@@ -140,6 +140,8 @@ function message(error: unknown): string {
 
 export class Run extends DurableObject<Env> {
   private readonly creating = new Set<number>()
+  private readonly leaving = new Map<string, Promise<void>>()
+  private readonly leavingIds = new Set<string>()
   private readonly specs = new Map<string, Spec>()
   private readonly sql: SqlStorage
   private ticking: Promise<void> | undefined
@@ -1387,18 +1389,32 @@ export class Run extends DurableObject<Env> {
         : this.sandboxes().find((candidate) => candidate.id === row.sandbox)
     if (record?.handle && row.slot) {
       const handle = JSON.parse(record.handle) as Sandbox.Handle
-      const needed = this.rows().some(
-        (other) => other.id !== row.id && other.task === row.task && other.phase !== 'done',
-      )
-      await provider
-        .connect(handle)
-        .exec(
-          Slot.create({ home: handle.home }).down(
-            row.slot,
-            config.sandbox.images === 'remove' && !needed ? 'remove' : 'keep',
-          ),
+      const slot = row.slot
+      this.leavingIds.add(row.id)
+      const down = (this.leaving.get(row.task) ?? Promise.resolve())
+        .then(() => {
+          const needed = this.rows().some(
+            (other) =>
+              other.id !== row.id &&
+              other.task === row.task &&
+              (other.phase !== 'done' || this.leavingIds.has(other.id)),
+          )
+          return provider
+            .connect(handle)
+            .exec(
+              Slot.create({ home: handle.home }).down(
+                slot,
+                config.sandbox.images === 'remove' && !needed ? 'remove' : 'keep',
+              ),
+            )
+        })
+        .then(
+          () => {},
+          () => {},
         )
-        .catch(() => {})
+        .finally(() => this.leavingIds.delete(row.id))
+      this.leaving.set(row.task, down)
+      await down
     }
     if (row.phase !== 'pending' && row.phase !== 'up')
       await Harness.remove(this.env, session).catch(() => {})
