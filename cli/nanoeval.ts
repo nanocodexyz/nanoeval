@@ -1,10 +1,13 @@
 #!/usr/bin/env node
+import { spawn } from 'node:child_process'
 import * as Fs from 'node:fs/promises'
+import * as Os from 'node:os'
 import * as Path from 'node:path'
 import { parseArgs } from 'node:util'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
 import type * as Config from '../src/Config.ts'
 import * as Task from '../src/Task.ts'
+import * as Plan from './Plan.ts'
 
 const usage = `nanoeval <command>
 
@@ -12,6 +15,13 @@ const usage = `nanoeval <command>
             [--ca-bundle FILE]
             Serve this machine as a local sandbox provider. With --ca-bundle, slot containers
             trust that certificate bundle, for a machine whose network re-signs TLS.
+  worker    --token T [--host 127.0.0.1] [--port 8787] [--state DIR] [--tick-ms N]
+            [--sandbox-url URL --sandbox-token T] [--claude-login FILE] [--codex-login FILE]
+            Run the Worker under local workerd. Model API keys and base URLs are taken from
+            ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, OPENAI_API_KEY and OPENAI_BASE_URL. A login
+            file (~/.claude/.credentials.json, ~/.codex/auth.json) makes that provider's
+            agents run on the plan signed in there: its access token is read once at start,
+            is never refreshed, and reaches workerd through a private file.
   run       --url URL --token T --task DIR... (--agent ID=PROVIDER:MODEL[:THINKING]... | --oracle)
             [--attempts 1] [--provider local|e2b] [--backend docker|dir] [--slots 4] [--sandboxes 1]
             [--memory-mb N] [--limits enforce|none] [--network bridge|host] [--docker keep|install]
@@ -172,6 +182,8 @@ async function main(): Promise<void> {
       attempts: { default: '1', type: 'string' },
       backend: { default: 'docker', type: 'string' },
       'ca-bundle': { type: 'string' },
+      'claude-login': { type: 'string' },
+      'codex-login': { type: 'string' },
       docker: { default: 'keep', type: 'string' },
       'exec-timeout-ms': { default: '600000', type: 'string' },
       host: { default: '127.0.0.1', type: 'string' },
@@ -182,17 +194,21 @@ async function main(): Promise<void> {
       network: { type: 'string' },
       oracle: { default: false, type: 'boolean' },
       out: { type: 'string' },
-      port: { default: '8788', type: 'string' },
+      port: { type: 'string' },
       provider: { default: 'local', type: 'string' },
       root: { type: 'string' },
       'sandbox-budget-usd': { default: '0', type: 'string' },
+      'sandbox-token': { default: process.env['NANOEVAL_SANDBOX_TOKEN'], type: 'string' },
+      'sandbox-url': { type: 'string' },
       'sandbox-timeout-sec': { default: '3600', type: 'string' },
       sandboxes: { default: '1', type: 'string' },
       'setup-sec': { default: '600', type: 'string' },
       slots: { default: '4', type: 'string' },
+      state: { type: 'string' },
       'step-retries': { default: '3', type: 'string' },
       task: { multiple: true, type: 'string' },
       template: { type: 'string' },
+      'tick-ms': { type: 'string' },
       token: { default: process.env['NANOEVAL_TOKEN'], type: 'string' },
       url: { default: process.env['NANOEVAL_URL'], type: 'string' },
       wait: { default: false, type: 'boolean' },
@@ -206,17 +222,84 @@ async function main(): Promise<void> {
 
   if (command === 'sandboxd') {
     const server = await Sandboxd.start({
-      ...(values['ca-bundle']
-        ? { env: { NANOEVAL_CA_BUNDLE: Path.resolve(values['ca-bundle']) } }
-        : {}),
+      env: values['ca-bundle'] ? { NANOEVAL_CA_BUNDLE: Path.resolve(values['ca-bundle']) } : {},
       execTimeoutMs: Number(values['exec-timeout-ms']),
       host: values.host,
-      port: Number(values.port),
+      port: Number(values.port ?? '8788'),
       root: values.root ?? Path.join(process.cwd(), 'output', 'sandboxes'),
       token: required(values.token, 'token'),
     })
     console.log('nanoeval sandboxd listening on ' + server.url)
     return
+  }
+
+  if (command === 'worker') {
+    const vars: Record<string, string> = { ACCESS_TOKEN: required(values.token, 'token') }
+    for (const name of [
+      'ANTHROPIC_API_KEY',
+      'ANTHROPIC_BASE_URL',
+      'OPENAI_API_KEY',
+      'OPENAI_BASE_URL',
+    ])
+      if (process.env[name]) vars[name] = process.env[name]
+    if (values['sandbox-url']) {
+      vars['LOCAL_SANDBOX_URL'] = values['sandbox-url']
+      vars['LOCAL_SANDBOX_TOKEN'] = required(values['sandbox-token'], 'sandbox-token')
+    }
+    if (values['tick-ms']) vars['TICK_MS'] = values['tick-ms']
+
+    const logins: [name: string, login: Plan.Login][] = []
+    if (values['claude-login'])
+      logins.push(['Claude', await Plan.claude(Path.resolve(values['claude-login']))])
+    if (values['codex-login'])
+      logins.push(['ChatGPT', await Plan.codex(Path.resolve(values['codex-login']))])
+    for (const [name, login] of logins) {
+      Object.assign(vars, login.vars)
+      const expiry =
+        login.expiresAt === undefined
+          ? 'at an unknown time'
+          : 'at ' + new Date(login.expiresAt).toISOString()
+      console.error(
+        login.expiresAt !== undefined && login.expiresAt <= Date.now()
+          ? 'the ' +
+              name +
+              ' plan login expired ' +
+              expiry +
+              ': its agents fail until you sign in again and restart the worker'
+          : 'the ' + name + ' plan login is used until it expires ' + expiry,
+      )
+    }
+    const relay = values['codex-login'] ? await Plan.relay() : undefined
+    Object.assign(vars, relay?.vars)
+
+    const root = Path.resolve(import.meta.dirname, '..')
+    const directory = await Fs.mkdtemp(Path.join(Os.tmpdir(), 'nanoeval-worker-'))
+    const file = Path.join(directory, 'vars.env')
+    await Fs.writeFile(file, Plan.envFile(vars), { mode: 0o600 })
+    const child = spawn(
+      process.execPath,
+      [
+        Path.join(root, 'node_modules', 'wrangler', 'bin', 'wrangler.js'),
+        'dev',
+        '--ip',
+        values.host,
+        '--port',
+        values.port ?? '8787',
+        '--persist-to',
+        Path.resolve(values.state ?? Path.join('output', 'worker')),
+        '--env-file',
+        file,
+      ],
+      { cwd: root, stdio: 'inherit' },
+    )
+    for (const signal of ['SIGINT', 'SIGTERM'] as const)
+      process.once(signal, () => child.kill(signal))
+    const code = await new Promise<number>((resolve) =>
+      child.once('exit', (exit) => resolve(exit ?? 1)),
+    )
+    await relay?.close()
+    await Fs.rm(directory, { force: true, recursive: true })
+    process.exit(code)
   }
 
   if (!command || !['attempt', 'cancel', 'export', 'run', 'status'].includes(command)) {

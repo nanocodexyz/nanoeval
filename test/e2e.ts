@@ -4,8 +4,10 @@ import * as Crypto from 'node:crypto'
 import * as Fs from 'node:fs'
 import * as Http from 'node:http'
 import type { AddressInfo } from 'node:net'
+import * as Os from 'node:os'
 import * as Path from 'node:path'
 import { client, exportJob, loadTask, oracle, summary } from '../cli/nanoeval.ts'
+import * as Plan from '../cli/Plan.ts'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
 import type * as Config from '../src/Config.ts'
 
@@ -19,6 +21,9 @@ const attempts = Number(process.env['NANOEVAL_E2E_ATTEMPTS'] ?? '2')
 const slots = Number(process.env['NANOEVAL_E2E_SLOTS'] ?? '4')
 const limits = (process.env['NANOEVAL_E2E_LIMITS'] ?? 'enforce') as 'enforce' | 'none'
 const realModel = process.env['NANOEVAL_E2E_ANTHROPIC_MODEL'] ?? 'claude-haiku-4-5'
+const codexModel = process.env['NANOEVAL_E2E_CODEX_MODEL'] ?? 'gpt-6-luna'
+const thinking = process.env['NANOEVAL_E2E_THINKING']
+const login = process.env['NANOEVAL_E2E_LOGIN']
 const scenario = process.env['NANOEVAL_E2E_SCENARIO'] ?? 'tasks'
 const restartAfterMs = Number(process.env['NANOEVAL_E2E_RESTART_AFTER_MS'] ?? '0')
 const caBundle = process.env['NANOEVAL_E2E_CA_BUNDLE']
@@ -134,8 +139,10 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
       }
     })
 
-  if (model === 'oracle') return { close() {}, url: undefined }
-  if (model !== 'anthropic') throw new Error('NANOEVAL_E2E_MODEL is scripted, oracle or anthropic')
+  if (model === 'oracle' || model === 'claude-plan' || model === 'codex-plan')
+    return { close() {}, url: undefined }
+  if (model !== 'anthropic')
+    throw new Error('NANOEVAL_E2E_MODEL is scripted, oracle, anthropic, claude-plan or codex-plan')
   if (!process.env['ANTHROPIC_API_KEY'])
     throw new Error('NANOEVAL_E2E_MODEL=anthropic needs ANTHROPIC_API_KEY')
   if (!process.env['HTTPS_PROXY'] && !process.env['https_proxy'])
@@ -207,8 +214,9 @@ async function main(): Promise<void> {
   const token = Crypto.randomBytes(16).toString('hex')
   const sandboxToken = Crypto.randomBytes(16).toString('hex')
 
+  Fs.writeFileSync(Path.join(out, 'slot.env'), 'NANOEVAL_E2E_LABEL=' + label + '\n')
   const sandboxd = await Sandboxd.start({
-    ...(caBundle ? { env: { NANOEVAL_CA_BUNDLE: Path.resolve(caBundle) } } : {}),
+    env: caBundle ? { NANOEVAL_CA_BUNDLE: Path.resolve(caBundle) } : {},
     execTimeoutMs: 600_000,
     host: '127.0.0.1',
     port: 0,
@@ -216,16 +224,30 @@ async function main(): Promise<void> {
     token: sandboxToken,
   })
   const upstream = await modelEndpoint()
+  const plan =
+    model === 'codex-plan'
+      ? await Plan.codex(login ?? Path.join(Os.homedir(), '.codex', 'auth.json'))
+      : model === 'claude-plan'
+        ? await Plan.claude(login ?? Path.join(Os.homedir(), '.claude', '.credentials.json'))
+        : undefined
+  if (plan?.expiresAt !== undefined && plan.expiresAt <= Date.now())
+    throw new Error('the plan login expired at ' + new Date(plan.expiresAt).toISOString())
+  const relay = model === 'codex-plan' ? await Plan.relay() : undefined
   const port = await freePort()
   const url = 'http://127.0.0.1:' + port
-  const vars = {
+  const vars: Record<string, string> = {
     ACCESS_TOKEN: token,
     LOCAL_SANDBOX_TOKEN: sandboxToken,
     LOCAL_SANDBOX_URL: sandboxd.url,
     TICK_MS: '500',
     ...(upstream.url ? { ANTHROPIC_BASE_URL: upstream.url } : {}),
     ...(model === 'scripted' ? { ANTHROPIC_API_KEY: 'scripted' } : {}),
+    ...(model === 'anthropic' ? { ANTHROPIC_API_KEY: process.env['ANTHROPIC_API_KEY']! } : {}),
+    ...plan?.vars,
+    ...relay?.vars,
   }
+  const secrets = Fs.mkdtempSync(Path.join(Os.tmpdir(), 'nanoeval-e2e-'))
+  Fs.writeFileSync(Path.join(secrets, 'vars.env'), Plan.envFile(vars), { mode: 0o600 })
   const log = Fs.createWriteStream(Path.join(out, 'wrangler.log'))
   const start = async () => {
     const child = spawn(
@@ -238,20 +260,12 @@ async function main(): Promise<void> {
         String(port),
         '--persist-to',
         Path.join(out, 'state'),
-        ...Object.entries(vars).flatMap(([name, value]) => ['--var', name + ':' + value]),
+        '--env-file',
+        Path.join(secrets, 'vars.env'),
       ],
       {
         detached: true,
-        env: {
-          HOME: process.env['HOME'],
-          PATH: process.env['PATH'],
-          ...(model === 'scripted'
-            ? {}
-            : {
-                ANTHROPIC_API_KEY: process.env['ANTHROPIC_API_KEY'],
-                CLOUDFLARE_INCLUDE_PROCESS_ENV: 'true',
-              }),
-        },
+        env: { HOME: process.env['HOME'], PATH: process.env['PATH'] },
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     )
@@ -295,12 +309,21 @@ async function main(): Promise<void> {
     const agents: Config.Agent[] =
       model === 'oracle'
         ? [oracle]
-        : failures || model !== 'scripted'
-          ? [{ id: failures ? 'right' : 'nanocode', model: realModel, provider: 'claude' }]
-          : [
-              { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
-              { id: 'wrong', model: 'claude-sonnet-4-6', provider: 'claude' },
+        : model === 'codex-plan'
+          ? [
+              {
+                id: 'nanocode',
+                model: codexModel,
+                provider: 'codex',
+                ...(thinking ? { thinking } : {}),
+              },
             ]
+          : failures || model !== 'scripted'
+            ? [{ id: failures ? 'right' : 'nanocode', model: realModel, provider: 'claude' }]
+            : [
+                { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
+                { id: 'wrong', model: 'claude-sonnet-4-6', provider: 'claude' },
+              ]
     const tasks = await Promise.all(
       directories.map((directory) => loadTask(directory, { solution: model === 'oracle' })),
     )
@@ -467,7 +490,12 @@ async function main(): Promise<void> {
       medianPhaseMs: Object.fromEntries(
         Object.entries(phases).map(([phase, values]) => [phase, median(values)]),
       ),
-      model: model === 'anthropic' ? realModel : model,
+      model:
+        model === 'anthropic' || model === 'claude-plan'
+          ? realModel
+          : model === 'codex-plan'
+            ? codexModel
+            : model,
       peakConcurrentAttempts: peak,
       slots,
       spend: status['spend'],
@@ -480,6 +508,8 @@ async function main(): Promise<void> {
   } finally {
     await stop(worker, 'SIGTERM')
     upstream.close()
+    await relay?.close()
+    Fs.rmSync(secrets, { force: true, recursive: true })
     await sandboxd.close()
   }
 }
