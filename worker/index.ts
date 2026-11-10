@@ -22,15 +22,14 @@ export default {
     if (!id) {
       if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405)
       const created = crypto.randomUUID()
+      const target = new URL('https://run.internal/create')
+      target.searchParams.set('id', created)
+      target.searchParams.set('url', (env.PUBLIC_URL || url.origin).replace(/\/+$/, ''))
       return env.RUNS.get(env.RUNS.idFromName(created)).fetch(
-        new Request('https://run.internal/create', {
+        new Request(target, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            config: await request.json().catch(() => null),
-            id: created,
-            publicUrl: (env.PUBLIC_URL || url.origin).replace(/\/+$/, ''),
-          }),
+          body: request.body,
         }),
       )
     }
