@@ -23,16 +23,22 @@ This is a first version. The table says what was run.
 | --- | --- |
 | Worker orchestrator (`Run` Durable Object), nanocode-ts harness sessions, CLI and API | Implemented. Tested end to end under local workerd |
 | Local sandbox provider (`nanoeval sandboxd`) | Implemented, tested |
-| Slot backends `docker` and `dir` | Implemented, tested: several attempts at once in one sandbox |
+| Slot backends `docker` and `dir` | Implemented, tested: up to 64 attempts at once in one sandbox |
 | Released `nanocode hand` in a slot, including Alpine images | Implemented, tested |
-| Real model run | Tested with `claude-haiku-4-5` through the Anthropic API |
+| Real model run | Tested with `claude-haiku-4-5` through the Anthropic API and with `gpt-6-luna` on a ChatGPT plan login |
+| Oracle run (`nanoeval run --oracle`): each task's own solution instead of a model | Implemented, tested |
+| Terminal-Bench 2.1 tasks | 87 of the 89 load, and 2 need Compose. 11 ran with their own solutions and passed. 5 ran with a model. The other 76 have not run |
 | Harbor job export and ATIF-v1.7 trajectories | Implemented. Shapes are unit tested. Not yet opened with `harbor view` |
 | Failure kinds `verifier`, `agent_timeout`, `environment` | Implemented, tested |
 | Orchestrator restart during a run | Tested: the Worker is killed with attempts in flight, restarts on the same state, and the run finishes |
 | E2B over MPP provider | Implemented against E2B's documented protocol and tested against a local mock. The live `402` challenge is decoded by `scripts/e2b-quote.ts`. **No sandbox has been paid for or started yet** |
 | Docker installation inside an E2B sandbox (`--docker install`) | Written, not run |
-| Container CPU and memory limits (`--limits enforce`) | Written, not run: the development host's Docker could not apply cgroup limits |
-| Codex models (`provider: codex`) | Wired, not run |
+| Container CPU and memory limits (`--limits enforce`) | Implemented, tested: the end-to-end test reads the limits of every slot container |
+| Codex models (`provider: codex`) | Tested on a ChatGPT plan login (`nanoeval worker --codex-login`). Not run with an OpenAI API key |
+| Claude plan login (`nanoeval worker --claude-login`) | Written, not run: no unexpired login was at hand |
+| Services on one Linux machine (`scripts/install-linux.sh`) | Implemented, run on one machine |
+| A certificate bundle and variables for slot containers (`sandboxd --ca-bundle`, `--slot-env`) | Implemented, tested |
+| Network isolation between local Docker slots | Missing. They share the host network, so two tasks that listen on one port interfere |
 | Deployment to Cloudflare | Bundles with `wrangler deploy --dry-run`. Not deployed |
 | `krun` (libkrun microVM) and `bwrap` slot backends | Planned |
 | `allow_internet = false`, Compose tasks, separate verifier environments | Refused at submission. Planned |
@@ -43,16 +49,14 @@ This is a first version. The table says what was run.
 Requirements: Node 24, Docker, Linux.
 
 ```sh
-npm install
+npm ci
 
 # 1. Make this machine a sandbox host.
 node cli/nanoeval.ts sandboxd --token "$SANDBOX_TOKEN"
 
-# 2. Start the Worker. ANTHROPIC_API_KEY comes from the environment.
-CLOUDFLARE_INCLUDE_PROCESS_ENV=true npx wrangler dev \
-  --var ACCESS_TOKEN:"$TOKEN" \
-  --var LOCAL_SANDBOX_URL:http://127.0.0.1:8788 \
-  --var LOCAL_SANDBOX_TOKEN:"$SANDBOX_TOKEN"
+# 2. Start the Worker under local workerd. ANTHROPIC_API_KEY comes from the environment.
+node cli/nanoeval.ts worker --token "$TOKEN" \
+  --sandbox-url http://127.0.0.1:8788 --sandbox-token "$SANDBOX_TOKEN"
 
 # 3. Submit a run: 2 tasks, 2 attempts each, 4 slots in one sandbox.
 node cli/nanoeval.ts run --url http://127.0.0.1:8787 --token "$TOKEN" \
@@ -61,7 +65,23 @@ node cli/nanoeval.ts run --url http://127.0.0.1:8787 --token "$TOKEN" \
   --attempts 2 --slots 4 --model-budget-usd 1 --wait --out output/job
 ```
 
-`--out` writes the Harbor job directory. If the Docker daemon cannot apply cgroup limits, pass `--limits none`. `nanoeval status`, `attempt`, `export` and `cancel` read a run later. A local hand dials `ws://127.0.0.1`, which nanocode accepts only on loopback, so local Docker slots use the host network (`--network host`, the default for the local provider).
+`--out` writes the Harbor job directory. If the Docker daemon cannot apply cgroup limits, pass `--limits none`. `nanoeval status`, `attempt`, `export` and `cancel` read a run later. A local hand dials `ws://127.0.0.1`, which nanocode accepts only on loopback, so local Docker slots use the host network (`--network host`, the default for the local provider). Slots on one machine therefore share its ports.
+
+Without an API key, a plan login works. `nanoeval worker --codex-login ~/.codex/auth.json` runs `codex` agents such as `--agent luna=codex:gpt-6-luna` on the ChatGPT plan signed in there, and `--claude-login ~/.claude/.credentials.json` does the same for `claude` agents. The access token is read once when the Worker starts and is never refreshed: sign in again with that tool and restart the Worker when it expires.
+
+To check task environments and verifiers without a model, `nanoeval run --oracle --task DIR... --wait` sends each task's `solution/` and runs `solution/solve.sh` in the slot in place of the agent. No other run sends a solution.
+
+## Keep it running on a Linux machine
+
+```sh
+npm ci
+scripts/install-linux.sh --codex-login ~/.codex/auth.json
+nanoeval run --oracle --task tasks/extract-todos --wait
+```
+
+The script needs Node 24, Docker and systemd. It writes two user services, `nanoeval-sandboxd` and `nanoeval-worker`, that listen on loopback (`--sandbox-port`, `--worker-port`), generates their tokens into `~/.config/nanoeval/env` with mode 600, and installs `~/.local/bin/nanoeval`, which reads that file. A run submitted with `--wait` and no `--out` is written under `~/nanoeval-runs` (`--runs`). Run the script again to change an option, and `loginctl enable-linger` to keep the services after you log out. The Worker runs from this checkout, and wrangler reloads it when the sources change.
+
+Two options are for a machine whose network stands between its containers and the internet. `--ca-bundle FILE` makes slot containers trust that bundle when the network re-signs TLS. `--slot-env FILE` starts them with the variables of that file, such as a package index or `UV_EXCLUDE_NEWER` where the registry holds back fresh releases.
 
 ## Run it on E2B
 
@@ -90,7 +110,9 @@ npm run check:types   # tsc for Node and for the Worker
 npm test              # unit tests
 npm run dry-run       # bundle the Worker
 npm run e2e           # local workerd + sandboxd + Docker slots + the scripted model
-NANOEVAL_E2E_MODEL=anthropic npm run e2e   # the same with a real model
+NANOEVAL_E2E_MODEL=oracle npm run e2e      # the task solutions in place of a model
+NANOEVAL_E2E_MODEL=anthropic npm run e2e   # a real model with ANTHROPIC_API_KEY
+NANOEVAL_E2E_MODEL=codex-plan npm run e2e  # a real model on the ChatGPT plan of ~/.codex/auth.json
 ```
 
 The scripted model answers the harness with fixed tool calls, so the end-to-end test needs no API key. It still runs the real Worker, the real nanocode-ts harness, the released hand and the real verifiers.
@@ -103,6 +125,7 @@ The scripted model answers the harness with fixed tool calls, so the end-to-end 
 | `src/` | Host-agnostic modules: tasks, results, admission, budget, providers |
 | `sandbox/` | `slot.sh`, the slot splitter, and `Sandboxd.ts`, the local sandbox daemon |
 | `cli/` | The `nanoeval` command |
+| `scripts/` | `install-linux.sh` and the E2B price quote |
 | `tasks/` | Three small Harbor tasks from gakonst/nanoeval |
 | `test/` | Unit tests, the end-to-end test and its failure fixtures |
 

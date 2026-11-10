@@ -29,13 +29,13 @@ It revives two earlier bodies of work:
 | --- | --- | --- |
 | `worker/index.ts` | Worker | Routes `/v1/runs` to a run and `/sessions` to nanocode-ts |
 | `worker/Run.ts` | Durable Object | One run: ledger, admission, attempt state machine, results |
-| `worker/Sessions.ts` | Durable Object | `App.create` from `nanocode-ts/cloudflare`: one harness session per attempt, model requests forwarded with the deployment's API key |
+| `worker/Sessions.ts` | Durable Object | `App.create` from `nanocode-ts/cloudflare`: one harness session per attempt, model requests forwarded with the deployment's API key or plan login |
 | `src/Sandbox.ts`, `src/Local.ts`, `src/E2b.ts` | Worker | The provider contract and its two providers |
 | `src/Payment.ts`, `src/Budget.ts` | Worker | MPP charges through mppx, refused past the run's budget, recorded in the ledger |
 | `sandbox/slot.sh` | Sandbox | The slot splitter: runtime setup, slot up, hand, verify, down, status |
 | `sandbox/Sandboxd.ts` | Any machine | The local provider's daemon: makes one machine a sandbox host |
 | `src/Task.ts`, `src/Atif.ts`, `src/Harbor.ts`, `src/Result.ts` | Worker and CLI | Harbor task loading, ATIF-v1.7 trajectories, Harbor job export, outcomes and pass@k |
-| `cli/nanoeval.ts` | Node | Submit a run, read status and artifacts, export, serve `sandboxd` |
+| `cli/nanoeval.ts`, `cli/Plan.ts` | Node | Submit a run, read status and artifacts, export, serve `sandboxd`, start the Worker under local workerd with its credentials |
 
 ## Harness outside the sandbox
 
@@ -57,6 +57,8 @@ A run is `tasks × agents × attempts`. Each attempt is one row in the run's SQL
 | `done` | The verifier reported, or a failure ended the attempt | Events, trajectory and verifier output are stored. The slot is removed and the session deleted |
 
 Long work (image builds, the hand, the verifier) runs detached in the sandbox and writes a status file. The orchestrator polls. No request holds a build open, and a restarted Durable Object continues from the ledger.
+
+An oracle run has no model. Its one agent has the provider `oracle`, every task is sent with its `solution/`, and the `run` phase starts `solution/solve.sh` in the slot with `slot.sh solve` under the agent deadline, where a model run submits a turn. The hand still attaches first, so an oracle run also shows that the hand starts in each task image. The solution's output is kept as `agent/oracle.txt`.
 
 Every attempt ends as `passed`, `failed` or `errored`, with the verifier reward kept beside it. A failure carries a kind: `agent`, `agent_timeout`, `verifier`, `verifier_timeout`, `environment`, `budget`, `cancelled` or `internal`. An agent timeout keeps its verifier reward, as Harbor does. Every other failure is an error with no reward, so an infrastructure failure never becomes a score of zero. Attempts are not retried.
 
@@ -81,6 +83,10 @@ A provider creates a sandbox, runs a command in it, writes a file to it, and kil
 
 **Local.** `nanoeval sandboxd` serves a machine over HTTP with a bearer token. A sandbox is a directory. This is the single-machine mode of the earlier versions: one large machine, many slots.
 
+A machine's network is host policy, and `sandboxd` passes it to the slots. `--ca-bundle FILE` mounts a certificate bundle into each slot container and names it in the variables that OpenSSL, curl, uv, pip, requests, Node, git and cargo read, for a network that re-signs TLS. `--slot-env FILE` starts each container with the variables of a file. Both change what the agent and the verifier see, so the sandbox's capabilities in the run's status record them as `ca_bundle` and `slot_env`. Neither is set by default.
+
+Local Docker slots use the host network, because a hand accepts a plaintext `ws://` URL only on loopback. Slots on one machine therefore share its ports: two attempts that listen on the same port interfere, and a verifier can reach another attempt's server. A slot with its own network stack, such as the planned `krun` backend, removes this.
+
 **E2B over MPP.** `src/E2b.ts` talks to `https://mpp.e2b.dev`, whose bodies match E2B's REST API:
 
 1. `POST /sandboxes {templateID, timeout, metadata}` answers `402` with `WWW-Authenticate: Payment …` challenges (`method="tempo"`, intents `charge` and `session`, amounts in base units of a six-decimal token).
@@ -94,9 +100,15 @@ The E2B JavaScript SDK is not used. It cannot pay, and it needs `nodejs_compat`.
 
 ## Tasks and results
 
-Tasks are Harbor task directories, schema 1.1, as Terminal-Bench 2.x ships them: `task.toml`, `instruction.md`, `environment/`, `tests/test.sh`. The verifier writes `/logs/verifier/reward.txt`. The CLI loads a directory and sends `environment/` and `tests/` with the run. `solution/` never leaves the machine. Tasks that need Compose, GPUs, a separate verifier environment or `allow_internet = false` are refused at submission.
+Tasks are Harbor task directories, schema 1.1, as Terminal-Bench 2.x ships them: `task.toml`, `instruction.md`, `environment/`, `tests/test.sh`. The verifier writes `/logs/verifier/reward.txt`. The CLI loads a directory and sends `tests/` with the run, and `environment/` when the task names no `docker_image`, since the image is then built from it. `solution/` leaves the machine only in an oracle run. The run stores a task's files in parts beside a small record of the task, so admission never reads the files. `environment.build_timeout_sec` bounds a task's environment setup when the task sets it. Tasks that need Compose, GPUs, a separate verifier environment or `allow_internet = false` are refused at submission.
 
-`nanoeval export` writes a Harbor job directory: `result.json` for the job, and per trial `result.json`, `agent/trajectory.json` (ATIF-v1.7), `agent/events.jsonl` and `verifier/test-stdout.txt`. Token counts and the harness's cost estimate come from the session's events, per attempt.
+`nanoeval export` writes a Harbor job directory: `result.json` for the job, and per trial `result.json`, `agent/trajectory.json` (ATIF-v1.7), `agent/events.jsonl` and `verifier/test-stdout.txt`. The CLI reads the result files in one request and each artifact in its own. Token counts and the harness's cost estimate come from the session's events, per attempt.
+
+## Model credentials
+
+The session sends a model request without a credential, and `worker/Sessions.ts` adds one in the `Forward` egress. With `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` it is the API key. With a plan login it is that plan's access token: `CLAUDE_CODE_OAUTH_TOKEN` for Claude, and `CHATGPT_ACCESS_TOKEN` with `CHATGPT_ACCOUNT_ID` for Codex, which make nanocode-ts open the session in its subscription mode for that provider. chatgpt.com refuses requests from workerd, so Codex plan requests go to the nanocode-egress relay (`CHATGPT_RELAY_URL`, `CHATGPT_RELAY_SECRET`), a Node process that forwards only the Codex Responses endpoints.
+
+`nanoeval worker` fills these for local workerd. It reads the access token of `--claude-login` or `--codex-login` once at start, never the refresh token, starts the relay on a loopback port with a random secret, and hands every variable to wrangler in a mode 600 file in a private temporary directory that it removes on exit. It does not refresh a login: an expired one fails at the provider, and the attempt ends as an `agent` error.
 
 ## Budget and payments
 
