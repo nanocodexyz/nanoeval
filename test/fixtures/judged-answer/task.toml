@@ -1,0 +1,22 @@
+schema_version = "1.1"
+
+[task]
+name = "fixtures/judged-answer"
+description = "A fixture for the end-to-end test of final messages and judges."
+
+[metadata.nanoeval]
+final_message = true
+judge = true
+
+[agent]
+timeout_sec = 60.0
+
+[verifier]
+timeout_sec = 30.0
+
+[environment]
+cpus = 1
+memory_mb = 256
+storage_mb = 128
+gpus = 0
+allow_internet = true

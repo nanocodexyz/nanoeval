@@ -72,16 +72,26 @@ let scriptedCalls = 0
 function scripted(body: { messages?: unknown; model?: string }): string {
   const text = JSON.stringify(body.messages ?? [])
   const id = ++scriptedCalls
-  const answered = text.includes('"tool_result"')
+  const reply = text.includes('JUDGE-FIXTURE')
+    ? text.includes('answer: nanoeval')
+      ? 'PASS'
+      : 'FAIL'
+    : text.includes('FINAL-ANSWER-FIXTURE')
+      ? body.model?.includes('sonnet')
+        ? 'wrong'
+        : 'nanoeval'
+      : undefined
+  const answered = reply !== undefined || text.includes('"tool_result"')
   const solution = solutions.find(([marker]) => text.includes(marker))
-  if (!solution) throw new Error('the scripted model has no solution for this prompt')
+  if (!solution && reply === undefined)
+    throw new Error('the scripted model has no solution for this prompt')
 
-  const command = body.model?.includes('sonnet') ? solution[2] : solution[1]
+  const command = body.model?.includes('sonnet') ? solution?.[2] : solution?.[1]
   const code = 'await tools.exec_command({ cmd: ' + JSON.stringify(command) + ' }); text("done")'
   const block = answered
     ? [
         { text: '', type: 'text' },
-        { text: 'The task is complete.', type: 'text_delta' },
+        { text: reply ?? 'The task is complete.', type: 'text_delta' },
       ]
     : [
         { id: 'toolu_' + id, input: {}, name: 'exec', type: 'tool_use' },
@@ -135,7 +145,7 @@ async function read(request: Http.IncomingMessage): Promise<Buffer> {
 }
 
 async function modelEndpoint(): Promise<{ close(): void; url: string | undefined }> {
-  if (model === 'scripted')
+  if (model === 'scripted' || scenario === 'judge')
     return listen(async (request, response) => {
       try {
         const reply = scripted(JSON.parse((await read(request)).toString()))
@@ -257,7 +267,7 @@ async function main(): Promise<void> {
     LOCAL_SANDBOX_URL: sandboxd.url,
     TICK_MS: tickMs,
     ...(upstream.url ? { ANTHROPIC_BASE_URL: upstream.url } : {}),
-    ...(model === 'scripted' ? { ANTHROPIC_API_KEY: 'scripted' } : {}),
+    ...(model === 'scripted' || scenario === 'judge' ? { ANTHROPIC_API_KEY: 'scripted' } : {}),
     ...(model === 'anthropic' ? { ANTHROPIC_API_KEY: process.env['ANTHROPIC_API_KEY']! } : {}),
     ...plan?.vars,
     ...relay?.vars,
@@ -313,7 +323,8 @@ async function main(): Promise<void> {
 
     const failures = scenario === 'failures'
     const isolated = scenario === 'network'
-    if (scenario !== 'tasks' && model !== 'scripted')
+    const judged = scenario === 'judge'
+    if (scenario !== 'tasks' && model !== 'scripted' && !(judged && model === 'oracle'))
       throw new Error('the ' + scenario + ' scenario runs on the scripted model')
     if (isolated) {
       if (backend === 'dir') throw new Error('the network scenario runs on docker or krun slots')
@@ -324,16 +335,18 @@ async function main(): Promise<void> {
         sandboxd: { token: sandboxToken, url: sandboxd.url },
       })
     }
-    const directories = failures
-      ? [
-          'large-tests',
-          'no-reward',
-          'slow-agent',
-          ...(backend === 'dir' ? [] : ['background-process', 'broken-environment']),
-        ].map((name) => Path.join('test/fixtures', name))
-      : isolated
-        ? [Network.fixture]
-        : taskNames.map((name) => Path.join('tasks', name))
+    const directories = judged
+      ? ['final-answer', 'judged-answer'].map((name) => Path.join('test/fixtures', name))
+      : failures
+        ? [
+            'large-tests',
+            'no-reward',
+            'slow-agent',
+            ...(backend === 'dir' ? [] : ['background-process', 'broken-environment']),
+          ].map((name) => Path.join('test/fixtures', name))
+        : isolated
+          ? [Network.fixture]
+          : taskNames.map((name) => Path.join('tasks', name))
     const agents: Config.Agent[] =
       model === 'oracle'
         ? [oracle]
@@ -368,6 +381,7 @@ async function main(): Promise<void> {
       agents,
       attempts: failures ? 1 : isolated ? slots : attempts,
       budget: { modelUsd: 1, sandboxUsd: 0 },
+      ...(judged ? { judge: { model: 'claude-haiku-4-5', provider: 'claude' as const } } : {}),
       limits: { attachSec: 60, setupSec: 600, stepRetries: 3 },
       name: 'e2e-' + label,
       sandbox: {
@@ -525,7 +539,13 @@ async function main(): Promise<void> {
     for (const attempt of status['attempts'] as { id: string }[]) {
       const detail = await api.attempt(created.id, attempt.id)
       assert.ok(detail['artifacts'].includes('verifier/test-stdout.txt'))
-      if (model === 'oracle') {
+      if (judged) {
+        const graded = detail['attempt'].task === 'fixtures/judged-answer'
+        assert.equal(detail['result'].judge?.requests, graded ? 1 : undefined)
+        assert.equal(detail['result'].timing.judge !== undefined, graded)
+        for (const name of ['verifier/judge-request.json', 'verifier/judge-response.json'])
+          assert.equal(detail['artifacts'].includes(name), graded)
+      } else if (model === 'oracle') {
         assert.deepEqual(detail['artifacts'], ['agent/oracle.txt', 'verifier/test-stdout.txt'])
         assert.match(
           await api.artifact(created.id, attempt.id, 'agent/oracle.txt'),
