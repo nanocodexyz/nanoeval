@@ -18,9 +18,12 @@
   },
   "dependencies": {
     "mppx": "0.16.0",
+    "nanocode-egress": "https://github.com/nanocodexyz/egress/releases/download/build-a0ff241/nanocode-egress-a0ff241.tgz",
     "nanocode-ts": "https://github.com/nanocodexyz/nanocode-ts/releases/download/build-751e03a/nanocode-ts-751e03a.tgz",
     "smol-toml": "1.9.1",
-    "viem": "2.57.7"
+    "undici": "7.30.1",
+    "viem": "2.57.7",
+    "ws": "8.21.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261016.1",

@@ -6,6 +6,8 @@ const providers = {
   codex: { base: 'OPENAI_BASE_URL', key: 'OPENAI_API_KEY' },
 } as const
 
+const relaySecretHeader = 'x-nanocode-relay-secret'
+
 export async function authorized(request: Request, env: Env): Promise<boolean> {
   const header = request.headers.get('authorization') ?? ''
   if (!env.ACCESS_TOKEN || !header.startsWith('Bearer ')) return false
@@ -18,33 +20,55 @@ export async function authorized(request: Request, env: Env): Promise<boolean> {
   return crypto.subtle.timingSafeEqual(actual, expected)
 }
 
+export function plan(env: Env, provider: 'claude' | 'codex'): Record<string, string> | undefined {
+  if (provider === 'claude')
+    return env.CLAUDE_CODE_OAUTH_TOKEN
+      ? { authorization: 'Bearer ' + env.CLAUDE_CODE_OAUTH_TOKEN }
+      : undefined
+  return env.CHATGPT_ACCESS_TOKEN && env.CHATGPT_ACCOUNT_ID
+    ? {
+        authorization: 'Bearer ' + env.CHATGPT_ACCESS_TOKEN,
+        'chatgpt-account-id': env.CHATGPT_ACCOUNT_ID,
+      }
+    : undefined
+}
+
+function refuse(message: string): Response {
+  return Response.json(
+    { type: 'error', error: { type: 'authentication_error', message } },
+    { status: 401 },
+  )
+}
+
 export const nanocode = App.create<Env>({
   authenticate: async (request, env) => ((await authorized(request, env)) ? account : null),
   egress: (env) =>
     Forward.create({
       fetch: (request, dispatch) => {
-        const provider = providers[dispatch.provider ?? 'claude']
-        const key = env[provider.key]
-        if (!key)
-          return Promise.resolve(
-            Response.json(
-              {
-                type: 'error',
-                error: { type: 'authentication_error', message: provider.key + ' is not set' },
-              },
-              { status: 401 },
-            ),
-          )
-
+        const name = dispatch.provider ?? 'claude'
+        const provider = providers[name]
         const headers = new Headers(request.headers)
-        if (provider.key === 'ANTHROPIC_API_KEY') headers.set('x-api-key', key)
-        else headers.set('authorization', 'Bearer ' + key)
-
-        const base = env[provider.base]
         const source = new URL(request.url)
-        const target = base
-          ? base.replace(/\/+$/, '') + source.pathname + source.search
-          : request.url
+        let target = request.url
+
+        if (dispatch.subscription) {
+          const credential = plan(env, name)
+          if (!credential) return Promise.resolve(refuse('no ' + name + ' plan login is set'))
+          headers.delete('x-api-key')
+          for (const [header, value] of Object.entries(credential)) headers.set(header, value)
+          if (name === 'codex' && env.CHATGPT_RELAY_URL) {
+            target = env.CHATGPT_RELAY_URL.replace(/\/+$/, '') + source.pathname + source.search
+            headers.set(relaySecretHeader, env.CHATGPT_RELAY_SECRET ?? '')
+          }
+        } else {
+          const key = env[provider.key]
+          if (!key) return Promise.resolve(refuse(provider.key + ' is not set'))
+          if (provider.key === 'ANTHROPIC_API_KEY') headers.set('x-api-key', key)
+          else headers.set('authorization', 'Bearer ' + key)
+          const base = env[provider.base]
+          if (base) target = base.replace(/\/+$/, '') + source.pathname + source.search
+        }
+
         return fetch(
           new Request(target, {
             method: request.method,
@@ -56,6 +80,7 @@ export const nanocode = App.create<Env>({
       },
     }),
   hands: 'always',
+  subscription: (_account, env, provider) => plan(env, provider) !== undefined,
   workspace: false,
 })
 
