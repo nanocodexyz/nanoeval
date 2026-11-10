@@ -270,6 +270,7 @@ cmd__krun_image() {
   tmp=$(mktemp -d "$base.XXXXXX")
   trap 'if [ -n "$pid" ]; then kill -KILL "$pid" 2>/dev/null; fi; if [ -n "$container" ]; then docker rm -f "$container" >/dev/null 2>&1; fi; rm -rf "$tmp"' EXIT
   format "$tmp/disk.ext4" "$storage"
+  : >"$tmp/vm.log"
   (cd "$tmp" && exec "$krun/nanoeval-krun" vm --boot "$krun/boot" --disk disk.ext4 --socket vm.sock --cpus "$vcpus" --memory-mib "$memory") >"$tmp/vm.log" 2>&1 </dev/null &
   pid=$!
   vm "$tmp" ready --log vm.log --pid "$pid" --socket vm.sock
@@ -374,6 +375,7 @@ cmd__up() {
         options+=(--passt "$(command -v passt)" --relay net/relay.sock)
         while IFS= read -r forward; do options+=(--forward "$forward"); done <"$dir/forwards"
       fi
+      : >"$dir/vm.log"
       (cd "$dir" && exec "$krun/nanoeval-krun" vm --boot "$krun/boot" --rt "$rt" --io io --socket vm.sock --cpus "$vcpus" --memory-mib "$memory" --lower "$base.ext4" --upper upper.ext4 "${options[@]}") >"$dir/vm.log" 2>&1 </dev/null &
       printf '%s\n' "$!" >"$dir/vm.pid"
       vm "$dir" ready --log vm.log --pid "$!" --socket vm.sock
