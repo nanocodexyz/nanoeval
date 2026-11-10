@@ -155,6 +155,14 @@ export function client(options: { token: string; url: string }) {
           '/v1/runs/' + run + '/attempts/' + attempt + '/artifacts/' + encodeURIComponent(name),
         )
       ).text(),
+    artifactBytes: async (run: string, attempt: string, name: string) =>
+      new Uint8Array(
+        await (
+          await call(
+            '/v1/runs/' + run + '/attempts/' + attempt + '/artifacts/' + encodeURIComponent(name),
+          )
+        ).arrayBuffer(),
+      ),
     attempt: async (run: string, attempt: string) =>
       (await call('/v1/runs/' + run + '/attempts/' + attempt)).json() as Promise<
         Record<string, any>
@@ -185,7 +193,7 @@ export async function exportJob(
   api: ReturnType<typeof client>,
   options: { out: string; run: string },
 ): Promise<Job> {
-  const write = async (path: string, contents: string) => {
+  const write = async (path: string, contents: string | Uint8Array) => {
     const target = Path.join(options.out, path)
     await Fs.mkdir(Path.dirname(target), { recursive: true })
     await Fs.writeFile(target, contents)
@@ -194,7 +202,10 @@ export async function exportJob(
   for (const [path, contents] of Object.entries(job.files)) await write(path, contents)
   for (const entry of job.artifacts)
     for (const name of entry.names)
-      await write(entry.trial + '/' + name, await api.artifact(options.run, entry.attempt, name))
+      await write(
+        entry.trial + '/' + name,
+        await api.artifactBytes(options.run, entry.attempt, name),
+      )
   return job
 }
 
@@ -516,7 +527,7 @@ async function main(): Promise<void> {
   if (command === 'export') await exportJob(api, { out: required(values.out, 'out'), run })
   if (command === 'attempt') {
     const attempt = required(rest[1], 'ATTEMPT')
-    if (rest[2]) process.stdout.write(await api.artifact(run, attempt, rest[2]))
+    if (rest[2]) process.stdout.write(await api.artifactBytes(run, attempt, rest[2]))
     else console.log(JSON.stringify(await api.attempt(run, attempt), null, 2))
   }
 }

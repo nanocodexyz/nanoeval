@@ -77,7 +77,7 @@ guest_copy() {
   shift 2
   rm -rf "$dir/io/$name"
   cp -R "$dir/task/$name" "$dir/io/$name"
-  vm "$dir" exec "$@" -- sh -c 'rm -rf "$1"' sh "/$name"
+  vm "$dir" exec "$@" --user 0 -- sh -c 'rm -rf "$1"' sh "/$name"
   vm "$dir" copy-in --socket vm.sock "$name" "/$name"
   rm -rf "$dir/io/$name"
 }
@@ -479,7 +479,7 @@ cmd__solve() {
       ;;
     docker)
       if [ -f "$dir/solution.env" ]; then options+=(--env-file "$dir/solution.env"); fi
-      docker exec "nanoeval-$slot" sh -c 'rm -rf /solution'
+      docker exec -u 0 "nanoeval-$slot" sh -c 'rm -rf /solution'
       docker cp "$dir/task/solution" "nanoeval-$slot:/solution"
       exec timeout -k 10 "$seconds" docker exec "${options[@]}" -w "$workdir" "nanoeval-$slot" sh -c "$run" sh /solution/solve.sh
       ;;
@@ -526,19 +526,21 @@ cmd__verify() {
       ;;
     docker)
       if [ -f "$dir/verifier.env" ]; then options+=(--env-file "$dir/verifier.env"); fi
-      docker exec "nanoeval-$slot" sh -c 'rm -rf /tests /logs/verifier && mkdir -p /logs/verifier'
+      docker exec -u 0 "nanoeval-$slot" sh -c 'rm -rf /tests /logs/verifier && mkdir -p /logs/verifier && chmod 777 /logs/verifier'
       docker cp "$dir/task/tests" "nanoeval-$slot:/tests"
       timeout -k 10 "$seconds" docker exec "${options[@]}" -w "$workdir" "nanoeval-$slot" sh -c "$run" sh /tests/test.sh || code=$?
       docker cp "nanoeval-$slot:/logs/verifier/." "$dir/verifier/" || true
+      docker exec -u 0 "nanoeval-$slot" cat /sys/fs/cgroup/memory.events 2>/dev/null | awk '$1 == "oom_kill" { print $2 }' >"$dir/oom" || true
       ;;
     krun)
       mapfile -t options < <(guest_options "$dir")
-      vm "$dir" exec "${options[@]}" -- sh -c 'rm -rf /logs/verifier && mkdir -p /logs/verifier'
+      vm "$dir" exec "${options[@]}" --user 0 -- sh -c 'rm -rf /logs/verifier && mkdir -p /logs/verifier && chmod 777 /logs/verifier'
       guest_copy "$dir" tests "${options[@]}"
       if [ -f "$dir/verifier.env" ]; then options+=(--env-file "$dir/verifier.env"); fi
       (cd "$dir" && timeout -k 10 "$seconds" "$krun/nanoeval-krun" exec "${options[@]}" -- sh -c "$run" sh /tests/test.sh) || code=$?
       rm -rf "$dir/io/verifier"
       if vm "$dir" copy-out --socket vm.sock /logs/verifier verifier; then cp -R "$dir/io/verifier/." "$dir/verifier/"; fi
+      vm "$dir" exec "${options[@]}" --user 0 -- /opt/nanoeval/krun/boot/nanoeval-krun-guest oom-kills >"$dir/oom" 2>/dev/null || true
       ;;
   esac
   return "$code"
@@ -601,16 +603,12 @@ cmd_status() {
 }
 
 cmd_log() {
-  local slot=$1 phase=$2 bytes=${3:-65536} file
+  local slot=$1 phase=$2 bytes=${3:-65536} file size
   case $phase in
     setup) file=$home/setup.log ;;
     up | hand | solve | verify)
       valid "$slot"
       file=$home/slots/$slot/$phase.log
-      ;;
-    ctrf)
-      valid "$slot"
-      file=$home/slots/$slot/verifier/ctrf.json
       ;;
     judge)
       valid "$slot"
@@ -618,14 +616,35 @@ cmd_log() {
       ;;
     *) die "unknown log: $phase" ;;
   esac
-  if [ -f "$file" ]; then tail -c "$bytes" "$file"; fi
+  [ -f "$file" ] || return 0
+  size=$(stat -c %s "$file")
+  if [ "$size" -gt "$bytes" ]; then printf 'nanoeval-slot: the last %s of the %s bytes of this log follow\n' "$bytes" "$size"; fi
+  tail -c "$bytes" "$file"
+}
+
+cmd_files() {
+  local slot=$1
+  valid "$slot"
+  local dir=$home/slots/$slot/verifier
+  [ -d "$dir" ] || return 0
+  (cd "$dir" && find . -type f ! -name $'*[\t\n]*' -printf '%s\t%P\n' | LC_ALL=C sort -t $'\t' -k 2)
+}
+
+cmd_file() {
+  local slot=$1 path=$2
+  valid "$slot"
+  local dir file
+  dir=$(readlink -f "$home/slots/$slot/verifier")
+  file=$(readlink -f "$dir/$path")
+  [ -f "$file" ] && [ "${file#"$dir"/}" != "$file" ] || die "slot $slot has no verifier file $path"
+  base64 -w 0 "$file"
 }
 
 command=${1:-}
-[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|up|hand|solve|verify|down|destroy|status|log> ...'
+[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|up|hand|solve|verify|down|destroy|prune|status|log|files|file> ...'
 shift
 case $command in
-  probe | setup | _setup | up | _up | _krun_image | hand | _hand | solve | _solve | verify | _verify | down | destroy | status | log)
+  probe | setup | _setup | up | _up | _krun_image | hand | _hand | solve | _solve | verify | _verify | down | destroy | prune | status | log | files | file)
     "cmd_$command" "$@"
     ;;
   *) die "unknown command: $command" ;;

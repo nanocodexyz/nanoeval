@@ -157,6 +157,19 @@ test('invalid and unsupported tasks are refused by name', async () => {
   assert.throws(() => Task.parse({ name: 'x' }), Task.InvalidError)
 })
 
+test('a verifier that names a test report is expected to write it', async () => {
+  const plain = await Task.load(source(manifest()))
+  assert.equal(plain.verifier.ctrf, undefined)
+  const reporting = await Task.load(
+    source(manifest(), {
+      'tests/test.sh':
+        'pytest --ctrf /logs/verifier/ctrf.json; echo $? > /logs/verifier/reward.txt\n',
+    }),
+  )
+  assert.equal(reporting.verifier.ctrf, true)
+  assert.deepEqual(Task.parse(JSON.parse(JSON.stringify(reporting))), reporting)
+})
+
 test('a run configuration is validated and tasks without internet are refused', async () => {
   const task = await Task.load(source(manifest()))
   const config = {

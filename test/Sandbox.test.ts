@@ -148,9 +148,13 @@ test('slots in one sandbox verify their own workspaces with the dir backend', as
     await Sandbox.run(sandbox, slots.log('right', 'verify', 4096)),
     'todos.txt is correct\n',
   )
+  assert.equal(
+    await Sandbox.run(sandbox, slots.log('right', 'verify', 5)),
+    'nanoeval-slot: the last 5 of the 21 bytes of this log follow\nrect\n',
+  )
   assert.equal(Slot.exit(final.slots['wrong']!.verify), 1)
 
-  await Sandbox.run(sandbox, slots.down('right'))
+  await Sandbox.run(sandbox, slots.down('right', 'keep'))
   assert.deepEqual(Object.keys((await status()).slots), ['wrong'])
   await assert.rejects(
     Sandbox.run(
@@ -211,6 +215,98 @@ test('a slot runs the task solution in its workspace before the verifier', async
   assert.equal(await wait(async () => (await status()).slots['solved']!.verify), 'exit:0')
   assert.equal((await status()).slots['solved']!.reward, 1)
   await provider.kill(created.handle)
+})
+
+test('a slot lists and returns every file its verifier wrote', async () => {
+  const provider = Local.create({ token, url: server.url })
+  const created = await provider.create({ metadata: {}, template: undefined, timeoutSec: 60 })
+  const sandbox = provider.connect(created.handle)
+  const slots = Slot.create({ home: created.handle.home })
+  await Sandbox.run(sandbox, 'mkdir -p ' + Sandbox.quote(created.handle.home + '/slots/files'))
+  await sandbox.write(slots.script, script)
+  await sandbox.write(
+    slots.taskFile('files'),
+    Tar.pack([
+      {
+        data: Bytes.fromText(
+          [
+            '#!/bin/sh',
+            'logs=$NANOEVAL_VERIFIER_LOGS',
+            'mkdir -p "$logs/nested"',
+            'printf \'{}\' >"$logs/ctrf.json"',
+            'printf \'\\377\\000\\376\' >"$logs/nested/data.bin"',
+            'ln -s /etc/passwd "$logs/link"',
+            'printf \'1\\n\' >"$logs/reward.txt"',
+            '',
+          ].join('\n'),
+        ),
+        executable: true,
+        path: 'tests/test.sh',
+      },
+    ]),
+  )
+  assert.equal(await Sandbox.run(sandbox, slots.files('files')), '')
+  await Sandbox.run(
+    sandbox,
+    slots.up('files', {
+      backend: 'dir',
+      cpus: 1,
+      image: undefined,
+      limits: 'none',
+      memoryMb: 1,
+      network: 'host',
+      storageMb: 1024,
+    }),
+  )
+  const status = async () => Slot.parseStatus(await Sandbox.run(sandbox, slots.status()))
+  assert.equal(await wait(async () => (await status()).slots['files']!.up), 'exit:0')
+  await Sandbox.run(sandbox, slots.verify('files', 30))
+  assert.equal(await wait(async () => (await status()).slots['files']!.verify), 'exit:0')
+
+  assert.deepEqual(Slot.parseFiles(await Sandbox.run(sandbox, slots.files('files'))), [
+    { bytes: 2, path: 'ctrf.json' },
+    { bytes: 3, path: 'nested/data.bin' },
+    { bytes: 2, path: 'reward.txt' },
+  ])
+  assert.deepEqual(
+    [...Bytes.fromBase64(await Sandbox.run(sandbox, slots.file('files', 'nested/data.bin')))],
+    [0xff, 0x00, 0xfe],
+  )
+  for (const path of ['link', '../verify.log', 'missing.txt'])
+    await assert.rejects(Sandbox.run(sandbox, slots.file('files', path)), Sandbox.CommandError)
+  assert.throws(() => Slot.parseFiles('12 no-tab\n'))
+  await provider.kill(created.handle)
+})
+
+test('pruning removes the image disks that no microVM holds', async () => {
+  const cache = Fs.mkdtempSync(Path.join(Os.tmpdir(), 'nanoeval-cache-'))
+  const base = Path.join(cache, 'krun', 'disk-128')
+  const files = ['.ext4', '.env', '.user', '.workdir'].map((suffix) => base + suffix)
+  Fs.mkdirSync(Path.dirname(base), { recursive: true })
+  for (const file of files) Fs.writeFileSync(file, '')
+  const prune = (...mode: string[]) =>
+    execFileSync('bash', ['sandbox/slot.sh', 'prune', ...mode], {
+      env: { ...process.env, NANOEVAL_CACHE: cache },
+    }).toString()
+  const holder = spawn('flock', ['-s', base + '.use', 'sleep', '300.25'])
+  try {
+    for (let tries = 0; tries < 100 && !Fs.existsSync(base + '.use'); tries++)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    assert.equal(prune('dry-run'), 'used disk ' + base + '.ext4\n')
+    assert.equal(prune(), 'kept disk ' + base + '.ext4\n')
+    assert.ok(files.every((file) => Fs.existsSync(file)))
+  } finally {
+    const exited = new Promise((resolve) => holder.once('exit', resolve))
+    holder.kill('SIGKILL')
+    await exited
+    spawnSync('pkill', ['-KILL', '-f', 'sleep 300.2[5]'])
+  }
+  assert.equal(prune('dry-run'), 'unused disk ' + base + '.ext4\n')
+  assert.ok(files.every((file) => Fs.existsSync(file)))
+  assert.equal(prune(), 'removed disk ' + base + '.ext4\n')
+  assert.ok(files.every((file) => !Fs.existsSync(file)))
+  assert.equal(prune(), '')
+  Fs.rmSync(cache, { force: true, recursive: true })
 })
 
 test('taking a slot down ends the work it still runs', async () => {

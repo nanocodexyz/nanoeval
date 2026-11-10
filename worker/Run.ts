@@ -57,8 +57,10 @@ type Meta = {
   id: string
   publicUrl: string
   sandboxFailures: number
+  starvedAt?: number
 }
 
+const artifactBytes = 4 * 1024 * 1024
 const handName = 'slot'
 const judgeRequest = 'verifier/' + Judge.requestFile
 const judgeRequestId = 'judge'
@@ -116,6 +118,11 @@ CREATE TABLE IF NOT EXISTS artifacts (
   part INTEGER NOT NULL,
   body TEXT NOT NULL,
   PRIMARY KEY (attempt, name, part)
+);
+CREATE TABLE IF NOT EXISTS binary_artifacts (
+  attempt TEXT NOT NULL,
+  name TEXT NOT NULL,
+  PRIMARY KEY (attempt, name)
 );
 `
 
@@ -361,8 +368,13 @@ export class Run extends DurableObject<Env> {
     })
   }
 
-  private putArtifact(attempt: string, name: string, body: string): void {
+  private putArtifact(attempt: string, name: string, content: string | Uint8Array): void {
+    const text = typeof content === 'string' ? content : Bytes.toValidText(content)
+    const body = text ?? Bytes.toBase64(content as Uint8Array)
     this.sql.exec('DELETE FROM artifacts WHERE attempt = ? AND name = ?', attempt, name)
+    this.sql.exec('DELETE FROM binary_artifacts WHERE attempt = ? AND name = ?', attempt, name)
+    if (text === undefined)
+      this.sql.exec('INSERT INTO binary_artifacts (attempt, name) VALUES (?, ?)', attempt, name)
     for (let part = 0; part * partCharacters < Math.max(body.length, 1); part++)
       this.sql.exec(
         'INSERT INTO artifacts (attempt, name, part, body) VALUES (?, ?, ?, ?)',
@@ -373,7 +385,7 @@ export class Run extends DurableObject<Env> {
       )
   }
 
-  private artifact(attempt: string, name: string): string | undefined {
+  private artifact(attempt: string, name: string): string | Uint8Array | undefined {
     const parts = this.sql
       .exec(
         'SELECT body FROM artifacts WHERE attempt = ? AND name = ? ORDER BY part',
@@ -381,7 +393,17 @@ export class Run extends DurableObject<Env> {
         name,
       )
       .toArray()
-    return parts.length ? parts.map((part) => part['body'] as string).join('') : undefined
+    if (!parts.length) return undefined
+    const body = parts.map((part) => part['body'] as string).join('')
+    const binary = this.sql
+      .exec('SELECT name FROM binary_artifacts WHERE attempt = ? AND name = ?', attempt, name)
+      .toArray().length
+    return binary ? Bytes.fromBase64(body) : body
+  }
+
+  private textArtifact(attempt: string, name: string): string | undefined {
+    const body = this.artifact(attempt, name)
+    return typeof body === 'string' ? body : undefined
   }
 
   private artifactNames(attempt: string): string[] {
@@ -858,7 +880,7 @@ export class Run extends DurableObject<Env> {
   }
 
   private judgeSessions(row: AttemptRow): string[] {
-    const request = this.artifact(row.id, judgeRequest)
+    const request = this.textArtifact(row.id, judgeRequest)
     return request
       ? Judge.parse(request).map((_, index) => this.session(row) + '-judge-' + index)
       : []
@@ -990,7 +1012,7 @@ export class Run extends DurableObject<Env> {
               await fail('environment', 'the solution did not report within its deadline')
             return
           }
-          const log = await Sandbox.run(sandbox, slots.log(slot, 'solve', logBytes))
+          const log = await Sandbox.run(sandbox, slots.log(slot, 'solve', artifactBytes))
           this.putArtifact(
             row.id,
             'agent/oracle.txt',
@@ -1046,10 +1068,23 @@ export class Run extends DurableObject<Env> {
             await fail('verifier_timeout', 'the verifier did not report within its deadline')
           return
         }
-        const log = await Sandbox.run(sandbox, slots.log(slot, 'verify', logBytes))
+        const log = await Sandbox.run(sandbox, slots.log(slot, 'verify', artifactBytes))
+        const written = Slot.parseFiles(await Sandbox.run(sandbox, slots.files(slot)))
+        const omitted = written.filter((file) => file.bytes > artifactBytes)
+        for (const file of written)
+          if (!omitted.includes(file))
+            this.putArtifact(
+              row.id,
+              'verifier/' + file.path,
+              Bytes.fromBase64(await Sandbox.run(sandbox, slots.file(slot, file.path))),
+            )
+        if (omitted.length)
+          this.putArtifact(
+            row.id,
+            'verifier-omitted.txt',
+            omitted.map((file) => file.path + ' ' + file.bytes + ' bytes\n').join(''),
+          )
         this.putArtifact(row.id, 'verifier/test-stdout.txt', log)
-        const ctrf = await Sandbox.run(sandbox, slots.log(slot, 'ctrf', 4 * 1024 * 1024))
-        if (ctrf) this.putArtifact(row.id, 'verifier/ctrf.json', ctrf)
 
         const judged = (JSON.parse(this.attempt(row.id)!.timing) as Result.Attempt['timing']).judge
         if (
@@ -1088,9 +1123,8 @@ export class Run extends DurableObject<Env> {
         }
 
         const earlier = this.attempt(row.id)!.failure
-        const failure: Result.Failure | undefined = earlier
-          ? (JSON.parse(earlier) as Result.Failure)
-          : code === 124 || code === 137
+        const failure: Result.Failure | undefined =
+          code === 124 || code === 137
             ? {
                 at: Date.now(),
                 kind: 'verifier_timeout',
@@ -1106,7 +1140,23 @@ export class Run extends DurableObject<Env> {
                     ' and wrote no reward: ' +
                     log.slice(-2000),
                 }
-              : undefined
+              : state.reward !== 1 &&
+                  task.verifier.ctrf &&
+                  !written.some((file) => file.path === Task.report)
+                ? {
+                    at: Date.now(),
+                    kind: 'verifier',
+                    message:
+                      'the verifier wrote reward ' +
+                      state.reward +
+                      ' without the test report its test.sh names, ' +
+                      Task.report +
+                      ', so its tests did not run: ' +
+                      log.slice(-2000),
+                  }
+                : earlier
+                  ? (JSON.parse(earlier) as Result.Failure)
+                  : undefined
         this.update('attempts', row.id, { timing: this.timing(row, 'verifier', 'finish') })
         await this.finish(provider, this.attempt(row.id)!, {
           ...(failure ? { failure } : {}),
@@ -1115,7 +1165,7 @@ export class Run extends DurableObject<Env> {
         return
       }
       case 'judge': {
-        const requests = Judge.parse(this.artifact(row.id, judgeRequest)!)
+        const requests = Judge.parse(this.textArtifact(row.id, judgeRequest)!)
         const reports = await Promise.all(
           this.judgeSessions(row).map((name) => Harness.turn(this.env, name, judgeRequestId)),
         )

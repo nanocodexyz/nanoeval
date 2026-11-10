@@ -28,6 +28,7 @@ export type Task = {
   name: string
   solution?: { env: Record<string, string> }
   verifier: {
+    ctrf?: boolean
     env: Record<string, string>
     finalMessage?: true
     judge?: true
@@ -131,6 +132,7 @@ export async function load(source: Source, options: load.Options = {}): Promise<
     name: string(task, 'name'),
     ...(options.solution ? { solution: { env: strings(solution, 'env') } } : {}),
     verifier: {
+      ...(Bytes.toText(source.files['tests/test.sh']).includes(report) ? { ctrf: true } : {}),
       env: strings(verifier, 'env'),
       ...(finalMessage ? { finalMessage } : {}),
       ...(judge ? { judge } : {}),

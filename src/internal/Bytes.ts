@@ -1,4 +1,5 @@
 const decoder = new TextDecoder()
+const strict = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 const encoder = new TextEncoder()
 
 export function fromBase64(text: string): Uint8Array {
@@ -26,4 +27,12 @@ export function toBase64(bytes: Uint8Array): string {
 
 export function toText(bytes: Uint8Array): string {
   return decoder.decode(bytes)
+}
+
+export function toValidText(bytes: Uint8Array): string | undefined {
+  try {
+    return strict.decode(bytes)
+  } catch {
+    return undefined
+  }
 }

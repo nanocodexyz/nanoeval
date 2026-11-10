@@ -335,18 +335,26 @@ async function main(): Promise<void> {
         sandboxd: { token: sandboxToken, url: sandboxd.url },
       })
     }
+    const packing = scenario === 'packing'
     const directories = judged
       ? ['final-answer', 'judged-answer'].map((name) => Path.join('test/fixtures', name))
-      : failures
-        ? [
-            'large-tests',
-            'no-reward',
-            'slow-agent',
-            ...(backend === 'dir' ? [] : ['background-process', 'broken-environment']),
-          ].map((name) => Path.join('test/fixtures', name))
-        : isolated
-          ? [Network.fixture]
-          : taskNames.map((name) => Path.join('tasks', name))
+      : packing
+        ? ['extract-todos', 'uppercase-message', 'write-greeting'].map((name) =>
+            Path.join('tasks', name),
+          )
+        : failures
+          ? [
+              'large-tests',
+              'no-reward',
+              'slow-agent',
+              'unreported-tests',
+              ...(backend === 'dir'
+                ? []
+                : ['background-process', 'broken-environment', 'memory-limit', 'plain-user']),
+            ].map((name) => Path.join('test/fixtures', name))
+          : isolated
+            ? [Network.fixture]
+            : taskNames.map((name) => Path.join('tasks', name))
     const agents: Config.Agent[] =
       model === 'oracle'
         ? [oracle]
@@ -501,14 +509,63 @@ async function main(): Promise<void> {
       assert.equal(byTask['fixtures/slow-agent'].outcome, 'failed')
       assert.equal(byTask['fixtures/slow-agent'].reward, 0)
       assert.equal(byTask['fixtures/slow-agent'].failure.kind, 'agent_timeout')
+      assert.equal(byTask['fixtures/unreported-tests'].outcome, 'errored')
+      assert.equal(byTask['fixtures/unreported-tests'].failure.kind, 'verifier')
+      assert.match(byTask['fixtures/unreported-tests'].failure.message, /its tests did not run/)
       if (backend !== 'dir') {
         assert.equal(byTask['fixtures/background-process'].outcome, 'passed')
         assert.equal(byTask['fixtures/broken-environment'].outcome, 'errored')
         assert.equal(byTask['fixtures/broken-environment'].failure.kind, 'environment')
+        assert.equal(byTask['fixtures/memory-limit'].outcome, 'failed')
+        assert.ok(
+          byTask['fixtures/memory-limit'].oomKills >= 1,
+          'the memory limit of the task ended a process of the attempt',
+        )
+        assert.equal(byTask['fixtures/background-process'].oomKills, undefined)
+        const plain = byTask['fixtures/plain-user']
+        assert.equal(plain.outcome, 'passed', JSON.stringify(plain.failure))
+        assert.deepEqual(
+          (await api.attempt(created.id, plain.id))['artifacts'].filter((name: string) =>
+            name.startsWith('verifier/'),
+          ),
+          [
+            'verifier/ctrf.json',
+            'verifier/extra/data.bin',
+            'verifier/reward.txt',
+            'verifier/test-stdout.txt',
+          ],
+        )
+        assert.deepEqual(
+          [
+            ...Fs.readFileSync(
+              Path.join(out, 'harbor', 'plain-user__right__1', 'verifier', 'extra', 'data.bin'),
+            ),
+          ],
+          [0xff, 0x00, 0xfe],
+        )
       }
+      assert.equal(status['counts'].errored, backend === 'dir' ? 2 : 3)
       assert.equal(
         JSON.parse(files['result.json']!).stats.n_errored_trials,
-        backend === 'dir' ? 1 : 2,
+        backend === 'dir' ? 3 : 4,
+        'Harbor counts every trial with an exception, the agent timeout included',
+      )
+      console.log('e2e passed: ' + label)
+      return
+    }
+
+    if (packing) {
+      const started: Record<string, number> = {}
+      for (const attempt of status['attempts'] as Record<string, any>[]) {
+        assert.equal(attempt['outcome'], 'passed')
+        started[attempt['task']] = (await api.attempt(created.id, attempt['id']))[
+          'result'
+        ].startedAt
+      }
+      assert.equal(peak, 2, 'two attempts fit the memory of the sandbox at once')
+      assert.ok(
+        started['nanoeval/write-greeting']! < started['nanoeval/uppercase-message']!,
+        'a small attempt starts while a larger one ahead of it waits for memory',
       )
       console.log('e2e passed: ' + label)
       return
@@ -546,7 +603,11 @@ async function main(): Promise<void> {
         for (const name of ['verifier/judge-request.json', 'verifier/judge-response.json'])
           assert.equal(detail['artifacts'].includes(name), graded)
       } else if (model === 'oracle') {
-        assert.deepEqual(detail['artifacts'], ['agent/oracle.txt', 'verifier/test-stdout.txt'])
+        assert.deepEqual(
+          detail['artifacts'].filter((name: string) => !name.startsWith('verifier/')),
+          ['agent/oracle.txt'],
+        )
+        assert.ok(detail['artifacts'].includes('verifier/reward.txt'))
         assert.match(
           await api.artifact(created.id, attempt.id, 'agent/oracle.txt'),
           /solve\.sh exited with 0\n$/,

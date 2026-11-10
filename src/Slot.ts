@@ -46,14 +46,16 @@ export function create(options: create.Options) {
     home,
     script,
     destroy: () => call('destroy'),
-    down: (slot: string) => call('down', slot),
+    down: (slot: string, images: 'keep' | 'remove') => call('down', slot, images),
     envFile: (slot: string, name: 'env' | 'solution.env' | 'verifier.env') =>
       home + '/slots/' + slot + '/' + name,
+    file: (slot: string, path: string) => call('file', slot, path),
+    files: (slot: string) => call('files', slot),
     hand: (slot: string, input: { name: string; url: string }) =>
       call('hand', slot, input.url, input.name),
     log: (
       slot: string,
-      phase: 'ctrf' | 'hand' | 'judge' | 'setup' | 'solve' | 'up' | 'verify',
+      phase: 'hand' | 'judge' | 'setup' | 'solve' | 'up' | 'verify',
       bytes: number,
     ) => call('log', slot, phase, String(bytes)),
     probe: () => call('probe'),
@@ -122,9 +124,27 @@ export function exit(phase: Phase): number | undefined {
   return phase.startsWith('exit:') ? Number(phase.slice('exit:'.length)) : undefined
 }
 
+export function parseFiles(text: string): { bytes: number; path: string }[] {
+  return text
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const tab = line.indexOf('\t')
+      const bytes = Number(line.slice(0, tab))
+      if (tab < 1 || !Number.isSafeInteger(bytes) || tab === line.length - 1)
+        throw new Error('the slot file listing is malformed: ' + line.slice(0, 200))
+      return { bytes, path: line.slice(tab + 1) }
+    })
+}
+
 export function parseStatus(text: string): Status {
   const status = JSON.parse(text) as Status
-  if (typeof status?.setup !== 'string' || typeof status.slots !== 'object' || !status.slots)
+  if (
+    typeof status?.setup !== 'string' ||
+    typeof status.disk_mb !== 'number' ||
+    typeof status.slots !== 'object' ||
+    !status.slots
+  )
     throw new Error('the slot status is malformed: ' + text.slice(0, 200))
   return status
 }
