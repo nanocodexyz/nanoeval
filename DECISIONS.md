@@ -84,7 +84,7 @@ Read from E2B's documentation, the proxy's `/openapi.json`, a live unpaid `402`,
 
 ## 2026-11-10: a Linux machine with KVM, Terminal-Bench 2.1 tasks and plan logins
 
-Machine for every measurement in this entry: a 32-core, 62 GiB Linux x86_64 machine with `/dev/kvm`, kernel 6.8, Docker 29.9.3 (systemd cgroup driver, cgroup v2), shared with other work (about 130 other containers ran throughout), Node 24.22.2, wrangler 4.151.1 (workerd 1.20261012.1), nanocode-ts `build-751e03a` and the same nanocode CLI release for the hand. Its network re-signs TLS to the Python and npm package registries and refuses packages published in the last few days. Each lane is one run, at commit `6259b05` unless it names another, with `TICK_MS=500` unless it names another.
+Machine for every measurement in this entry: a 32-core, 62 GiB Linux x86_64 machine with `/dev/kvm`, kernel 6.8, Docker 29.9.3 (systemd cgroup driver, cgroup v2), shared with other work (about 130 other containers ran throughout), Node 24.22.2, wrangler 4.151.1 (workerd 1.20261012.1), nanocode-ts `build-751e03a` and the same nanocode CLI release for the hand. Its network re-signs TLS to the Python and npm package registries and refuses packages published in the last few days. Each lane is one run, at commit `696b964` unless it names another, with `TICK_MS=500` unless it names another.
 
 ### What the first version had not run
 
@@ -111,7 +111,7 @@ The lanes of CI on this machine, with limits enforced:
 NANOEVAL_E2E_TASKS=extract-todos,uppercase-message,write-greeting NANOEVAL_E2E_SLOTS=32 NANOEVAL_E2E_ATTEMPTS=22 NANOEVAL_E2E_TICK_MS=500 node test/e2e.ts
 ```
 
-Scripted model, Docker slots, limits enforced, 3 tasks × 2 agents, one sandbox, commit `34ced85` (the last two rows with `NANOEVAL_E2E_TICK_MS` added to the test). Every run ended with half of its attempts passed and half failed as scripted, none errored, and no container left.
+Scripted model, Docker slots, limits enforced, 3 tasks × 2 agents, one sandbox, commit `d8a4c93` (the last two rows with `NANOEVAL_E2E_TICK_MS` added to the test). Every run ended with half of its attempts passed and half failed as scripted, none errored, and no container left.
 
 | Slots | Attempts | Tick | Wall | Environment | Hand attach | Agent | Verifier |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -165,8 +165,8 @@ NANOEVAL_E2E_MODEL=codex-plan NANOEVAL_E2E_THINKING=low node test/e2e.ts
 
 | Lane | Attempts | Slots | Wall | Agent | Result |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `gpt-6-luna`, thinking low, ChatGPT plan, Docker slots, 2 tasks × 2 attempts, commit `987a69f` | 4 | 4 | 65.8 s | 23.4 s | 4 passed, 0 errored, $0.0103 by the harness's estimate |
-| Same lane, second run, from a fresh clone of commit `0604e9f` | 4 | 4 | 28.6 s | 23.9 s | 4 passed, 0 errored, $0.0091 |
+| `gpt-6-luna`, thinking low, ChatGPT plan, Docker slots, 2 tasks × 2 attempts, commit `a55f5aa` | 4 | 4 | 65.8 s | 23.4 s | 4 passed, 0 errored, $0.0103 by the harness's estimate |
+| Same lane, second run, from a fresh clone of commit `666bfbc` | 4 | 4 | 28.6 s | 23.9 s | 4 passed, 0 errored, $0.0091 |
 
 `NANOEVAL_E2E_MODEL=claude-plan` stopped before its run because the login had expired, so the Claude plan path has not carried a request. `NANOEVAL_E2E_MODEL=anthropic` was not run on this machine: it has no key.
 
@@ -199,7 +199,7 @@ The harbor route used to return every artifact of a run in one response. It now 
 
 ## 2026-11-10: krun slots
 
-Machine: the one of the entry above, with libkrunfw 5.5.0 (guest kernel 6.12.91), libkrun at `df85b8b` built from source with Rust 1.97.1, an ext4 filesystem 93% full, and other work running throughout (load average 2 to 6 before each run). The lanes ran once each from a fresh clone of commit `e1a37b1`, with the scripted model unless a row says oracle. The slot and image timings further down were taken by calling `slot.sh` directly, on the same code before its last rebase.
+Machine: the one of the entry above, with libkrunfw 5.5.0 (guest kernel 6.12.91), libkrun at `df85b8b` built from source with Rust 1.97.1, an ext4 filesystem 93% full, and other work running throughout (load average 2 to 6 before each run). The lanes ran once each from a fresh clone of commit `0c246f6`, with the scripted model unless a row says oracle. The slot and image timings further down were taken by calling `slot.sh` directly, on the same code before its last rebase.
 
 ### What was kept from the earlier microVM code
 
