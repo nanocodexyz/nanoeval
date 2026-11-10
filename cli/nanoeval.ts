@@ -17,7 +17,7 @@ const usage = `nanoeval <command>
             trust that certificate bundle, for a machine whose network re-signs TLS. With
             --slot-env, they start with the variables of that file, such as a proxy or a
             package index the machine's network requires.
-  worker    --token T [--host 127.0.0.1] [--port 8787] [--state DIR] [--tick-ms N]
+  worker    --token T [--host 127.0.0.1] [--port 8787] [--state DIR] [--tick-ms 500]
             [--sandbox-url URL --sandbox-token T] [--claude-login FILE] [--codex-login FILE]
             Run the Worker under local workerd. Model API keys and base URLs are taken from
             ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, OPENAI_API_KEY and OPENAI_BASE_URL. A login
@@ -223,7 +223,7 @@ async function main(): Promise<void> {
       'step-retries': { default: '3', type: 'string' },
       task: { multiple: true, type: 'string' },
       template: { type: 'string' },
-      'tick-ms': { type: 'string' },
+      'tick-ms': { default: '500', type: 'string' },
       token: { default: process.env['NANOEVAL_TOKEN'], type: 'string' },
       url: { default: process.env['NANOEVAL_URL'], type: 'string' },
       wait: { default: false, type: 'boolean' },
@@ -264,7 +264,7 @@ async function main(): Promise<void> {
       vars['LOCAL_SANDBOX_URL'] = values['sandbox-url']
       vars['LOCAL_SANDBOX_TOKEN'] = required(values['sandbox-token'], 'sandbox-token')
     }
-    if (values['tick-ms']) vars['TICK_MS'] = values['tick-ms']
+    vars['TICK_MS'] = values['tick-ms']
 
     const logins: [name: string, login: Plan.Login][] = []
     if (values['claude-login'])
