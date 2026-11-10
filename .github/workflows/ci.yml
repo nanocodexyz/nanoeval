@@ -74,6 +74,11 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: krun
           NANOEVAL_E2E_SCENARIO: network
+      - name: End to end, krun final messages and a judge, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: krun
+          NANOEVAL_E2E_SCENARIO: judge
       - name: Keep the logs of a failed run
         if: failure()
         uses: actions/upload-artifact@v4
