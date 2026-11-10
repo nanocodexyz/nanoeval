@@ -4,7 +4,7 @@ use net::netlink::{self, Interface};
 
 use nix::{
     mount::{MntFlags, MsFlags, mount, umount2},
-    unistd::{chdir, pivot_root},
+    unistd::{chdir, pivot_root, setsid},
 };
 
 use crate::{NONE, step};
@@ -81,6 +81,7 @@ pub(crate) fn run(mode: &str, options: &Options) -> io::Result<()> {
     step("pivot the root", pivot_root(".", "."))?;
     step("detach the boot root", umount2(".", MntFlags::MNT_DETACH))?;
     step("enter /", chdir("/"))?;
+    step("leave the session of the console", setsid())?;
     step(
         "raise the limit on process ids",
         fs::write(PID_MAX, PID_MAX_DEFAULT),
