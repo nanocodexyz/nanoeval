@@ -85,7 +85,7 @@ A provider creates a sandbox, runs a command in it, writes a file to it, and kil
 
 A machine's network is host policy, and `sandboxd` passes it to the slots. `--ca-bundle FILE` mounts a certificate bundle into each slot container and names it in the variables that OpenSSL, curl, uv, pip, requests, Node, git and cargo read, for a network that re-signs TLS. `--slot-env FILE` starts each container with the variables of a file. Both change what the agent and the verifier see, so the sandbox's capabilities in the run's status record them as `ca_bundle` and `slot_env`. Neither is set by default.
 
-Local Docker slots use the host network, because a hand accepts a plaintext `ws://` URL only on loopback. Slots on one machine therefore share its ports: two attempts that listen on the same port interfere, and a verifier can reach another attempt's server. A slot with its own network stack, such as the planned `krun` backend, removes this.
+Local Docker slots use the host network, because a hand accepts a plaintext `ws://` URL only on loopback. Slots on one machine therefore share its ports: an attempt cannot bind a port that another holds, and a verifier can reach another attempt's server. A slot with its own network stack, such as the planned `krun` backend, removes this.
 
 **E2B over MPP.** `src/E2b.ts` talks to `https://mpp.e2b.dev`, whose bodies match E2B's REST API:
 
