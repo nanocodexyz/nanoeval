@@ -27,6 +27,7 @@ const login = process.env['NANOEVAL_E2E_LOGIN']
 const scenario = process.env['NANOEVAL_E2E_SCENARIO'] ?? 'tasks'
 const restartAfterMs = Number(process.env['NANOEVAL_E2E_RESTART_AFTER_MS'] ?? '0')
 const caBundle = process.env['NANOEVAL_E2E_CA_BUNDLE']
+const tickMs = process.env['NANOEVAL_E2E_TICK_MS'] ?? '500'
 const label =
   process.env['NANOEVAL_E2E_LABEL'] ??
   model + '-' + backend + (scenario === 'tasks' ? '' : '-' + scenario)
@@ -244,7 +245,7 @@ async function main(): Promise<void> {
     ACCESS_TOKEN: token,
     LOCAL_SANDBOX_TOKEN: sandboxToken,
     LOCAL_SANDBOX_URL: sandboxd.url,
-    TICK_MS: '500',
+    TICK_MS: tickMs,
     ...(upstream.url ? { ANTHROPIC_BASE_URL: upstream.url } : {}),
     ...(model === 'scripted' ? { ANTHROPIC_API_KEY: 'scripted' } : {}),
     ...(model === 'anthropic' ? { ANTHROPIC_API_KEY: process.env['ANTHROPIC_API_KEY']! } : {}),
@@ -401,6 +402,8 @@ async function main(): Promise<void> {
 
     assert.equal(status['sandboxes'].length, 1, 'every attempt shares one sandbox')
     assert.equal(status['sandboxes'][0].state, 'closed')
+    assert.equal(status['sandboxes'][0].capabilities.ca_bundle, caBundle !== undefined)
+    assert.equal(status['sandboxes'][0].capabilities.slot_env, true)
     if (backend === 'docker') {
       assert.deepEqual(containers(sandboxes), [], 'no slot container outlives the run')
       if (scenario !== 'restart') {
@@ -508,6 +511,7 @@ async function main(): Promise<void> {
       peakConcurrentAttempts: peak,
       slots,
       spend: status['spend'],
+      tickMs: Number(tickMs),
       tasks: taskNames,
       wallMs,
     }
