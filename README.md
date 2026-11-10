@@ -61,7 +61,7 @@ node cli/nanoeval.ts run --url http://127.0.0.1:8787 --token "$TOKEN" \
   --attempts 2 --slots 4 --model-budget-usd 1 --wait --out output/job
 ```
 
-`--out` writes the Harbor job directory. `nanoeval status`, `attempt`, `export` and `cancel` read a run later. A local hand dials `ws://127.0.0.1`, which nanocode accepts only on loopback, so local Docker slots use the host network (`--network host`, the default for the local provider).
+`--out` writes the Harbor job directory. If the Docker daemon cannot apply cgroup limits, pass `--limits none`. `nanoeval status`, `attempt`, `export` and `cancel` read a run later. A local hand dials `ws://127.0.0.1`, which nanocode accepts only on loopback, so local Docker slots use the host network (`--network host`, the default for the local provider).
 
 ## Run it on E2B
 
