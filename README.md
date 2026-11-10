@@ -25,11 +25,11 @@ This is a first version. The table says what was run.
 | Worker orchestrator (`Run` Durable Object), nanocode-ts harness sessions, CLI and API | Implemented. Tested end to end under local workerd |
 | Local sandbox provider (`nanoeval sandboxd`) | Implemented, tested |
 | Slot backends `docker` and `dir` | Implemented, tested: up to 64 attempts at once in one sandbox |
-| Slot backend `krun`, one libkrun microVM per slot | Implemented, tested on a Linux machine with KVM: every end-to-end lane, 32 microVMs at once, and five Terminal-Bench 2.1 tasks with their own solutions, which all pass on a private network |
+| Slot backend `krun`, one libkrun microVM per slot | Implemented, tested on a Linux machine with KVM: every end-to-end lane, 32 microVMs at once, and Terminal-Bench 2.1 with the tasks' own solutions on a private network, where 82 of the 89 pass |
 | Released `nanocode hand` in a slot, including Alpine images | Implemented, tested |
 | Real model run | Tested with `claude-haiku-4-5` through the Anthropic API and with `gpt-6-luna` on a ChatGPT plan login |
 | Oracle run (`nanoeval run --oracle`): each task's own solution instead of a model | Implemented, tested |
-| Terminal-Bench 2.1 tasks | 87 of the 89 load, and 2 need Compose. 11 ran with their own solutions and passed. 5 ran with a model. The other 76 have not run |
+| Terminal-Bench 2.1 tasks | All 89 load. With their own solutions on a private network, one attempt each, 82 of the 89 pass on krun slots, and 73 of the 79 that the test machine's disk let run pass on Docker slots. [DECISIONS.md](DECISIONS.md#2026-11-10-terminal-bench-21-every-task-with-its-own-solution) has every task and why the others do not pass. 5 ran with a model |
 | Dataset importers (`nanoeval import`, `datasets`, `run --dataset`) | Implemented, tested: unit tests import from recorded fixtures with no network |
 | `terminal-bench-2.1`, imported from the Harbor registry by digest | Verified: the 89 directories match the ones Harbor downloads byte for byte. 4 tasks ran with their own solutions on Docker and krun slots and passed, on the machine's network and again on a private network |
 | `terminal-bench-2.0` | 89 tasks imported and checked against their digests. 2 ran with their own solutions on Docker and krun slots and passed |

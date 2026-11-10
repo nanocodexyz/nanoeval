@@ -506,3 +506,179 @@ The lanes above ran before slots had a network of their own, on the machine's ne
 - SWE-bench instance images are named by tag. The verifier needs the network, and has not run on a private one.
 - The registry importer depends on a service another project runs. Its archives are kept in the source cache once fetched, and a pinned digest never changes meaning.
 - Agents' Last Exam was not looked at beyond its source: its task archive is behind a Hugging Face login.
+
+## 2026-11-10: Terminal-Bench 2.1, every task with its own solution
+
+Machine: the 32-core Linux machine with KVM of the entries above, shared with other work throughout (load average 1 to 11 during these runs). The filesystem that holds Docker's images had 47 to 54 GB free, and 45 GB of it had to stay free, so these runs had 2 to 9 GB of it. The disks of krun slots, the sandbox directories and the Workers' state were on another filesystem. One local sandbox per backend, each started with `--ca-bundle`, `--slot-env` (`UV_EXCLUDE_NEWER` and `PIP_UPLOADED_PRIOR_TO` eight days back) and `--slot-forward` for the registry proxy on the machine's loopback, both on one `NANOEVAL_CACHE` so that one holds the image locks of the other, and a Worker each at a tick of 500 ms. Every run is `nanoeval run --oracle --images remove` with one attempt per task and slots on a private network. Code: this branch on top of the commit that records datasets and the judge on a private network (`4d11381`). The runs k4 to k7, d5 and d6 ran at the commit that takes the slots of a task down one after another, and k8, d7 to d10 and the samples at the commit that starts a guest's commands without a controlling terminal, which changes the krun guest and nothing else.
+
+### What the earlier runs changed
+
+The commits of this branch before this entry answer what the first oracle runs over all tasks showed:
+
+| A run showed | Now |
+| --- | --- |
+| 2 of the 89 tasks were refused for `custom_docker_compose` under `[metadata]`, a flag Harbor never reads. Neither ships a Compose file | A task is refused for the Compose file it ships, or for `mcp_servers`. All 89 load |
+| A verifier that could not install its test runner scored the attempt 0, and of what a verifier wrote only `ctrf.json` was kept | Every verifier file is an artifact. A reward other than 1 without the report that `test.sh` names is a `verifier` error |
+| A solution that ran out of memory read as a wrong answer | The attempt carries `oomKills` |
+| Six heavy environments at once took the disk close to full, and one 8 GiB task held back every 2 GiB task behind it | `--free-disk-mb`, first-fit admission, and `--setup-sec` as a floor under a task's `build_timeout_sec` |
+| Harbor 0.25.0 refused every exported trial | Trial ids, configs and error counts as Harbor's models want them |
+| A guest started with `kernel.pid_max` at 4096 | 32768 |
+| A long run kept every image and image disk | `--images remove` and `nanoeval prune` |
+| Two attempts of one task that ended in the same tick left its image behind | The slots of a task go down in turn |
+
+### Runs
+
+| Run | Backend | Tasks | Attempts | Slots | Passed | Failed | Errored | Cancelled | Wall | Least free disk |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| k4 | krun | All 89 | 89 | 5 | 13 | 1 | 0 | 75 | 635 s | 45.4 GB |
+| k5 | krun | The 64 that k4 left with images under 500 MB compressed | 64 | 5 | 60 | 3 | 1 | 0 | 2,281 s | 47.0 GB |
+| d5 | docker | The 70 with images under 500 MB compressed | 70 | 3 | 34 | 1 | 0 | 35 | 733 s | 45.4 GB |
+| k6 | krun | 7 with larger images, one run each | 7 | 1 | 6 | 0 | 0 | 1 | 1,233 s | 48.1 GB |
+| k7 | krun | 1 with a larger image | 1 | 1 | 1 | 0 | 0 | 0 | 42 s | 48.3 GB |
+| k8 | krun | `fix-ocaml-gc` after its fix and the 3 largest images, one run each | 4 | 1 | 2 | 0 | 2 | 0 | 549 s | 45.6 GB |
+| d6 | docker | The 35 that d5 left, one run each | 35 | 1 | 30 | 4 | 0 | 1 | 2,239 s | 47.0 GB |
+| d7 | docker | `hf-model-inference` again | 1 | 1 | 1 | 0 | 0 | 0 | 33 s | 49.5 GB |
+| d8 | docker | 8 with larger images, one run each, while k8 ran | 8 | 1 | 5 | 0 | 0 | 3 | 613 s | 45.2 GB |
+| d9 | docker | 11 that were left or cancelled, one run each, with nothing else running | 11 | 1 | 3 | 0 | 2 | 6 | 1,268 s | 45.2 GB |
+| d10 | docker | `caffe-cifar-10` | 1 | 1 | 0 | 0 | 0 | 1 | 27 s | 45.5 GB |
+
+Wall is the time of the run, and for a row of single runs their sum. A cancelled attempt is not an outcome: the task ran again in a later row, or the table below says that it did not run.
+
+k4, d5 and a diagnostic run of ten tasks ran at once and were cancelled together when the free disk fell from 48.7 to 45.4 GB within ten seconds. One Docker slot had written 3.1 GB of Python packages into its container while krun slots pulled images. From then on a watcher cancelled a run that took the free disk under a floor between 45.5 and 47 GB, tasks with larger images ran one run each, and at most one Docker slot ran at a time. Two more attempts at running both lanes at once were cancelled the same way, by a Docker slot and a krun image pull that happened to grow together.
+
+### Outcomes
+
+| Backend | Passed | Failed | Errored | Refused at load | Not run |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| krun | 82 | 4 | 3 | 0 | 0 |
+| docker | 73 | 4 | 2 | 0 | 10 |
+
+The attempts with an outcome took 9,474 s on krun slots and 4,532 s on Docker slots, summed from the start of each attempt to its end. The longest passes on krun were `crack-7z-hash` (1,436 s), `compile-compcert` (940 s) and `caffe-cifar-10` (910 s).
+
+| Task | krun | docker | krun s | docker s | When not passed |
+| --- | --- | --- | ---: | ---: | --- |
+| `adaptive-rejection-sampler` | passed | passed | 26 | 23 |  |
+| `bn-fit-modify` | passed | passed | 41 | 44 |  |
+| `break-filter-js-from-html` | passed | passed | 30 | 23 |  |
+| `build-cython-ext` | failed | failed | 119 | 106 | Task: its solution leaves `planarity` unpinned |
+| `build-pmars` | passed | passed | 25 | 21 |  |
+| `build-pov-ray` | passed | passed | 38 | 43 |  |
+| `caffe-cifar-10` | passed | not run | 910 |  | Docker: not run. A watcher cancelled it for disk with 1.9 GB written, when 2.0 GB were left above the floor |
+| `cancel-async-tasks` | passed | passed | 29 | 28 |  |
+| `chess-best-move` | passed | passed | 33 | 28 |  |
+| `circuit-fibsqrt` | passed | passed | 49 | 40 |  |
+| `cobol-modernization` | passed | passed | 19 | 14 |  |
+| `code-from-image` | passed | passed | 15 | 13 |  |
+| `compile-compcert` | passed | not run | 940 |  | Docker: not run. A watcher cancelled it for disk with 3.4 GB written |
+| `configure-git-webserver` | passed | passed | 28 | 31 |  |
+| `constraints-scheduling` | passed | passed | 17 | 18 |  |
+| `count-dataset-tokens` | passed | passed | 122 | 149 |  |
+| `crack-7z-hash` | passed | passed | 1436 | 384 |  |
+| `custom-memory-heap-crash` | passed | passed | 40 | 18 |  |
+| `db-wal-recovery` | passed | passed | 17 | 15 |  |
+| `distribution-search` | passed | passed | 14 | 13 |  |
+| `dna-assembly` | passed | passed | 21 | 20 |  |
+| `dna-insert` | passed | passed | 23 | 25 |  |
+| `extract-elf` | passed | passed | 20 | 13 |  |
+| `extract-moves-from-video` | passed | passed | 15 | 14 |  |
+| `feal-differential-cryptanalysis` | passed | passed | 18 | 15 |  |
+| `feal-linear-cryptanalysis` | passed | passed | 15 | 13 |  |
+| `filter-js-from-html` | passed | passed | 196 | 182 |  |
+| `financial-document-processor` | passed | passed | 54 | 39 |  |
+| `fix-code-vulnerability` | passed | passed | 17 | 13 |  |
+| `fix-git` | passed | passed | 15 | 15 |  |
+| `fix-ocaml-gc` | passed | passed | 298 | 297 |  |
+| `gcode-to-text` | passed | passed | 114 | 107 |  |
+| `git-leak-recovery` | passed | passed | 18 | 12 |  |
+| `git-multibranch` | passed | passed | 33 | 28 |  |
+| `gpt2-codegolf` | passed | passed | 27 | 21 |  |
+| `headless-terminal` | passed | passed | 45 | 36 |  |
+| `hf-model-inference` | passed | passed | 47 | 29 |  |
+| `install-windows-3.11` | passed | not run | 243 |  | Docker: not run. A watcher cancelled it for disk with 3.4 GB written |
+| `kv-store-grpc` | passed | passed | 37 | 35 |  |
+| `large-scale-text-editing` | passed | passed | 64 | 65 |  |
+| `largest-eigenval` | passed | passed | 22 | 35 |  |
+| `llm-inference-batching-scheduler` | passed | passed | 14 | 11 |  |
+| `log-summary-date-ranges` | passed | passed | 15 | 15 |  |
+| `mailman` | passed | passed | 54 | 47 |  |
+| `make-doom-for-mips` | passed | passed | 41 | 36 |  |
+| `make-mips-interpreter` | passed | passed | 33 | 26 |  |
+| `mcmc-sampling-stan` | failed | failed | 205 | 187 | Task: its solution leaves `RcppParallel` unpinned |
+| `merge-diff-arc-agi-task` | passed | passed | 17 | 18 |  |
+| `model-extraction-relu-logits` | passed | passed | 47 | 17 |  |
+| `modernize-scientific-stack` | passed | passed | 25 | 23 |  |
+| `mteb-leaderboard` | passed | not run | 129 |  | Docker: not run. A watcher cancelled it for disk with 3.4 GB written |
+| `mteb-retrieve` | passed | not run | 79 |  | Docker: not run. A watcher cancelled it for disk with 3.3 GB written |
+| `multi-source-data-merger` | passed | passed | 15 | 17 |  |
+| `nginx-request-logging` | passed | passed | 16 | 22 |  |
+| `openssl-selfsigned-cert` | passed | passed | 11 | 10 |  |
+| `overfull-hbox` | passed | passed | 43 | 39 |  |
+| `password-recovery` | passed | passed | 15 | 16 |  |
+| `path-tracing` | passed | passed | 34 | 32 |  |
+| `path-tracing-reverse` | passed | passed | 19 | 17 |  |
+| `polyglot-c-py` | passed | passed | 18 | 15 |  |
+| `polyglot-rust-c` | passed | passed | 21 | 23 |  |
+| `portfolio-optimization` | passed | passed | 95 | 77 |  |
+| `protein-assembly` | failed | failed | 165 | 257 | Task: its solution's optimizer finds no solution |
+| `prove-plus-comm` | passed | passed | 27 | 23 |  |
+| `pypi-server` | failed | failed | 59 | 98 | Machine: the registry's hold on new releases |
+| `pytorch-model-cli` | passed | passed | 104 | 74 |  |
+| `pytorch-model-recovery` | passed | not run | 118 |  | Docker: not run. A watcher cancelled it for disk with 3.6 GB written |
+| `qemu-alpine-ssh` | errored | errored | 62 | 48 | Task: the verifier's `apt-get install curl` gets 404 on Debian 11 |
+| `qemu-startup` | errored | errored | 58 | 45 | Task: the verifier's `apt-get install curl` gets 404 on Debian 11 |
+| `query-optimize` | passed | passed | 302 | 275 |  |
+| `raman-fitting` | passed | passed | 23 | 19 |  |
+| `regex-chess` | passed | passed | 198 | 185 |  |
+| `regex-log` | passed | passed | 16 | 12 |  |
+| `reshard-c4-data` | passed | not run | 117 |  | Docker: not run. A watcher cancelled it for disk with 3.5 GB written |
+| `rstan-to-pystan` | passed | passed | 422 | 476 |  |
+| `sam-cell-seg` | passed | not run | 156 |  | Docker: not run. A watcher cancelled it for disk with 4.5 GB written |
+| `sanitize-git-repo` | passed | passed | 13 | 11 |  |
+| `schemelike-metacircular-eval` | passed | passed | 78 | 73 |  |
+| `sparql-university` | passed | passed | 11 | 13 |  |
+| `sqlite-db-truncate` | passed | passed | 11 | 11 |  |
+| `sqlite-with-gcov` | passed | passed | 38 | 37 |  |
+| `torch-pipeline-parallelism` | passed | not run | 105 |  | Docker: not tried, its verifier needs 5.3 GB of disk |
+| `torch-tensor-parallelism` | errored | not run | 904 |  | krun: the verifier's torch 2.7.0 deadlocks. Docker: not tried, its verifier needs 5.3 GB of disk |
+| `train-fasttext` | passed | passed | 106 | 102 |  |
+| `tune-mjcf` | passed | passed | 54 | 24 |  |
+| `video-processing` | passed | passed | 23 | 21 |  |
+| `vulnerable-secret` | passed | passed | 12 | 9 |  |
+| `winning-avg-corewars` | passed | passed | 22 | 17 |  |
+| `write-compressor` | passed | passed | 34 | 29 |  |
+
+### After the last change
+
+The commit that starts a guest's commands without a controlling terminal came after most of the runs above. From it, seven tasks ran again as one run on each backend, on 4 krun slots and on 3 Docker slots: `kv-store-grpc`, `mailman`, `git-multibranch`, `configure-git-webserver`, `break-filter-js-from-html`, `openssl-selfsigned-cert` and `build-pmars`. 7 of 7 passed on krun slots in 66 s and 7 of 7 on Docker slots in 78 s. Four of them are among the five below that failed on the machine's network and pass on a private one. k8 and d7 to d10 ran at that commit as well, `fix-ocaml-gc` on both backends among them.
+
+### What does not pass
+
+**A defect here, fixed.** `fix-ocaml-gc` hung on a krun slot. Its verifier's `git clone` and the script around it stood in the stopped state for the ten minutes they were watched, and would have until the verifier's hour was over. A command in a guest ran in a background process group of the session that owns the console, so a read from `/dev/tty` stopped the whole group. A script of two lines that reads `/dev/tty` in a guest stopped the same way. The guest now leaves that session after it boots. The same script gets `No such device or address`, as it does under `docker exec` without a terminal, and `fix-ocaml-gc` passes in 301 s.
+
+**The machine's network, earlier.** Before this branch was rebased onto the commit that gives every slot a private network (`44300f8`), one run of 65 tasks on 5 krun slots on the machine's network ended with 55 passed and 10 failed in 3,023 s. Five of the ten pass on a private network in the table above, with the same solutions: `break-filter-js-from-html` (the verifier's browser driver could not reach the browser it had started), `mailman` (the mail server did not start), `git-multibranch` and `configure-git-webserver`, and `torch-pipeline-parallelism` (`connect: Connection refused` between two processes of one test). A sixth, `torch-tensor-parallelism`, got past the same error and into the deadlock below. On Docker slots of that state, `git-multibranch` and `configure-git-webserver` failed because their verifiers reached the machine's own listeners on ports 22 and 8080 (`Permission denied (publickey)`, HTTP 404), and both pass on a private network.
+
+**The machine.**
+
+- `pypi-server`, both backends. The machine's registry refuses releases younger than about a week. `solve.sh` installs `twine` with the pip 25.2 of the image, which resolves `markdown-it-py` 4.3.0 from inside that week and gets HTTP 403. That pip has no option to leave recent releases out, so the variables of `--slot-env` do not reach it. The solution exits 1, and the verifier's install from the task's server fails.
+- 10 tasks did not run on Docker slots, for disk. A Docker slot keeps its image and everything the solution and the verifier install on the filesystem with the floor, which had 3.3 GB above the watcher's floor when these ran alone, one after another, and 2.0 GB at the end. The watcher cancelled `install-windows-3.11`, `mteb-retrieve`, `mteb-leaderboard`, `compile-compcert`, `pytorch-model-recovery` and `reshard-c4-data` with 3.3 to 3.6 GB written, `caffe-cifar-10` with 1.9 GB, and earlier `sam-cell-seg` with 4.5 GB. The two torch tasks were not tried: their verifier's torch 2.7.0 and its CUDA libraries filled 5.3 GB of a krun slot's disk. All ten ran on krun slots, whose disks were on the other filesystem, and nine of them passed there.
+
+**The task.**
+
+- `build-cython-ext`, both backends, 10 of 11 tests. `solve.sh` installs `planarity` without a version. 1.0.0 no longer puts `pos` on the nodes of `planarity.networkx_graph`, and the upstream test `test_reconstructed_space_curve`, which the verifier runs, ends in `KeyError: 'pos'`. Read from a run of a copy of the task whose solution also runs that test.
+- `mcmc-sampling-stan`, both backends, 2 of 6 tests. `solve.sh` pins `rstan` and leaves its dependency `RcppParallel` open. The current release wants cmake, which the image does not have (`RcppParallel requires cmake (>= 3.5); cmake was not found`), so `rstan` is never installed.
+- `protein-assembly`, both backends. The solution's DnaChisel run ends in `NoSolutionError` with one `EnforceTranslation` constraint unsolved and writes no `gblock.txt`, in each of its 5 runs here: 3 on krun slots and 2 on Docker slots, the earlier state included. Its `numpy` and codon tables are not pinned.
+- `torch-tensor-parallelism` on krun, a `verifier_timeout` error after 900 s. The verifier pins torch 2.7.0, which deadlocks while a process group is destroyed: the main thread joins the Gloo worker thread in `~ProcessGroupGloo` while it holds the GIL, and that worker waits for the GIL to release a tensor. Read with `py-spy dump --native` in the guest. One of the two processes of `test_column_parallel_linear[2-True]` never exits. It happened in 3 of 3 runs on krun slots, one of them a copy of the task with 2 vCPUs. It did not run on Docker slots.
+- `qemu-startup` and `qemu-alpine-ssh`, both backends, a `verifier` error. Their image is Debian 11, whose security archive lists `curl` 7.74.0-1.3+deb11u16 and answers 404 for that package, so `apt-get install curl` in `test.sh` fails and no test runs. The solution exits 0 on both. This is the error that the missing test report is for, not a score of 0.
+- `portfolio-optimization` on Docker, once. The verifier wants the C version 1.2 times as fast as the Python one at 8,000 assets and measured 1.15 in d6, in an attempt where the solution's own benchmark had measured 1.5. It passed in d9 and on krun, and the table shows d9.
+
+None of the solutions was run under Harbor on this machine, so "the task" above means that the cause is in what the task installs or measures, not that Harbor was seen to fail the same way.
+
+### Limits of this version
+
+- The Docker lane is incomplete: 10 tasks did not run there, and nothing here says how they behave in a container.
+- One attempt per task. `portfolio-optimization` failed once and passed once on Docker slots with the same solution, and a second attempt of the other tasks was not made.
+- No solution was run under Harbor on this machine.
+- The torch deadlock was seen on krun slots only. A krun slot gives a task exactly its `cpus` as vCPUs, where a container sees every core of the machine under a quota, and the copy of the task with 2 vCPUs deadlocked as well.
+- Three images stayed on the machine after runs were cancelled while their slots were pulling them. The image cache had no record of the one that was checked, and that record is what `--images remove` and `nanoeval prune` go by. They were removed by name.
+- `--free-disk-mb` holds back new attempts and does not stop one that is writing. What kept the floor here was a watcher outside nanoeval that cancelled the run, which costs every attempt of that run. It let the free disk fall as far as 45.2 GB before a cancelled slot was gone.
+- A verifier that hangs costs its whole `verifier.timeout_sec`: 900 s for the torch deadlock, and an hour for the stopped `git clone` had it not been fixed.
