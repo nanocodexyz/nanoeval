@@ -1,10 +1,22 @@
-use std::io::{self, Read, Write};
+use std::{
+    io::{self, Read, Write},
+    net::Ipv4Addr,
+};
 
 pub const CHUNK: usize = 64 * 1024;
+pub const FORWARD: &str = "forward=";
+pub const GUEST_ADDRESS: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 15);
+pub const GUEST_GATEWAY: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 2);
+pub const GUEST_INTERFACE: &str = "eth0";
+pub const GUEST_MTU: u32 = 65_520;
+pub const GUEST_PREFIX: u8 = 24;
+pub const GUEST_RESOLVER: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 3);
 pub const IO_TAG: &str = "io";
-pub const MAGIC: [u8; 4] = *b"NKR1";
+pub const MAGIC: [u8; 4] = *b"NKR2";
 pub const PORT: u32 = 1024;
+pub const PRIVATE: &str = "private";
 pub const READY: &str = "nanoeval-krun-guest: listening";
+pub const RELAY_PORT: u32 = 1025;
 pub const RUNTIME_TAG: &str = "rt";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -21,6 +33,7 @@ pub enum Request {
         arguments: Vec<Vec<u8>>,
         directory: Vec<u8>,
         environment: Vec<Vec<u8>>,
+        forwards: Vec<Vec<u8>>,
         user: Vec<u8>,
     },
     Ping,
@@ -92,12 +105,14 @@ impl Request {
                 arguments,
                 directory,
                 environment,
+                forwards,
                 user,
             } => {
                 buffer.push(2);
                 write_list(&mut buffer, arguments)?;
                 write_bytes(&mut buffer, directory)?;
                 write_list(&mut buffer, environment)?;
+                write_list(&mut buffer, forwards)?;
                 write_bytes(&mut buffer, user)?;
             }
             Self::Ping => buffer.push(3),
@@ -134,6 +149,7 @@ impl Request {
                 arguments: read_list(reader)?,
                 directory: read_bytes(reader)?,
                 environment: read_list(reader)?,
+                forwards: read_list(reader)?,
                 user: read_bytes(reader)?,
             }),
             3 => Ok(Self::Ping),
@@ -215,6 +231,7 @@ mod tests {
                 arguments: vec![b"sh".to_vec(), b"-c".to_vec(), b"echo \xff".to_vec()],
                 directory: b"/app".to_vec(),
                 environment: vec![b"PATH=/bin".to_vec()],
+                forwards: vec![b"127.0.0.1:8787".to_vec()],
                 user: Vec::new(),
             },
             Request::Ping,

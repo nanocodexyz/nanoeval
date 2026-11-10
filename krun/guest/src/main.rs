@@ -1,6 +1,7 @@
 mod boot;
 mod copy;
 mod exec;
+mod relay;
 mod unpack;
 
 use std::{
@@ -25,16 +26,25 @@ const NONE: Option<&str> = None;
 
 fn main() -> ExitCode {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
-    let (Some(mode), runtime) = (
-        arguments.first(),
-        arguments
-            .iter()
-            .any(|argument| argument == wire::RUNTIME_TAG),
-    ) else {
-        eprintln!("usage: nanoeval-krun-guest <disk|overlay> [rt]");
+    let Some(mode) = arguments.first() else {
+        eprintln!(
+            "usage: nanoeval-krun-guest <disk|overlay> [rt] [private] [forward=ADDRESS:PORT...]"
+        );
         return ExitCode::from(125);
     };
-    if let Err(error) = boot::run(mode, runtime).and_then(|()| serve()) {
+    let has = |name: &str| arguments.iter().any(|argument| argument == name);
+    let options = boot::Options {
+        private: has(wire::PRIVATE),
+        runtime: has(wire::RUNTIME_TAG),
+    };
+    let forwards = arguments
+        .iter()
+        .filter_map(|argument| argument.strip_prefix(wire::FORWARD))
+        .map(str::as_bytes);
+    let booted = boot::run(mode, &options)
+        .and_then(|()| relay::listen(forwards))
+        .and_then(|_forwards| serve());
+    if let Err(error) = booted {
         eprintln!("nanoeval-krun-guest: {error}");
         return ExitCode::from(125);
     }
@@ -91,6 +101,7 @@ fn handle(mut connection: File) {
             arguments,
             directory,
             environment,
+            forwards,
             user,
         } => exec::run(
             &connection,
@@ -98,6 +109,7 @@ fn handle(mut connection: File) {
                 arguments,
                 directory,
                 environment,
+                forwards,
                 user,
             },
         ),

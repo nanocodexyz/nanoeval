@@ -8,6 +8,7 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+net.workspace = true
 nix = { workspace = true, features = ["fs", "mount", "poll", "process", "signal", "socket"] }
 tar.workspace = true
 wire.workspace = true

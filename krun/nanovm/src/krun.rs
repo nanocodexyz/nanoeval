@@ -11,6 +11,8 @@ use crate::{
 };
 
 const EXT4_FILESYSTEM: &CStr = c"ext4";
+const GUEST_MAC: [u8; 6] = [0x5a, 0x94, 0xef, 0xe4, 0x0c, 0xee];
+const NET_FEATURES: u32 = 1 << 0 | 1 << 1 | 1 << 7 | 1 << 10 | 1 << 11 | 1 << 14;
 const ROOT_BLOCK_DEVICE: &CStr = c"/dev/vda";
 const ROOT_BLOCK_ID: &CStr = c"vda";
 const ROOT_TAG: &CStr = c"/dev/root";
@@ -245,6 +247,23 @@ fn attach_network(context: u32, network: Network, ports: &[VsockPort]) -> Result
     match network {
         Network::Disabled if ports.is_empty() => return Ok(()),
         Network::Disabled => check(krun::krun_add_vsock(context, 0), "attach vsock")?,
+        Network::Proxy(descriptor) => {
+            check(krun::krun_add_vsock(context, 0), "attach vsock")?;
+            let mac = GUEST_MAC;
+            check(
+                unsafe {
+                    krun::krun_add_net_unixstream(
+                        context,
+                        ptr::null(),
+                        descriptor,
+                        mac.as_ptr(),
+                        NET_FEATURES,
+                        0,
+                    )
+                },
+                "attach the network proxy",
+            )?;
+        }
         Network::Internet => {
             check(
                 krun::krun_add_vsock(context, TSI_HIJACK_INET),
@@ -260,7 +279,14 @@ fn attach_network(context: u32, network: Network, ports: &[VsockPort]) -> Result
     for port in ports {
         let path = c_string(port.path().as_os_str(), "vsock socket path")?;
         check(
-            unsafe { krun::krun_add_vsock_port2(context, port.port(), path.as_ptr(), true) },
+            unsafe {
+                krun::krun_add_vsock_port2(
+                    context,
+                    port.port(),
+                    path.as_ptr(),
+                    port.guest_listens_value(),
+                )
+            },
             "map vsock port",
         )?;
     }

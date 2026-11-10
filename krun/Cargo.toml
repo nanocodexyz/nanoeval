@@ -1,5 +1,5 @@
 [workspace]
-members = ["guest", "host", "nanovm", "wire"]
+members = ["guest", "host", "nanovm", "net", "wire"]
 resolver = "3"
 
 [workspace.package]
@@ -11,9 +11,10 @@ repository = "https://github.com/nanocodexyz/nanoeval"
 publish = false
 
 [workspace.dependencies]
-krun = { package = "libkrun", git = "https://github.com/containers/libkrun", rev = "df85b8b75f55e8ef1b06b5bc18f08dc6d7b5aeb0", features = ["blk"] }
+krun = { package = "libkrun", git = "https://github.com/containers/libkrun", rev = "df85b8b75f55e8ef1b06b5bc18f08dc6d7b5aeb0", features = ["blk", "net"] }
 libloading = "0.8"
 nanovm = { path = "nanovm" }
+net = { package = "nanoeval-net", path = "net" }
 nix = { version = "0.30.1", default-features = false }
 tar = { version = "0.4.44", default-features = false, features = ["xattr"] }
 wire = { path = "wire" }

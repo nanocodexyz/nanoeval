@@ -3,16 +3,20 @@ use std::{
     ffi::{OsStr, OsString},
     fs,
     io::{self, Read, Write},
-    os::unix::{ffi::OsStrExt, net::UnixStream},
+    net::Ipv4Addr,
+    os::{
+        fd::{AsRawFd, OwnedFd},
+        unix::{ffi::OsStrExt, net::UnixStream},
+    },
     path::Path,
-    process::ExitCode,
+    process::{Command, ExitCode, Stdio},
     thread,
     time::Duration,
 };
 
 use nanovm::{
-    BlockDevice, Capabilities, GuestCommand, KrunVm, RootFilesystem, SharedDirectory, VmConfig,
-    VsockPort,
+    BlockDevice, Capabilities, GuestCommand, KrunVm, Network, RootFilesystem, SharedDirectory,
+    VmConfig, VsockPort,
 };
 use wire::{Frame, Request};
 
@@ -114,9 +118,12 @@ fn vm(arguments: impl Iterator<Item = OsString>) -> Result<u8, String> {
             "boot",
             "cpus",
             "disk",
+            "forward",
             "io",
             "lower",
             "memory-mib",
+            "passt",
+            "relay",
             "rt",
             "socket",
             "upper",
@@ -157,14 +164,50 @@ fn vm(arguments: impl Iterator<Item = OsString>) -> Result<u8, String> {
     if let Some(exchange) = arguments.maybe("io") {
         config = config.shared_directory(SharedDirectory::read_write(wire::IO_TAG, exchange));
     }
+    let proxy = arguments
+        .maybe("passt")
+        .map(|program| passt(program))
+        .transpose()?;
+    if let Some(proxy) = &proxy {
+        config = config.network(Network::Proxy(proxy.as_raw_fd()));
+        command = command.arg(wire::PRIVATE);
+    }
+    if let Some(relay) = arguments.maybe("relay") {
+        config = config.vsock_port(VsockPort::guest_connects(wire::RELAY_PORT, relay));
+    }
+    for forward in arguments.all("forward") {
+        let mut argument = OsString::from(wire::FORWARD);
+        argument.push(forward);
+        command = command.arg(argument);
+    }
     KrunVm::new(&config)
         .and_then(|vm| vm.run(&command))
         .map_err(|error| error.to_string())?;
     Ok(0)
 }
 
+fn passt(program: &OsStr) -> Result<UnixStream, String> {
+    let (guest, proxy) =
+        UnixStream::pair().map_err(|error| format!("the network socket pair: {error}"))?;
+    let mask = Ipv4Addr::from(u32::MAX << (u32::BITS - u32::from(wire::GUEST_PREFIX)));
+    Command::new(program)
+        .args(["--foreground", "--ipv4-only", "--no-dhcp", "--no-map-gw"])
+        .args(["--fd", "0"])
+        .args(["--address", &wire::GUEST_ADDRESS.to_string()])
+        .args(["--netmask", &mask.to_string()])
+        .args(["--gateway", &wire::GUEST_GATEWAY.to_string()])
+        .args(["--dns-forward", &wire::GUEST_RESOLVER.to_string()])
+        .stdin(Stdio::from(OwnedFd::from(proxy)))
+        .spawn()
+        .map_err(|error| format!("{}: {error}", Path::new(program).display()))?;
+    Ok(guest)
+}
+
 fn exec(arguments: impl Iterator<Item = OsString>) -> Result<u8, String> {
-    let arguments = Arguments::parse(arguments, &["cwd", "env", "env-file", "socket", "user"])?;
+    let arguments = Arguments::parse(
+        arguments,
+        &["cwd", "env", "env-file", "forward", "socket", "user"],
+    )?;
     if arguments.rest.is_empty() {
         return Err("exec needs a command".to_owned());
     }
@@ -199,6 +242,11 @@ fn exec(arguments: impl Iterator<Item = OsString>) -> Result<u8, String> {
             .maybe("cwd")
             .map_or_else(|| b"/".to_vec(), |directory| directory.as_bytes().to_vec()),
         environment,
+        forwards: arguments
+            .all("forward")
+            .into_iter()
+            .map(|forward| forward.as_bytes().to_vec())
+            .collect(),
         user: arguments
             .maybe("user")
             .map(|user| user.as_bytes().to_vec())

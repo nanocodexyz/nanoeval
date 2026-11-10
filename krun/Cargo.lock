@@ -693,9 +693,17 @@ dependencies = [
 name = "nanoeval-krun-guest"
 version = "0.1.0"
 dependencies = [
+ "nanoeval-net",
  "nix",
  "tar",
  "wire",
+]
+
+[[package]]
+name = "nanoeval-net"
+version = "0.1.0"
+dependencies = [
+ "nix",
 ]
 
 [[package]]

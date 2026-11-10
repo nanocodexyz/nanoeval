@@ -25,10 +25,13 @@ use nix::{
 };
 use wire::Frame;
 
+use crate::relay;
+
 pub(crate) struct Spec {
     pub(crate) arguments: Vec<Vec<u8>>,
     pub(crate) directory: Vec<u8>,
     pub(crate) environment: Vec<Vec<u8>>,
+    pub(crate) forwards: Vec<Vec<u8>>,
     pub(crate) user: Vec<u8>,
 }
 
@@ -118,6 +121,7 @@ fn command(spec: &Spec) -> io::Result<Command> {
 
 pub(crate) fn run(connection: &File, spec: &Spec) -> io::Result<i32> {
     let mut writer = connection;
+    let _forwards = relay::listen(spec.forwards.iter().map(Vec::as_slice))?;
     let mut child = match command(spec)?.spawn() {
         Ok(child) => child,
         Err(error) => {

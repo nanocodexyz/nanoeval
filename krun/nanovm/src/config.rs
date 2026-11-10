@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    os::fd::RawFd,
+    path::{Path, PathBuf},
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RootFilesystem {
@@ -11,6 +14,7 @@ pub enum Network {
     Disabled,
     #[default]
     Internet,
+    Proxy(RawFd),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -95,16 +99,31 @@ impl SharedDirectory {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VsockPort {
+    listens: bool,
     path: PathBuf,
     port: u32,
 }
 
 impl VsockPort {
-    pub fn guest_listens(port: u32, path: impl Into<PathBuf>) -> Self {
+    pub fn guest_connects(port: u32, path: impl Into<PathBuf>) -> Self {
         Self {
+            listens: false,
             path: path.into(),
             port,
         }
+    }
+
+    pub fn guest_listens(port: u32, path: impl Into<PathBuf>) -> Self {
+        Self {
+            listens: true,
+            path: path.into(),
+            port,
+        }
+    }
+
+    #[must_use]
+    pub const fn guest_listens_value(&self) -> bool {
+        self.listens
     }
 
     #[must_use]
@@ -289,5 +308,16 @@ mod tests {
 
         assert_eq!(config.vsock_ports()[0].port(), 1_024);
         assert_eq!(config.vsock_ports()[0].path(), Path::new("vm.sock"));
+        assert!(config.vsock_ports()[0].guest_listens_value());
+    }
+
+    #[test]
+    fn a_vsock_port_the_guest_connects_to_is_explicit() {
+        let config = VmConfig::new(directory("boot"))
+            .network(Network::Proxy(3))
+            .vsock_port(VsockPort::guest_connects(1_025, "relay.sock"));
+
+        assert_eq!(config.network_value(), Network::Proxy(3));
+        assert!(!config.vsock_ports()[0].guest_listens_value());
     }
 }
