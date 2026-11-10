@@ -19,6 +19,16 @@ spawn() {
   shift 2
   printf 'running\n' >"$status"
   setsid nohup bash -c 'status=$1; shift; "$@"; code=$?; printf "exit:%s\n" "$code" >"$status.tmp"; mv "$status.tmp" "$status"' bash "$status" "$@" >"$log" 2>&1 </dev/null &
+  printf '%s\n' "$!" >"$status.pid"
+}
+
+reap() {
+  local file
+  for file in "$1"/*.status.pid; do
+    [ -f "$file" ] || continue
+    [ "$(state "${file%.pid}")" = running ] || continue
+    pkill -KILL -s "$(cat "$file")" 2>/dev/null || true
+  done
 }
 
 state() {
@@ -130,7 +140,7 @@ cmd__up() {
         local hash
         hash=$(tar -C "$dir/task/environment" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - . | sha256sum | cut -c1-24)
         image=nanoeval-env:$hash
-        flock "$home/build-$hash.lock" bash -c 'docker image inspect "$1" >/dev/null 2>&1 || docker build -q -t "$1" "$2"' bash "$image" "$dir/task/environment"
+        flock "$home/build-$hash.lock" bash -c 'docker image inspect "$1" >/dev/null 2>&1 || docker build -q --force-rm -t "$1" "$2"' bash "$image" "$dir/task/environment"
       else
         flock "$home/pull.lock" bash -c 'docker image inspect "$1" >/dev/null 2>&1 || docker pull -q "$1"' bash "$image"
       fi
@@ -245,6 +255,7 @@ cmd_down() {
   valid "$slot"
   local dir=$home/slots/$slot
   stop_hand "$slot"
+  reap "$dir"
   if [ "$(cat "$dir/backend" 2>/dev/null)" = docker ]; then
     docker rm -f "nanoeval-$slot" >/dev/null 2>&1 || true
   fi
@@ -252,6 +263,10 @@ cmd_down() {
 }
 
 cmd_destroy() {
+  local dir
+  for dir in "$home" "$home"/slots/*/; do
+    reap "$dir"
+  done
   if has docker; then
     docker ps -aq --filter "label=nanoeval=$home" | xargs -r docker rm -f >/dev/null 2>&1 || true
   fi

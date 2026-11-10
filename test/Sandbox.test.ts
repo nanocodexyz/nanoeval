@@ -162,3 +162,48 @@ test('slots in one sandbox verify their own workspaces with the dir backend', as
   await provider.kill(created.handle)
   assert.ok(!Fs.existsSync(created.handle.home))
 })
+
+test('taking a slot down ends the work it still runs', async () => {
+  const provider = Local.create({ token, url: server.url })
+  const created = await provider.create({ metadata: {}, template: undefined, timeoutSec: 60 })
+  const sandbox = provider.connect(created.handle)
+  const slots = Slot.create({ home: created.handle.home })
+  await Sandbox.run(sandbox, 'mkdir -p ' + Sandbox.quote(created.handle.home + '/slots/busy'))
+  await sandbox.write(slots.script, script)
+  await sandbox.write(
+    slots.taskFile('busy'),
+    Tar.pack([
+      {
+        data: Bytes.fromText('#!/bin/sh\nsleep 300.125\n'),
+        executable: true,
+        path: 'tests/test.sh',
+      },
+    ]),
+  )
+  await Sandbox.run(
+    sandbox,
+    slots.up('busy', {
+      backend: 'dir',
+      cpus: 1,
+      image: undefined,
+      limits: 'none',
+      memoryMb: 1,
+      network: 'host',
+    }),
+  )
+  const status = async () => Slot.parseStatus(await Sandbox.run(sandbox, slots.status()))
+  assert.equal(await wait(async () => (await status()).slots['busy']!.up), 'exit:0')
+
+  await Sandbox.run(sandbox, slots.verify('busy', 300))
+  const sleeping = async () => (await sandbox.exec('pgrep -f "sleep 300.12[5]"')).stdout.trim()
+  for (let tries = 0; tries < 100 && !(await sleeping()); tries++)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  assert.notEqual(await sleeping(), '')
+  assert.equal((await status()).slots['busy']!.verify, 'running')
+
+  await Sandbox.run(sandbox, slots.down('busy'))
+  for (let tries = 0; tries < 100 && (await sleeping()); tries++)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  assert.equal(await sleeping(), '')
+  await provider.kill(created.handle)
+})
