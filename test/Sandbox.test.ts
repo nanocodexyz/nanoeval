@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import * as Fs from 'node:fs'
 import * as Os from 'node:os'
 import * as Path from 'node:path'
@@ -10,6 +11,7 @@ import * as Local from '../src/Local.ts'
 import * as Sandbox from '../src/Sandbox.ts'
 import * as Slot from '../src/Slot.ts'
 import * as Tar from '../src/Tar.ts'
+import * as Krun from './Krun.ts'
 
 const token = 'test-token'
 const script = Fs.readFileSync(new URL('../sandbox/slot.sh', import.meta.url))
@@ -26,8 +28,8 @@ after(async () => {
   Fs.rmSync(root, { force: true, recursive: true })
 })
 
-const wait = async (read: () => Promise<Slot.Phase>): Promise<Slot.Phase> => {
-  for (let tries = 0; tries < 200; tries++) {
+const wait = async (read: () => Promise<Slot.Phase>, tries = 200): Promise<Slot.Phase> => {
+  for (; tries > 0; tries--) {
     const phase = await read()
     if (phase !== 'running' && phase !== 'none') return phase
     await new Promise((resolve) => setTimeout(resolve, 50))
@@ -254,3 +256,138 @@ test('taking a slot down ends the work it still runs', async () => {
   assert.equal(await sleeping(), '')
   await provider.kill(created.handle)
 })
+
+test('deleting a sandbox ends the work its slots still run', async () => {
+  const provider = Local.create({ token, url: server.url })
+  const created = await provider.create({ metadata: {}, template: undefined, timeoutSec: 60 })
+  const sandbox = provider.connect(created.handle)
+  const slots = Slot.create({ home: created.handle.home })
+  await Sandbox.run(sandbox, 'mkdir -p ' + Sandbox.quote(created.handle.home + '/slots/left'))
+  await sandbox.write(slots.script, script)
+  await sandbox.write(
+    slots.taskFile('left'),
+    Tar.pack([
+      {
+        data: Bytes.fromText('#!/bin/sh\nsleep 300.375\n'),
+        executable: true,
+        path: 'tests/test.sh',
+      },
+    ]),
+  )
+  await Sandbox.run(
+    sandbox,
+    slots.up('left', {
+      backend: 'dir',
+      cpus: 1,
+      image: undefined,
+      limits: 'none',
+      memoryMb: 1,
+      network: 'host',
+      storageMb: 1024,
+    }),
+  )
+  const status = async () => Slot.parseStatus(await Sandbox.run(sandbox, slots.status()))
+  assert.equal(await wait(async () => (await status()).slots['left']!.up), 'exit:0')
+  await Sandbox.run(sandbox, slots.verify('left', 300))
+  const sleeping = () => execFileSync('pgrep', ['-f', 'sleep 300.37[5]']).toString().trim()
+  const idle = () => {
+    try {
+      return sleeping() === ''
+    } catch {
+      return true
+    }
+  }
+  for (let tries = 0; tries < 100 && idle(); tries++)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  assert.ok(!idle())
+
+  await provider.kill(created.handle)
+  for (let tries = 0; tries < 100 && !idle(); tries++)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  assert.ok(idle())
+})
+
+test(
+  'a krun slot runs the solution and the verifier in a microVM',
+  { skip: Krun.missing() ?? false },
+  async () => {
+    const provider = Local.create({ token, url: server.url })
+    const created = await provider.create({ metadata: {}, template: undefined, timeoutSec: 60 })
+    const home = created.handle.home
+    const sandbox = provider.connect(created.handle)
+    const slots = Slot.create({ home })
+    const status = async () => Slot.parseStatus(await Sandbox.run(sandbox, slots.status()))
+    const guest = (command: string) =>
+      sandbox.exec(
+        'cd ' +
+          Sandbox.quote(home + '/slots/vm') +
+          ' && ' +
+          Sandbox.quote(home + '/rt/krun/nanoeval-krun') +
+          ' exec --socket vm.sock --cwd /app -- sh -c ' +
+          Sandbox.quote(command),
+      )
+
+    try {
+      await Sandbox.run(sandbox, 'mkdir -p ' + Sandbox.quote(home + '/slots/vm'))
+      await sandbox.write(slots.script, script)
+      await Sandbox.run(
+        sandbox,
+        slots.setup({ backend: 'krun', docker: 'keep', runtime: Slot.runtime }),
+      )
+      assert.equal(await wait(async () => (await status()).setup, 12_000), 'exit:0')
+      const capabilities = JSON.parse(
+        await Sandbox.run(sandbox, slots.probe()),
+      ) as Sandbox.Capabilities
+      assert.equal(capabilities.krun, true)
+
+      const task = await loadTask('tasks/extract-todos', { solution: true })
+      await sandbox.write(
+        slots.taskFile('vm'),
+        Tar.pack(
+          Object.entries(task.files).map(([path, data]) => ({
+            data: Bytes.fromBase64(data),
+            executable: task.executable.includes(path),
+            path,
+          })),
+        ),
+      )
+      await Sandbox.run(
+        sandbox,
+        slots.up('vm', {
+          backend: 'krun',
+          cpus: task.environment.cpus,
+          image: undefined,
+          limits: 'enforce',
+          memoryMb: task.environment.memoryMb,
+          network: 'host',
+          storageMb: task.environment.storageMb,
+        }),
+      )
+      assert.equal(await wait(async () => (await status()).slots['vm']!.up, 2_400), 'exit:0')
+      assert.equal(Krun.machines(root).length, 1)
+
+      assert.deepEqual(await guest('nproc; ls; ls -d /tests /solution; echo warn >&2; exit 7'), {
+        exitCode: 7,
+        stderr:
+          'ls: /tests: No such file or directory\nls: /solution: No such file or directory\nwarn\n',
+        stdout: '1\nnotes.md\n',
+      })
+      const memoryKb = Number((await guest("awk '/MemTotal/ { print $2 }' /proc/meminfo")).stdout)
+      assert.ok(memoryKb > 0 && memoryKb < 2 * task.environment.memoryMb * 1024, memoryKb + ' kB')
+
+      await Sandbox.run(sandbox, slots.solve('vm', 30))
+      assert.equal(await wait(async () => (await status()).slots['vm']!.solve), 'exit:0')
+      await Sandbox.run(sandbox, slots.verify('vm', 30))
+      assert.equal(await wait(async () => (await status()).slots['vm']!.verify), 'exit:0')
+      assert.equal((await status()).slots['vm']!.reward, 1)
+      assert.equal((await guest('ls /tests')).stdout, 'test.sh\n')
+
+      await Sandbox.run(sandbox, slots.down('vm'))
+      assert.deepEqual(Krun.machines(root), [])
+      assert.deepEqual((await status()).slots, {})
+    } finally {
+      await provider.kill(created.handle)
+    }
+    assert.deepEqual(Krun.machines(root), [])
+  },
+)
