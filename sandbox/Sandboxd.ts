@@ -61,7 +61,12 @@ export async function start(options: Options): Promise<Server> {
   const root = Path.resolve(options.root)
   await Fs.mkdir(root, { recursive: true })
   const expected = Crypto.createHash('sha256').update(options.token).digest()
-  const env = { ...process.env, ...options.env }
+  const krun = Path.resolve(import.meta.dirname, '../krun')
+  const env = {
+    ...((await Fs.stat(krun).catch(() => undefined)) ? { NANOEVAL_KRUN_SOURCE: krun } : {}),
+    ...process.env,
+    ...options.env,
+  }
   const home = (id: string) => Path.join(root, id)
 
   const handle = async (

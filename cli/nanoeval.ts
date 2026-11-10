@@ -25,7 +25,7 @@ const usage = `nanoeval <command>
             agents run on the plan signed in there: its access token is read once at start,
             is never refreshed, and reaches workerd through a private file.
   run       --url URL --token T --task DIR... (--agent ID=PROVIDER:MODEL[:THINKING]... | --oracle)
-            [--attempts 1] [--provider local|e2b] [--backend docker|dir] [--slots 4] [--sandboxes 1]
+            [--attempts 1] [--provider local|e2b] [--backend docker|dir|krun] [--slots 4] [--sandboxes 1]
             [--memory-mb N] [--limits enforce|none] [--network bridge|host] [--docker keep|install]
             [--template NAME] [--sandbox-timeout-sec 3600] [--sandbox-budget-usd 0] [--model-budget-usd N]
             [--setup-sec 600] [--attach-sec 60] [--step-retries 3] [--name NAME] [--wait] [--out DIR]

@@ -525,8 +525,14 @@ export class Run extends DurableObject<Env> {
           const capabilities = JSON.parse(
             await Sandbox.run(sandbox, slots.probe()),
           ) as Sandbox.Capabilities
-          if (config.sandbox.backend === 'docker' && !capabilities.docker)
-            throw new Error('the sandbox has no working Docker daemon for the docker backend')
+          if (config.sandbox.backend !== 'dir' && !capabilities.docker)
+            throw new Error(
+              'the sandbox has no working Docker daemon for the ' +
+                config.sandbox.backend +
+                ' backend',
+            )
+          if (config.sandbox.backend === 'krun' && !capabilities.krun)
+            throw new Error('the sandbox cannot start libkrun microVMs for the krun backend')
           this.update('sandboxes', row.id, {
             capabilities: JSON.stringify(capabilities),
             state: 'ready',
@@ -584,7 +590,11 @@ export class Run extends DurableObject<Env> {
       await sandbox.write(slots.script, Bytes.fromText(slotScript))
       await Sandbox.run(
         sandbox,
-        slots.setup({ docker: config.sandbox.docker, runtime: Slot.runtime }),
+        slots.setup({
+          backend: config.sandbox.backend,
+          docker: config.sandbox.docker,
+          runtime: Slot.runtime,
+        }),
       )
       this.update('sandboxes', id, { state: 'setup' })
     } catch (error) {
@@ -749,6 +759,7 @@ export class Run extends DurableObject<Env> {
         limits: config.sandbox.limits,
         memoryMb: task.environment.memoryMb,
         network: config.sandbox.network,
+        storageMb: task.environment.storageMb,
       }),
     )
   }
