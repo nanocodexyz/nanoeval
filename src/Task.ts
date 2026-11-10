@@ -40,11 +40,13 @@ export type Source = {
   files: Record<string, Uint8Array>
 }
 
+export const report = 'ctrf.json'
 export const schemaVersion = '1.1'
 export const earlierVersion = '1.0'
 export const finalMessagePath = 'solution/final_message.txt'
 export const verifierInputs = 'tests/.nanoeval'
 
+const compose = ['environment/docker-compose.yaml', 'environment/docker-compose.yml']
 const packageDirectories = ['environment', 'solution', 'steps', 'tests']
 const packageFiles = ['instruction.md', 'README.md', 'task.toml']
 const shippedDirectories = ['environment/', 'tests/']
@@ -77,11 +79,14 @@ export async function load(source: Source, options: load.Options = {}): Promise<
   const finalMessage = flag(extension, 'final_message')
   const judge = flag(extension, 'judge')
 
-  if (metadata['custom_docker_compose'] === true || environment['custom_docker_compose'] === true)
-    throw new UnsupportedError('tasks with custom_docker_compose are not supported')
+  if (compose.some((path) => path in source.files))
+    throw new UnsupportedError('tasks with a Compose file are not supported')
   if (number(environment, 'gpus', 0) > 0) throw new UnsupportedError('GPU tasks are not supported')
   if ((verifier['environment_mode'] ?? 'same') !== 'same')
     throw new UnsupportedError('verifier environment_mode must be same')
+  const servers = environment['mcp_servers']
+  if (servers !== undefined && !(Array.isArray(servers) && servers.length === 0))
+    throw new UnsupportedError('tasks with mcp_servers are not supported')
 
   const image = environment['docker_image']
   if (image !== undefined && (typeof image !== 'string' || !image))

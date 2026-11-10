@@ -363,12 +363,7 @@ test('an imported dataset runs only while its tasks match their checksums', asyn
   const compose: Dataset.Case = {
     files: {
       ...first!.files,
-      'task.toml': Bytes.fromText(
-        Bytes.toText(first!.files['task.toml']!).replace(
-          '[metadata]',
-          '[metadata]\ncustom_docker_compose = true',
-        ),
-      ),
+      'environment/docker-compose.yaml': Bytes.fromText('services: {}\n'),
     },
     id: 'compose',
   }

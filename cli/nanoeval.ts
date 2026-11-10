@@ -438,7 +438,12 @@ async function main(): Promise<void> {
     if (values.oracle && values.agent?.length)
       throw new Error('--oracle runs no model: leave out --agent')
     const tasks = await Promise.all(
-      (values.task ?? []).map((directory) => loadTask(directory, { solution: values.oracle })),
+      (values.task ?? []).map((directory) =>
+        loadTask(directory, { solution: values.oracle }).catch((error: Error) => {
+          error.message = directory + ': ' + error.message
+          throw error
+        }),
+      ),
     )
     if (values.dataset) {
       const dataset = await loadDataset(values.dataset, { ...selection, solution: values.oracle })

@@ -137,13 +137,23 @@ test('invalid and unsupported tasks are refused by name', async () => {
   )
   await assert.rejects(Task.load(source(manifest('gpus = 1\n'))), Task.UnsupportedError)
   await assert.rejects(
-    Task.load(source(manifest('custom_docker_compose = true\n'))),
+    Task.load(source(manifest(), { 'environment/docker-compose.yaml': 'services: {}\n' })),
     Task.UnsupportedError,
   )
+  const converted = manifest().replace(
+    '[agent]',
+    '[metadata]\ncustom_docker_compose = true\n[agent]',
+  )
+  assert.equal((await Task.load(source(converted))).name, 'suite/example')
   await assert.rejects(
     Task.load(source(manifest().replace('memory_mb = 256', 'memory_mb = "big"'))),
     Task.InvalidError,
   )
+  await assert.rejects(
+    Task.load(source(manifest('mcp_servers = [{ name = "docs" }]\n'))),
+    Task.UnsupportedError,
+  )
+  assert.equal((await Task.load(source(manifest('mcp_servers = []\n')))).name, 'suite/example')
   assert.throws(() => Task.parse({ name: 'x' }), Task.InvalidError)
 })
 
