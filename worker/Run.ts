@@ -120,6 +120,10 @@ function json(value: unknown, status = 200): Response {
   return Response.json(value, { status, headers: { 'cache-control': 'no-store' } })
 }
 
+function oracleAgent(config: { agents: readonly Config.Agent[] }): Config.Agent | undefined {
+  return config.agents.find((agent) => agent.provider === 'oracle')
+}
+
 function message(error: unknown): string {
   return error instanceof Error ? error.name + ': ' + error.message : String(error)
 }
@@ -730,6 +734,11 @@ export class Run extends DurableObject<Env> {
         slots.envFile(slot, 'verifier.env'),
         Bytes.fromText(Slot.envFile(task.verifier.env)),
       )
+    if (task.solution && Object.keys(task.solution.env).length)
+      await sandbox.write(
+        slots.envFile(slot, 'solution.env'),
+        Bytes.fromText(Slot.envFile(task.solution.env)),
+      )
     await Sandbox.run(
       sandbox,
       slots.up(slot, {
@@ -776,7 +785,8 @@ export class Run extends DurableObject<Env> {
         rows.map(async (row) => {
           try {
             if (meta.cancelled) {
-              if (row.phase === 'run') await Harness.cancel(this.env, this.session(row), requestId)
+              if (row.phase === 'run' && row.agent !== oracleAgent(config)?.id)
+                await Harness.cancel(this.env, this.session(row), requestId)
               await this.finish(provider, row, {
                 failure: { at: Date.now(), kind: 'cancelled', message: 'the run was cancelled' },
                 reward: null,
@@ -904,14 +914,17 @@ export class Run extends DurableObject<Env> {
       }
       case 'attach': {
         if ((await Harness.hands(this.env, session)).includes(handName)) {
-          await Harness.submit(this.env, session, {
-            hand: handName,
-            model: agent.model,
-            prompt: task.instruction,
-            provider: agent.provider,
-            requestId,
-            ...(agent.thinking ? { thinking: agent.thinking } : {}),
-          })
+          if (agent.provider === 'oracle')
+            await Sandbox.run(sandbox, slots.solve(slot, task.agent.timeoutSec))
+          else
+            await Harness.submit(this.env, session, {
+              hand: handName,
+              model: agent.model,
+              prompt: task.instruction,
+              provider: agent.provider,
+              requestId,
+              ...(agent.thinking ? { thinking: agent.thinking } : {}),
+            })
           this.update('attempts', row.id, {
             deadline_at: Date.now() + task.agent.timeoutSec * 1000,
             phase: 'run',
@@ -937,6 +950,30 @@ export class Run extends DurableObject<Env> {
         return
       }
       case 'run': {
+        if (agent.provider === 'oracle') {
+          const code = Slot.exit(state.solve)
+          if (code === undefined) {
+            if (now > row.deadline_at! + config.limits.attachSec * 1000)
+              await fail('environment', 'the solution did not report within its deadline')
+            return
+          }
+          const log = await Sandbox.run(sandbox, slots.log(slot, 'solve', logBytes))
+          this.putArtifact(
+            row.id,
+            'agent/oracle.txt',
+            log + '\nsolve.sh exited with ' + code + '\n',
+          )
+          if (code === 124 || code === 137)
+            this.update('attempts', row.id, {
+              failure: JSON.stringify({
+                at: now,
+                kind: 'agent_timeout',
+                message: 'the solution did not finish within ' + task.agent.timeoutSec + ' s',
+              } satisfies Result.Failure),
+            })
+          await this.verify(row, sandbox, slots, task)
+          return
+        }
         const report = await Harness.turn(this.env, session, requestId)
         if (report.status === 'completed') {
           await this.verify(row, sandbox, slots, task)
@@ -1032,7 +1069,7 @@ export class Run extends DurableObject<Env> {
     const task = this.task(row.task)
     const agent = config.agents.find((candidate) => candidate.id === row.agent)!
     const session = this.session(row)
-    const submitted = row.phase === 'run' || row.phase === 'verify'
+    const submitted = agent.provider !== 'oracle' && (row.phase === 'run' || row.phase === 'verify')
     const now = Date.now()
 
     let usage: Atif.Usage | null = null

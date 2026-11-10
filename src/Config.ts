@@ -8,7 +8,7 @@ export class InvalidError extends Error {
 export type Agent = {
   id: string
   model: string
-  provider: 'claude' | 'codex'
+  provider: 'claude' | 'codex' | 'oracle'
   thinking?: string
 }
 
@@ -69,7 +69,7 @@ export function parse(value: unknown): Config {
     return {
       id: agent.id,
       model: agent.model,
-      provider: choice(agent.provider, 'provider', ['claude', 'codex']),
+      provider: choice(agent.provider, 'provider', ['claude', 'codex', 'oracle']),
       ...(agent.thinking ? { thinking: agent.thinking } : {}),
     }
   })
@@ -83,6 +83,15 @@ export function parse(value: unknown): Config {
     if (!task.environment.allowInternet)
       throw new Task.UnsupportedError(
         task.name + ' sets allow_internet = false, which no slot backend enforces yet',
+      )
+  const oracle = agents.some((agent) => agent.provider === 'oracle')
+  if (oracle && agents.length > 1) fail('an oracle run has the oracle as its only agent')
+  for (const task of tasks)
+    if (oracle !== (task.solution !== undefined))
+      fail(
+        oracle
+          ? task.name + ' carries no solution for the oracle'
+          : task.name + ' carries its solution, which only an oracle run may send',
       )
 
   const sandbox = config.sandbox ?? fail('sandbox is required')

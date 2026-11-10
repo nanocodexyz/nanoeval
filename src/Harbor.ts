@@ -28,6 +28,7 @@ export function trial(attempt: Result.Attempt, options: trial.Options): Record<s
   const phase = (value: Result.Phase | undefined) =>
     value ? { started_at: iso(value.startedAt), finished_at: iso(value.finishedAt) } : null
   const usage = attempt.usage
+  const oracle = attempt.agent.provider === 'oracle'
 
   return {
     id: attempt.id,
@@ -39,7 +40,7 @@ export function trial(attempt: Result.Attempt, options: trial.Options): Record<s
     task_checksum: attempt.task.checksum,
     config: {
       agent: {
-        name: 'nanocode',
+        name: oracle ? 'oracle' : 'nanocode',
         model_name: attempt.agent.model,
         kwargs: {
           provider: attempt.agent.provider,
@@ -51,12 +52,14 @@ export function trial(attempt: Result.Attempt, options: trial.Options): Record<s
       trial_name: trialName(attempt),
     },
     agent_info: {
-      name: 'nanocode',
+      name: oracle ? 'oracle' : 'nanocode',
       version: options.version,
-      model_info: {
-        name: attempt.agent.model,
-        provider: attempt.agent.provider === 'claude' ? 'anthropic' : 'openai',
-      },
+      model_info: oracle
+        ? null
+        : {
+            name: attempt.agent.model,
+            provider: attempt.agent.provider === 'claude' ? 'anthropic' : 'openai',
+          },
     },
     agent_result: usage
       ? {

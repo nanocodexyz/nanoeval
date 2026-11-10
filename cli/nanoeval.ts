@@ -10,12 +10,14 @@ const usage = `nanoeval <command>
 
   sandboxd  --token T [--host 127.0.0.1] [--port 8788] [--root DIR] [--exec-timeout-ms 600000]
             Serve this machine as a local sandbox provider.
-  run       --url URL --token T --task DIR... --agent ID=PROVIDER:MODEL[:THINKING]...
+  run       --url URL --token T --task DIR... (--agent ID=PROVIDER:MODEL[:THINKING]... | --oracle)
             [--attempts 1] [--provider local|e2b] [--backend docker|dir] [--slots 4] [--sandboxes 1]
             [--memory-mb N] [--limits enforce|none] [--network bridge|host] [--docker keep|install]
             [--template NAME] [--sandbox-timeout-sec 3600] [--sandbox-budget-usd 0] [--model-budget-usd N]
             [--setup-sec 600] [--attach-sec 60] [--step-retries 3] [--name NAME] [--wait] [--out DIR]
             Submit a run. With --wait, poll until it finishes and print the summary.
+            With --oracle no model runs: each task's solution/solve.sh is sent and run in its slot,
+            then the verifier, to check environments and verifiers.
   status    --url URL --token T RUN
   attempt   --url URL --token T RUN ATTEMPT [ARTIFACT]
   export    --url URL --token T RUN --out DIR
@@ -37,15 +39,20 @@ async function walk(
   return found
 }
 
-export async function loadTask(root: string): Promise<Task.Task> {
+export async function loadTask(root: string, options: Task.load.Options = {}): Promise<Task.Task> {
   const entries = await walk(root)
   const files: Record<string, Uint8Array> = {}
   for (const entry of entries) files[entry.path] = await Fs.readFile(Path.join(root, entry.path))
-  return Task.load({
-    executable: entries.filter((entry) => entry.executable).map((entry) => entry.path),
-    files,
-  })
+  return Task.load(
+    {
+      executable: entries.filter((entry) => entry.executable).map((entry) => entry.path),
+      files,
+    },
+    options,
+  )
 }
+
+export const oracle: Config.Agent = { id: 'oracle', model: 'solution', provider: 'oracle' }
 
 export function parseAgent(text: string): Config.Agent {
   const match = /^([^=]+)=(claude|codex):([^:]+)(?::([a-z]+))?$/.exec(text)
@@ -170,6 +177,7 @@ async function main(): Promise<void> {
       'model-budget-usd': { type: 'string' },
       name: { type: 'string' },
       network: { type: 'string' },
+      oracle: { default: false, type: 'boolean' },
       out: { type: 'string' },
       port: { default: '8788', type: 'string' },
       provider: { default: 'local', type: 'string' },
@@ -213,10 +221,14 @@ async function main(): Promise<void> {
   const api = client({ token: required(values.token, 'token'), url: required(values.url, 'url') })
 
   if (command === 'run') {
-    const tasks = await Promise.all((values.task ?? []).map((directory) => loadTask(directory)))
+    if (values.oracle && values.agent?.length)
+      throw new Error('--oracle runs no model: leave out --agent')
+    const tasks = await Promise.all(
+      (values.task ?? []).map((directory) => loadTask(directory, { solution: values.oracle })),
+    )
     const provider = values.provider as Config.Config['sandbox']['provider']
     const config: Config.Config = {
-      agents: (values.agent ?? []).map(parseAgent),
+      agents: values.oracle ? [oracle] : (values.agent ?? []).map(parseAgent),
       attempts: Number(values.attempts),
       budget: {
         ...(values['model-budget-usd'] ? { modelUsd: Number(values['model-budget-usd']) } : {}),

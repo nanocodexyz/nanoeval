@@ -214,6 +214,41 @@ stop_hand() {
   esac
 }
 
+cmd_solve() {
+  local slot=$1
+  valid "$slot"
+  local dir=$home/slots/$slot
+  [ "$(state "$dir/up.status")" = exit:0 ] || die "slot $slot is not up"
+  [ -f "$dir/task/solution/solve.sh" ] || die "slot $slot has no solution/solve.sh"
+  case $(state "$dir/solve.status") in
+    running | exit:*) return 0 ;;
+  esac
+  spawn "$dir/solve.status" "$dir/solve.log" bash "$self" _solve "$@"
+}
+
+cmd__solve() {
+  local slot=$1 seconds=$2
+  local dir=$home/slots/$slot workdir line
+  workdir=$(cat "$dir/workdir")
+  local run='if command -v bash >/dev/null 2>&1; then exec bash "$1"; else exec sh "$1"; fi'
+  local options=()
+  case $(cat "$dir/backend") in
+    dir)
+      if [ -f "$dir/solution.env" ]; then
+        while IFS= read -r line; do options+=("$line"); done <"$dir/solution.env"
+      fi
+      cd "$workdir"
+      exec env "${options[@]}" timeout -k 10 "$seconds" sh -c "$run" sh "$dir/task/solution/solve.sh"
+      ;;
+    docker)
+      if [ -f "$dir/solution.env" ]; then options+=(--env-file "$dir/solution.env"); fi
+      docker exec "nanoeval-$slot" sh -c 'rm -rf /solution'
+      docker cp "$dir/task/solution" "nanoeval-$slot:/solution"
+      exec timeout -k 10 "$seconds" docker exec "${options[@]}" -w "$workdir" "nanoeval-$slot" sh -c "$run" sh /solution/solve.sh
+      ;;
+  esac
+}
+
 cmd_verify() {
   local slot=$1
   valid "$slot"
@@ -295,8 +330,8 @@ cmd_status() {
     slot=${dir##*/}
     [ "$first" = 1 ] || printf ','
     first=0
-    printf '"%s":{"hand":"%s","reward":%s,"up":"%s","verify":"%s"}' \
-      "$slot" "$(state "$dir/hand.status")" "$(reward "$dir")" "$(state "$dir/up.status")" "$(state "$dir/verify.status")"
+    printf '"%s":{"hand":"%s","reward":%s,"solve":"%s","up":"%s","verify":"%s"}' \
+      "$slot" "$(state "$dir/hand.status")" "$(reward "$dir")" "$(state "$dir/solve.status")" "$(state "$dir/up.status")" "$(state "$dir/verify.status")"
   done
   printf '}}\n'
 }
@@ -305,7 +340,7 @@ cmd_log() {
   local slot=$1 phase=$2 bytes=${3:-65536} file
   case $phase in
     setup) file=$home/setup.log ;;
-    up | hand | verify)
+    up | hand | solve | verify)
       valid "$slot"
       file=$home/slots/$slot/$phase.log
       ;;
@@ -319,10 +354,10 @@ cmd_log() {
 }
 
 command=${1:-}
-[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|up|hand|verify|down|destroy|status|log> ...'
+[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|up|hand|solve|verify|down|destroy|status|log> ...'
 shift
 case $command in
-  probe | setup | _setup | up | _up | hand | _hand | verify | _verify | down | destroy | status | log)
+  probe | setup | _setup | up | _up | hand | _hand | solve | _solve | verify | _verify | down | destroy | status | log)
     "cmd_$command" "$@"
     ;;
   *) die "unknown command: $command" ;;

@@ -5,7 +5,7 @@ import * as Fs from 'node:fs'
 import * as Http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import * as Path from 'node:path'
-import { client, exportJob, loadTask, summary } from '../cli/nanoeval.ts'
+import { client, exportJob, loadTask, oracle, summary } from '../cli/nanoeval.ts'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
 import type * as Config from '../src/Config.ts'
 
@@ -133,6 +133,8 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
       }
     })
 
+  if (model === 'oracle') return { close() {}, url: undefined }
+  if (model !== 'anthropic') throw new Error('NANOEVAL_E2E_MODEL is scripted, oracle or anthropic')
   if (!process.env['ANTHROPIC_API_KEY'])
     throw new Error('NANOEVAL_E2E_MODEL=anthropic needs ANTHROPIC_API_KEY')
   if (!process.env['HTTPS_PROXY'] && !process.env['https_proxy'])
@@ -278,8 +280,8 @@ async function main(): Promise<void> {
     assert.equal(unauthorized.status, 401)
 
     const failures = scenario === 'failures'
-    if (failures && model !== 'scripted')
-      throw new Error('the failures scenario runs on the scripted model')
+    if (scenario !== 'tasks' && model !== 'scripted')
+      throw new Error('the ' + scenario + ' scenario runs on the scripted model')
     const directories = failures
       ? [
           'large-tests',
@@ -289,13 +291,17 @@ async function main(): Promise<void> {
         ].map((name) => Path.join('test/fixtures', name))
       : taskNames.map((name) => Path.join('tasks', name))
     const agents: Config.Agent[] =
-      failures || model !== 'scripted'
-        ? [{ id: failures ? 'right' : 'nanocode', model: realModel, provider: 'claude' }]
-        : [
-            { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
-            { id: 'wrong', model: 'claude-sonnet-4-6', provider: 'claude' },
-          ]
-    const tasks = await Promise.all(directories.map((directory) => loadTask(directory)))
+      model === 'oracle'
+        ? [oracle]
+        : failures || model !== 'scripted'
+          ? [{ id: failures ? 'right' : 'nanocode', model: realModel, provider: 'claude' }]
+          : [
+              { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
+              { id: 'wrong', model: 'claude-sonnet-4-6', provider: 'claude' },
+            ]
+    const tasks = await Promise.all(
+      directories.map((directory) => loadTask(directory, { solution: model === 'oracle' })),
+    )
     for (const task of tasks)
       if (task.name === 'fixtures/large-tests')
         task.files['tests/large.bin'] = Buffer.alloc(largeTestBytes).toString('base64')
@@ -409,6 +415,8 @@ async function main(): Promise<void> {
       assert.equal(status['agents'].wrong.failed, total / 2)
       assert.equal(status['agents'].right.passAtK['1'], 1)
       assert.equal(status['agents'].wrong.passAtK['1'], 0)
+    } else if (model === 'oracle') {
+      assert.equal(status['counts'].passed, total, 'every solution passes its verifier')
     } else {
       assert.ok(status['counts'].passed > 0, 'the model solves at least one task')
     }
@@ -416,14 +424,21 @@ async function main(): Promise<void> {
     const phases: Record<string, number[]> = {}
     for (const attempt of status['attempts'] as { id: string }[]) {
       const detail = await api.attempt(created.id, attempt.id)
-      assert.ok(detail['artifacts'].includes('agent/trajectory.json'))
       assert.ok(detail['artifacts'].includes('verifier/test-stdout.txt'))
-      const trajectory = JSON.parse(
-        await api.artifact(created.id, attempt.id, 'agent/trajectory.json'),
-      )
-      assert.equal(trajectory.schema_version, 'ATIF-v1.7')
-      assert.ok(trajectory.steps.length >= 2)
-      assert.ok(trajectory.final_metrics.extra.tool_calls >= 1)
+      if (model === 'oracle') {
+        assert.deepEqual(detail['artifacts'], ['agent/oracle.txt', 'verifier/test-stdout.txt'])
+        assert.match(
+          await api.artifact(created.id, attempt.id, 'agent/oracle.txt'),
+          /solve\.sh exited with 0\n$/,
+        )
+      } else {
+        const trajectory = JSON.parse(
+          await api.artifact(created.id, attempt.id, 'agent/trajectory.json'),
+        )
+        assert.equal(trajectory.schema_version, 'ATIF-v1.7')
+        assert.ok(trajectory.steps.length >= 2)
+        assert.ok(trajectory.final_metrics.extra.tool_calls >= 1)
+      }
       for (const [phase, span] of Object.entries(
         detail['result'].timing as Record<string, { finishedAt: number; startedAt: number }>,
       ))
@@ -444,7 +459,7 @@ async function main(): Promise<void> {
       medianPhaseMs: Object.fromEntries(
         Object.entries(phases).map(([phase, values]) => [phase, median(values)]),
       ),
-      model: model === 'scripted' ? 'scripted' : realModel,
+      model: model === 'anthropic' ? realModel : model,
       peakConcurrentAttempts: peak,
       slots,
       spend: status['spend'],

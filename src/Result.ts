@@ -19,7 +19,7 @@ export type Failure = {
 export type Phase = { finishedAt: number; startedAt: number }
 
 export type Attempt = {
-  agent: { id: string; model: string; provider: 'claude' | 'codex'; thinking?: string }
+  agent: { id: string; model: string; provider: 'claude' | 'codex' | 'oracle'; thinking?: string }
   failure?: Failure
   finishedAt: number
   id: string
