@@ -140,9 +140,9 @@ cmd__up() {
         local hash
         hash=$(tar -C "$dir/task/environment" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - . | sha256sum | cut -c1-24)
         image=nanoeval-env:$hash
-        flock "$home/build-$hash.lock" bash -c 'docker image inspect "$1" >/dev/null 2>&1 || docker build -q --force-rm -t "$1" "$2"' bash "$image" "$dir/task/environment"
+        flock "$home/build-$hash.lock" bash -c 'docker image inspect "$1" >/dev/null 2>&1 || docker build -q --force-rm --label nanoeval=environment -t "$1" "$2"' bash "$image" "$dir/task/environment"
       else
-        flock "$home/pull.lock" bash -c 'docker image inspect "$1" >/dev/null 2>&1 || docker pull -q "$1"' bash "$image"
+        flock "$home/pull-$(printf '%s' "$image" | sha256sum | cut -c1-24).lock" bash -c 'docker image inspect "$1" >/dev/null 2>&1 || docker pull -q "$1"' bash "$image"
       fi
       local options=()
       if [ -f "$dir/env" ]; then options+=(--env-file "$dir/env"); fi
