@@ -1,0 +1,95 @@
+import * as Sandbox from './Sandbox.ts'
+
+export type Backend = 'dir' | 'docker'
+
+export type Phase = 'none' | 'running' | `exit:${number}`
+
+export type Status = {
+  setup: Phase
+  slots: Record<string, { hand: Phase; reward: number | null; up: Phase; verify: Phase }>
+}
+
+export type Runtime = {
+  release: string
+  sha256: string
+}
+
+export const runtime: Runtime = {
+  release: 'https://github.com/nanocodexyz/nanocode/releases/download/nanocode-cli',
+  sha256: 'a5305c5a052d424d331a6d558c7d7820a0af1ef1c94c27a1c2f1682598bd7754',
+}
+
+export function create(options: create.Options) {
+  const home = options.home
+  const script = home + '/slot.sh'
+  const call = (...args: readonly string[]) =>
+    'NANOEVAL_HOME=' +
+    Sandbox.quote(home) +
+    ' bash ' +
+    Sandbox.quote(script) +
+    ' ' +
+    args.map(Sandbox.quote).join(' ')
+
+  return {
+    home,
+    script,
+    destroy: () => call('destroy'),
+    down: (slot: string) => call('down', slot),
+    envFile: (slot: string, name: 'env' | 'verifier.env') => home + '/slots/' + slot + '/' + name,
+    hand: (slot: string, input: { name: string; url: string }) =>
+      call('hand', slot, input.url, input.name),
+    log: (slot: string, phase: 'ctrf' | 'hand' | 'setup' | 'up' | 'verify', bytes: number) =>
+      call('log', slot, phase, String(bytes)),
+    probe: () => call('probe'),
+    setup: (input: { docker: 'install' | 'keep'; runtime: Runtime }) =>
+      call('setup', input.runtime.release, input.runtime.sha256, input.docker),
+    status: () => call('status'),
+    taskFile: (slot: string) => home + '/slots/' + slot + '/task.tar',
+    up: (
+      slot: string,
+      input: {
+        backend: Backend
+        cpus: number
+        image: string | undefined
+        limits: 'enforce' | 'none'
+        memoryMb: number
+        network: 'bridge' | 'host'
+      },
+    ) =>
+      call(
+        'up',
+        slot,
+        input.backend,
+        String(input.cpus),
+        String(input.memoryMb),
+        input.limits,
+        input.network,
+        ...(input.image ? [input.image] : []),
+      ),
+    verify: (slot: string, timeoutSec: number) =>
+      call('verify', slot, String(Math.ceil(timeoutSec))),
+  }
+}
+
+export declare namespace create {
+  type Options = {
+    home: string
+  }
+}
+
+export function envFile(env: Record<string, string>): string {
+  return Object.entries(env)
+    .map(([name, value]) => name + '=' + value + '\n')
+    .join('')
+}
+
+export function exit(phase: Phase): number | undefined {
+  return phase.startsWith('exit:') ? Number(phase.slice('exit:'.length)) : undefined
+}
+
+export function parseStatus(text: string): Status {
+  const status = JSON.parse(text) as Status
+  if (typeof status?.setup !== 'string' || typeof status.slots !== 'object' || !status.slots)
+    throw new Error('the slot status is malformed: ' + text.slice(0, 200))
+  return status
+}
