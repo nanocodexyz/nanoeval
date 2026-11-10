@@ -215,8 +215,12 @@ async function main(): Promise<void> {
   const sandboxToken = Crypto.randomBytes(16).toString('hex')
 
   Fs.writeFileSync(Path.join(out, 'slot.env'), 'NANOEVAL_E2E_LABEL=' + label + '\n')
+  Fs.writeFileSync(Path.join(out, 'slot.env'), 'NANOEVAL_E2E_LABEL=' + label + '\n')
   const sandboxd = await Sandboxd.start({
-    env: caBundle ? { NANOEVAL_CA_BUNDLE: Path.resolve(caBundle) } : {},
+    env: {
+      NANOEVAL_SLOT_ENV: Path.join(out, 'slot.env'),
+      ...(caBundle ? { NANOEVAL_CA_BUNDLE: Path.resolve(caBundle) } : {}),
+    },
     execTimeoutMs: 600_000,
     host: '127.0.0.1',
     port: 0,
@@ -405,6 +409,10 @@ async function main(): Promise<void> {
           assert.ok(
             allowed.has(seen.limits),
             name + ' ran with cpu and memory limits ' + seen.limits + ', limits is ' + limits,
+          )
+          assert.ok(
+            seen.env.includes('NANOEVAL_E2E_LABEL=' + label),
+            name + ' starts with the variables of the sandbox',
           )
           assert.equal(
             seen.env.includes('SSL_CERT_FILE=/opt/nanoeval/ca.pem'),

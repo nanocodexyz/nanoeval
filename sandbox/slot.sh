@@ -155,6 +155,10 @@ cmd__up() {
       if [ -f "$rt/trust" ]; then
         for name in $trust; do options+=(-e "$name=/opt/nanoeval/ca.pem"); done
       fi
+      if [ -n "${NANOEVAL_SLOT_ENV:-}" ]; then
+        [ -f "$NANOEVAL_SLOT_ENV" ] || die "NANOEVAL_SLOT_ENV is not a file: $NANOEVAL_SLOT_ENV"
+        options+=(--env-file "$NANOEVAL_SLOT_ENV")
+      fi
       if [ -f "$dir/env" ]; then options+=(--env-file "$dir/env"); fi
       docker rm -f "nanoeval-$slot" >/dev/null 2>&1 || true
       case $limits in
