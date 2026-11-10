@@ -223,7 +223,7 @@ judge = true           # the verifier may ask a model
 | `/tests/.nanoeval/final_message.txt` | `final_message = true` | The message that completed the turn. Empty when the agent ran out of time. In an oracle run, `solution/final_message.txt` |
 | `/tests/.nanoeval/judge-response.json` | The verifier asked | `{"responses":[{"id","text"}]}`, one per request, in order |
 
-**Judge.** Model credentials stay in the Worker, and a slot gets neither a credential nor an address to call.
+**Judge.** Model credentials stay in the Worker, and a slot gets neither a credential nor an address to call. On a [private network](#slot-networks) the verifier cannot reach the Worker at all, since the relay's allow list is reset before it starts, and the judge works the same: the request and the answers are files that the sandbox provider reads and writes.
 
 ```
  verify, round 1   tests/test.sh writes /logs/verifier/judge-request.json
@@ -325,7 +325,7 @@ The eval stack of nanocode at `2d4a4c539^` (`crates/experimental/nanocodex-eval`
 | Dataset adapters and import store (`nanocodex-eval-adapters`, `import/mod.rs`) | Pinned sources normalized into task packages | Back for five datasets, see [Datasets](#datasets). The rest are listed in the README with what each needs |
 | Judge service (`judge.rs`) | An OpenAI-compatible endpoint on the host for verifiers | Replaced by the judge request file |
 | Separate verifier environment (`vm.rs`, `tests/Dockerfile`) | The verifier in a fresh machine from its own image, with only named artifacts carried over | Refused at submission. Planned: GDPval, SWE-Atlas QnA and GeneBench Pro need it |
-| Network modes (`network_mode`, `allow_internet = false`) | A candidate without a network and a verifier with one | Refused. Planned, on top of a private network per slot. Closed-book datasets need it |
+| Network modes (`network_mode`, `allow_internet = false`) | A candidate without a network and a verifier with one | Refused. Planned, on top of the private network a slot now has, which still allows every connection out. Closed-book datasets need it |
 | Transcripts (`transcript.json`) | A prompt of several messages | Not carried over. Planned: MRCR and 115 HealthBench cases need it |
 | Verifier-dependency cache (`vm.rs`) | The `apt` and `uv` setup of Terminal-Bench verifiers kept on a cache disk | Not carried over. Planned after a measurement: verifiers that install their tools took 14 to 46 s of each attempt here |
 | Rerun lineage (`eval/run/retained.rs`, later the workset) | A run that retries what an earlier one did not pass | Planned |

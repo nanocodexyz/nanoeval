@@ -404,7 +404,7 @@ When it stayed down, the four attempts ended as environment errors ("Network con
 
 ## 2026-11-10: dataset importers, final messages and a judge
 
-Machine for every measurement in this entry: the 32-core Linux machine with KVM of the entries above, shared with other work throughout (load average near 7 before these runs). Each lane is one run, at the commit that adds `nanoeval import`, with the loader change for `version = "1.0"` added before the Terminal-Bench 2.0 lanes, `TICK_MS=500`, one local sandbox started with `--ca-bundle` and `--slot-env` (`UV_EXCLUDE_NEWER`), and a Worker on a ChatGPT plan login for the model lanes.
+Machine for every measurement in this entry: the 32-core Linux machine with KVM of the entries above, shared with other work throughout (load average near 7 before these runs). Each lane is one run, at the commit that adds `nanoeval import`, with the loader change for `version = "1.0"` added before the Terminal-Bench 2.0 lanes, `TICK_MS=500`, one local sandbox started with `--ca-bundle` and `--slot-env` (`UV_EXCLUDE_NEWER`), slots on the machine's network, and a Worker on a ChatGPT plan login for the model lanes. [On a private network](#on-a-private-network) has the lanes that ran again once slots had their own.
 
 ### What the earlier adapters were
 
@@ -476,7 +476,26 @@ A turn's report already carries its last message, so handing it to the verifier 
 Phase times are medians over the lane's attempts, and the verifier column includes the judge. Cost is the harness's estimate. The model lanes together cost $0.030.
 
 - A judge call is a nanocode session turn: the three judgments of one HealthBench case took 28,008 input tokens and 128 output tokens, about 9,300 input tokens a call for prompts of a few hundred words, and $0.0029. A judge that is a bare model request would cost a fraction of that. It needs a second client per provider beside the session protocol, and waits for a reason.
-- The one errored Terminal-Bench attempt is not about tasks: `nanoeval-krun ready` opened `vm.log` before the backgrounded VMM had created it ("vm.log: No such file or directory"). `slot.sh` starts the VMM with its output redirected in a background subshell and calls `ready` at once. The same task passed on the next run. The race is left to the krun slot code.
+- The one errored Terminal-Bench attempt is not about tasks: `nanoeval-krun ready` opened `vm.log` before the backgrounded VMM had created it ("vm.log: No such file or directory"). `slot.sh` starts the VMM with its output redirected in a background subshell and calls `ready` at once. The same task passed on the next run. `cefe403` has since closed the race.
+
+### On a private network
+
+The lanes above ran before slots had a network of their own, on the machine's network. After the rebase onto the commit that makes a private network the default (`44300f8`), these ran again, one run each, with the sandbox also started with `--slot-forward` for the machine's registry proxy. Every sandbox reported `network: private`.
+
+| Lane | Backend | Attempts | Wall | Verifier | Result |
+| --- | --- | ---: | ---: | ---: | --- |
+| End to end, final message and judge, scripted model | Docker | 8 | 12.8 s | 1.8 s | 4 passed, 4 failed as scripted |
+| Same | krun | 8 | 8.2 s | 1.6 s | 4 passed, 4 failed as scripted |
+| Same, oracle | Docker | 2 | 5.4 s | 1.8 s | 2 passed |
+| Same, oracle | krun | 2 | 4.9 s | 1.6 s | 2 passed |
+| Terminal-Bench 2.1, the same 4 tasks, oracle | Docker | 4 | 24.1 s | 13.6 s | 4 passed |
+| Terminal-Bench 2.1, the same 4 tasks, oracle | krun | 4 | 29.5 s | 15.6 s | 4 passed |
+| GPQA Diamond, the same 5, oracle | krun | 5 | 10.5 s | 0.5 s | 5 passed |
+| HealthBench Professional, the same 2, oracle, judge `gpt-6-luna` low | krun | 2 | 12.5 s | 8.5 s | rewards 0.643 and 0.028 as before, $0.0046 |
+
+- **The judge needs no route from the slot.** A copy of the judged fixture whose verifier first runs `wget` against the Worker's address and port, with its solution and `gpt-6-luna` as the judge: on a private network the verifier prints "Connection refused" on Docker and on krun slots, and the attempt is judged and passes on both. With `--network host` the same verifier reads the Worker's `/health`, and passes too. The request and the answer travel as files through the sandbox provider, so the verifier's network does not matter to them.
+- The krun attempt that errored above did not recur: the log of a microVM is now created before its guest is awaited.
+- SWE-bench Verified was not run again: its instance image no longer fit the free disk.
 
 ### Limits of this version
 
@@ -484,6 +503,6 @@ Phase times are medians over the lane's attempts, and the verifier column includ
 - The judge sees nanocode's system prompt and could call a tool that no hand serves, which would end as a verifier timeout. It did not happen in the 7 attempts a real model judged.
 - There is one judge round, and a grader must write the same prompts in both rounds.
 - GPQA and HealthBench run with a network in the slot, so they are open-book here.
-- SWE-bench instance images are named by tag. The verifier needs the network.
+- SWE-bench instance images are named by tag. The verifier needs the network, and has not run on a private one.
 - The registry importer depends on a service another project runs. Its archives are kept in the source cache once fetched, and a pinned digest never changes meaning.
 - Agents' Last Exam was not looked at beyond its source: its task archive is behind a Hugging Face login.

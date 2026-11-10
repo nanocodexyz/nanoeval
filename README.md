@@ -31,12 +31,12 @@ This is a first version. The table says what was run.
 | Oracle run (`nanoeval run --oracle`): each task's own solution instead of a model | Implemented, tested |
 | Terminal-Bench 2.1 tasks | 87 of the 89 load, and 2 need Compose. 11 ran with their own solutions and passed. 5 ran with a model. The other 76 have not run |
 | Dataset importers (`nanoeval import`, `datasets`, `run --dataset`) | Implemented, tested: unit tests import from recorded fixtures with no network |
-| `terminal-bench-2.1`, imported from the Harbor registry by digest | Verified: the 89 directories match the ones Harbor downloads byte for byte. 4 tasks ran with their own solutions on Docker and krun slots and passed |
+| `terminal-bench-2.1`, imported from the Harbor registry by digest | Verified: the 89 directories match the ones Harbor downloads byte for byte. 4 tasks ran with their own solutions on Docker and krun slots and passed, on the machine's network and again on a private network |
 | `terminal-bench-2.0` | 89 tasks imported and checked against their digests. 2 ran with their own solutions on Docker and krun slots and passed |
-| `swe-bench-verified` | 500 instances imported. `psf__requests-1142` ran on Docker slots: its gold patch passes and an empty patch fails. Not run on krun slots, where the image disk did not fit the disk budget of the test machine |
-| `gpqa-diamond` | 198 tasks imported. 5 ran with their reference answers on Docker and krun slots and passed. 5 ran with `gpt-6-luna`: 2 right, 3 wrong |
-| `healthbench-professional` | 410 cases imported. 2 ran with their physician answers on Docker and krun slots and 3 with `gpt-6-luna` on krun slots, all judged by `gpt-6-luna` |
-| A task graded on the agent's final message, and a judge answered by the orchestrator | Implemented, tested end to end on Docker and krun slots with the scripted model, and with `gpt-6-luna` |
+| `swe-bench-verified` | 500 instances imported. `psf__requests-1142` ran on Docker slots: its gold patch passes and an empty patch fails. That run had slots on the machine's network. Not run on a private network or on krun slots, where the image did not fit the disk budget of the test machine |
+| `gpqa-diamond` | 198 tasks imported. 5 ran with their reference answers on Docker and krun slots and passed, and again on krun slots with a private network. 5 ran with `gpt-6-luna`: 2 right, 3 wrong |
+| `healthbench-professional` | 410 cases imported. 2 ran with their physician answers on Docker and krun slots and 3 with `gpt-6-luna` on krun slots, all judged by `gpt-6-luna`. The 2 ran again on krun slots with a private network, with the same scores |
+| A task graded on the agent's final message, and a judge answered by the orchestrator | Implemented, tested end to end on Docker and krun slots with the scripted model, and with `gpt-6-luna`. On a private network the verifier cannot reach the Worker, and the judge still answers |
 | GraphWalks, MRCR, Arena-Hard, BrowseComp, GDPval, SWE-Atlas QnA, GeneBench Pro, ARC-AGI-3, Agents' Last Exam importers | Not ported. [Datasets](#datasets) says why |
 | Harbor job export and ATIF-v1.7 trajectories | Implemented. Shapes are unit tested. Not yet opened with `harbor view` |
 | Failure kinds `verifier`, `agent_timeout`, `environment` | Implemented, tested |
@@ -117,8 +117,8 @@ What to know before reading a score:
 - **Final messages.** GPQA and HealthBench send the dataset's prompt unchanged and grade the agent's last message. The orchestrator hands that message to the verifier. Nothing asks the agent to write a file.
 - **Judges.** A judged verifier writes its prompts to a file, and the orchestrator answers them with the model of `--judge`. No model credential and no judge endpoint enters a slot. [DESIGN.md](DESIGN.md#final-messages-and-judges) has the protocol.
 - **HealthBench scores are not pass or fail.** The reward is the length-adjusted rubric score, which can exceed 1. An attempt counts as passed only at exactly 1, so read `mean reward` in the summary. The 115 cases with earlier turns are left out, since a task carries one instruction.
-- **GPQA and HealthBench are closed-book and slots are not.** No slot backend cuts a slot off from the network yet, so an agent could search.
-- **SWE-bench needs the network in the verifier**, which installs `uv` and `swebench`, and about 4 GB of disk for each instance image. A machine whose network holds back fresh packages needs `sandboxd --slot-env` with `UV_EXCLUDE_NEWER`.
+- **GPQA and HealthBench are closed-book and slots are not.** A slot on a private network still has connections out, and nothing cuts them yet, so an agent could search.
+- **SWE-bench needs the network in the verifier**, which installs `uv` and `swebench`, and about 4 GB of disk for each instance image. A machine whose network holds back fresh packages needs `sandboxd --slot-env` with `UV_EXCLUDE_NEWER`, and one whose registries sit behind a proxy on its loopback needs `--slot-forward`.
 - **Instance images are named by tag**, as the official harness names them. Only the dataset is pinned by digest.
 
 Not ported from the earlier adapters, with the reason, in the order they would come back:
