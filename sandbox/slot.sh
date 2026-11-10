@@ -86,7 +86,7 @@ stop_vm() {
   pid=$(cat "$dir/vm.pid" 2>/dev/null) || return 0
   [ "$(readlink "/proc/$pid/cwd" 2>/dev/null)" = "$dir" ] || return 0
   kill -KILL "$pid" 2>/dev/null || true
-  tail --pid="$pid" -f /dev/null
+  tail --pid="$pid" -f /dev/null -s 0.01
 }
 
 cmd_probe() {
