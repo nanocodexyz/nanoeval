@@ -642,7 +642,6 @@ export class Run extends DurableObject<Env> {
     task: Task.Task,
     target: SandboxRow,
   ): Promise<void> {
-    const config = this.config()
     const meta = this.meta()!
     const handle = JSON.parse(target.handle!) as Sandbox.Handle
     const sandbox = provider.connect(handle)
@@ -659,44 +658,54 @@ export class Run extends DurableObject<Env> {
     })
 
     try {
-      await Sandbox.run(sandbox, 'mkdir -p ' + Sandbox.quote(handle.home + '/slots/' + slot))
-      await sandbox.write(
-        slots.taskFile(slot),
-        Tar.pack(
-          Object.entries(task.files).map(([path, data]) => ({
-            data: Bytes.fromBase64(data),
-            executable: task.executable.includes(path),
-            path,
-          })),
-        ),
-      )
-      if (Object.keys(task.environment.env).length)
-        await sandbox.write(
-          slots.envFile(slot, 'env'),
-          Bytes.fromText(Slot.envFile(task.environment.env)),
-        )
-      if (Object.keys(task.verifier.env).length)
-        await sandbox.write(
-          slots.envFile(slot, 'verifier.env'),
-          Bytes.fromText(Slot.envFile(task.verifier.env)),
-        )
-      await Sandbox.run(
-        sandbox,
-        slots.up(slot, {
-          backend: config.sandbox.backend,
-          cpus: task.environment.cpus,
-          image: task.environment.dockerImage,
-          limits: config.sandbox.limits,
-          memoryMb: task.environment.memoryMb,
-          network: config.sandbox.network,
-        }),
-      )
+      await this.startSlot(sandbox, slots, slot, task)
     } catch (error) {
       await this.finish(provider, this.attempt(row.id)!, {
         failure: { at: Date.now(), kind: 'environment', message: message(error) },
         reward: null,
       })
     }
+  }
+
+  private async startSlot(
+    sandbox: Sandbox.Sandbox,
+    slots: ReturnType<typeof Slot.create>,
+    slot: string,
+    task: Task.Task,
+  ): Promise<void> {
+    const config = this.config()
+    await Sandbox.run(sandbox, 'mkdir -p ' + Sandbox.quote(slots.home + '/slots/' + slot))
+    await sandbox.write(
+      slots.taskFile(slot),
+      Tar.pack(
+        Object.entries(task.files).map(([path, data]) => ({
+          data: Bytes.fromBase64(data),
+          executable: task.executable.includes(path),
+          path,
+        })),
+      ),
+    )
+    if (Object.keys(task.environment.env).length)
+      await sandbox.write(
+        slots.envFile(slot, 'env'),
+        Bytes.fromText(Slot.envFile(task.environment.env)),
+      )
+    if (Object.keys(task.verifier.env).length)
+      await sandbox.write(
+        slots.envFile(slot, 'verifier.env'),
+        Bytes.fromText(Slot.envFile(task.verifier.env)),
+      )
+    await Sandbox.run(
+      sandbox,
+      slots.up(slot, {
+        backend: config.sandbox.backend,
+        cpus: task.environment.cpus,
+        image: task.environment.dockerImage,
+        limits: config.sandbox.limits,
+        memoryMb: task.environment.memoryMb,
+        network: config.sandbox.network,
+      }),
+    )
   }
 
   private async advanceAttempts(provider: Sandbox.Provider): Promise<void> {
@@ -740,6 +749,10 @@ export class Run extends DurableObject<Env> {
               return
             }
             const state = status.slots[row.slot!]
+            if (row.phase === 'up' && (!state || state.up === 'none')) {
+              await this.startSlot(sandbox, slots, row.slot!, this.task(row.task))
+              return
+            }
             if (!state) throw new Error('the sandbox reports no slot ' + row.slot)
             await this.advance(provider, row, { config, sandbox, slots, state })
             if (row.errors) this.update('attempts', row.id, { errors: 0 })
@@ -1015,20 +1028,6 @@ export class Run extends DurableObject<Env> {
       }
     }
 
-    const record =
-      row.sandbox === null
-        ? undefined
-        : this.sandboxes().find((candidate) => candidate.id === row.sandbox)
-    if (record?.handle && row.slot) {
-      const handle = JSON.parse(record.handle) as Sandbox.Handle
-      await provider
-        .connect(handle)
-        .exec(Slot.create({ home: handle.home }).down(row.slot))
-        .catch(() => {})
-    }
-    if (row.phase !== 'pending' && row.phase !== 'up')
-      await Harness.remove(this.env, session).catch(() => {})
-
     const result: Result.Attempt = {
       agent,
       ...(end.failure ? { failure: end.failure } : {}),
@@ -1057,6 +1056,20 @@ export class Run extends DurableObject<Env> {
       phase_at: now,
       result: JSON.stringify(result),
     })
+
+    const record =
+      row.sandbox === null
+        ? undefined
+        : this.sandboxes().find((candidate) => candidate.id === row.sandbox)
+    if (record?.handle && row.slot) {
+      const handle = JSON.parse(record.handle) as Sandbox.Handle
+      await provider
+        .connect(handle)
+        .exec(Slot.create({ home: handle.home }).down(row.slot))
+        .catch(() => {})
+    }
+    if (row.phase !== 'pending' && row.phase !== 'up')
+      await Harness.remove(this.env, session).catch(() => {})
   }
 
   private async closeIdle(provider: Sandbox.Provider): Promise<void> {

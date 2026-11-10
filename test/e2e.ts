@@ -20,6 +20,7 @@ const slots = Number(process.env['NANOEVAL_E2E_SLOTS'] ?? '4')
 const limits = (process.env['NANOEVAL_E2E_LIMITS'] ?? 'enforce') as 'enforce' | 'none'
 const realModel = process.env['NANOEVAL_E2E_ANTHROPIC_MODEL'] ?? 'claude-haiku-4-5'
 const scenario = process.env['NANOEVAL_E2E_SCENARIO'] ?? 'tasks'
+const restartAfterMs = Number(process.env['NANOEVAL_E2E_RESTART_AFTER_MS'] ?? '0')
 const label =
   process.env['NANOEVAL_E2E_LABEL'] ??
   model + '-' + backend + (scenario === 'tasks' ? '' : '-' + scenario)
@@ -282,19 +283,26 @@ async function main(): Promise<void> {
     let status: Record<string, any>
     let peak = 0
     let restarted = false
+    let activeAt: number | undefined
     for (;;) {
       status = await api.status(created.id)
       peak = Math.max(peak, status['counts'].active)
       if (status['state'] === 'finished') break
-      if (scenario === 'restart' && !restarted && status['counts'].active > 0) {
+      if (status['counts'].active > 0) activeAt ??= Date.now()
+      if (
+        scenario === 'restart' &&
+        !restarted &&
+        Date.now() - (activeAt ?? Infinity) >= restartAfterMs
+      ) {
         restarted = true
         await stop(worker, 'SIGKILL')
         worker = await start()
       }
       if (Date.now() - started > 20 * 60_000)
         throw new Error('the run did not finish:\n' + summary(status))
-      await new Promise((resolve) => setTimeout(resolve, 500))
+      await new Promise((resolve) => setTimeout(resolve, scenario === 'restart' ? 100 : 500))
     }
+    if (scenario === 'restart') assert.ok(restarted, 'the Worker restarted during the run')
     const wallMs = Date.now() - started
     console.log(summary(status))
     Fs.writeFileSync(Path.join(out, 'status.json'), JSON.stringify(status, null, 2) + '\n')
