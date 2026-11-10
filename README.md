@@ -38,7 +38,7 @@ This is a first version. The table says what was run.
 | Claude plan login (`nanoeval worker --claude-login`) | Written, not run: no unexpired login was at hand |
 | Services on one Linux machine (`scripts/install-linux.sh`) | Implemented, run on one machine |
 | A certificate bundle and variables for slot containers (`sandboxd --ca-bundle`, `--slot-env`) | Implemented, tested |
-| Network isolation between local Docker slots | Missing. They share the host network, so two tasks that listen on one port interfere |
+| Network isolation between local Docker slots | Missing. They share the host network, so attempts that listen on a fixed port are not isolated from each other |
 | Deployment to Cloudflare | Bundles with `wrangler deploy --dry-run`. Not deployed |
 | `krun` (libkrun microVM) and `bwrap` slot backends | Planned |
 | `allow_internet = false`, Compose tasks, separate verifier environments | Refused at submission. Planned |
