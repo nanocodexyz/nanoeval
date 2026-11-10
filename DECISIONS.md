@@ -196,3 +196,97 @@ The harbor route used to return every artifact of a run in one response. It now 
 - The installed Worker runs from the checkout under `wrangler dev`, which reloads it when a source file changes.
 - A verifier that cannot install its dependencies writes reward 0, and the attempt is scored as failed. Only an oracle run shows it.
 - `storage_mb` is not enforced, and nothing removes the environment images that slots build.
+
+## 2026-11-10: krun slots
+
+Machine: the one of the entry above, with libkrunfw 5.5.0 (guest kernel 6.12.91), libkrun at `df85b8b` built from source with Rust 1.97.1, an ext4 filesystem 93% full, and other work running throughout (load average 2 to 6 before each run). The lanes ran once each from a fresh clone of commit `e1a37b1`, with the scripted model unless a row says oracle. The slot and image timings further down were taken by calling `slot.sh` directly, on the same code before its last rebase.
+
+### What was kept from the earlier microVM code
+
+gakonst/nanoeval and nanocode's `crates/nanocodex-vm` both pinned libkrun `df85b8b` with features `blk` and `net` and loaded `libkrunfw.so.5` through the dynamic loader. The machine still had that firmware, so the pin is unchanged, without `net`. `crates/nanovm` is ported as `krun/nanovm`. The guest overlay of `nanocodex-vm` (a read-only image disk under a sparse upper disk per attempt) is kept, written again in `krun/guest`. The guest tool proxy and its JSON protocol over the virtio console are not: the hand runs in the guest and dials out, and what remains is an exec port over vsock for the hand, the solution and the verifier. Their recorded numbers were 89.8 ms to a ready guest on x86_64 KVM and 250 to 316 ms on another Linux host. Here a guest answers 84 ms after its VMM starts (12 boots in a row, 2 vCPUs, 1 GiB, including the copy of its upper disk).
+
+Cargo could not resolve a new lockfile on this machine, whose registry holds back crates published in the last days. `krun/Cargo.lock` therefore starts from the lockfile of gakonst/nanoeval, which pins the same libkrun.
+
+### Decisions the box settled
+
+- **The image disk is written in a microVM.** `docker export` of a 1.04 GB archive (30,152 entries) became an ext4 disk in 4.4 to 4.9 s in the builder microVM, and in 4.3 s with `mke2fs -d` under fakeroot. Both listed the same paths, types, modes, owners, link targets and file sizes when booted. The builder needs nothing installed and no faked ownership, so it stays.
+- **Copy-on-write is an overlay in the guest.** For that 1 GB image: a copied tree took 0.70 s on an idle disk and 0.99 s under load, a sparse copy of the ext4 disk 0.27 s and 0.42 s, each with 1 GB allocated per slot. An empty 10 GiB upper disk took 15 ms and 4 MB (0.33 s when the disk was busy). A host overlayfs was not possible without root: `unshare -Urm` fails writing `uid_map` on this machine. A device-mapper snapshot needs root and a module that was not loaded, and qemu-img did not run from a user's directory, so neither was measured.
+- **A guest is ready when it says so.** libkrun binds the host socket of a vsock port before the guest listens, and a connection made in that window hung for 5 s before it was refused: every first boot took 5.08 s. The guest now prints a line on its console once it listens, and `ready` waits for that line before it connects.
+- **Guests use the host's resolver.** The first version gave guests the nameservers behind the host's stub resolver, which skipped what the stub enforces: package registries resolved to their real addresses and three Terminal-Bench verifiers passed that fail in a Docker slot without the host's certificate bundle. Guests now get `/etc/resolv.conf` as it is. glibc reaches a resolver on the host's loopback only over TCP (`options use-vc`), because a connected UDP socket to a loopback address stays in the guest. musl sends unconnected datagrams and needs nothing.
+- **Stopping a hand sends SIGTERM to the hand alone**, as a Docker slot does, so a hand ends the same way in both backends. The first version sent SIGKILL to its process group.
+- **`down` waits for the VMM to exit.** `tail --pid` polls once a second by default, which made every slot take a second to go down. At 10 ms, one slot goes down in 39 ms and 32 together in 0.11 s. The check that the pid still is the slot's VMM compared its working directory with an unresolved path and missed under a symlinked sandbox root, which left the microVM running until `destroy`. The path is resolved now.
+
+### Lanes
+
+| Lane | Backend | Attempts | Slots | Wall | Result |
+| --- | --- | ---: | ---: | ---: | --- |
+| Scripted model | krun | 8 | 4 | 6.4 s | 4 passed, 4 failed as scripted |
+| Scripted model | docker | 8 | 4 | 5.8 s | 4 passed, 4 failed as scripted |
+| Oracle, with a certificate bundle | krun | 3 | 4 | 3.7 s | 3 passed |
+| Oracle, with a certificate bundle | docker | 3 | 4 | 3.7 s | 3 passed |
+| Failure kinds and fixtures | krun | 5 | 4 | not recorded | 2 passed, 1 failed, 2 errored, each as designed |
+| Failure kinds and fixtures | docker | 5 | 4 | not recorded | 2 passed, 1 failed, 2 errored, each as designed |
+| Worker killed and restarted once | krun | 8 | 4 | 6.3 s | 4 passed, 4 failed as scripted |
+| Worker killed and restarted once | docker | 8 | 4 | 6.4 s | 4 passed, 4 failed as scripted |
+| Scripted model | dir | 6 | 3 | 5.1 s | 3 passed, 3 failed as scripted |
+
+After every krun lane no VMM process, no export container and no sandbox directory remained. The krun lanes also read each microVM's vCPUs and memory from its VMM and compare them with the task. With `ldconfig` replaced by one that lists no libkrunfw, the krun lane printed `e2e skipped` and exited 0 and the krun unit test was skipped. In an `ubuntu:24.04` container without `/dev/kvm` the lane was skipped the same way.
+
+### Scale
+
+2 tasks × 2 agents, one sandbox, 1 vCPU and 256 MiB per slot. Every run ended with half of its attempts passed and half failed as scripted, and none errored. Memory is the peak of the summed resident memory of the VMM processes for krun and of the containers' cgroups for docker, sampled twice a second.
+
+| Backend | Slots | Attempts | Tick | Wall | Environment | Hand attach | Agent | Verifier | Memory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| krun | 16 | 64 | 500 ms | 11.9 s | 0.70 s | 0.57 s | 0.55 s | 0.61 s | 1,185 MB |
+| docker | 16 | 64 | 500 ms | 13.0 s | 0.74 s | 0.59 s | 0.57 s | 0.63 s | 50 MB |
+| krun | 32 | 64 | 500 ms | 7.8 s | 0.95 s | 0.67 s | 0.61 s | 0.75 s | 2,368 MB |
+| docker | 32 | 64 | 500 ms | 9.1 s | 1.01 s | 0.70 s | 0.63 s | 0.79 s | 97 MB |
+| krun | 16 | 64 | 100 ms | 6.6 s | 0.32 s | 0.26 s | 0.30 s | 0.24 s | 1,182 MB |
+| docker | 16 | 64 | 100 ms | 7.9 s | 0.38 s | 0.23 s | 0.29 s | 0.26 s | 49 MB |
+| krun | 32 | 128 | 100 ms | 9.6 s | 0.54 s | 0.31 s | 0.58 s | 0.34 s | 2,369 MB |
+| docker | 32 | 128 | 100 ms | 11.9 s | 0.58 s | 0.34 s | 0.62 s | 0.44 s | 80 MB |
+
+A microVM slot is as fast as a container slot through every phase, and the tick still dominates both. It costs memory instead: about 74 MB of VMM per running 256 MiB guest against about 3 MB for a container of these tasks. An idle guest of that size held 52 MB, and an idle 2 GiB guest 84 MB.
+
+Called directly, with the image disk cached, `slot.sh up` took 0.13 s for one krun slot and 0.12 to 0.15 s for one Docker slot. Started together, 16 krun slots were up in a median of 0.24 s (slowest 0.37 s) and 32 in 0.42 s (0.71 s). Docker: 0.26 s (0.38 s) and 0.46 s (0.77 s).
+
+The first slot of an image also prepares its disk:
+
+| Image | Disk | `up`, first slot | `up` after that |
+| --- | ---: | ---: | ---: |
+| The sample task's Alpine image | 11 MB | 1.14 s | 0.13 s |
+| `alexgshaw/build-pmars:20251031` | 155 MB | 1.35 s | 0.13 s |
+| `python:3.13-bookworm` | 1,047 MB | 6.69 s | 0.14 s |
+
+### Terminal-Bench 2.1 with the tasks' own solutions
+
+Four tasks, one oracle attempt each, four slots, 1 vCPU and 2 GiB each, the host's certificate bundle given to the sandbox.
+
+| Task | krun | docker |
+| --- | --- | --- |
+| `build-pmars` | passed | passed |
+| `openssl-selfsigned-cert` | passed | passed |
+| `log-summary-date-ranges` | passed | passed |
+| `kv-store-grpc` | failed | passed |
+
+From the start of the harness to its end the run took 33.5 s on krun with at most 1,458 MB of VMM, and 31.0 s on docker with at most 941 MB in the containers. `kv-store-grpc` fails in the guest's network, not in the task: its verifier's gRPC client reports `Failed to set SO_REUSEADDR` on a TSI socket. The test harness itself exits nonzero on these runs, because its oracle lane expects exactly two artifacts and these verifiers also write `ctrf.json`.
+
+### What TSI costs
+
+Checked with two guests and a server on the host's loopback:
+
+- A guest reads a server on the host's `127.0.0.1`, which is how the hand reaches a local Worker.
+- Two guests each served on `127.0.0.1:8000` and each read its own server. Both listeners were also bound on the host by their VMMs.
+- A guest with no listener on a port read the server another guest ran on that port of its loopback, and so did the host.
+- A server on port 80 in a guest did not come up.
+
+So a krun slot isolates the filesystem, the processes, the CPUs and the memory of an attempt, and not its network. The private network needs virtio-net. passt 2024-02 from the distribution's archive, run from a user's directory, exits with `Failed to sandbox process` where unprivileged user namespaces are restricted, and libkrun at this pin then panics with `BadActivate`. The system package or gvproxy, which gakonst/nanoeval used, is the way, with a relay in the guest so that the hand still finds a Worker on loopback.
+
+### Limits of this version
+
+- krun slots share the host's network through TSI, with the gaps above.
+- Image disks in `~/.cache/nanoeval/krun` are never removed, and each is as large as its image.
+- Admission counts a slot's declared memory. The VMM's own memory, 50 to 85 MB per guest here, is not counted.
+- The launcher is built on the sandbox host with cargo, or handed over prebuilt. No release ships it.
+- CI on a hosted runner skips the krun lane and has not run the krun job yet.
