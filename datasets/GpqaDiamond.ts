@@ -109,7 +109,8 @@ export const adapter: Dataset.Adapter = {
   description:
     "GPQA Diamond, 198 multiple-choice questions from the authors' release, answered in the final message",
   name: 'gpqa-diamond',
-  proof: 'TBD',
+  proof:
+    '5 tasks with their reference answers on Docker and krun slots, and 5 with gpt-6-luna on Docker slots',
   source: {
     csv_sha256: pin.csvSha256,
     kind: 'github',

@@ -113,7 +113,8 @@ export const adapter: Dataset.Adapter = {
   description:
     'SWE-bench Verified, 500 instances, each in its official prebuilt image and graded by the official harness',
   name: 'swe-bench-verified',
-  proof: 'TBD',
+  proof:
+    '1 instance on Docker slots: its gold patch passes and an empty patch fails. Not run on krun slots',
   source: {
     file: pin.file,
     kind: 'huggingface',

@@ -120,7 +120,8 @@ export const adapter: Dataset.Adapter = {
   description:
     "HealthBench Professional, the cases that are one user message, answered in the final message and graded by the run's judge",
   name: 'healthbench-professional',
-  proof: 'TBD',
+  proof:
+    '2 cases with their physician answers on Docker and krun slots and 3 with gpt-6-luna on krun slots, judged by gpt-6-luna',
   source: {
     file: pin.file,
     kind: 'huggingface',

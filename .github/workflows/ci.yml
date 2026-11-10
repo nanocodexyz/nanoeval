@@ -43,6 +43,16 @@ jobs:
           NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
           NANOEVAL_E2E_ATTEMPTS: '1'
           NANOEVAL_E2E_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+      - name: End to end, final messages and a judge
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: judge
+      - name: End to end, final messages and a judge, oracle
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: judge
+          NANOEVAL_E2E_MODEL: oracle
+          NANOEVAL_E2E_ATTEMPTS: '1'
       - name: End to end, failure kinds
         run: npm run e2e
         env:
