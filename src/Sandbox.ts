@@ -5,6 +5,7 @@ export type Capabilities = {
   cpus: number
   docker: boolean
   kernel: string
+  krun: boolean
   kvm: boolean
   memory_mb: number
   slot_env: boolean

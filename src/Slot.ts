@@ -1,6 +1,6 @@
 import * as Sandbox from './Sandbox.ts'
 
-export type Backend = 'dir' | 'docker'
+export type Backend = 'dir' | 'docker' | 'krun'
 
 export type Phase = 'none' | 'running' | `exit:${number}`
 
@@ -48,8 +48,8 @@ export function create(options: create.Options) {
       bytes: number,
     ) => call('log', slot, phase, String(bytes)),
     probe: () => call('probe'),
-    setup: (input: { docker: 'install' | 'keep'; runtime: Runtime }) =>
-      call('setup', input.runtime.release, input.runtime.sha256, input.docker),
+    setup: (input: { backend: Backend; docker: 'install' | 'keep'; runtime: Runtime }) =>
+      call('setup', input.runtime.release, input.runtime.sha256, input.docker, input.backend),
     solve: (slot: string, timeoutSec: number) => call('solve', slot, String(Math.ceil(timeoutSec))),
     status: () => call('status'),
     taskFile: (slot: string) => home + '/slots/' + slot + '/task.tar',
@@ -62,6 +62,7 @@ export function create(options: create.Options) {
         limits: 'enforce' | 'none'
         memoryMb: number
         network: 'bridge' | 'host'
+        storageMb: number
       },
     ) =>
       call(
@@ -72,6 +73,7 @@ export function create(options: create.Options) {
         String(input.memoryMb),
         input.limits,
         input.network,
+        String(input.storageMb),
         ...(input.image ? [input.image] : []),
       ),
     verify: (slot: string, timeoutSec: number) =>

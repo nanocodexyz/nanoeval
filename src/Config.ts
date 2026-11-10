@@ -113,7 +113,7 @@ export function parse(value: unknown): Config {
     },
     name: config.name,
     sandbox: {
-      backend: choice(sandbox.backend, 'sandbox.backend', ['dir', 'docker']),
+      backend: choice(sandbox.backend, 'sandbox.backend', ['dir', 'docker', 'krun']),
       docker: choice(sandbox.docker, 'sandbox.docker', ['install', 'keep']),
       limits: choice(sandbox.limits, 'sandbox.limits', ['enforce', 'none']),
       max: integer(sandbox.max, 'sandbox.max', 1),
