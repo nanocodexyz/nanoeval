@@ -91,6 +91,8 @@ test('slots in one sandbox verify their own workspaces with the dir backend', as
   assert.ok(capabilities.cpus >= 1)
   assert.ok(capabilities.memory_mb > 0)
   assert.equal(typeof capabilities.kvm, 'boolean')
+  assert.equal(capabilities.ca_bundle, false)
+  assert.equal(capabilities.slot_env, false)
   assert.deepEqual(Slot.parseStatus(await Sandbox.run(sandbox, slots.status())), {
     setup: 'none',
     slots: {},
