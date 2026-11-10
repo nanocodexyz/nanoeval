@@ -15,6 +15,7 @@ export type Task = {
   description: string
   environment: {
     allowInternet: boolean
+    buildTimeoutSec?: number
     cpus: number
     dockerImage?: string
     env: Record<string, string>
@@ -69,11 +70,6 @@ export async function load(source: Source): Promise<Task> {
   if ((verifier['environment_mode'] ?? 'same') !== 'same')
     throw new UnsupportedError('verifier environment_mode must be same')
 
-  const files: Record<string, string> = {}
-  for (const [path, data] of Object.entries(source.files))
-    if (shippedDirectories.some((directory) => path.startsWith(directory)))
-      files[path] = Bytes.toBase64(data)
-
   const image = environment['docker_image']
   if (image !== undefined && (typeof image !== 'string' || !image))
     throw new InvalidError('environment.docker_image must be a nonempty string')
@@ -82,12 +78,20 @@ export async function load(source: Source): Promise<Task> {
       'the task has neither environment.docker_image nor environment/Dockerfile',
     )
 
+  const shipped = image === undefined ? shippedDirectories : ['tests/']
+  const files: Record<string, string> = {}
+  for (const [path, data] of Object.entries(source.files))
+    if (shipped.some((directory) => path.startsWith(directory))) files[path] = Bytes.toBase64(data)
+
   return {
     agent: { timeoutSec: positive(agent, 'timeout_sec') },
     checksum: 'sha256:' + (await checksum(source.files)),
     description: typeof task['description'] === 'string' ? task['description'] : '',
     environment: {
       allowInternet: environment['allow_internet'] !== false,
+      ...(environment['build_timeout_sec'] === undefined
+        ? {}
+        : { buildTimeoutSec: positive(environment, 'build_timeout_sec') }),
       cpus: positive(environment, 'cpus'),
       ...(image === undefined ? {} : { dockerImage: image }),
       env: strings(environment, 'env'),
@@ -120,6 +124,9 @@ export function parse(value: unknown): Task {
     task.environment.cpus > 0 &&
     Number.isSafeInteger(task.environment?.memoryMb) &&
     task.environment.memoryMb > 0 &&
+    (task.environment.buildTimeoutSec === undefined ||
+      (Number.isFinite(task.environment.buildTimeoutSec) &&
+        task.environment.buildTimeoutSec > 0)) &&
     typeof task.files === 'object' &&
     task.files !== null &&
     typeof task.files['tests/test.sh'] === 'string' &&

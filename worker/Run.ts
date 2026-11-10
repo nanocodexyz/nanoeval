@@ -47,6 +47,8 @@ type SandboxRow = {
   state: 'closed' | 'creating' | 'failed' | 'ready' | 'setup' | 'unknown'
 }
 
+type Spec = Omit<Task.Task, 'files'>
+
 type Meta = {
   cancelled: boolean
   createdAt: number
@@ -67,6 +69,13 @@ const version = '0.1.0'
 const schema = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS tasks (name TEXT PRIMARY KEY, body TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS task_files (
+  task TEXT NOT NULL,
+  path TEXT NOT NULL,
+  part INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  PRIMARY KEY (task, path, part)
+);
 CREATE TABLE IF NOT EXISTS sandboxes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   state TEXT NOT NULL,
@@ -117,6 +126,7 @@ function message(error: unknown): string {
 
 export class Run extends DurableObject<Env> {
   private readonly creating = new Set<number>()
+  private readonly specs = new Map<string, Spec>()
   private readonly sql: SqlStorage
   private ticking: Promise<void> | undefined
 
@@ -130,7 +140,8 @@ export class Run extends DurableObject<Env> {
     const url = new URL(request.url)
     const parts = url.pathname.split('/').filter(Boolean)
     try {
-      if (request.method === 'POST' && parts[0] === 'create') return await this.create(request)
+      if (request.method === 'POST' && parts[0] === 'create')
+        return await this.create(request, url.searchParams)
       if (!this.meta()) return json({ error: 'run not found' }, 404)
       if (request.method === 'GET' && parts[0] === 'status') return json(this.status())
       if (request.method === 'GET' && parts[0] === 'harbor') return json({ files: this.harbor() })
@@ -166,10 +177,10 @@ export class Run extends DurableObject<Env> {
     await this.tick()
   }
 
-  private async create(request: Request): Promise<Response> {
+  private async create(request: Request, params: URLSearchParams): Promise<Response> {
     if (this.meta()) return json({ error: 'the run exists' }, 409)
-    const body = (await request.json()) as { config: unknown; id: string; publicUrl: string }
-    const config = Config.parse(body.config)
+    const id = params.get('id')!
+    const config = Config.parse(await request.json().catch(() => null))
     if (
       config.sandbox.provider === 'local' &&
       !(this.env.LOCAL_SANDBOX_URL && this.env.LOCAL_SANDBOX_TOKEN)
@@ -187,12 +198,22 @@ export class Run extends DurableObject<Env> {
         'config',
         JSON.stringify({ ...config, tasks: config.tasks.map((task) => task.name) }),
       )
-      for (const task of config.tasks)
+      for (const { files, ...spec } of config.tasks) {
         this.sql.exec(
           'INSERT INTO tasks (name, body) VALUES (?, ?)',
-          task.name,
-          JSON.stringify(task),
+          spec.name,
+          JSON.stringify(spec),
         )
+        for (const [path, body] of Object.entries(files))
+          for (let part = 0; part * partCharacters < Math.max(body.length, 1); part++)
+            this.sql.exec(
+              'INSERT INTO task_files (task, path, part, body) VALUES (?, ?, ?, ?)',
+              spec.name,
+              path,
+              part,
+              body.slice(part * partCharacters, (part + 1) * partCharacters),
+            )
+      }
       let counter = 0
       for (let n = 1; n <= config.attempts; n++)
         for (const task of config.tasks)
@@ -209,13 +230,13 @@ export class Run extends DurableObject<Env> {
         cancelled: false,
         createdAt: Date.now(),
         finishedAt: null,
-        id: body.id,
-        publicUrl: body.publicUrl,
+        id,
+        publicUrl: params.get('url')!,
         sandboxFailures: 0,
       })
     })
     this.ctx.waitUntil(this.tick())
-    return json({ attempts: this.rows().length, id: body.id }, 201)
+    return json({ attempts: this.rows().length, id }, 201)
   }
 
   private meta(): Meta | undefined {
@@ -236,9 +257,32 @@ export class Run extends DurableObject<Env> {
     return JSON.parse(row['value'] as string)
   }
 
-  private task(name: string): Task.Task {
-    const row = this.sql.exec('SELECT body FROM tasks WHERE name = ?', name).one()
-    return JSON.parse(row['body'] as string)
+  private task(name: string): Spec {
+    let spec = this.specs.get(name)
+    if (!spec) {
+      const row = this.sql.exec('SELECT body FROM tasks WHERE name = ?', name).one()
+      spec = JSON.parse(row['body'] as string) as Spec
+      this.specs.set(name, spec)
+    }
+    return spec
+  }
+
+  private taskFiles(name: string): Tar.Entry[] {
+    const executable = this.task(name).executable
+    const files = new Map<string, string[]>()
+    for (const row of this.sql.exec(
+      'SELECT path, body FROM task_files WHERE task = ? ORDER BY path, part',
+      name,
+    ))
+      files.set(row['path'] as string, [
+        ...(files.get(row['path'] as string) ?? []),
+        row['body'] as string,
+      ])
+    return [...files].map(([path, parts]) => ({
+      data: Bytes.fromBase64(parts.join('')),
+      executable: executable.includes(path),
+      path,
+    }))
   }
 
   private rows(): AttemptRow[] {
@@ -589,7 +633,7 @@ export class Run extends DurableObject<Env> {
       const lifetime =
         (task.agent.timeoutSec +
           task.verifier.timeoutSec +
-          config.limits.setupSec +
+          (task.environment.buildTimeoutSec ?? config.limits.setupSec) +
           config.limits.attachSec) *
         1000
       const ready = this.sandboxes()
@@ -639,7 +683,7 @@ export class Run extends DurableObject<Env> {
   private async assign(
     provider: Sandbox.Provider,
     row: AttemptRow,
-    task: Task.Task,
+    task: Spec,
     target: SandboxRow,
   ): Promise<void> {
     const meta = this.meta()!
@@ -671,20 +715,11 @@ export class Run extends DurableObject<Env> {
     sandbox: Sandbox.Sandbox,
     slots: ReturnType<typeof Slot.create>,
     slot: string,
-    task: Task.Task,
+    task: Spec,
   ): Promise<void> {
     const config = this.config()
     await Sandbox.run(sandbox, 'mkdir -p ' + Sandbox.quote(slots.home + '/slots/' + slot))
-    await sandbox.write(
-      slots.taskFile(slot),
-      Tar.pack(
-        Object.entries(task.files).map(([path, data]) => ({
-          data: Bytes.fromBase64(data),
-          executable: task.executable.includes(path),
-          path,
-        })),
-      ),
-    )
+    await sandbox.write(slots.taskFile(slot), Tar.pack(this.taskFiles(task.name)))
     if (Object.keys(task.environment.env).length)
       await sandbox.write(
         slots.envFile(slot, 'env'),
@@ -824,10 +859,11 @@ export class Run extends DurableObject<Env> {
       case 'up': {
         const code = Slot.exit(state.up)
         if (code === undefined) {
-          if (elapsed > config.limits.setupSec * 1000)
+          const setupSec = task.environment.buildTimeoutSec ?? config.limits.setupSec
+          if (elapsed > setupSec * 1000)
             await fail(
               'environment',
-              'the task environment was not ready within ' + config.limits.setupSec + ' s',
+              'the task environment was not ready within ' + setupSec + ' s',
             )
           return
         }
@@ -976,7 +1012,7 @@ export class Run extends DurableObject<Env> {
     row: AttemptRow,
     sandbox: Sandbox.Sandbox,
     slots: ReturnType<typeof Slot.create>,
-    task: Task.Task,
+    task: Spec,
   ): Promise<void> {
     this.update('attempts', row.id, { timing: this.timing(row, 'agentExecution', 'finish') })
     await Sandbox.run(sandbox, slots.verify(row.slot!, task.verifier.timeoutSec))

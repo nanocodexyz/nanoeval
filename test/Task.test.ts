@@ -59,6 +59,17 @@ test('a task ships its environment and tests, and never its solution', async () 
   assert.equal(task.instruction, 'Do the thing.\n')
 })
 
+test('a task that names an image ships only its tests', async () => {
+  const task = await Task.load(
+    source(manifest('docker_image = "alpine:3.21"\nbuild_timeout_sec = 900.0\n')),
+  )
+  assert.deepEqual(Object.keys(task.files), ['tests/test.sh'])
+  assert.equal(task.environment.dockerImage, 'alpine:3.21')
+  assert.equal(task.environment.buildTimeoutSec, 900)
+  assert.deepEqual(Task.parse(JSON.parse(JSON.stringify(task))), task)
+  await assert.rejects(Task.load(source(manifest('build_timeout_sec = 0\n'))), Task.InvalidError)
+})
+
 test('the checksum covers package files and changes with their contents', async () => {
   const first = await Task.load(source(manifest()))
   const same = await Task.load(source(manifest(), { 'notes/ignored.txt': 'x' }))
