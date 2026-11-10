@@ -178,15 +178,23 @@ test('a run exports as a Harbor job directory', () => {
   const files = Harbor.files({
     artifacts: { a00001: { 'agent/trajectory.json': '{}' } },
     attempts: [attempt({}), failed],
-    job: { finishedAt: 3000, id: 'job-1', name: 'example', startedAt: 500 },
+    job: {
+      finishedAt: 3000,
+      id: '0b1f5a3e-6c1d-4f0a-9d2e-7a8b9c0d1e2f',
+      name: 'example',
+      startedAt: 500,
+    },
     running: 0,
     source: 'example',
     total: 2,
     version: '0.1.0',
   })
   assert.deepEqual(Object.keys(files).sort(), [
+    'config.json',
     'one__haiku__1/agent/trajectory.json',
+    'one__haiku__1/config.json',
     'one__haiku__1/result.json',
+    'one__haiku__2/config.json',
     'one__haiku__2/result.json',
     'result.json',
   ])
@@ -204,7 +212,59 @@ test('a run exports as a Harbor job directory', () => {
   assert.equal(errored.verifier_result, null)
   assert.equal(errored.exception_info.exception_type, 'EnvironmentError')
 
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+  const stamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
+  const environments = ['docker', 'e2b']
+  const ids = new Set<string>()
+  for (const name of ['one__haiku__1', 'one__haiku__2']) {
+    const result = JSON.parse(files[name + '/result.json']!)
+    assert.match(result.id, uuid)
+    ids.add(result.id)
+    assert.match(result.config.job_id, uuid)
+    assert.deepEqual(result.config, JSON.parse(files[name + '/config.json']!))
+    assert.deepEqual(Object.keys(result.config.task).sort(), ['path', 'source'])
+    assert.deepEqual(result.task_id, { path: result.config.task.path })
+    assert.equal(result.config.trial_name, name)
+    assert.equal(result.trial_name, name)
+    assert.equal(typeof result.config.agent.kwargs, 'object')
+    assert.ok(environments.includes(result.config.environment.type))
+    assert.equal(typeof result.agent_info.name, 'string')
+    assert.equal(typeof result.agent_info.version, 'string')
+    assert.equal(typeof result.task_checksum, 'string')
+    for (const key of ['started_at', 'finished_at']) assert.match(result[key], stamp)
+    for (const key of ['environment_setup', 'agent_setup', 'agent_execution', 'verifier'])
+      if (result[key] !== null)
+        for (const edge of ['started_at', 'finished_at']) assert.match(result[key][edge], stamp)
+    if (result.exception_info !== null) {
+      assert.match(result.exception_info.occurred_at, stamp)
+      for (const key of ['exception_type', 'exception_message', 'exception_traceback'])
+        assert.equal(typeof result.exception_info[key], 'string')
+    }
+    if (result.verifier_result !== null)
+      for (const value of Object.values(result.verifier_result.rewards))
+        assert.equal(typeof value, 'number')
+  }
+  assert.equal(ids.size, 2)
+  const microvm = Harbor.trialConfig(
+    attempt({ sandbox: { backend: 'krun', id: 1, provider: 'local', slot: 'run-a00001' } }),
+    {
+      job: { finishedAt: null, id: trial.config.job_id, name: 'example', startedAt: 500 },
+      source: 'example',
+    },
+  )
+  assert.deepEqual(microvm['environment'], {
+    kwargs: { backend: 'krun', id: 1, provider: 'local', slot: 'run-a00001' },
+  })
+
+  const config = JSON.parse(files['config.json']!)
+  assert.equal(config.job_name, 'example')
+  assert.equal(config.n_attempts, 2)
+  assert.deepEqual(config.tasks, [{ path: 'suite/one', source: 'example' }])
+  assert.equal(config.agents.length, 1)
+
   const job = JSON.parse(files['result.json']!)
+  assert.match(job.id, uuid)
+  assert.match(job.started_at, stamp)
   assert.equal(job.n_total_trials, 2)
   assert.equal(job.stats.n_errored_trials, 1)
   assert.deepEqual(job.stats.evals['haiku__example'].pass_at_k, { '1': 1, '2': 1 })

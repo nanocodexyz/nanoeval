@@ -24,6 +24,58 @@ export function trialName(attempt: Result.Attempt): string {
   return task + '__' + attempt.agent.id + '__' + attempt.index
 }
 
+export function trialId(job: Job, attempt: Result.Attempt): string {
+  return job.id.slice(0, 24) + attempt.id.replace(/\D/g, '').padStart(12, '0')
+}
+
+export function trialConfig(
+  attempt: Result.Attempt,
+  options: { job: Job; source: string },
+): Record<string, unknown> {
+  const sandbox = attempt.sandbox
+  const type =
+    sandbox?.provider === 'e2b' ? 'e2b' : sandbox?.backend === 'docker' ? 'docker' : undefined
+  return {
+    task: { path: attempt.task.name, source: options.source },
+    trial_name: trialName(attempt),
+    agent: {
+      name: attempt.agent.provider === 'oracle' ? 'oracle' : 'nanocode',
+      model_name: attempt.agent.model,
+      kwargs: {
+        id: attempt.agent.id,
+        provider: attempt.agent.provider,
+        ...(attempt.agent.thinking ? { reasoning_effort: attempt.agent.thinking } : {}),
+      },
+    },
+    environment: { ...(type ? { type } : {}), kwargs: sandbox ?? {} },
+    job_id: options.job.id,
+  }
+}
+
+export function jobConfig(input: {
+  attempts: readonly Result.Attempt[]
+  job: Job
+  source: string
+}): Record<string, unknown> {
+  const agents = new Map<string, unknown>()
+  const tasks = new Set<string>()
+  const types = new Set<unknown>()
+  for (const attempt of input.attempts) {
+    const config = trialConfig(attempt, input)
+    agents.set(attempt.agent.id, config['agent'])
+    tasks.add(attempt.task.name)
+    types.add((config['environment'] as { type?: string }).type)
+  }
+  const [type] = types
+  return {
+    job_name: input.job.name,
+    n_attempts: Math.max(1, ...input.attempts.map((attempt) => attempt.index)),
+    ...(types.size === 1 && type ? { environment: { type } } : {}),
+    agents: [...agents.values()],
+    tasks: [...tasks].sort().map((path) => ({ path, source: input.source })),
+  }
+}
+
 export function trial(attempt: Result.Attempt, options: trial.Options): Record<string, unknown> {
   const phase = (value: Result.Phase | undefined) =>
     value ? { started_at: iso(value.startedAt), finished_at: iso(value.finishedAt) } : null
@@ -31,26 +83,14 @@ export function trial(attempt: Result.Attempt, options: trial.Options): Record<s
   const oracle = attempt.agent.provider === 'oracle'
 
   return {
-    id: attempt.id,
+    id: trialId(options.job, attempt),
     task_name: attempt.task.name,
     trial_name: trialName(attempt),
     trial_uri: options.uri,
     task_id: { path: attempt.task.name },
     source: options.source,
     task_checksum: attempt.task.checksum,
-    config: {
-      agent: {
-        name: oracle ? 'oracle' : 'nanocode',
-        model_name: attempt.agent.model,
-        kwargs: {
-          provider: attempt.agent.provider,
-          ...(attempt.agent.thinking ? { thinking: attempt.agent.thinking } : {}),
-        },
-      },
-      environment: attempt.sandbox,
-      job_id: options.job.id,
-      trial_name: trialName(attempt),
-    },
+    config: trialConfig(attempt, options),
     agent_info: {
       name: oracle ? 'oracle' : 'nanocode',
       version: options.version,
@@ -127,7 +167,7 @@ export function job(
     }
     evals[agent + '__' + options.source] = {
       n_trials: scored.length,
-      n_errors: summary.errored,
+      n_errors: own.filter((attempt) => attempt.failure).length,
       metrics: [
         {
           mean: own.length
@@ -152,7 +192,7 @@ export function job(
     n_total_trials: options.total,
     stats: {
       n_completed_trials: attempts.length,
-      n_errored_trials: attempts.filter((attempt) => attempt.outcome === 'errored').length,
+      n_errored_trials: attempts.filter((attempt) => attempt.failure).length,
       n_running_trials: options.running,
       n_pending_trials: options.total - attempts.length - options.running,
       n_cancelled_trials: attempts.filter((attempt) => attempt.failure?.kind === 'cancelled')
@@ -178,6 +218,7 @@ export declare namespace job {
 
 export function files(input: files.Input): Record<string, string> {
   const out: Record<string, string> = {
+    'config.json': pretty(jobConfig(input)),
     'result.json': pretty(
       job(input.attempts, {
         job: input.job,
@@ -189,6 +230,7 @@ export function files(input: files.Input): Record<string, string> {
   }
   for (const attempt of input.attempts) {
     const name = trialName(attempt)
+    out[name + '/config.json'] = pretty(trialConfig(attempt, input))
     out[name + '/result.json'] = pretty(
       trial(attempt, {
         job: input.job,
