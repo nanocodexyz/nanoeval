@@ -114,22 +114,32 @@ export function client(options: { token: string; url: string }) {
         })
       ).json()) as { attempts: number; id: string },
     harbor: async (run: string) =>
-      (
-        (await (await call('/v1/runs/' + run + '/harbor')).json()) as {
-          files: Record<string, string>
-        }
-      ).files,
+      (await (await call('/v1/runs/' + run + '/harbor')).json()) as Job,
     status: async (run: string) =>
       (await call('/v1/runs/' + run)).json() as Promise<Record<string, any>>,
   }
 }
 
-export async function exportJob(files: Record<string, string>, out: string): Promise<void> {
-  for (const [path, contents] of Object.entries(files)) {
-    const target = Path.join(out, path)
+export type Job = {
+  artifacts: { attempt: string; names: string[]; trial: string }[]
+  files: Record<string, string>
+}
+
+export async function exportJob(
+  api: ReturnType<typeof client>,
+  options: { out: string; run: string },
+): Promise<Job> {
+  const write = async (path: string, contents: string) => {
+    const target = Path.join(options.out, path)
     await Fs.mkdir(Path.dirname(target), { recursive: true })
     await Fs.writeFile(target, contents)
   }
+  const job = await api.harbor(options.run)
+  for (const [path, contents] of Object.entries(job.files)) await write(path, contents)
+  for (const entry of job.artifacts)
+    for (const name of entry.names)
+      await write(entry.trial + '/' + name, await api.artifact(options.run, entry.attempt, name))
+  return job
 }
 
 export function summary(status: Record<string, any>): string {
@@ -371,7 +381,7 @@ async function main(): Promise<void> {
               )
             : undefined)
         if (out) {
-          await exportJob(await api.harbor(created.id), out)
+          await exportJob(api, { out, run: created.id })
           console.log('job written to ' + out)
         }
         process.exitCode = status['counts'].errored ? 1 : 0
@@ -384,7 +394,7 @@ async function main(): Promise<void> {
   const run = required(rest[0], 'RUN')
   if (command === 'status') console.log(summary(await api.status(run)))
   if (command === 'cancel') console.log(JSON.stringify(await api.cancel(run)))
-  if (command === 'export') await exportJob(await api.harbor(run), required(values.out, 'out'))
+  if (command === 'export') await exportJob(api, { out: required(values.out, 'out'), run })
   if (command === 'attempt') {
     const attempt = required(rest[1], 'ATTEMPT')
     if (rest[2]) process.stdout.write(await api.artifact(run, attempt, rest[2]))
