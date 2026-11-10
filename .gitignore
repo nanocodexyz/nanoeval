@@ -4,3 +4,4 @@
 /.env.*
 .wrangler/
 .dev.vars
+/krun/target/
