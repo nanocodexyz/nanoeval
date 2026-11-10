@@ -51,6 +51,10 @@ jobs:
         run: npm run e2e
         env:
           NANOEVAL_E2E_SCENARIO: restart
+      - name: End to end, krun slots, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: krun
       - name: Keep the logs of a failed run
         if: failure()
         uses: actions/upload-artifact@v4
@@ -60,3 +64,15 @@ jobs:
             output/e2e/**/wrangler.log
             output/e2e/**/status.json
             output/e2e/**/harbor
+
+  krun:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: krun
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
