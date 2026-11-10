@@ -12,9 +12,11 @@ import * as Plan from './Plan.ts'
 const usage = `nanoeval <command>
 
   sandboxd  --token T [--host 127.0.0.1] [--port 8788] [--root DIR] [--exec-timeout-ms 600000]
-            [--ca-bundle FILE]
+            [--ca-bundle FILE] [--slot-env FILE]
             Serve this machine as a local sandbox provider. With --ca-bundle, slot containers
-            trust that certificate bundle, for a machine whose network re-signs TLS.
+            trust that certificate bundle, for a machine whose network re-signs TLS. With
+            --slot-env, they start with the variables of that file, such as a proxy or a
+            package index the machine's network requires.
   worker    --token T [--host 127.0.0.1] [--port 8787] [--state DIR] [--tick-ms N]
             [--sandbox-url URL --sandbox-token T] [--claude-login FILE] [--codex-login FILE]
             Run the Worker under local workerd. Model API keys and base URLs are taken from
@@ -203,6 +205,7 @@ async function main(): Promise<void> {
       'sandbox-timeout-sec': { default: '3600', type: 'string' },
       sandboxes: { default: '1', type: 'string' },
       'setup-sec': { default: '600', type: 'string' },
+      'slot-env': { type: 'string' },
       slots: { default: '4', type: 'string' },
       state: { type: 'string' },
       'step-retries': { default: '3', type: 'string' },
@@ -222,7 +225,10 @@ async function main(): Promise<void> {
 
   if (command === 'sandboxd') {
     const server = await Sandboxd.start({
-      env: values['ca-bundle'] ? { NANOEVAL_CA_BUNDLE: Path.resolve(values['ca-bundle']) } : {},
+      env: {
+        ...(values['ca-bundle'] ? { NANOEVAL_CA_BUNDLE: Path.resolve(values['ca-bundle']) } : {}),
+        ...(values['slot-env'] ? { NANOEVAL_SLOT_ENV: Path.resolve(values['slot-env']) } : {}),
+      },
       execTimeoutMs: Number(values['exec-timeout-ms']),
       host: values.host,
       port: Number(values.port ?? '8788'),
