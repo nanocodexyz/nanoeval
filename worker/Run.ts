@@ -171,7 +171,14 @@ export class Run extends DurableObject<Env> {
           const body = this.artifact(row.id, decodeURIComponent(parts[3]))
           return body === undefined
             ? json({ error: 'artifact not found' }, 404)
-            : new Response(body, { headers: { 'content-type': 'text/plain; charset=utf-8' } })
+            : new Response(body as string | Uint8Array<ArrayBuffer>, {
+                headers: {
+                  'content-type':
+                    typeof body === 'string'
+                      ? 'text/plain; charset=utf-8'
+                      : 'application/octet-stream',
+                },
+              })
         }
         return json({
           artifacts: this.artifactNames(row.id),
@@ -850,6 +857,7 @@ export class Run extends DurableObject<Env> {
         backend: config.sandbox.backend,
         cpus: task.environment.cpus,
         image: task.environment.dockerImage,
+        images: config.sandbox.images === 'remove' ? 'remove' : 'keep',
         limits: config.sandbox.limits,
         memoryMb: task.environment.memoryMb,
         network: config.sandbox.network,
@@ -1379,9 +1387,17 @@ export class Run extends DurableObject<Env> {
         : this.sandboxes().find((candidate) => candidate.id === row.sandbox)
     if (record?.handle && row.slot) {
       const handle = JSON.parse(record.handle) as Sandbox.Handle
+      const needed = this.rows().some(
+        (other) => other.id !== row.id && other.task === row.task && other.phase !== 'done',
+      )
       await provider
         .connect(handle)
-        .exec(Slot.create({ home: handle.home }).down(row.slot))
+        .exec(
+          Slot.create({ home: handle.home }).down(
+            row.slot,
+            config.sandbox.images === 'remove' && !needed ? 'remove' : 'keep',
+          ),
+        )
         .catch(() => {})
     }
     if (row.phase !== 'pending' && row.phase !== 'up')

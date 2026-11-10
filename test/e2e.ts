@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import * as Crypto from 'node:crypto'
 import * as Fs from 'node:fs'
 import * as Http from 'node:http'
@@ -38,6 +38,8 @@ const label =
   model + '-' + backend + (scenario === 'tasks' ? '' : '-' + scenario)
 const out = Path.resolve('output/e2e', label)
 const largeTestBytes = 3 * 1024 * 1024
+const stamp = Crypto.randomBytes(6).toString('hex')
+const keptImage = 'nanoeval-e2e-kept:' + stamp
 
 const solutions: [marker: string, right: string, wrong: string][] = [
   [
@@ -242,6 +244,7 @@ async function main(): Promise<void> {
   const sandboxd = await Sandboxd.start({
     env: {
       NANOEVAL_SLOT_ENV: Path.join(out, 'slot.env'),
+      ...(scenario === 'images' ? { NANOEVAL_CACHE: Path.join(out, 'cache') } : {}),
       ...(caBundle ? { NANOEVAL_CA_BUNDLE: Path.resolve(caBundle) } : {}),
       ...(slotForward ? { NANOEVAL_SLOT_FORWARD: slotForward } : {}),
     },
@@ -711,6 +714,7 @@ async function main(): Promise<void> {
   } finally {
     await stop(worker, 'SIGTERM')
     beacon.close()
+    if (scenario === 'images') spawnSync('docker', ['rmi', keptImage])
     upstream.close()
     await relay?.close()
     Fs.rmSync(secrets, { force: true, recursive: true })

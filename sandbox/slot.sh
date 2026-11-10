@@ -6,6 +6,7 @@ rt=$home/rt
 krun=$rt/krun
 net=$rt/nanoeval-net
 cache=${NANOEVAL_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/nanoeval}
+images=$cache/images
 self=$(readlink -f "$0")
 trust='CARGO_HTTP_CAINFO CURL_CA_BUNDLE GIT_SSL_CAINFO NODE_EXTRA_CA_CERTS PIP_CERT REQUESTS_CA_BUNDLE SSL_CERT_FILE'
 
@@ -41,6 +42,10 @@ state() {
 
 has() {
   command -v "$1" >/dev/null 2>&1
+}
+
+key() {
+  printf '%s' "$1" | sha256sum | cut -c1-24
 }
 
 launcher() {
@@ -256,20 +261,60 @@ environment() {
     [ -f "$dir/task/environment/Dockerfile" ] || die "task has neither docker_image nor environment/Dockerfile"
     hash=$(tar -C "$dir/task/environment" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - . | sha256sum | cut -c1-24)
     image=nanoeval-env:$hash
-    flock "$home/build-$hash.lock" bash -c 'docker image inspect "$1" >/dev/null 2>&1 || docker build -q --force-rm --label nanoeval=environment -t "$1" "$2"' bash "$image" "$dir/task/environment" >&2
-  else
-    flock "$home/pull-$(printf '%s' "$image" | sha256sum | cut -c1-24).lock" bash -c 'docker image inspect "$1" >/dev/null 2>&1 || docker pull -q "$1"' bash "$image" >&2
   fi
   printf '%s\n' "$image"
 }
 
+fetch() {
+  local dir=$1 image=$2 mark
+  mark=$images/$(key "$image")
+  case $image in
+    nanoeval-env:*)
+      flock "$mark.lock" bash -c 'docker image inspect "$1" >/dev/null 2>&1 || { docker build -q --force-rm --label nanoeval=environment -t "$1" "$2" && printf "%s\n" "$1" >"$3"; }' bash "$image" "$dir/task/environment" "$mark" >&2
+      ;;
+    *)
+      flock "$mark.lock" bash -c 'docker image inspect "$1" >/dev/null 2>&1 || { docker pull -q "$1" && printf "%s\n" "$1" >"$2"; }' bash "$image" "$mark" >&2
+      ;;
+  esac
+}
+
+hold() {
+  local dir=$1 image=$2
+  mkdir -p "$images"
+  printf '%s\n' "$image" >"$dir/image"
+  exec 9>"$images/$(key "$image").use"
+  flock -s 9
+}
+
+drop_disk() {
+  local base=$1
+  [ -f "$base.ext4" ] || return 0
+  flock -xn "$base.use" rm -f "$base.ext4" "$base.env" "$base.user" "$base.workdir"
+}
+
+drop_made() {
+  local made
+  for made in "$images"/*.disk-*; do
+    [ -f "$made" ] || continue
+    [ -f "$(cat "$made").ext4" ] || rm -f "$made"
+  done
+}
+
+drop_image() {
+  local image=$1 mark
+  mark=$images/$(key "$image")
+  [ -f "$mark" ] || return 0
+  flock -xn "$mark.use" bash -c 'docker rmi "$1" >/dev/null 2>&1 && rm -f "$2"' bash "$image" "$mark"
+}
+
 cmd__krun_image() {
   local image=$1 key=$2 storage=$3 vcpus=$4 memory=$5
-  local base=$cache/krun/$key container='' pid='' tmp
+  local base=$cache/krun/$key
   if [ -f "$base.ext4" ]; then return 0; fi
+  container='' pid='' tmp=''
   rm -rf "$base".??????
   tmp=$(mktemp -d "$base.XXXXXX")
-  trap 'if [ -n "$pid" ]; then kill -KILL "$pid" 2>/dev/null; fi; if [ -n "$container" ]; then docker rm -f "$container" >/dev/null 2>&1; fi; rm -rf "$tmp"' EXIT
+  trap 'if [ -n "$pid" ]; then kill -KILL "$pid" 2>/dev/null; fi; if [ -n "$container" ]; then docker rm -f "$container" >/dev/null 2>&1; fi; if [ -n "$tmp" ]; then rm -rf "$tmp"; fi' EXIT
   format "$tmp/disk.ext4" "$storage"
   : >"$tmp/vm.log"
   (cd "$tmp" && exec "$krun/nanoeval-krun" vm --boot "$krun/boot" --disk disk.ext4 --socket vm.sock --cpus "$vcpus" --memory-mib "$memory") >"$tmp/vm.log" 2>&1 </dev/null &
@@ -296,7 +341,7 @@ cmd__krun_image() {
 }
 
 cmd__up() {
-  local slot=$1 backend=$2 cpus=$3 memory=$4 limits=$5 network=$6 storage=$7 image=${8:-}
+  local slot=$1 backend=$2 cpus=$3 memory=$4 limits=$5 network=$6 storage=$7 release=${8:-keep} image=${9:-}
   local dir=$home/slots/$slot
   rm -rf "$dir/task" "$dir/verifier"
   mkdir -p "$dir/task" "$dir/verifier"
@@ -312,6 +357,10 @@ cmd__up() {
   esac
   if [ "$network" = private ] && [ "$(cat "$home/network" 2>/dev/null)" != private ]; then die 'the sandbox was not set up for the private network'; fi
   printf '%s\n' "$network" >"$dir/network"
+  case $release in
+    keep | remove) ;;
+    *) die "up keeps or removes the image: $release" ;;
+  esac
   case $backend in
     dir)
       mkdir -p "$dir/work"
@@ -322,6 +371,8 @@ cmd__up() {
       ;;
     docker)
       image=$(environment "$dir" "$image")
+      hold "$dir" "$image"
+      fetch "$dir" "$image"
       local options=() name
       if [ -f "$rt/trust" ]; then
         for name in $trust; do options+=(-e "$name=/opt/nanoeval/ca.pem"); done
@@ -336,7 +387,7 @@ cmd__up() {
       if [ "$network" = private ]; then
         network=nanoeval-$(printf '%s' "$home" | sha256sum | cut -c1-12)
         flock "$home/network.lock" bash -c 'docker network inspect "$1" >/dev/null 2>&1 || docker network create --label "nanoeval=$2" "$1" >/dev/null' bash "$network" "$home"
-        relay "$dir"
+        relay "$dir" 9>&-
         options+=(-v "$dir/net:/opt/nanoeval/net:ro")
       fi
       docker run -d --name "nanoeval-$slot" --label "nanoeval=$home" \
@@ -358,12 +409,28 @@ cmd__up() {
       [ -x "$krun/nanoeval-krun" ] || die 'the sandbox was not set up for the krun backend'
       if [ -n "${NANOEVAL_SLOT_ENV:-}" ] && [ ! -f "$NANOEVAL_SLOT_ENV" ]; then die "NANOEVAL_SLOT_ENV is not a file: $NANOEVAL_SLOT_ENV"; fi
       image=$(environment "$dir" "$image")
-      local base vcpus workdir
-      base=$(docker image inspect -f '{{.Id}}' "$image")
-      base=${base#sha256:}
-      base=$cache/krun/${base:0:24}-$storage
+      hold "$dir" "$image"
+      local base='' made vcpus workdir
+      made=$images/$(key "$image").disk-$storage
+      if ! docker image inspect "$image" >/dev/null 2>&1 && [ -s "$made" ]; then
+        base=$(cat "$made")
+        exec 8>"$base.use"
+        flock -s 8
+      fi
       vcpus=$(awk -v cpus="$cpus" 'BEGIN { whole = int(cpus); print (whole < cpus ? whole + 1 : whole) }')
-      flock "$base.lock" bash "$self" _krun_image "$image" "${base##*/}" "$storage" "$vcpus" "$memory"
+      if [ ! -f "$base.ext4" ]; then
+        fetch "$dir" "$image"
+        base=$(docker image inspect -f '{{.Id}}' "$image")
+        base=${base#sha256:}
+        base=$cache/krun/${base:0:24}-$storage
+        exec 8>"$base.use"
+        flock -s 8
+        flock "$base.lock" bash "$self" _krun_image "$image" "${base##*/}" "$storage" "$vcpus" "$memory"
+        printf '%s\n' "$base" >"$made"
+      fi
+      printf '%s\n' "$base" >"$dir/disk"
+      exec 9>&-
+      if [ "$release" = remove ]; then drop_image "$image" || true; fi
       cp "$base.env" "$dir/image.env"
       cp "$base.user" "$dir/user"
       workdir=$(cat "$base.workdir")
@@ -372,14 +439,16 @@ cmd__up() {
       format "$dir/upper.ext4" "$storage"
       local options=() forward
       if [ "$network" = private ]; then
-        relay "$dir"
+        relay "$dir" 8>&-
         options+=(--passt "$(command -v passt)" --relay net/relay.sock)
         while IFS= read -r forward; do options+=(--forward "$forward"); done <"$dir/forwards"
       fi
       : >"$dir/vm.log"
-      (cd "$dir" && exec "$krun/nanoeval-krun" vm --boot "$krun/boot" --rt "$rt" --io io --socket vm.sock --cpus "$vcpus" --memory-mib "$memory" --lower "$base.ext4" --upper upper.ext4 "${options[@]}") >"$dir/vm.log" 2>&1 </dev/null &
+      (cd "$dir" && exec "$krun/nanoeval-krun" vm --boot "$krun/boot" --rt "$rt" --io io --socket vm.sock --cpus "$vcpus" --memory-mib "$memory" --lower "$base.ext4" --upper upper.ext4 "${options[@]}") >"$dir/vm.log" 2>&1 </dev/null 8>&- &
       printf '%s\n' "$!" >"$dir/vm.pid"
-      vm "$dir" ready --log vm.log --pid "$!" --socket vm.sock
+      (cd "$dir" && exec tail --pid="$!" -f /dev/null -s 0.01) >/dev/null 2>&1 </dev/null &
+      printf '%s\n' "$!" >"$dir/use.pid"
+      vm "$dir" ready --log vm.log --pid "$(cat "$dir/vm.pid")" --socket vm.sock
       ;;
     *) die "unsupported backend: $backend" ;;
   esac
@@ -548,17 +617,67 @@ cmd__verify() {
 }
 
 cmd_down() {
-  local slot=$1
+  local slot=$1 release=${2:-keep}
   valid "$slot"
-  local dir=$home/slots/$slot
+  local dir=$home/slots/$slot disk='' image=''
+  case $release in
+    keep | remove) ;;
+    *) die "down keeps or removes the image: $release" ;;
+  esac
+  if [ -f "$dir/disk" ]; then disk=$(cat "$dir/disk"); fi
+  if [ -f "$dir/image" ]; then image=$(cat "$dir/image"); fi
   stop_hand "$slot"
   reap "$dir"
   case $(cat "$dir/backend" 2>/dev/null) in
     docker) docker rm -f "nanoeval-$slot" >/dev/null 2>&1 || true ;;
-    krun) stop_process "$dir" vm.pid ;;
+    krun)
+      stop_process "$dir" vm.pid
+      stop_process "$dir" use.pid
+      ;;
   esac
   stop_process "$dir" relay.pid
   rm -rf "$dir"
+  if [ "$release" = remove ]; then
+    if [ -n "$disk" ]; then drop_disk "$disk" || true; fi
+    if [ -n "$image" ]; then drop_image "$image" || true; fi
+    drop_made
+  fi
+}
+
+cmd_prune() {
+  local mode=${1:-remove} base image mark
+  case $mode in
+    dry-run | remove) ;;
+    *) die "prune takes dry-run or nothing: $mode" ;;
+  esac
+  for base in "$cache"/krun/*.ext4; do
+    [ -f "$base" ] || continue
+    base=${base%.ext4}
+    if [ "$mode" = dry-run ]; then
+      if flock -xn "$base.use" true; then printf 'unused disk %s\n' "$base.ext4"; else printf 'used disk %s\n' "$base.ext4"; fi
+    elif drop_disk "$base"; then
+      printf 'removed disk %s\n' "$base.ext4"
+    else
+      printf 'kept disk %s\n' "$base.ext4"
+    fi
+  done
+  if [ "$mode" = remove ]; then drop_made; fi
+  for mark in "$images"/*; do
+    [ -f "$mark" ] || continue
+    case $mark in
+      *.disk-* | *.lock | *.use) continue ;;
+    esac
+    image=$(cat "$mark")
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+      if [ "$mode" = remove ]; then rm -f "$mark"; fi
+    elif [ "$mode" = dry-run ]; then
+      if flock -xn "$mark.use" true; then printf 'unused image %s\n' "$image"; else printf 'used image %s\n' "$image"; fi
+    elif drop_image "$image"; then
+      printf 'removed image %s\n' "$image"
+    else
+      printf 'kept image %s\n' "$image"
+    fi
+  done
 }
 
 cmd_destroy() {

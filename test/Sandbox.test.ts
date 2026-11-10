@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import * as Fs from 'node:fs'
 import * as Os from 'node:os'
 import * as Path from 'node:path'
@@ -348,7 +348,7 @@ test('taking a slot down ends the work it still runs', async () => {
   assert.notEqual(await sleeping(), '')
   assert.equal((await status()).slots['busy']!.verify, 'running')
 
-  await Sandbox.run(sandbox, slots.down('busy'))
+  await Sandbox.run(sandbox, slots.down('busy', 'keep'))
   for (let tries = 0; tries < 100 && (await sleeping()); tries++)
     await new Promise((resolve) => setTimeout(resolve, 50))
   assert.equal(await sleeping(), '')
@@ -444,6 +444,8 @@ test(
     const sandbox = provider.connect(created.handle)
     const slots = Slot.create({ home })
     const status = async () => Slot.parseStatus(await Sandbox.run(sandbox, slots.status()))
+    const cache = home + '/cache'
+    const cached = (command: string) => 'NANOEVAL_CACHE=' + Sandbox.quote(cache) + ' ' + command
     const guest = (command: string) =>
       sandbox.exec(
         'cd ' +
@@ -459,7 +461,9 @@ test(
       await sandbox.write(slots.script, script)
       await Sandbox.run(
         sandbox,
-        slots.setup({ backend: 'krun', docker: 'keep', network: 'host', runtime: Slot.runtime }),
+        cached(
+          slots.setup({ backend: 'krun', docker: 'keep', network: 'host', runtime: Slot.runtime }),
+        ),
       )
       assert.equal(await wait(async () => (await status()).setup, 12_000), 'exit:0')
       const capabilities = JSON.parse(
@@ -480,15 +484,17 @@ test(
       )
       await Sandbox.run(
         sandbox,
-        slots.up('vm', {
-          backend: 'krun',
-          cpus: task.environment.cpus,
-          image: undefined,
-          limits: 'enforce',
-          memoryMb: task.environment.memoryMb,
-          network: 'host',
-          storageMb: task.environment.storageMb,
-        }),
+        cached(
+          slots.up('vm', {
+            backend: 'krun',
+            cpus: task.environment.cpus,
+            image: undefined,
+            limits: 'enforce',
+            memoryMb: task.environment.memoryMb,
+            network: 'host',
+            storageMb: task.environment.storageMb,
+          }),
+        ),
       )
       assert.equal(await wait(async () => (await status()).slots['vm']!.up, 2_400), 'exit:0')
       assert.equal(Krun.machines(root).length, 1)
@@ -510,8 +516,17 @@ test(
       assert.equal((await status()).slots['vm']!.reward, 1)
       assert.equal((await guest('ls /tests')).stdout, 'test.sh\n')
 
-      await Sandbox.run(sandbox, slots.down('vm'))
+      const disks = () => Fs.readdirSync(cache + '/krun').filter((name) => name.endsWith('.ext4'))
+      const prune = (mode: string) =>
+        Sandbox.run(sandbox, cached('bash ' + Sandbox.quote(slots.script) + ' prune ' + mode))
+      assert.equal(disks().length, 1)
+      assert.match(await prune('dry-run'), /^used disk .*\.ext4$/m)
+      assert.match(await prune('remove'), /^kept disk .*\.ext4$/m)
+      assert.equal(disks().length, 1)
+
+      await Sandbox.run(sandbox, cached(slots.down('vm', 'remove')))
       assert.deepEqual(Krun.machines(root), [])
+      assert.deepEqual(disks(), [])
       assert.deepEqual((await status()).slots, {})
     } finally {
       await provider.kill(created.handle)

@@ -191,6 +191,15 @@ test('a run configuration is validated and tasks without internet are refused', 
     tasks: [task],
   }
   assert.equal(Config.parse(config).attempts, 2)
+  assert.equal(Config.parse(config).sandbox.images, 'keep')
+  assert.equal(
+    Config.parse({ ...config, sandbox: { ...config.sandbox, images: 'remove' } }).sandbox.images,
+    'remove',
+  )
+  assert.throws(
+    () => Config.parse({ ...config, sandbox: { ...config.sandbox, images: 'all' } }),
+    Config.InvalidError,
+  )
   assert.throws(() => Config.parse({ ...config, attempts: 0 }), Config.InvalidError)
   assert.throws(() => Config.parse({ ...config, agents: [] }), Config.InvalidError)
   assert.throws(

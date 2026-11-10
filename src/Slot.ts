@@ -92,6 +92,7 @@ export function create(options: create.Options) {
         backend: Backend
         cpus: number
         image: string | undefined
+        images?: 'keep' | 'remove'
         limits: 'enforce' | 'none'
         memoryMb: number
         network: Network
@@ -107,6 +108,7 @@ export function create(options: create.Options) {
         input.limits,
         input.network,
         String(input.storageMb),
+        input.images ?? 'keep',
         ...(input.image ? [input.image] : []),
       ),
     verifierInput: (slot: string, name: string) =>

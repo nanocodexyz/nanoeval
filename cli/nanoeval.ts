@@ -65,6 +65,9 @@ const usage = `nanoeval <command>
   export    --url URL --token T RUN --out DIR
             Write the run as a Harbor job directory.
   cancel    --url URL --token T RUN
+  prune     [--dry-run]
+            On this machine, remove the environment images that slots pulled or built and
+            the krun image disks, except those a slot is using.
 `
 
 async function walk(
@@ -447,6 +450,22 @@ async function main(): Promise<void> {
       store: Source.create(values.sources ? Path.resolve(values.sources) : Source.defaultRoot()),
     })
     console.log(manifest.dataset + ': ' + manifest.tasks.length + ' tasks in ' + out)
+    return
+  }
+
+  if (command === 'prune') {
+    const child = spawn(
+      'bash',
+      [
+        Path.resolve(import.meta.dirname, '../sandbox/slot.sh'),
+        'prune',
+        ...(values['dry-run'] ? ['dry-run'] : []),
+      ],
+      { stdio: 'inherit' },
+    )
+    process.exitCode = await new Promise<number>((resolve) =>
+      child.once('exit', (exit) => resolve(exit ?? 1)),
+    )
     return
   }
 
