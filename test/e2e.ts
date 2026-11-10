@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import * as Crypto from 'node:crypto'
 import * as Fs from 'node:fs'
 import * as Http from 'node:http'
@@ -208,6 +208,41 @@ function inspect(ids: readonly string[]): [name: string, limits: string, env: st
   }
 }
 
+function krunMissing(): string | undefined {
+  try {
+    Fs.accessSync('/dev/kvm', Fs.constants.R_OK | Fs.constants.W_OK)
+  } catch {
+    return 'read and write access to /dev/kvm'
+  }
+  const libraries = spawnSync('ldconfig', ['-p'], {
+    env: { PATH: process.env['PATH'] + ':/usr/sbin:/sbin' },
+  })
+  if (!String(libraries.stdout).includes('libkrunfw.so.5') && !process.env['LD_LIBRARY_PATH'])
+    return 'libkrunfw.so.5'
+  const cargo =
+    spawnSync('cargo', ['--version']).status === 0 ||
+    Fs.existsSync(Path.join(Os.homedir(), '.cargo/bin/cargo'))
+  if (!process.env['NANOEVAL_KRUN'] && !cargo)
+    return 'cargo, or NANOEVAL_KRUN with the built launcher'
+  return undefined
+}
+
+function machines(root: string): string[] {
+  return spawnSync('ps', ['-eo', 'args='])
+    .stdout.toString()
+    .split('\n')
+    .filter(
+      (line) => line.startsWith(root + Path.sep) && line.includes('/rt/krun/nanoeval-krun vm '),
+    )
+}
+
+function machineSizes(root: string): string[] {
+  return machines(root).flatMap((line) => {
+    const size = / --cpus (\d+) --memory-mib (\d+) --lower /.exec(line)
+    return size ? [size[1] + ' ' + size[2]] : []
+  })
+}
+
 async function freePort(): Promise<number> {
   const probe = await listen(() => {})
   probe.close()
@@ -215,6 +250,11 @@ async function freePort(): Promise<number> {
 }
 
 async function main(): Promise<void> {
+  const missing = backend === 'krun' ? krunMissing() : undefined
+  if (missing) {
+    console.log('e2e skipped: ' + label + ' needs ' + missing)
+    return
+  }
   Fs.rmSync(out, { force: true, recursive: true })
   Fs.mkdirSync(out, { recursive: true })
   const token = Crypto.randomBytes(16).toString('hex')
@@ -313,7 +353,7 @@ async function main(): Promise<void> {
           'large-tests',
           'no-reward',
           'slow-agent',
-          ...(backend === 'docker' ? ['background-process', 'broken-environment'] : []),
+          ...(backend === 'dir' ? [] : ['background-process', 'broken-environment']),
         ].map((name) => Path.join('test/fixtures', name))
       : taskNames.map((name) => Path.join('tasks', name))
     const agents: Config.Agent[] =
@@ -366,6 +406,12 @@ async function main(): Promise<void> {
 
     const sandboxes = Path.join(out, 'sandboxes')
     const observed = new Map<string, { env: string[]; limits: string }>()
+    const sizes = new Set<string>()
+    const sized = new Set(
+      config.tasks.map(
+        (task) => Math.ceil(task.environment.cpus) + ' ' + task.environment.memoryMb,
+      ),
+    )
     const allowed = new Set(
       config.tasks.map((task) =>
         limits === 'enforce'
@@ -385,6 +431,7 @@ async function main(): Promise<void> {
       if (backend === 'docker' && scenario !== 'restart')
         for (const [name, value, env] of inspect(containers(sandboxes)))
           observed.set(name, { env: JSON.parse(env) as string[], limits: value })
+      if (backend === 'krun') for (const size of machineSizes(sandboxes)) sizes.add(size)
       if (
         scenario === 'restart' &&
         !restarted &&
@@ -429,6 +476,15 @@ async function main(): Promise<void> {
         }
       }
     }
+    if (backend === 'krun') {
+      assert.deepEqual(machines(sandboxes), [], 'no microVM outlives the run')
+      assert.deepEqual(containers(sandboxes), [], 'no export container outlives the run')
+      if (scenario !== 'restart') {
+        assert.ok(sizes.size > 0, 'microVMs were seen while the run was active')
+        for (const size of sizes)
+          assert.ok(sized.has(size), 'a microVM ran with ' + size + ' vCPUs and MiB')
+      }
+    }
     assert.deepEqual(Fs.readdirSync(sandboxes), [], 'no sandbox directory outlives the run')
 
     if (failures) {
@@ -441,14 +497,14 @@ async function main(): Promise<void> {
       assert.equal(byTask['fixtures/slow-agent'].outcome, 'failed')
       assert.equal(byTask['fixtures/slow-agent'].reward, 0)
       assert.equal(byTask['fixtures/slow-agent'].failure.kind, 'agent_timeout')
-      if (backend === 'docker') {
+      if (backend !== 'dir') {
         assert.equal(byTask['fixtures/background-process'].outcome, 'passed')
         assert.equal(byTask['fixtures/broken-environment'].outcome, 'errored')
         assert.equal(byTask['fixtures/broken-environment'].failure.kind, 'environment')
       }
       assert.equal(
         JSON.parse(files['result.json']!).stats.n_errored_trials,
-        backend === 'docker' ? 2 : 1,
+        backend === 'dir' ? 1 : 2,
       )
       console.log('e2e passed: ' + label)
       return
