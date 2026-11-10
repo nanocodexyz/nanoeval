@@ -11,6 +11,7 @@ CLI ─▶ Worker ─▶ Run object ─▶ sandbox provider ─▶ sandbox ─�
 - **Harness outside.** Model credentials and the event journal stay in the Worker. A task image gets no agent CLI, runtime or CA bundle installed.
 - **Many attempts per machine.** `sandbox/slot.sh` gives each attempt its own container or microVM, its own network and its own hand inside one sandbox, admitted by free slots and memory.
 - **Harbor in, Harbor out.** Tasks are Harbor task directories (Terminal-Bench 2.x layout). A run exports as a Harbor job with ATIF-v1.7 trajectories.
+- **Datasets in.** `nanoeval import` writes Terminal-Bench, SWE-bench Verified and two question-answering datasets as task directories, from sources pinned by digest.
 - **Typed outcomes.** An attempt is `passed`, `failed` or `errored`, and an infrastructure failure is never a score of zero.
 
 [DESIGN.md](DESIGN.md) has the architecture and the alternatives it rejects. [DECISIONS.md](DECISIONS.md) records what each change established, with its measurements.
@@ -29,6 +30,14 @@ This is a first version. The table says what was run.
 | Real model run | Tested with `claude-haiku-4-5` through the Anthropic API and with `gpt-6-luna` on a ChatGPT plan login |
 | Oracle run (`nanoeval run --oracle`): each task's own solution instead of a model | Implemented, tested |
 | Terminal-Bench 2.1 tasks | 87 of the 89 load, and 2 need Compose. 11 ran with their own solutions and passed. 5 ran with a model. The other 76 have not run |
+| Dataset importers (`nanoeval import`, `datasets`, `run --dataset`) | Implemented, tested: unit tests import from recorded fixtures with no network |
+| `terminal-bench-2.1`, imported from the Harbor registry by digest | Verified: the 89 directories match the ones Harbor downloads byte for byte. 4 tasks ran with their own solutions on Docker and krun slots and passed |
+| `terminal-bench-2.0` | 89 tasks imported and checked against their digests. 2 ran with their own solutions on Docker and krun slots and passed |
+| `swe-bench-verified` | 500 instances imported. `psf__requests-1142` ran on Docker slots: its gold patch passes and an empty patch fails. Not run on krun slots, where the image disk did not fit the disk budget of the test machine |
+| `gpqa-diamond` | 198 tasks imported. 5 ran with their reference answers on Docker and krun slots and passed. 5 ran with `gpt-6-luna`: 2 right, 3 wrong |
+| `healthbench-professional` | 410 cases imported. 2 ran with their physician answers on Docker and krun slots and 3 with `gpt-6-luna` on krun slots, all judged by `gpt-6-luna` |
+| A task graded on the agent's final message, and a judge answered by the orchestrator | Implemented, tested end to end on Docker and krun slots with the scripted model, and with `gpt-6-luna` |
+| GraphWalks, MRCR, Arena-Hard, BrowseComp, GDPval, SWE-Atlas QnA, GeneBench Pro, ARC-AGI-3, Agents' Last Exam importers | Not ported. [Datasets](#datasets) says why |
 | Harbor job export and ATIF-v1.7 trajectories | Implemented. Shapes are unit tested. Not yet opened with `harbor view` |
 | Failure kinds `verifier`, `agent_timeout`, `environment` | Implemented, tested |
 | Orchestrator restart during a run | Tested: the Worker is killed with attempts in flight, restarts on the same state, and the run finishes |
@@ -74,6 +83,56 @@ node cli/nanoeval.ts run --url http://127.0.0.1:8787 --token "$TOKEN" \
 Without an API key, a plan login works. `nanoeval worker --codex-login ~/.codex/auth.json` runs `codex` agents such as `--agent luna=codex:gpt-6-luna` on the ChatGPT plan signed in there, and `--claude-login ~/.claude/.credentials.json` does the same for `claude` agents. The access token is read once when the Worker starts and is never refreshed: sign in again with that tool and restart the Worker when it expires.
 
 To check task environments and verifiers without a model, `nanoeval run --oracle --task DIR... --wait` sends each task's `solution/` and runs `solution/solve.sh` in the slot in place of the agent. No other run sends a solution.
+
+## Datasets
+
+`nanoeval import` writes a dataset as Harbor task directories, so a benchmark needs no Harbor process and no adapter at run time. Every source is pinned in this repository by a digest and refused when it does not match. `dataset.json` beside the tasks names the pinned source and the package checksum of every task, and `run --dataset` checks each task against it before it is sent.
+
+```sh
+node cli/nanoeval.ts datasets
+node cli/nanoeval.ts import terminal-bench-2.1 --out datasets/terminal-bench-2.1
+
+# Check environments and verifiers with the tasks' own solutions.
+node cli/nanoeval.ts run --url http://127.0.0.1:8787 --token "$TOKEN" \
+  --dataset datasets/terminal-bench-2.1 --only fix-git --only openssl-selfsigned-cert \
+  --oracle --backend krun --wait
+
+# A dataset whose answers are graded by a model names the judge.
+node cli/nanoeval.ts import healthbench-professional --out datasets/healthbench --limit 20
+node cli/nanoeval.ts run --url http://127.0.0.1:8787 --token "$TOKEN" \
+  --dataset datasets/healthbench --agent luna=codex:gpt-6-luna \
+  --judge codex:gpt-6-luna:low --model-budget-usd 1 --wait
+```
+
+| Dataset | Pinned source | Tasks | Environment | Graded by |
+| --- | --- | --- | --- | --- |
+| `terminal-bench-2.1` | The Harbor registry package `terminal-bench/terminal-bench-2-1`, by the digest of its 89 task packages | 89 | The task's image | The task's tests |
+| `terminal-bench-2.0` | `terminal-bench/terminal-bench-2`, the same way | 89 | The task's image | The task's tests |
+| `swe-bench-verified` | `princeton-nlp/SWE-bench_Verified` on Hugging Face at `c104f84`, by the SHA-256 of its Parquet file | 500 | The official image of the instance, `swebench/sweb.eval.x86_64.<instance>` | The official harness: `swebench` 4.0.3 writes the evaluation script and reads its log in the verifier |
+| `gpqa-diamond` | The authors' release, `idavidrein/gpqa` at `56686c0`, by the SHA-256 of `dataset.zip` and of the question file | 198 | `python:3.12-slim` | The answer letter in the agent's final message |
+| `healthbench-professional` | `openai/healthbench-professional` on Hugging Face at `349962f`, by SHA-256 | 410 of 525 | `python:3.12-slim` | Each rubric item, judged by the model the run names |
+
+What to know before reading a score:
+
+- **Final messages.** GPQA and HealthBench send the dataset's prompt unchanged and grade the agent's last message. The orchestrator hands that message to the verifier. Nothing asks the agent to write a file.
+- **Judges.** A judged verifier writes its prompts to a file, and the orchestrator answers them with the model of `--judge`. No model credential and no judge endpoint enters a slot. [DESIGN.md](DESIGN.md#final-messages-and-judges) has the protocol.
+- **HealthBench scores are not pass or fail.** The reward is the length-adjusted rubric score, which can exceed 1. An attempt counts as passed only at exactly 1, so read `mean reward` in the summary. The 115 cases with earlier turns are left out, since a task carries one instruction.
+- **GPQA and HealthBench are closed-book and slots are not.** No slot backend cuts a slot off from the network yet, so an agent could search.
+- **SWE-bench needs the network in the verifier**, which installs `uv` and `swebench`, and about 4 GB of disk for each instance image. A machine whose network holds back fresh packages needs `sandboxd --slot-env` with `UV_EXCLUDE_NEWER`.
+- **Instance images are named by tag**, as the official harness names them. Only the dataset is pinned by digest.
+
+Not ported from the earlier adapters, with the reason, in the order they would come back:
+
+| Dataset | Why not yet |
+| --- | --- |
+| GraphWalks | The importer and grader are small. Its 297 MB Parquet file and prompts of up to a million tokens need a streaming import and a budget to run |
+| MRCR, and the other 115 HealthBench cases | The prompt is a conversation of several messages. A task carries one instruction |
+| Arena-Hard | Needs the judge twice per answer against a baseline answer. The judge is here, the importer is not |
+| BrowseComp | Its grader is one judge call. Its tasks need a browsing tool that was never run in the earlier stack |
+| GDPval, SWE-Atlas QnA, GeneBench Pro | Their verifiers run in a separate image, which nanoeval refuses |
+| ARC-AGI-3 | The earlier adapter was a stub with a three-action cap |
+| Agents' Last Exam | Its 44 GB task archive is behind a Hugging Face login |
+| OpenAI Evals, external manifests | They described tasks for the earlier runner. A Harbor task directory is that description now |
 
 ## Keep it running on a Linux machine
 
@@ -134,6 +193,7 @@ npm test              # unit tests
 npm run dry-run       # bundle the Worker
 npm run e2e           # local workerd + sandboxd + Docker slots + the scripted model
 NANOEVAL_E2E_MODEL=oracle npm run e2e      # the task solutions in place of a model
+NANOEVAL_E2E_SCENARIO=judge npm run e2e    # final messages and a judge, with the scripted model
 NANOEVAL_E2E_MODEL=anthropic npm run e2e   # a real model with ANTHROPIC_API_KEY
 NANOEVAL_E2E_MODEL=codex-plan npm run e2e  # a real model on the ChatGPT plan of ~/.codex/auth.json
 NANOEVAL_E2E_BACKEND=krun npm run e2e      # microVM slots, skipped where krun cannot run
@@ -152,6 +212,7 @@ The scripted model answers the harness with fixed tool calls, so the end-to-end 
 | `sandbox/` | `slot.sh`, the slot splitter, and `Sandboxd.ts`, the local sandbox daemon |
 | `krun/` | The Rust workspace: the libkrun binding, the launcher and the guest binary of the krun backend, and `nanoeval-net`, the relay and inbound rule of a private slot |
 | `cli/` | The `nanoeval` command |
+| `datasets/` | The dataset importers, and the graders they write into tasks |
 | `scripts/` | `install-linux.sh` and the E2B price quote |
 | `tasks/` | Three small Harbor tasks from gakonst/nanoeval |
 | `test/` | Unit tests, the end-to-end test and its failure fixtures |

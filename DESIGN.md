@@ -37,6 +37,8 @@ The microVM per attempt of both is back as the `krun` slot backend, described un
 | `sandbox/slot.sh` | Sandbox | The slot splitter: runtime setup, slot up, hand, verify, down, status |
 | `sandbox/Sandboxd.ts` | Any machine | The local provider's daemon: makes one machine a sandbox host |
 | `src/Task.ts`, `src/Atif.ts`, `src/Harbor.ts`, `src/Result.ts` | Worker and CLI | Harbor task loading, ATIF-v1.7 trajectories, Harbor job export, outcomes and pass@k |
+| `src/Judge.ts` | Worker | The judge request a verifier writes and the answer it reads |
+| `datasets/` | Node | The dataset importers behind `nanoeval import` |
 | `cli/nanoeval.ts`, `cli/Plan.ts` | Node | Submit a run, read status and artifacts, export, serve `sandboxd`, start the Worker under local workerd with its credentials |
 
 ## Harness outside the sandbox
@@ -56,6 +58,7 @@ A run is `tasks × agents × attempts`. Each attempt is one row in the run's SQL
 | `attach` | The environment is ready | The session mints a hand token. `slot.sh hand` starts the hand inside the slot |
 | `run` | The hand is listed | The instruction is submitted as one turn on that hand. The agent deadline is `agent.timeout_sec` |
 | `verify` | The turn completed, or its deadline passed and it was cancelled | The hand is stopped. `tests/` is copied in only now and `tests/test.sh` runs with `verifier.timeout_sec` |
+| `judge` | The verifier wrote a judge request and no reward | Each prompt is one turn of its own session on the run's judge. The answers become a verifier input and the attempt returns to `verify` once |
 | `done` | The verifier reported, or a failure ended the attempt | Events, trajectory and verifier output are stored. The slot is removed and the session deleted |
 
 Long work (image builds, the hand, the verifier) runs detached in the sandbox and writes a status file. The orchestrator polls. No request holds a build open, and a restarted Durable Object continues from the ledger.
@@ -169,9 +172,73 @@ The E2B JavaScript SDK is not used. It cannot pay, and it needs `nodejs_compat`.
 
 ## Tasks and results
 
-Tasks are Harbor task directories, schema 1.1, as Terminal-Bench 2.x ships them: `task.toml`, `instruction.md`, `environment/`, `tests/test.sh`. The verifier writes `/logs/verifier/reward.txt`. The CLI loads a directory and sends `tests/` with the run, and `environment/` when the task names no `docker_image`, since the image is then built from it. `solution/` leaves the machine only in an oracle run. The run stores a task's files in parts beside a small record of the task, so admission never reads the files. `environment.build_timeout_sec` bounds a task's environment setup when the task sets it. Tasks that need Compose, GPUs, a separate verifier environment or `allow_internet = false` are refused at submission.
+Tasks are Harbor task directories, schema 1.1, as Terminal-Bench 2.x ships them: `task.toml`, `instruction.md`, `environment/`, `tests/test.sh`. The verifier writes `/logs/verifier/reward.txt`. The CLI loads a directory and sends `tests/` with the run, and `environment/` when the task names no `docker_image`, since the image is then built from it. `solution/` leaves the machine only in an oracle run. The run stores a task's files in parts beside a small record of the task, so admission never reads the files. `environment.build_timeout_sec` bounds a task's environment setup when the task sets it. Tasks that need Compose, GPUs, a separate verifier environment or `allow_internet = false` are refused at submission. A task of the earlier Harbor format, which writes `version = "1.0"` where later tasks write `schema_version`, loads the same way: Terminal-Bench 2.0 is published in it.
+
+[Datasets](#datasets) describes where task directories come from, and [Final messages and judges](#final-messages-and-judges) the two additions to the task format.
 
 `nanoeval export` writes a Harbor job directory: `result.json` for the job, and per trial `result.json`, `agent/trajectory.json` (ATIF-v1.7), `agent/events.jsonl` and `verifier/test-stdout.txt`. The CLI reads the result files in one request and each artifact in its own. Token counts and the harness's cost estimate come from the session's events, per attempt.
+
+## Datasets
+
+A dataset importer turns a published benchmark into Harbor task directories once, on the machine that submits runs. Nothing about a dataset exists at run time: the Worker and the slots see ordinary tasks. The importers are the adapters of nanocode's `crates/experimental/nanocodex-eval-adapters` (removed in `2d4a4c539`), ported to TypeScript in `datasets/`.
+
+```
+ nanoeval import NAME --out DIR
+   datasets/Catalog.ts   the datasets, each with the digests it is pinned to
+   datasets/Source.ts    downloads into ~/.cache/nanoeval/sources, kept by SHA-256
+   datasets/<Adapter>.ts rows of the source become task files
+   datasets/assets/      the verifier of each dataset: test.sh, grade.py, solve.sh
+   datasets/Dataset.ts   writes DIR/<task>/ and DIR/dataset.json
+ nanoeval run --dataset DIR
+   every task is hashed and compared with dataset.json before the run is submitted
+```
+
+**Pins.** A source is a file with a SHA-256 written in the adapter, or a set of task packages with a digest over their digests. A download that does not match is refused and not kept. `dataset.json` (`nanoeval-dataset-v1`) records the pins and, for every task, its id, its name and its package checksum, the same checksum a run reports. Importing part of a dataset (`--only`, `--limit`) adds to the manifest of that directory. A directory holds one dataset from one source.
+
+| Dataset | Where the tasks come from | What the importer writes |
+| --- | --- | --- |
+| Terminal-Bench 2.0 and 2.1 | The Harbor registry, read without a login as Harbor's client reads it: the dataset version is found by its digest, its task list must hash to the pinned digest, and each `dist.tar.gz` must unpack to the package hash the list names | The package, unchanged |
+| SWE-bench Verified | One Parquet file from Hugging Face at a pinned revision | `instruction.md` is the problem statement. `docker_image` is the official instance image. `tests/` holds the instance row and a verifier that asks the official `swebench` package for the evaluation script, runs it, and lets the package read the log. `solution/` applies the gold patch |
+| GPQA Diamond | `dataset.zip` of the authors' repository at a pinned commit, opened with the password its README publishes | The authors' prompt with the choices in the order of their baseline (`random.seed(0)`, one `random.shuffle` per row). The correct letter stays in `tests/case.json` |
+| HealthBench Professional | One JSON Lines file from Hugging Face at a pinned revision | The user's message as the instruction. The rubric stays in `tests/case.json`, the physician's answer in `solution/` |
+
+The Terminal-Bench source is the registry and not the Git repository, although the earlier adapter cloned `harbor-framework/terminal-bench-2-1` at a pinned commit. At that commit 88 of the 89 tasks hash the same as the registry's packages. `sanitize-git-repo` differs in five lines of `tests/test_outputs.py`, where the repository splits fake credentials into two string literals and the published package does not. Leaderboard runs use the packages, so the importer does too.
+
+A small task shared by thousands of cases needs no new format: every GPQA and HealthBench task names the same `docker_image`, so Docker pulls it once and krun slots share one image disk under their own overlays.
+
+## Final messages and judges
+
+Two things the Harbor layout cannot say are added under `[metadata.nanoeval]` in `task.toml`. Harbor keeps `[metadata]` free-form, so these tasks still load there, and a task without the table behaves as before.
+
+```toml
+[metadata.nanoeval]
+final_message = true   # the verifier grades the agent's last message
+judge = true           # the verifier may ask a model
+```
+
+**Verifier inputs.** The orchestrator writes into `tests/.nanoeval/` of the slot's copy of the task, after the agent has ended and before `tests/` is copied into the environment. The files therefore reach the environment exactly as `tests/` does, and the agent never sees them.
+
+| File in the environment | Written when | Holds |
+| --- | --- | --- |
+| `/tests/.nanoeval/final_message.txt` | `final_message = true` | The message that completed the turn. Empty when the agent ran out of time. In an oracle run, `solution/final_message.txt` |
+| `/tests/.nanoeval/judge-response.json` | The verifier asked | `{"responses":[{"id","text"}]}`, one per request, in order |
+
+**Judge.** Model credentials stay in the Worker, and a slot gets neither a credential nor an address to call.
+
+```
+ verify, round 1   tests/test.sh writes /logs/verifier/judge-request.json
+                   {"requests":[{"id":"rubric-0","prompt":"..."}]} and no reward
+ judge             the Run object submits each prompt as a turn of its own session,
+                   with no hand, on the model of the run's judge, and waits
+ verify, round 2   the answers are written as a verifier input and tests/test.sh
+                   runs again: it finds them and writes the reward
+```
+
+- The run names the judge (`--judge PROVIDER:MODEL[:THINKING]`). A run with a judged task and no judge is refused at submission. A request cannot choose its model.
+- A request is read only when the first round wrote no reward and the task says `judge = true`. It is at most 2 MiB, the limit of the earlier judge service. A malformed request, a failed judge turn, or a second round without a reward is a `verifier` error, never a score.
+- The second round starts from an empty `/logs/verifier`, so a grader must produce the same prompts twice. There is one judge round.
+- Judge sessions use the credentials and the egress of agent sessions. Their tokens are kept beside the attempt as `judge` and count against the model budget. The request and the answers are artifacts of the attempt.
+- The judge is a nanocode session, so the model sees nanocode's system prompt before the grader's prompt. In the earlier stack the judge was also an agent turn without tools. A judge call cost about 9,300 input tokens of that prompt in the runs recorded in DECISIONS.md.
 
 ## Model credentials
 
@@ -211,6 +278,14 @@ A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP c
 | A second container per slot for the relay and the rule | Twice the containers, and an image to build or pull on every host |
 | The session relay inside `sandboxd` | It would end every hand when `sandboxd` restarts. A slot's processes outlive it |
 | A listener for the Worker on the bridge's gateway, or TLS in front of it | Every slot could reach the first, and the second needs a certificate that every hand trusts |
+| A Rust crate beside `krun/` for the importers, reusing the earlier adapters as they are | They are written against `nanocodex-eval`'s import store, case plans and task format, about 3,300 lines that no longer exist, so little would be reused as it is. The task loader, the checksum and the CLI they must agree with are TypeScript, and a second binary would have to be built on every machine that imports. What ports unchanged is the data: the pins, the prompts and the graders |
+| Cloning the Terminal-Bench repository at a pinned commit, as the earlier adapter did | One of its 89 tasks differs from the published package, see [Datasets](#datasets) |
+| Generating SWE-bench evaluation scripts while importing | That needs Python and the `swebench` package on the importing machine. The verifier already runs in an environment with a network, and asks the same pinned package there |
+| The earlier SWE-bench grader, `pytest` over the listed tests | It is only right for repositories whose tests are pytest ids, and it passes on exit status. The official parsers decide per test |
+| A judge endpoint that the verifier calls with a token, as the earlier judge service was | The slot would need a route to the Worker, which a private slot network does not give, and a token that outlives the agent's processes in the same environment. A file needs neither |
+| A model request sent by the Worker itself for the judge | A plan login only works through the session protocol of nanocode-ts, so a second client for each provider would be needed beside it |
+| Asking the agent to write its answer to a file | It changes the dataset's prompt. The final message is what these datasets grade |
+| The solution's output as the final message of an oracle run | The log of a solution also holds what `docker cp` and the shell print. A file in `solution/` is exact |
 
 ## Reused
 
@@ -229,5 +304,35 @@ A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP c
 | gakonst/nanoeval and nanocode `Cargo.lock` | libkrun `df85b8b` with libkrunfw 5 | The same pin, and the same lock entries for its dependencies |
 | nanocode `crates/nanocodex-vm` `overlay.rs` and guest | A read-only image disk under a sparse upper disk per attempt, mounted and pivoted into by the guest | Reimplemented in `krun/guest/src/boot.rs` |
 | nanocode `crates/nanocodex-vm` `image/` | The image disk built from `docker export` | Kept as the source. The disk is written by a builder microVM instead of a packaging container |
+| nanocode `crates/experimental/nanocodex-eval-adapters/src/lib.rs` | The pinned revisions and SHA-256 digests of SWE-bench Verified, GPQA and HealthBench Professional | Copied into `datasets/SweBench.ts`, `GpqaDiamond.ts` and `HealthBench.ts`, and checked again against the live sources |
+| nanocode `…/src/source.rs` | Downloads kept by digest and refused on a mismatch, a ZIP member opened without a host `unzip` | Ported to `datasets/Source.ts` and `datasets/Zip.ts`. Git checkouts and LFS left out: no shipped dataset needs them |
+| nanocode `…/src/harbor.rs` | Harbor packages imported unchanged, a dataset digest over the task digests | Ported to `datasets/HarborHub.ts`, reading the registry in place of a checkout |
+| nanocode `…/src/swe_bench.rs` | The instance image name, the problem statement as the instruction, the instance row hidden in `tests/` | Ported to `datasets/SweBench.ts`. All 500 rows in place of the first one. The grader is new |
+| nanocode `…/src/gpqa_diamond.rs`, `assets/gpqa-diamond/` | The prompt, CPython's seed-zero shuffle, the canary check, `grade.py` and `test.sh` | Ported. `grade.py` reads the final message from the verifier inputs and writes `reward.txt`, otherwise unchanged. `test.sh` unchanged |
+| nanocode `…/src/healthbench_professional.rs`, `assets/healthbench-professional/` | The case checks, the scoring constants, the grader prompt, the score | Ported. `grade.py` keeps the prompt, the parser and the arithmetic, and writes a judge request where it called the judge service |
+| nanocode `crates/experimental/nanocodex-eval/src/judge.rs` | A judge that is an agent turn without tools on the evaluator's own login, with no credential in the environment, and its 2 MiB request limit | Kept as the design. The loopback service and its token became a request file |
+| nanocode `…/src/import/mod.rs` | `dataset.json` with the source and a digest per task, `output = final_message` | Kept as `nanoeval-dataset-v1` and `[metadata.nanoeval] final_message` |
+| Harbor `adapters/swebench` | The pinned grader packages (`swebench==4.0.3`, `datasets==2.16.1`, `fastcore<1.11`), task resources and timeouts | The same values in `datasets/assets/swe-bench/test.sh` and `datasets/SweBench.ts` |
 
-Not carried over yet: image pulls and Dockerfile builds without Docker, warm spare microVMs, prompt-cache cohorts, duration-ordered dispatch, rerun lineage, the verifier-dependency cache, egress leases.
+## What the earlier runner had
+
+The eval stack of nanocode at `2d4a4c539^` (`crates/experimental/nanocodex-eval`, `crates/nanocodex-vm`) against this repository:
+
+| Earlier piece | What it did | Here |
+| --- | --- | --- |
+| Attempt roots (`vm.rs`, `nanocodex-vm/src/overlay.rs`) | A fresh sparse ext4 upper disk over a read-only image disk for each attempt, or a reflink copy that could be kept | Back as krun slots. Keeping the root of a finished attempt is not carried over: planned, for looking at a failure |
+| Workset (`workset.rs`) | One SQLite row per task, treatment and repetition, claimed under file locks | Replaced by the ledger of the Run object |
+| Dataset adapters and import store (`nanocodex-eval-adapters`, `import/mod.rs`) | Pinned sources normalized into task packages | Back for five datasets, see [Datasets](#datasets). The rest are listed in the README with what each needs |
+| Judge service (`judge.rs`) | An OpenAI-compatible endpoint on the host for verifiers | Replaced by the judge request file |
+| Separate verifier environment (`vm.rs`, `tests/Dockerfile`) | The verifier in a fresh machine from its own image, with only named artifacts carried over | Refused at submission. Planned: GDPval, SWE-Atlas QnA and GeneBench Pro need it |
+| Network modes (`network_mode`, `allow_internet = false`) | A candidate without a network and a verifier with one | Refused. Planned, on top of a private network per slot. Closed-book datasets need it |
+| Transcripts (`transcript.json`) | A prompt of several messages | Not carried over. Planned: MRCR and 115 HealthBench cases need it |
+| Verifier-dependency cache (`vm.rs`) | The `apt` and `uv` setup of Terminal-Bench verifiers kept on a cache disk | Not carried over. Planned after a measurement: verifiers that install their tools took 14 to 46 s of each attempt here |
+| Rerun lineage (`eval/run/retained.rs`, later the workset) | A run that retries what an earlier one did not pass | Planned |
+| Profiles (`profile.rs`, `nanocodex.toml`) | Named recipes of benchmarks, harnesses, models and thinking levels | Not needed yet: a run is a command line over dataset directories. A run file is the equivalent when one is wanted |
+| Capture proxy (`capture_proxy.rs`) | Recorded the model traffic of other harnesses for comparison | Not needed: nanoeval runs nanocode sessions, whose events are the record |
+| Coordinator and pull workers (`coordinator.rs`, `cluster.rs`) | One HTTP owner of the ledger, workers that claim tasks, a host load sampler | Not needed: the Worker is the coordinator and a sandbox provider is the worker |
+| Named rewards and scoring policies (`reward.json`) | Several rewards per attempt and a rule for passing | Not carried over. A grader writes one `reward.txt`, and the summary reports the mean reward beside the pass rate |
+| Image builds without Docker (`nanocodex-vm/src/image`) | OCI pulls and Dockerfile builds straight to a disk | Not carried over. Docker builds, a builder microVM writes the disk |
+
+Also not carried over yet: warm spare microVMs, prompt-cache cohorts, duration-ordered dispatch, egress leases.

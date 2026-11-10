@@ -401,3 +401,89 @@ When it stayed down, the four attempts ended as environment errors ("Network con
 - The private network needs cargo or a built `nanoeval-net` on a Docker host, and passt from the system's packages on a krun host. `--network host` needs neither.
 - A sandbox whose `sandboxd` stays down past a run's retries is left until someone deletes it.
 - CI on a hosted runner has not run the new lanes.
+
+## 2026-11-10: dataset importers, final messages and a judge
+
+Machine for every measurement in this entry: the 32-core Linux machine with KVM of the entries above, shared with other work throughout (load average near 7 before these runs). Each lane is one run, at the commit that adds `nanoeval import`, with the loader change for `version = "1.0"` added before the Terminal-Bench 2.0 lanes, `TICK_MS=500`, one local sandbox started with `--ca-bundle` and `--slot-env` (`UV_EXCLUDE_NEWER`), and a Worker on a ChatGPT plan login for the model lanes.
+
+### What the earlier adapters were
+
+nanocode's `crates/experimental/nanocodex-eval-adapters` at `2d4a4c539^` held fifteen adapters. Its history (the plan at `ef324d31b`, one commit per adapter on 2026-08-10) records what ran:
+
+| Adapter | Recorded evidence |
+| --- | --- |
+| Harbor packages (Terminal-Bench 2.1, DeepSWE) | Run at scale: 890 of 890 Terminal-Bench 2.1 attempts |
+| GPQA Diamond | All 198 rows imported, one case run and passed |
+| GraphWalks | 1,150 rows imported, four cases run |
+| HealthBench Professional | One case run with one rubric judgment |
+| GDPval | One case run with a judge |
+| SWE-bench Verified, Arena-Hard, GeneBench Pro, external manifests | One case each in a smoke gate, no score recorded. SWE-bench downloaded only the first row and graded with plain `pytest` |
+| MRCR | Imported, no run recorded |
+| SWE-Atlas QnA | Its only run failed before a model call |
+| BrowseComp, Agents' Last Exam, OpenAI Evals | Tested against fixtures only |
+| ARC-AGI-3 | A stub with a three-action cap |
+
+So one adapter was proven and the rest were single cases. The ports here are the three that were small and real (Harbor packages, GPQA, HealthBench), and SWE-bench with a new grader.
+
+### TypeScript in the CLI, not a Rust crate
+
+The earlier adapters are about 6,200 lines of Rust against `nanocodex-eval`'s `import` module and task type (3,300 lines, gone). Reusing them as they are would mean reviving that module beside a TypeScript loader that already defines the task, its checksum and the CLI. `krun/` is Rust because it links libkrun. An importer links nothing: it downloads, hashes and writes files, and Node 24 does that with `fetch`, `node:crypto` and `node:zlib`. Two things needed code: a ZIP reader with the traditional PKWARE cipher (81 lines, `datasets/Zip.ts`) and CPython's Mersenne Twister shuffle (66 lines, `datasets/PythonRandom.ts`). The importers are 1,014 lines in all. Parquet is read by `hyparquet` 1.32.0, the one dependency added, with no dependencies of its own. On a machine that cannot resolve a fresh Cargo lockfile, the `csv`, `zip` and `parquet` crates would also have been the harder way.
+
+### Terminal-Bench comes from the registry, by digest
+
+- Harbor downloads task packages from its registry, a Supabase project that its client reads without a login ("public reads still work"). `GET /rest/v1/dataset_version` and `dataset_version_task` list a dataset version and its task packages, and `GET /storage/v1/object/packages/<archive_path>` is a `dist.tar.gz`. The publishable key of Harbor's client is the only credential.
+- The package content hash is the checksum `src/Task.ts` already computes. A dataset is pinned by the SHA-256 over its sorted task digests joined with commas, which is Harbor's own dataset digest when a dataset has no extra files: for `terminal-bench/terminal-bench-2` the two are the same value, `c6fc2e23…`.
+- `nanoeval import terminal-bench-2.1` wrote 89 directories. Against the 89 that Harbor had downloaded on this machine, every task has the same checksum and `diff -r` reports only the added `dataset.json`.
+- The Git repository at the commit the earlier adapter pinned (`5c8eadf`) gives the same checksum for 88 tasks. `sanitize-git-repo` differs: its `tests/test_outputs.py` builds five fake credentials from two string literals each. The repository's `tasks/dataset.toml` lists the digest of that variant, the registry the other.
+- Terminal-Bench 2.0 packages say `version = "1.0"` and have no `schema_version`, so the loader refused all 89. The fields nanoeval reads are the same, and the loader now takes that form.
+
+### SWE-bench Verified is graded by the official package, in the verifier
+
+`tests/test.sh` installs `uv`, then `swebench` 4.0.3 with the pins of Harbor's adapter, asks `make_test_spec` for the instance's evaluation script, runs it in the task's own shell, and lets `get_logs_eval`, `get_eval_tests_report` and `get_resolution_status` decide. The reward is 1 only for a full resolution.
+
+- All 500 rows import in a second or two from a 2.1 MB Parquet file. The instance image of `psf__requests-1142` is 3.81 GB in Docker.
+- With the gold patch the attempt passed: verifier 45.8 s, of which the run of the tests is a few seconds and the rest installs the grader. With `solution/solve.sh` replaced by `true` in a copy of the task, the attempt failed with reward 0, so the grader tells the two apart.
+- Not run on krun slots: a second copy of the image as a disk would have taken the machine below the free space its other work was promised. One instance on one backend is what was shown.
+
+### GPQA Diamond and HealthBench Professional
+
+- `dataset.zip` of `idavidrein/gpqa` opens with the published password and the question file hashes to the pin of the earlier adapter. The shuffle matches CPython: six shuffles of `[0, 1, 2, 3]` after seed zero give the same orders in both.
+- HealthBench Professional has 525 cases, 410 of them one user message. Their rubrics have 1 to 5 items, 2.2 on average.
+- GPQA with `gpt-6-luna` at low thinking: 2 of 5 right, and the 3 failures are wrong letters in the asked format, read from the session events. HealthBench with the physician's answer as the oracle scores 0.03 and 0.64 on two cases, the same on both backends: the reward is a rubric score, and a reference answer is not a perfect one.
+
+### Final messages and a judge
+
+A turn's report already carries its last message, so handing it to the verifier is one file written into the slot's copy of `tests/`. A session accepts a turn without a hand under `hands: 'always'`, which is what makes a judge a session: the end-to-end lane passed on its first run with the scripted model.
+
+| Lane | Backend | Attempts | Wall | Agent | Verifier | Result |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| End to end, final message and judge, scripted model | Docker | 8 | 8.5 s | 0.65 s | 1.6 s, judge 0.73 s | 4 passed, 4 failed as scripted |
+| Same, oracle | krun | 2 | 5.1 s | 0.57 s | 1.8 s, judge 0.59 s | 2 passed |
+| Terminal-Bench 2.1, 4 tasks, oracle | Docker | 4 | 26.2 s | 0.5 s | 14.5 s | 4 passed |
+| Terminal-Bench 2.1, same 4, oracle | krun | 4 | 28.3 s | 0.5 s | 13.9 s | 3 passed, 1 errored: `environment` |
+| Terminal-Bench 2.1, the errored task again | krun | 1 | 18.1 s | 5.7 s | 8.4 s | 1 passed |
+| Terminal-Bench 2.0, 2 tasks, oracle | Docker | 2 | 27.5 s | 0.5 s | 23.8 s | 2 passed |
+| Terminal-Bench 2.0, same 2, oracle | krun | 2 | 26.2 s | 0.5 s | 23.8 s | 2 passed |
+| SWE-bench Verified, 1 instance, gold patch | Docker | 1 | 49.1 s | 0.5 s | 45.8 s | 1 passed |
+| SWE-bench Verified, same instance, empty patch | Docker | 1 | 38.2 s | 0.5 s | 33.6 s | 1 failed, reward 0 |
+| GPQA Diamond, 5 tasks, oracle | Docker | 5 | 11.6 s | 0.5 s | 0.5 s | 5 passed |
+| GPQA Diamond, same 5, oracle | krun | 5 | 7.2 s | 0.5 s | 0.5 s | 5 passed |
+| GPQA Diamond, same 5, `gpt-6-luna` low | Docker | 5 | 25.1 s | 13.3 s | 0.6 s | 2 passed, 3 failed, $0.0075 |
+| HealthBench Professional, 2 cases, oracle, judge `gpt-6-luna` low | Docker | 2 | 17.5 s | 0.6 s | 7.3 s | rewards 0.643 and 0.028, $0.0060 |
+| HealthBench Professional, same 2, oracle, same judge | krun | 2 | 10.4 s | 0.5 s | 8.0 s | rewards 0.643 and 0.028, $0.0053 |
+| HealthBench Professional, 3 cases, `gpt-6-luna` low, same judge | krun | 3 | 33.7 s | 23.4 s | 4.8 s | rewards 0.357, 0.617 and 1.031, $0.0114 |
+
+Phase times are medians over the lane's attempts, and the verifier column includes the judge. Cost is the harness's estimate. The model lanes together cost $0.030.
+
+- A judge call is a nanocode session turn: the three judgments of one HealthBench case took 28,008 input tokens and 128 output tokens, about 9,300 input tokens a call for prompts of a few hundred words, and $0.0029. A judge that is a bare model request would cost a fraction of that. It needs a second client per provider beside the session protocol, and waits for a reason.
+- The one errored Terminal-Bench attempt is not about tasks: `nanoeval-krun ready` opened `vm.log` before the backgrounded VMM had created it ("vm.log: No such file or directory"). `slot.sh` starts the VMM with its output redirected in a background subshell and calls `ready` at once. The same task passed on the next run. The race is left to the krun slot code.
+
+### Limits of this version
+
+- An attempt passes at reward 1. A dataset with graded rewards reads as failed attempts beside a mean reward. Named rewards are not carried over.
+- The judge sees nanocode's system prompt and could call a tool that no hand serves, which would end as a verifier timeout. It did not happen in the 7 attempts a real model judged.
+- There is one judge round, and a grader must write the same prompts in both rounds.
+- GPQA and HealthBench run with a network in the slot, so they are open-book here.
+- SWE-bench instance images are named by tag. The verifier needs the network.
+- The registry importer depends on a service another project runs. Its archives are kept in the source cache once fetched, and a pinned digest never changes meaning.
+- Agents' Last Exam was not looked at beyond its source: its task archive is behind a Hugging Face login.
