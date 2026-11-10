@@ -1,4 +1,5 @@
 import * as Sandbox from './Sandbox.ts'
+import * as Task from './Task.ts'
 
 export type Backend = 'dir' | 'docker' | 'krun'
 
@@ -52,10 +53,12 @@ export function create(options: create.Options) {
       call('hand', slot, input.url, input.name),
     log: (
       slot: string,
-      phase: 'ctrf' | 'hand' | 'setup' | 'solve' | 'up' | 'verify',
+      phase: 'ctrf' | 'hand' | 'judge' | 'setup' | 'solve' | 'up' | 'verify',
       bytes: number,
     ) => call('log', slot, phase, String(bytes)),
     probe: () => call('probe'),
+    reverify: (slot: string, timeoutSec: number) =>
+      call('verify', slot, String(Math.ceil(timeoutSec)), '2'),
     setup: (input: {
       backend: Backend
       docker: 'install' | 'keep'
@@ -96,6 +99,8 @@ export function create(options: create.Options) {
         String(input.storageMb),
         ...(input.image ? [input.image] : []),
       ),
+    verifierInput: (slot: string, name: string) =>
+      home + '/slots/' + slot + '/task/' + Task.verifierInputs + '/' + name,
     verify: (slot: string, timeoutSec: number) =>
       call('verify', slot, String(Math.ceil(timeoutSec))),
   }

@@ -24,6 +24,13 @@ export type Attempt = {
   finishedAt: number
   id: string
   index: number
+  judge?: {
+    model: string
+    provider: 'claude' | 'codex'
+    requests: number
+    thinking?: string
+    usage: Atif.Usage | null
+  }
   outcome: 'errored' | 'failed' | 'passed'
   reward: number | null
   sandbox: { backend: string; id: number; provider: string; slot: string } | null
@@ -34,6 +41,7 @@ export type Attempt = {
     agentExecution?: Phase
     agentSetup?: Phase
     environmentSetup?: Phase
+    judge?: Phase
     verifier?: Phase
   }
   usage: Atif.Usage | null

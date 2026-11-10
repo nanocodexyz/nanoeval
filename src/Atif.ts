@@ -188,6 +188,28 @@ export declare namespace fromEvents {
   }
 }
 
+export function sum(usages: readonly Usage[]): Usage {
+  const total: Usage = {
+    cacheWriteTokens: 0,
+    cachedTokens: 0,
+    costUsd: undefined,
+    inputTokens: 0,
+    modelCalls: 0,
+    outputTokens: 0,
+    toolCalls: 0,
+  }
+  for (const usage of usages) {
+    total.cacheWriteTokens += usage.cacheWriteTokens
+    total.cachedTokens += usage.cachedTokens
+    if (usage.costUsd !== undefined) total.costUsd = (total.costUsd ?? 0) + usage.costUsd
+    total.inputTokens += usage.inputTokens
+    total.modelCalls += usage.modelCalls
+    total.outputTokens += usage.outputTokens
+    total.toolCalls += usage.toolCalls
+  }
+  return total
+}
+
 export function usage(events: readonly SessionEvent[]): Usage {
   const totals: Usage = {
     cacheWriteTokens: 0,

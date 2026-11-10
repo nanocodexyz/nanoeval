@@ -15,7 +15,7 @@ export type Report = {
 }
 
 export type Turn = {
-  hand: string
+  hand?: string
   model: string
   prompt: string
   provider: 'claude' | 'codex'
@@ -65,7 +65,7 @@ export async function submit(env: Env, name: string, turn: Turn): Promise<Report
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        hand: turn.hand,
+        ...(turn.hand ? { hand: turn.hand } : {}),
         model: turn.model,
         prompt: turn.prompt,
         provider: turn.provider,

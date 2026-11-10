@@ -494,13 +494,17 @@ cmd__solve() {
 }
 
 cmd_verify() {
-  local slot=$1
+  local slot=$1 round=${3:-1}
   valid "$slot"
   local dir=$home/slots/$slot
   [ "$(state "$dir/up.status")" = exit:0 ] || die "slot $slot is not up"
-  case $(state "$dir/verify.status") in
-    running | exit:*) return 0 ;;
-  esac
+  if [ "$(cat "$dir/verify.round" 2>/dev/null || printf 1)" = "$round" ]; then
+    case $(state "$dir/verify.status") in
+      running | exit:*) return 0 ;;
+    esac
+  fi
+  [ "$(state "$dir/verify.status")" != running ] || die "slot $slot is still verifying"
+  printf '%s\n' "$round" >"$dir/verify.round"
   stop_hand "$slot"
   spawn "$dir/verify.status" "$dir/verify.log" bash "$self" _verify "$@"
 }
@@ -511,6 +515,8 @@ cmd__verify() {
   workdir=$(cat "$dir/workdir")
   local run='if command -v bash >/dev/null 2>&1; then exec bash "$1"; else exec sh "$1"; fi'
   local options=()
+  rm -rf "$dir/verifier"
+  mkdir -p "$dir/verifier"
   case $(cat "$dir/backend") in
     dir)
       if [ -f "$dir/verifier.env" ]; then
@@ -605,6 +611,10 @@ cmd_log() {
     ctrf)
       valid "$slot"
       file=$home/slots/$slot/verifier/ctrf.json
+      ;;
+    judge)
+      valid "$slot"
+      file=$home/slots/$slot/verifier/judge-request.json
       ;;
     *) die "unknown log: $phase" ;;
   esac

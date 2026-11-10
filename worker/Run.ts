@@ -7,6 +7,7 @@ import * as Budget from '../src/Budget.ts'
 import * as Config from '../src/Config.ts'
 import * as E2b from '../src/E2b.ts'
 import * as Harbor from '../src/Harbor.ts'
+import * as Judge from '../src/Judge.ts'
 import * as Bytes from '../src/internal/Bytes.ts'
 import * as Local from '../src/Local.ts'
 import * as Payment from '../src/Payment.ts'
@@ -14,11 +15,11 @@ import * as Result from '../src/Result.ts'
 import * as Sandbox from '../src/Sandbox.ts'
 import * as Slot from '../src/Slot.ts'
 import * as Tar from '../src/Tar.ts'
-import type * as Task from '../src/Task.ts'
+import * as Task from '../src/Task.ts'
 import type { Env } from './Env.ts'
 import * as Harness from './Harness.ts'
 
-type Phase = 'attach' | 'done' | 'pending' | 'run' | 'up' | 'verify'
+type Phase = 'attach' | 'done' | 'judge' | 'pending' | 'run' | 'up' | 'verify'
 
 type AttemptRow = {
   agent: string
@@ -59,6 +60,8 @@ type Meta = {
 }
 
 const handName = 'slot'
+const judgeRequest = 'verifier/' + Judge.requestFile
+const judgeRequestId = 'judge'
 const hostUtilization = 0.8
 const logBytes = 65_536
 const partCharacters = 524_288
@@ -326,7 +329,10 @@ export class Run extends DurableObject<Env> {
   private modelSpent(): number {
     let total = 0
     for (const row of this.rows())
-      if (row.result) total += (JSON.parse(row.result) as Result.Attempt).usage?.costUsd ?? 0
+      if (row.result) {
+        const result = JSON.parse(row.result) as Result.Attempt
+        total += (result.usage?.costUsd ?? 0) + (result.judge?.usage?.costUsd ?? 0)
+      }
     return total
   }
 
@@ -851,6 +857,13 @@ export class Run extends DurableObject<Env> {
     return this.meta()!.id + '-' + row.id
   }
 
+  private judgeSessions(row: AttemptRow): string[] {
+    const request = this.artifact(row.id, judgeRequest)
+    return request
+      ? Judge.parse(request).map((_, index) => this.session(row) + '-judge-' + index)
+      : []
+  }
+
   private timing(
     row: AttemptRow,
     phase: keyof Result.Attempt['timing'],
@@ -991,12 +1004,15 @@ export class Run extends DurableObject<Env> {
                 message: 'the solution did not finish within ' + task.agent.timeoutSec + ' s',
               } satisfies Result.Failure),
             })
-          await this.verify(row, sandbox, slots, task)
+          const answer = this.taskFiles(task.name).find(
+            (file) => file.path === Task.finalMessagePath,
+          )
+          await this.verify(row, { sandbox, slots, task }, answer ? Bytes.toText(answer.data) : '')
           return
         }
         const report = await Harness.turn(this.env, session, requestId)
         if (report.status === 'completed') {
-          await this.verify(row, sandbox, slots, task)
+          await this.verify(row, { sandbox, slots, task }, report.ok?.message ?? '')
           return
         }
         if (report.status === 'failed' || report.status === 'cancelled') {
@@ -1012,7 +1028,7 @@ export class Run extends DurableObject<Env> {
               message: 'the agent did not finish within ' + task.agent.timeoutSec + ' s',
             } satisfies Result.Failure),
           })
-          await this.verify(row, sandbox, slots, task)
+          await this.verify(row, { sandbox, slots, task }, '')
           return
         }
         if (report.kind === 'detached' && Slot.exit(state.hand) !== undefined) {
@@ -1034,6 +1050,42 @@ export class Run extends DurableObject<Env> {
         this.putArtifact(row.id, 'verifier/test-stdout.txt', log)
         const ctrf = await Sandbox.run(sandbox, slots.log(slot, 'ctrf', 4 * 1024 * 1024))
         if (ctrf) this.putArtifact(row.id, 'verifier/ctrf.json', ctrf)
+
+        const judged = (JSON.parse(this.attempt(row.id)!.timing) as Result.Attempt['timing']).judge
+        if (
+          state.reward === null &&
+          task.verifier.judge &&
+          !judged &&
+          code !== 124 &&
+          code !== 137
+        ) {
+          const request = await Sandbox.run(sandbox, slots.log(slot, 'judge', Judge.requestBytes))
+          if (request) {
+            let requests: Judge.Request[]
+            try {
+              requests = Judge.parse(request)
+            } catch (error) {
+              await fail('verifier', message(error))
+              return
+            }
+            const judge = config.judge!
+            this.putArtifact(row.id, judgeRequest, request)
+            for (const [index, entry] of requests.entries())
+              await Harness.submit(this.env, session + '-judge-' + index, {
+                model: judge.model,
+                prompt: entry.prompt,
+                provider: judge.provider,
+                requestId: judgeRequestId,
+                ...(judge.thinking ? { thinking: judge.thinking } : {}),
+              })
+            this.update('attempts', row.id, {
+              phase: 'judge',
+              phase_at: Date.now(),
+              timing: this.timing(row, 'judge', 'start'),
+            })
+            return
+          }
+        }
 
         const earlier = this.attempt(row.id)!.failure
         const failure: Result.Failure | undefined = earlier
@@ -1062,16 +1114,58 @@ export class Run extends DurableObject<Env> {
         })
         return
       }
+      case 'judge': {
+        const requests = Judge.parse(this.artifact(row.id, judgeRequest)!)
+        const reports = await Promise.all(
+          this.judgeSessions(row).map((name) => Harness.turn(this.env, name, judgeRequestId)),
+        )
+        const broken = reports.find(
+          (report) => report.status === 'failed' || report.status === 'cancelled',
+        )
+        if (broken) {
+          await fail(
+            'verifier',
+            'the judge ' + broken.status + ': ' + (broken.error ?? 'no reason'),
+          )
+          return
+        }
+        if (reports.some((report) => report.status !== 'completed')) {
+          if (elapsed > task.verifier.timeoutSec * 1000)
+            await fail(
+              'verifier_timeout',
+              'the judge did not answer within ' + task.verifier.timeoutSec + ' s',
+            )
+          return
+        }
+        const body = Judge.answer(
+          requests,
+          reports.map((report) => report.ok?.message ?? ''),
+        )
+        this.putArtifact(row.id, 'verifier/' + Judge.responseFile, body)
+        await sandbox.write(slots.verifierInput(slot, Judge.responseFile), Bytes.fromText(body))
+        await Sandbox.run(sandbox, slots.reverify(slot, task.verifier.timeoutSec))
+        this.update('attempts', row.id, {
+          phase: 'verify',
+          phase_at: Date.now(),
+          timing: this.timing(row, 'judge', 'finish'),
+        })
+        return
+      }
     }
   }
 
   private async verify(
     row: AttemptRow,
-    sandbox: Sandbox.Sandbox,
-    slots: ReturnType<typeof Slot.create>,
-    task: Spec,
+    context: { sandbox: Sandbox.Sandbox; slots: ReturnType<typeof Slot.create>; task: Spec },
+    answer: string,
   ): Promise<void> {
+    const { sandbox, slots, task } = context
     this.update('attempts', row.id, { timing: this.timing(row, 'agentExecution', 'finish') })
+    if (task.verifier.finalMessage)
+      await sandbox.write(
+        slots.verifierInput(row.slot!, 'final_message.txt'),
+        Bytes.fromText(answer),
+      )
     await Sandbox.run(sandbox, slots.verify(row.slot!, task.verifier.timeoutSec))
     this.update('attempts', row.id, {
       phase: 'verify',
@@ -1089,8 +1183,18 @@ export class Run extends DurableObject<Env> {
     const task = this.task(row.task)
     const agent = config.agents.find((candidate) => candidate.id === row.agent)!
     const session = this.session(row)
-    const submitted = agent.provider !== 'oracle' && (row.phase === 'run' || row.phase === 'verify')
+    const submitted = agent.provider !== 'oracle' && ['judge', 'run', 'verify'].includes(row.phase)
     const now = Date.now()
+    const judges = this.judgeSessions(row)
+    const judgeUsage: Atif.Usage[] = []
+    for (const name of judges) {
+      try {
+        judgeUsage.push(Atif.usage(await Harness.events(this.env, name)))
+      } catch (error) {
+        this.putArtifact(row.id, 'verifier/judge-error.txt', message(error))
+      }
+      await Harness.remove(this.env, name).catch(() => {})
+    }
 
     let usage: Atif.Usage | null = null
     if (submitted) {
@@ -1127,6 +1231,15 @@ export class Run extends DurableObject<Env> {
       finishedAt: now,
       id: row.id,
       index: row.n,
+      ...(config.judge && judges.length
+        ? {
+            judge: {
+              ...config.judge,
+              requests: judges.length,
+              usage: judgeUsage.length === judges.length ? Atif.sum(judgeUsage) : null,
+            },
+          }
+        : {}),
       outcome: Result.outcome(end.reward, end.failure),
       reward: end.reward,
       sandbox:

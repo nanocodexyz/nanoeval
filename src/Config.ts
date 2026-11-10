@@ -12,10 +12,17 @@ export type Agent = {
   thinking?: string
 }
 
+export type Judge = {
+  model: string
+  provider: 'claude' | 'codex'
+  thinking?: string
+}
+
 export type Config = {
   agents: readonly Agent[]
   attempts: number
   budget: { modelUsd?: number; sandboxUsd: number }
+  judge?: Judge
   limits: { attachSec: number; setupSec: number; stepRetries: number }
   name: string
   sandbox: {
@@ -100,6 +107,21 @@ export function parse(value: unknown): Config {
           : task.name + ' carries its solution, which only an oracle run may send',
       )
 
+  let judge: Judge | undefined
+  if (config.judge !== undefined) {
+    if (typeof config.judge?.model !== 'string' || !config.judge.model)
+      fail('the judge names no model')
+    if (config.judge.thinking !== undefined) choice(config.judge.thinking, 'thinking', thinking)
+    judge = {
+      model: config.judge.model,
+      provider: choice(config.judge.provider, 'judge.provider', ['claude', 'codex']),
+      ...(config.judge.thinking ? { thinking: config.judge.thinking } : {}),
+    }
+  }
+  for (const task of tasks)
+    if (task.verifier.judge && !judge)
+      fail(task.name + ' is graded by a model: the run must name a judge')
+
   const sandbox = config.sandbox ?? fail('sandbox is required')
   const backend = choice(sandbox.backend, 'sandbox.backend', ['dir', 'docker', 'krun'])
   if (!Slot.networks[backend].includes(sandbox.network))
@@ -115,6 +137,7 @@ export function parse(value: unknown): Config {
         : { modelUsd: amount(budget.modelUsd, 'budget.modelUsd') }),
       sandboxUsd: amount(budget.sandboxUsd, 'budget.sandboxUsd'),
     },
+    ...(judge ? { judge } : {}),
     limits: {
       attachSec: integer(limits.attachSec, 'limits.attachSec', 1),
       setupSec: integer(limits.setupSec, 'limits.setupSec', 1),
