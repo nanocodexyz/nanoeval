@@ -1,0 +1,28 @@
+{
+  "name": "nanoeval",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-10-16",
+  "rules": [{ "type": "Text", "globs": ["**/*.sh"], "fallthrough": true }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "RUNS", "class_name": "Run" },
+      { "name": "SESSIONS", "class_name": "AgentSession" },
+    ],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AgentSession", "Run"] }],
+  "vars": {
+    "EVENT_COALESCE_MS": "100",
+    "EVENT_PAGE_SIZE": "128",
+    "EVENT_STREAM_KEEPALIVE_MS": "5000",
+    "EVENT_TAIL_BYTES": "4194304",
+    "MODEL_AUTH": "api_key",
+    "MODEL_SOCKET_LINGER_MS": "30000",
+    "RECOVERY_BACKOFF_MS": "3600000",
+    "RECOVERY_DELAY_MS": "5000",
+    "REMOTE_MAX_FRAME_BYTES": "1048576",
+    "REMOTE_TIMEOUT_MS": "30000",
+    "RUNTIME_MEMORY_BUDGET_BYTES": "67108864",
+    "TICK_MS": "2000",
+  },
+  "observability": { "enabled": true },
+}
