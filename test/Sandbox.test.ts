@@ -118,6 +118,7 @@ test('slots in one sandbox verify their own workspaces with the dir backend', as
         limits: 'none',
         memoryMb: 256,
         network: 'host',
+        storageMb: 1024,
       }),
     )
   }
@@ -157,6 +158,7 @@ test('slots in one sandbox verify their own workspaces with the dir backend', as
         limits: 'none',
         memoryMb: 1,
         network: 'host',
+        storageMb: 1024,
       }),
     ),
     Sandbox.CommandError,
@@ -191,6 +193,7 @@ test('a slot runs the task solution in its workspace before the verifier', async
     limits: 'none',
     memoryMb: 256,
     network: 'host',
+    storageMb: 1024,
   })
   await assert.rejects(Sandbox.run(sandbox, slots.solve('solved', 30)), Sandbox.CommandError)
   await Sandbox.run(sandbox, up)
@@ -232,6 +235,7 @@ test('taking a slot down ends the work it still runs', async () => {
       limits: 'none',
       memoryMb: 1,
       network: 'host',
+      storageMb: 1024,
     }),
   )
   const status = async () => Slot.parseStatus(await Sandbox.run(sandbox, slots.status()))
