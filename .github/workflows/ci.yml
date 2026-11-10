@@ -42,6 +42,7 @@ jobs:
           NANOEVAL_E2E_MODEL: oracle
           NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
           NANOEVAL_E2E_ATTEMPTS: '1'
+          NANOEVAL_E2E_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
       - name: End to end, failure kinds
         run: npm run e2e
         env:
