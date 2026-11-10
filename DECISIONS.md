@@ -290,3 +290,114 @@ So a krun slot isolates the filesystem, the processes, the CPUs and the memory o
 - Admission counts a slot's declared memory. The VMM's own memory, 50 to 85 MB per guest here, is not counted.
 - The launcher is built on the sandbox host with cargo, or handed over prebuilt. No release ships it.
 - CI on a hosted runner skips the krun lane and has not run the krun job yet.
+
+## 2026-11-10: a private network for every slot
+
+Machine: the one of the two entries above, with passt `0.0~git20240220` from the distribution's package and other work running throughout (load average 8 to 30 while these ran, which is why some shared-network numbers are slower than the ones above). Every pair of rows below ran back to back on the same code, so the comparison is between the two networks on one afternoon and not with the earlier entries. Each lane is one run unless it gives several.
+
+### What was wrong
+
+Slots shared the machine's network, as `--network host` in Docker and through TSI in a microVM. Run again here with four attempts of Terminal-Bench's `kv-store-grpc` at once, which serves on port 5328:
+
+| Backend | Network | Result | What happened |
+| --- | --- | --- | --- |
+| docker | host | 4 of 4 passed | Four servers listened on `*:5328` of the machine at once, which gRPC allows by binding with `SO_REUSEPORT`, so a verifier reaches whichever server the kernel picks. The four scores are not four measurements |
+| krun | host | 0 of 4 passed | The verifier's client fails on a TSI socket with "Failed to set SO_REUSEADDR" |
+| docker | private | 4 of 4 passed | Each slot has the port to itself |
+| krun | private | 4 of 4 passed | The same, on a real guest socket |
+
+### What the machine settled
+
+- **Its package registries are on its loopback.** The machine's resolver answers the registry names with an address on the machine's own loopback, where a proxy re-signs TLS. That is why verifiers worked on the host network and on TSI, and why a slot with its own loopback got "Connection refused" from `pypi.org` in the first private container. No design that isolates the loopback can hide this, so it is host policy: `sandboxd --slot-forward ADDRESS:PORT` names the listener, every private slot listens on the same address of its own loopback, and the relay carries it. With it, `pip download` worked in a container and an 18.9 MB archive came through a guest's forward in 3.5 s.
+- **Docker's embedded resolver asks the machine's resolver.** On a user-defined network a container's `resolv.conf` names `127.0.0.11` and records `ExtServers: [host(127.0.0.53)]`, and a registry name resolved to the same loopback address as on the host. The default bridge would have skipped the stub.
+- **A bridge alone does not keep the host out.** On a plain user-defined network a process on the host and a second container both read a listener at the first container's address. With `enable_icc=false` the second container timed out and the host still read it. With the rule that `nanoeval-net firewall` writes into the container's namespace, both timed out, while the container still read itself on its loopback and on its own address, resolved names and reached HTTPS. The rule is `iifname "lo" accept`, `ct state established,related accept` under a policy of drop, written over netlink in one batch, and `docker exec --privileged` took 25 ms to apply it.
+- **One Docker network per sandbox.** The daemon has no custom address pools and three bridge networks existed. A network took 44 ms to create and gave a /16. Per-slot networks were not built: 64 of them do not fit a default daemon's pools, and they would not have kept the host out either.
+- **passt works as the distribution ships it.** The VMM makes a socket pair and starts `/usr/bin/passt --fd 0` on one end, and passt exits when the VMM is killed. The guest sets a fixed address itself, since libkrun's DHCP client waits only 100 ms. With `--no-map-gw` passt says "Couldn't get any nameserver address" at start, because it will not hand a guest the host's loopback resolver, and `--dns-forward` still reached that resolver: a registry name resolved in the guest as it does on the host.
+- **What a private guest can and cannot do**, checked with two guests: a guest served on ports 80 and 5328 and read itself on its loopback and on its own address, and a bind with `SO_REUSEADDR` succeeded. The other guest got "Connection refused" on its loopback and a timeout at the gateway. The host had nothing bound on those ports, got "Connection refused" on its loopback and a timeout at the guest's address. A listener on the host's loopback was refused from the guest, and the gateway address did not lead to it.
+- **gvproxy was read, not run in a guest.** v0.8.9, the release gakonst/nanoeval pinned: `cmd/gvproxy/config.go` maps `192.168.127.254` to the host's `127.0.0.1` when no NAT table is configured, and `main.go` serves `/services/forwarder/expose` on the gateway's port 80 inside the guest's network. Its binary is 12.9 MB. Both would have to be configured away for an untrusted guest, so passt was chosen.
+- **A microVM's log could be missing.** `slot.sh` started the VMM in the background and then read its log, which the background shell had not always created: one attempt of a 64-attempt krun lane ended as an environment error with "vm.log: No such file or directory". The log is created first now, and six such lanes then ran without an error.
+
+### Lanes
+
+From a fresh clone of commit `cefe403`, one run per lane, on the private network that is now the default. The last column is the same lane with `NANOEVAL_E2E_NETWORK=host` from the working copy at `11f6727`.
+
+| Lane | Backend | Attempts | Slots | Wall, private | Wall, host | Result |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| Scripted model | docker | 8 | 4 | 12.3 s with the first build of `nanoeval-net`, 6.9 s in a second run | 6.6 s | 4 passed, 4 failed as scripted |
+| Scripted model | krun | 8 | 4 | 6.0 s | 5.4 s | 4 passed, 4 failed as scripted |
+| Oracle, with a certificate bundle | docker | 3 | 4 | 4.3 s | 5.0 s | 3 passed |
+| Oracle, with a certificate bundle | krun | 3 | 4 | 3.8 s | 3.3 s | 3 passed |
+| Failure kinds and fixtures | docker | 5 | 4 | not recorded | not run | 2 passed, 1 failed, 2 errored, each as designed |
+| Failure kinds and fixtures | krun | 5 | 4 | not recorded | not run | 2 passed, 1 failed, 2 errored, each as designed |
+| Worker killed and restarted once | docker | 8 | 4 | 7.7 s | 7.0 s | 4 passed, 4 failed as scripted |
+| Worker killed and restarted once | krun | 8 | 4 | 6.6 s | 7.6 s | 4 passed, 4 failed as scripted |
+| Slot networks | docker | 4 | 4 | 3.8 s after the two-slot checks | fails, as below | 4 passed |
+| Slot networks | krun | 4 | 4 | 3.3 s after the two-slot checks | fails, as below | 4 passed |
+| Scripted model | dir | 6 | 3 | not applicable | 5.6 s | 3 passed, 3 failed as scripted |
+
+At four slots the two networks are within a tick of each other.
+
+The network lane is new. It starts two slots through `slot.sh`, serves a token on port 5329 in one, and checks that the other slot and the host do not read that token on their loopbacks, at the gateway or at the container's address, that a listener on the host's loopback is refused, and that a name resolves and HTTPS answers. Then it runs one attempt per slot of a fixture whose agent serves on that port: the verifier reads its own slot's token, the agent and the verifier both reach HTTPS, the agent reaches its session, and the verifier reaches neither the session nor the host's loopback. With `NANOEVAL_E2E_NETWORK=host` the lane fails on docker with "a slot reached the listener of another slot on its loopback" and on krun with "the listener of a slot is bound on the loopback of the host".
+
+Every lane now also counts the networks and relays of its sandboxes, and found none after any run, including the restart lanes.
+
+### Scale
+
+Scripted model, one sandbox, 1 CPU and 256 MiB per slot, tick 500 ms, 2 tasks × 2 agents for 32 slots and 3 tasks × 2 agents for 64. Every run ended with half of its attempts passed and half failed as scripted and none errored. Wall times are of three runs each, alternating between the networks, and the phase medians are of the second run.
+
+| Backend | Network | Slots | Attempts | Wall | Environment | Hand attach | Agent | Verifier |
+| --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| docker | host | 32 | 64 | 10.0, 10.4, 10.1 s | 1.07 s | 0.75 s | 0.66 s | 0.83 s |
+| docker | private | 32 | 64 | 16.9, 15.1, 15.2 s | 1.33 s | 0.72 s | 0.72 s | 1.00 s |
+| krun | host | 32 | 64 | 9.0, 8.6, 8.2 s | 1.07 s | 0.80 s | 0.65 s | 0.75 s |
+| krun | private | 32 | 64 | 9.7, 8.2, 8.8 s | 1.12 s | 0.74 s | 0.63 s | 0.73 s |
+| docker | host | 64 | 264 | 37.3 s, one run | 1.91 s | 1.26 s | 1.49 s | 1.50 s |
+| docker | private | 64 | 264 | 52.9 s, one run | 2.03 s | 1.18 s | 1.45 s | 1.51 s |
+
+A private microVM costs nothing that these lanes can see. A private container costs Docker's bridge: the phases are close, and the run is half as long again, because the daemon attaches and detaches bridge endpoints one after another and a wave of slots waits for it at both ends. Removing a slot's container in the background instead was tried and changed nothing (16.2 and 16.1 s), so it was not kept. An attempt that runs for minutes will not notice. A lane of attempts that take a second does.
+
+### What one slot costs
+
+`slot.sh` called directly on the sample task with its image cached, one slot alone and then 32 or 64 started together:
+
+| Backend | Network | One up | 32 up, median (slowest) | 64 up, median (slowest) | One down | 32 down together | 64 down together |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| docker | host | 0.12 to 0.16 s | 0.46 s (0.78 s) | 0.83 s (1.49 s) | 0.08 to 0.13 s | 0.40 s | 0.60 s |
+| docker | private | 0.21 to 0.23 s | 0.66 s (1.07 s) | 1.21 s (2.11 s) | 0.17 s | 2.41 s | 4.31 s |
+| docker | private, one forward | 0.25 s | 0.83 s (1.28 s) | not run | 0.27 s | 2.45 s | not run |
+| krun | host | 0.13 s | 0.41 s (0.70 s) | not run | 0.04 s | 0.10 s | not run |
+| krun | private | 0.14 s | 0.46 s (0.77 s) | not run | 0.05 s | 0.11 s | not run |
+| krun | private, one forward | 0.14 s | 0.50 s (0.78 s) | not run | 0.05 s | 0.11 s | not run |
+
+`docker rm -f` alone took 37 to 40 ms for a container on the host network and 146 to 171 ms for one on a bridge. In memory a private slot adds its relay, 0.5 MB of resident memory, and a Docker slot with a forward a second 0.5 MB process inside the container. A private guest adds its passt, 29.8 MB, and its VMM held 53.0 MB against 52.0 MB with TSI.
+
+### Terminal-Bench 2.1 with the tasks' own solutions
+
+Through `nanoeval sandboxd` with `--ca-bundle`, `--slot-env` setting `UV_EXCLUDE_NEWER` and `--slot-forward` for the registry proxy, a Worker at a tick of 500 ms, four slots, and the image disks of the earlier entry:
+
+| Tasks | Backend | Network | Result | Wall |
+| --- | --- | --- | --- | ---: |
+| `kv-store-grpc`, 4 attempts at once | docker | private | 4 of 4 passed | 66 s |
+| `kv-store-grpc`, 4 attempts at once | krun | private | 4 of 4 passed | 59 s |
+| `build-pmars`, `openssl-selfsigned-cert`, `log-summary-date-ranges`, `cancel-async-tasks` | docker | private | 4 of 4 passed | 31 s |
+| The same four | krun | private | 4 of 4 passed | 33 s |
+| `kv-store-grpc`, 4 attempts at once | docker | host | 4 of 4 passed, sharing one port | 65 s |
+| `kv-store-grpc`, 4 attempts at once | krun | host | 0 of 4 passed | 68 s |
+
+After each run no container, network, relay, VMM, passt process or sandbox directory of that `sandboxd` remained.
+
+### A killed sandboxd
+
+`sandboxd` got SIGKILL eight seconds into four attempts of `kv-store-grpc`, with the hands attached, and was started again 0.2 s later, as its service does. The relays, the containers or microVMs with their passt processes, and the hands outlived it. Both runs finished with 4 of 4 passed, and nothing was left, on docker and on krun.
+
+When it stayed down, the four attempts ended as environment errors ("Network connection lost") and the run finished without its sandbox: four containers, one network, four relays and the sandbox directory stayed. A `DELETE` of that sandbox on the restarted `sandboxd` removed all of them in 1.7 s. Nothing deletes such a sandbox on its own, with or without a private network.
+
+### Limits of this version
+
+- A hand of a private slot attached to a deployed Worker over `wss://` has not run. The slot's path for it is the plain outbound one that the HTTPS checks use.
+- Docker's bridge makes a lane of very short attempts about half as long again at 32 and 64 slots.
+- A private guest's passt, about 30 MB, is not counted by admission, like the VMM's own memory.
+- A private slot reaches what the machine serves on its other addresses, and has IPv4 only.
+- The private network needs cargo or a built `nanoeval-net` on a Docker host, and passt from the system's packages on a krun host. `--network host` needs neither.
+- A sandbox whose `sandboxd` stays down past a run's retries is left until someone deletes it.
+- CI on a hosted runner has not run the new lanes.

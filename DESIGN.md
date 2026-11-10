@@ -7,7 +7,7 @@ It revives two earlier bodies of work:
 - [gakonst/nanoeval](https://github.com/gakonst/nanoeval) (Rust, July 2026, last commit `10aed6b`): a library-first evaluator that kept the Nanocodex harness on the host and ran each attempt's tools in a disposable libkrun microVM.
 - The eval stack in nanocode's history (`harbor_adapter/`, then `crates/experimental/nanocodex-eval` and `crates/nanocodex-vm`), removed from the tree in `2d4a4c539` (2026-10-13).
 
-The microVM per attempt of both is back as the `krun` slot backend, described under [krun slots](#krun-slots).
+The microVM per attempt of both is back as the `krun` slot backend, described under [krun slots](#krun-slots). The private guest network of the first is back for container and microVM slots alike, described under [Slot networks](#slot-networks).
 
 ## Shape
 
@@ -66,7 +66,7 @@ Every attempt ends as `passed`, `failed` or `errored`, with the verifier reward 
 
 ## The slot splitter
 
-`sandbox/slot.sh` packs N attempts into one sandbox. The orchestrator uploads it once per sandbox and calls it through the provider's `exec`. `probe` reports what the machine can isolate with (`docker`, `kvm`, `krun`, `userns`, `bwrap`, CPUs, memory). `kvm` says that `/dev/kvm` can be opened for reading and writing, and `krun` that the installed launcher reached KVM and loaded libkrunfw.
+`sandbox/slot.sh` packs N attempts into one sandbox. The orchestrator uploads it once per sandbox and calls it through the provider's `exec`. `probe` reports what the machine can isolate with (`docker`, `kvm`, `krun`, `userns`, `bwrap`, CPUs, memory) and which network the sandbox was set up for. `kvm` says that `/dev/kvm` can be opened for reading and writing, and `krun` that the installed launcher reached KVM and loaded libkrunfw.
 
 | Backend | Isolation | State |
 | --- | --- | --- |
@@ -90,8 +90,8 @@ A krun slot is one libkrun microVM. In gakonst/nanoeval the harness stayed on th
              vdb  upper.ext4, sparse, one per slot            overlay(vda, vdb) becomes /
              virtiofs rt, read-only: the hand, CA bundle      rt mounted at /opt/nanoeval
              virtiofs io: tests in, verifier logs out         vsock port 1024
+             virtio-net on a passt process of its own         eth0, when the network is private
  slot.sh ─ nanoeval-krun exec ─ vm.sock ─ vsock ───────▶ hand, solution, verifier
-                                                           hand ─ ws://127.0.0.1 ─▶ Worker
 ```
 
 | Piece | Runs | Role |
@@ -99,7 +99,8 @@ A krun slot is one libkrun microVM. In gakonst/nanoeval the harness stayed on th
 | `krun/nanovm` | Host | The libkrun binding: one VM's disks, shares, vsock ports and command |
 | `krun/host`, `nanoeval-krun` | Host | `vm` is the VMM process of one microVM. `exec`, `copy-in`, `copy-out`, `unpack`, `stop` and `ready` talk to a guest. `check` says whether this machine can start one |
 | `krun/guest`, `nanoeval-krun-guest` | Guest | A static musl binary. Mounts the disks, pivots into the overlay, then serves requests on a vsock port |
-| `krun/wire` | Both | The request and frame encoding of that port |
+| `krun/wire` | Both | The request and frame encoding of that port, and the address plan of a private guest |
+| `krun/net`, `nanoeval-net` | Host and slot | The relay of a private slot, on both sides, and the rule that drops what comes into a Docker slot. A static binary, which the guest uses as a library |
 
 **Root filesystem.** `slot.sh up` builds or pulls the task image with Docker, as a Docker slot does. The image becomes a disk once: a builder microVM boots on an empty sparse ext4 of the task's `storage_mb`, `docker export` streams into it over vsock, and the guest unpacks the archive as root. Owners, modes, devices and links are therefore written by a kernel onto ext4, with no root and no fakeroot on the host. The disk is kept in `$NANOEVAL_CACHE/krun` (`~/.cache/nanoeval/krun`) under the image id and the storage size, beside the image's environment, working directory and user. Every slot attaches it read-only and adds a sparse ext4 of its own as the upper layer of an overlay that the guest mounts. Taking a slot down deletes that file.
 
@@ -107,16 +108,43 @@ A krun slot is one libkrun microVM. In gakonst/nanoeval the harness stayed on th
 
 **Resources.** vCPUs are the task's `cpus` rounded up, memory is `memory_mb`, and the root can grow to `storage_mb`. They hold whatever `--limits` says. Admission is unchanged: a slot counts its task's declared memory. An idle guest costs the host far less, since libkrun backs guest memory on demand.
 
-**Network.** A krun slot uses libkrun's TSI: the VMM makes the guest's sockets on the host. A connection to `127.0.0.1` that nothing in the guest listens on reaches the host's loopback, which is how the hand dials a local Worker over the plain `ws://` it only accepts for loopback. This is `--network host` for a microVM, and `bridge` is refused. Its limits are those of TSI:
+**Network.** A krun slot has a private network by default, described under [Slot networks](#slot-networks). With `--network host` it uses libkrun's TSI instead: the VMM makes the guest's sockets on the host, and a connection to `127.0.0.1` that nothing in the guest listens on reaches the host's loopback. `bridge` is refused. The limits of TSI are why it is not the default:
 
 - A listener in the guest is also bound on the host, with `SO_REUSEPORT`. Two guests may listen on one port, and each reaches its own listener first, but a guest or the host with no listener of its own on that port reaches another guest's.
 - A guest cannot serve on a port the host keeps for root: a listener on port 80 did not come up, since the VMM is not root.
 - Some socket options do not hold: a gRPC client fails with "Failed to set SO_REUSEADDR". ICMP and raw sockets do not exist.
 - A connected UDP socket to a loopback address stays in the guest, so a resolver on the host's loopback is reached with `options use-vc`.
 
-A private network per guest needs virtio-net with passt or gvproxy, and then a relay in the guest for a Worker on the host's loopback. That is planned, not built.
-
 **What a guest gets that its image lacks.** `/opt/nanoeval`, as in a Docker slot. `/etc/resolv.conf` and `/etc/hosts` when the image leaves them empty, which `docker export` does. Nothing else: no agent, no shell, no init system.
+
+## Slot networks
+
+A `docker` or `krun` slot of the local provider gets a network of its own (`--network private`, the default there): its own loopback and port space, connections out, and nothing in. `--network host` shares the machine's network, as every slot did before. `bridge` is Docker's default bridge, the default where the Worker is deployed and reached over `wss://`. A `dir` slot is a directory and stays on the machine's network. The network is a property of the sandbox: `slot.sh setup` prepares it, `probe` reports it, the run refuses a sandbox that reports another, and the run's status shows it as `network` in the sandbox's capabilities.
+
+```
+ slot                                                       host
+ hand ─ ws://127.0.0.1:P ─▶ listener on the slot's loopback
+                              │ docker: nanoeval-net slot ─ relay.sock, mounted read-only
+                              │ krun:   the guest agent ─ vsock port 1025 ─ relay.sock
+                              ▼
+                            nanoeval-net host, one per slot ─ allow list ─▶ 127.0.0.1:P, the Worker
+ everything else ─▶ docker: the sandbox's bridge and NAT      krun: the guest's passt
+```
+
+| | Docker slot | krun slot |
+| --- | --- | --- |
+| Network stack | The container's namespace on a bridge network of its sandbox. One network per sandbox, created with the first slot and removed by `destroy` | A virtio-net device on a passt process that the VMM starts for this guest alone. No TSI. The guest agent sets the address, the route and the MTU over netlink |
+| Out | Docker's NAT | passt opens the host's sockets for the guest's connections |
+| Names | Docker's embedded resolver, which asks the machine's resolver from the host | The guest's resolver address, which passt forwards to the machine's resolver |
+| In | A rule in the container's namespace accepts loopback and replies and drops the rest. `nanoeval-net firewall` writes it over netlink from `docker exec --privileged`, so the task cannot remove it | passt forwards no port, and the gateway address is not mapped to the host (`--no-map-gw`) |
+| What the image needs | Nothing. `nanoeval-net` is static and sits beside the hand in `/opt/nanoeval` | Nothing |
+| What the host needs | cargo to build `nanoeval-net`, or the built binary | The same, and passt installed as a system package |
+
+**The relay.** A hand accepts a plain `ws://` URL only for a loopback address, and a local Worker listens on the machine's loopback, which a private slot cannot reach. So the slot listens on the Worker's address and port on its own loopback, and each connection it accepts is carried to the host: through `relay.sock` in a directory mounted read-only into the container, or through a vsock port that libkrun connects to the same socket. The slot side names the address it wants in a first line. The host side is one `nanoeval-net host` process per slot. It dials the address only when the slot's allow list holds it, and a slot cannot write that list. The list holds the session's address while the hand runs, so the listener and the entry exist exactly as long as the hand does: the Docker listener wraps the hand's command, the guest's belongs to the hand's exec request, and `slot.sh verify` resets the list before the verifier starts. The relays belong to the slot, not to `sandboxd`, so a restarted `sandboxd` does not cut a hand off. A Worker reached over `wss://` needs none of this: the hand dials out.
+
+**Forwards.** A machine's resolver may answer a name with an address on the machine's own loopback, where a proxy for package registries listens. A private slot would find nothing there. `sandboxd --slot-forward ADDRESS:PORT` names such listeners, and every slot then listens on the same address of its own loopback for its whole life and relays to the host's, through the same socket and allow list. It is host policy like `--ca-bundle`, and the sandbox's capabilities record it as `slot_forward`.
+
+**What is not isolated.** A private slot reaches whatever the machine serves on its other addresses, such as the bridge's gateway or its LAN address, as any container does. It has IPv4 only. While the hand runs, the Worker's port on the slot's loopback is taken. Docker hands out one subnet per sandbox from its address pools, about 30 on a default daemon, which bounds the sandboxes of a machine and not their slots.
 
 ## Sandbox providers
 
@@ -124,9 +152,9 @@ A provider creates a sandbox, runs a command in it, writes a file to it, and kil
 
 **Local.** `nanoeval sandboxd` serves a machine over HTTP with a bearer token. A sandbox is a directory. This is the single-machine mode of the earlier versions: one large machine, many slots.
 
-A machine's network is host policy, and `sandboxd` passes it to the slots. `--ca-bundle FILE` mounts a certificate bundle into each slot container and names it in the variables that OpenSSL, curl, uv, pip, requests, Node, git and cargo read, for a network that re-signs TLS. `--slot-env FILE` starts each container with the variables of a file. Both change what the agent and the verifier see, so the sandbox's capabilities in the run's status record them as `ca_bundle` and `slot_env`. Neither is set by default.
+A machine's network is host policy, and `sandboxd` passes it to the slots. `--ca-bundle FILE` mounts a certificate bundle into each slot and names it in the variables that OpenSSL, curl, uv, pip, requests, Node, git and cargo read, for a network that re-signs TLS. `--slot-env FILE` starts each slot with the variables of a file. Both change what the agent and the verifier see, so the sandbox's capabilities in the run's status record them as `ca_bundle` and `slot_env`. Neither is set by default.
 
-Local Docker slots use the host network, because a hand accepts a plaintext `ws://` URL only on loopback. Slots on one machine therefore share its ports: an attempt cannot bind a port that another holds, and a verifier can reach another attempt's server. A slot with its own network stack, such as the planned `krun` backend, removes this.
+A slot of the local provider is on a private network unless the run asks for the host's (`--network host`). On the host's network slots share the machine's ports: an attempt cannot bind a port that another holds, and a verifier can reach another attempt's server. `--slot-forward` is the third piece of host policy, described under [Slot networks](#slot-networks).
 
 **E2B over MPP.** `src/E2b.ts` talks to `https://mpp.e2b.dev`, whose bodies match E2B's REST API:
 
@@ -173,7 +201,16 @@ A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP c
 | A copy of the image per slot, as a tree or as a sparse ext4 copy | 0.3 to 1.0 s and 1 GB per slot for a 1 GB image, against 15 ms on an idle disk and 4 MB for an overlay upper disk |
 | A qcow2 or device-mapper snapshot of the image | Device-mapper needs root and a kernel module. qcow2 needs qemu-img on every host and a second disk format in the VMM. The guest overlay needs neither |
 | `mke2fs -d` under fakeroot to build the image disk | As fast as the builder microVM (4.3 s against 4.4 s for a 1 GB archive), but it adds fakeroot to every host and fakes what a kernel does for real |
-| passt for a private guest network, in this change | The packaged passt sandboxes itself in a user namespace. Run from a user's directory on Ubuntu 24.04 it exits with "Failed to sandbox process", and libkrun then panics activating the device. It needs the system package or gvproxy |
+| passt run from a user's directory | The packaged passt sandboxes itself in a user namespace. Run from a user's directory on Ubuntu 24.04 it exits with "Failed to sandbox process", and libkrun then panics activating the device. The system package carries the AppArmor profile that lets it, so that is the requirement |
+| gvproxy for the guest network, as in gakonst/nanoeval | As released (v0.8.9, read from its source) it maps an address of the guest's network to the host's `127.0.0.1` and serves its port-forwarding API to the guest at the gateway, so a guest could reach the host's loopback and ask for listeners on the host. Closing both needs a configuration file or a build of our own. It is a 12.9 MB Go binary to fetch where passt is a distribution package |
+| TSI with a port map, or TSI for outbound connections only | libkrun hijacks every guest socket or none. A listener is still bound on the host, and the socket options that fail still fail |
+| libkrun's own DHCP client for the guest's address | It gives up 100 ms after its request. The address plan is fixed, so the guest agent sets it and a slow passt cannot leave a guest without an address |
+| One Docker network per slot | 64 slots need 64 subnets, where a default daemon's pools hold about 30 networks, and a bridge with its firewall rules per slot. The host still reaches every container at its address |
+| One Docker network with `enable_icc=false` and no rule in the slot | It stops container to container traffic through br_netfilter and does not stop the host: a process on the host read a listener at a container's bridge address |
+| `--network none` with a user-mode stack per container (slirp4netns, pasta, a tap to gvproxy) | Joining a container's namespace from outside needs root on the host, and a tap inside needs a device the container does not have. Docker's bridge is also what task images are built for |
+| A second container per slot for the relay and the rule | Twice the containers, and an image to build or pull on every host |
+| The session relay inside `sandboxd` | It would end every hand when `sandboxd` restarts. A slot's processes outlive it |
+| A listener for the Worker on the bridge's gateway, or TLS in front of it | Every slot could reach the first, and the second needs a certificate that every hand trusts |
 
 ## Reused
 
@@ -188,9 +225,9 @@ A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP c
 | `HARNESS_PLACEMENT.md`, `NANOCODEX_VM_TOOLS.md` | Host harness, tools in the environment | Realized by the nanocode hand |
 | nanocode-ts | `App.create`, `Forward`, hand tokens, the hand protocol | Used as a dependency |
 | nanocode | The `nanocode hand` release binary | Downloaded and verified in each sandbox |
-| gakonst/nanoeval `crates/nanovm` | The libkrun binding: `VmConfig`, `GuestCommand`, `KrunVm`, the capability probe | Ported to `krun/nanovm`. Read-only roots and vsock ports added. gvproxy, egress leases and the process config file left out |
+| gakonst/nanoeval `crates/nanovm` | The libkrun binding: `VmConfig`, `GuestCommand`, `KrunVm`, the capability probe | Ported to `krun/nanovm`. Read-only roots, vsock ports in both directions and a virtio-net device on a socket it is handed added. gvproxy, egress leases and the process config file left out |
 | gakonst/nanoeval and nanocode `Cargo.lock` | libkrun `df85b8b` with libkrunfw 5 | The same pin, and the same lock entries for its dependencies |
 | nanocode `crates/nanocodex-vm` `overlay.rs` and guest | A read-only image disk under a sparse upper disk per attempt, mounted and pivoted into by the guest | Reimplemented in `krun/guest/src/boot.rs` |
 | nanocode `crates/nanocodex-vm` `image/` | The image disk built from `docker export` | Kept as the source. The disk is written by a builder microVM instead of a packaging container |
 
-Not carried over yet: a private guest network (gvproxy in gakonst/nanoeval), image pulls and Dockerfile builds without Docker, warm spare microVMs, prompt-cache cohorts, duration-ordered dispatch, rerun lineage, the verifier-dependency cache, egress leases.
+Not carried over yet: image pulls and Dockerfile builds without Docker, warm spare microVMs, prompt-cache cohorts, duration-ordered dispatch, rerun lineage, the verifier-dependency cache, egress leases.
