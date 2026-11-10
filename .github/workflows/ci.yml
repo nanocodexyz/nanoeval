@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run check:types
+      - run: npm test
+      - run: npm run dry-run
+      - name: End to end, Docker slots
+        run: npm run e2e
+      - name: End to end, directory slots
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
+          NANOEVAL_E2E_SLOTS: '3'
+          NANOEVAL_E2E_ATTEMPTS: '1'
+      - name: End to end, failure kinds
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: failures
+      - name: End to end, orchestrator restart
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: restart
+      - name: Keep the logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-output
+          path: |
+            output/e2e/**/wrangler.log
+            output/e2e/**/status.json
+            output/e2e/**/harbor

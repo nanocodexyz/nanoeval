@@ -1,0 +1,18 @@
+schema_version = "1.1"
+
+[task]
+name = "fixtures/slow-agent"
+description = "A failure-path fixture for the end-to-end test."
+
+[agent]
+timeout_sec = 3.0
+
+[verifier]
+timeout_sec = 30.0
+
+[environment]
+cpus = 1
+memory_mb = 256
+storage_mb = 128
+gpus = 0
+allow_internet = true
