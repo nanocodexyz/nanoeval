@@ -113,7 +113,7 @@ cmd_setup() {
 }
 
 setup_krun() {
-  local arch guest host resolver
+  local arch guest host
   [ -c /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ] || die 'the krun backend needs read and write access to /dev/kvm'
   has docker || die 'the krun backend builds root filesystems from Docker images and found no docker'
   if [ -n "${NANOEVAL_KRUN:-}" ]; then
@@ -136,12 +136,11 @@ setup_krun() {
   mkdir -p "$krun/boot/dev" "$krun/boot/mnt" "$krun/boot/proc" "$krun/boot/sys" "$cache/krun"
   cp "$host" "$krun/nanoeval-krun"
   cp "$guest" "$krun/boot/nanoeval-krun-guest"
-  for resolver in /etc/resolv.conf /run/systemd/resolve/resolv.conf; do
-    [ -f "$resolver" ] || continue
-    awk '$1 == "nameserver" && $2 !~ /^127\./ && $2 != "::1"' "$resolver" >"$krun/resolv.conf"
-    [ -s "$krun/resolv.conf" ] && break
-  done
-  [ -s "$krun/resolv.conf" ] || die 'the krun backend found no nameserver outside loopback in /etc/resolv.conf or /run/systemd/resolve/resolv.conf'
+  awk '$1 == "nameserver"' /etc/resolv.conf >"$krun/resolv.conf"
+  [ -s "$krun/resolv.conf" ] || die 'the krun backend found no nameserver in /etc/resolv.conf'
+  if awk '$2 ~ /^127\./ || $2 == "::1" { loopback = 1 } END { exit !loopback }' "$krun/resolv.conf"; then
+    printf 'options use-vc\n' >>"$krun/resolv.conf"
+  fi
   "$krun/nanoeval-krun" check >/dev/null
 }
 
