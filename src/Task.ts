@@ -26,6 +26,7 @@ export type Task = {
   files: Record<string, string>
   instruction: string
   name: string
+  solution?: { env: Record<string, string> }
   verifier: { env: Record<string, string>; timeoutSec: number }
 }
 
@@ -40,7 +41,7 @@ const packageDirectories = ['environment', 'solution', 'steps', 'tests']
 const packageFiles = ['instruction.md', 'README.md', 'task.toml']
 const shippedDirectories = ['environment/', 'tests/']
 
-export async function load(source: Source): Promise<Task> {
+export async function load(source: Source, options: load.Options = {}): Promise<Task> {
   const manifest = source.files['task.toml']
   const instruction = source.files['instruction.md']
   if (!manifest) throw new InvalidError('the task has no task.toml')
@@ -78,7 +79,14 @@ export async function load(source: Source): Promise<Task> {
       'the task has neither environment.docker_image nor environment/Dockerfile',
     )
 
-  const shipped = image === undefined ? shippedDirectories : ['tests/']
+  if (options.solution && !source.files['solution/solve.sh'])
+    throw new InvalidError('the task has no solution/solve.sh')
+  const solution = raw['solution'] === undefined ? {} : table(raw, 'solution')
+  const shipped = [
+    ...(image === undefined ? ['environment/'] : []),
+    ...(options.solution ? ['solution/'] : []),
+    'tests/',
+  ]
   const files: Record<string, string> = {}
   for (const [path, data] of Object.entries(source.files))
     if (shipped.some((directory) => path.startsWith(directory))) files[path] = Bytes.toBase64(data)
@@ -102,7 +110,14 @@ export async function load(source: Source): Promise<Task> {
     files,
     instruction: Bytes.toText(instruction),
     name: string(task, 'name'),
+    ...(options.solution ? { solution: { env: strings(solution, 'env') } } : {}),
     verifier: { env: strings(verifier, 'env'), timeoutSec: positive(verifier, 'timeout_sec') },
+  }
+}
+
+export declare namespace load {
+  type Options = {
+    solution?: boolean
   }
 }
 
@@ -131,8 +146,11 @@ export function parse(value: unknown): Task {
     task.files !== null &&
     typeof task.files['tests/test.sh'] === 'string' &&
     Array.isArray(task.executable) &&
+    (task.solution === undefined || typeof task.files['solution/solve.sh'] === 'string') &&
     Object.keys(task.files).every((path) =>
-      shippedDirectories.some((directory) => path.startsWith(directory)),
+      [...shippedDirectories, ...(task.solution ? ['solution/'] : [])].some((directory) =>
+        path.startsWith(directory),
+      ),
     )
   if (!valid) throw new InvalidError('the task is not a normalized nanoeval task')
   return task
@@ -183,7 +201,7 @@ function strings(table: Record<string, unknown>, key: string): Record<string, st
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || /[\r\n]/.test(entry))
       throw new InvalidError(key + '.' + name + ' is not a single-line environment variable')
   }
-  return value as Record<string, string>
+  return { ...(value as Record<string, string>) }
 }
 
 function table(raw: Record<string, unknown>, key: string): Record<string, unknown> {

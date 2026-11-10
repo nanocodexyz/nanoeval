@@ -163,6 +163,47 @@ test('slots in one sandbox verify their own workspaces with the dir backend', as
   assert.ok(!Fs.existsSync(created.handle.home))
 })
 
+test('a slot runs the task solution in its workspace before the verifier', async () => {
+  const provider = Local.create({ token, url: server.url })
+  const created = await provider.create({ metadata: {}, template: undefined, timeoutSec: 60 })
+  const sandbox = provider.connect(created.handle)
+  const slots = Slot.create({ home: created.handle.home })
+  await Sandbox.run(sandbox, 'mkdir -p ' + Sandbox.quote(created.handle.home + '/slots/solved'))
+  await sandbox.write(slots.script, script)
+
+  const task = await loadTask('tasks/extract-todos', { solution: true })
+  await sandbox.write(
+    slots.taskFile('solved'),
+    Tar.pack(
+      Object.entries(task.files).map(([path, data]) => ({
+        data: Bytes.fromBase64(data),
+        executable: task.executable.includes(path),
+        path,
+      })),
+    ),
+  )
+  const up = slots.up('solved', {
+    backend: 'dir',
+    cpus: 1,
+    image: undefined,
+    limits: 'none',
+    memoryMb: 256,
+    network: 'host',
+  })
+  await assert.rejects(Sandbox.run(sandbox, slots.solve('solved', 30)), Sandbox.CommandError)
+  await Sandbox.run(sandbox, up)
+  const status = async () => Slot.parseStatus(await Sandbox.run(sandbox, slots.status()))
+  assert.equal(await wait(async () => (await status()).slots['solved']!.up), 'exit:0')
+  assert.equal((await status()).slots['solved']!.solve, 'none')
+
+  await Sandbox.run(sandbox, slots.solve('solved', 30))
+  assert.equal(await wait(async () => (await status()).slots['solved']!.solve), 'exit:0')
+  await Sandbox.run(sandbox, slots.verify('solved', 30))
+  assert.equal(await wait(async () => (await status()).slots['solved']!.verify), 'exit:0')
+  assert.equal((await status()).slots['solved']!.reward, 1)
+  await provider.kill(created.handle)
+})
+
 test('taking a slot down ends the work it still runs', async () => {
   const provider = Local.create({ token, url: server.url })
   const created = await provider.create({ metadata: {}, template: undefined, timeoutSec: 60 })

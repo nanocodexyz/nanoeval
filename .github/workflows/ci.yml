@@ -36,6 +36,12 @@ jobs:
           NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
           NANOEVAL_E2E_SLOTS: '3'
           NANOEVAL_E2E_ATTEMPTS: '1'
+      - name: End to end, oracle
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_MODEL: oracle
+          NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
+          NANOEVAL_E2E_ATTEMPTS: '1'
       - name: End to end, failure kinds
         run: npm run e2e
         env:

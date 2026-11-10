@@ -70,6 +70,57 @@ test('a task that names an image ships only its tests', async () => {
   await assert.rejects(Task.load(source(manifest('build_timeout_sec = 0\n'))), Task.InvalidError)
 })
 
+test('a solution is shipped only when asked for, and only an oracle run takes it', async () => {
+  const toml = manifest('[solution.env]\nMODE = "reference"\n')
+  const plain = await Task.load(source(toml))
+  assert.equal(plain.solution, undefined)
+  assert.ok(!('solution/solve.sh' in plain.files))
+
+  const solved = await Task.load(source(toml), { solution: true })
+  assert.deepEqual(solved.solution, { env: { MODE: 'reference' } })
+  assert.deepEqual(Object.keys(solved.files).sort(), [
+    'environment/Dockerfile',
+    'solution/solve.sh',
+    'tests/test.sh',
+  ])
+  assert.deepEqual(Task.parse(JSON.parse(JSON.stringify(solved))), solved)
+  assert.throws(
+    () => Task.parse({ ...plain, files: { ...plain.files, 'solution/solve.sh': 'eA==' } }),
+    Task.InvalidError,
+  )
+
+  const unsolved = source(toml)
+  delete unsolved.files['solution/solve.sh']
+  await assert.rejects(Task.load(unsolved, { solution: true }), Task.InvalidError)
+
+  const config = {
+    agents: [{ id: 'oracle', model: 'solution', provider: 'oracle' }],
+    attempts: 1,
+    budget: { sandboxUsd: 0 },
+    limits: { attachSec: 60, setupSec: 600, stepRetries: 3 },
+    name: 'example',
+    sandbox: {
+      backend: 'docker',
+      docker: 'keep',
+      limits: 'enforce',
+      max: 1,
+      network: 'host',
+      provider: 'local',
+      slots: 4,
+      timeoutSec: 3600,
+    },
+    tasks: [solved],
+  }
+  const model = { id: 'haiku', model: 'claude-haiku-4-5', provider: 'claude' }
+  assert.equal(Config.parse(config).agents[0]!.provider, 'oracle')
+  assert.throws(() => Config.parse({ ...config, tasks: [plain] }), Config.InvalidError)
+  assert.throws(() => Config.parse({ ...config, agents: [model] }), Config.InvalidError)
+  assert.throws(
+    () => Config.parse({ ...config, agents: [...config.agents, model] }),
+    Config.InvalidError,
+  )
+})
+
 test('the checksum covers package files and changes with their contents', async () => {
   const first = await Task.load(source(manifest()))
   const same = await Task.load(source(manifest(), { 'notes/ignored.txt': 'x' }))

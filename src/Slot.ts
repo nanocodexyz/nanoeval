@@ -6,7 +6,10 @@ export type Phase = 'none' | 'running' | `exit:${number}`
 
 export type Status = {
   setup: Phase
-  slots: Record<string, { hand: Phase; reward: number | null; up: Phase; verify: Phase }>
+  slots: Record<
+    string,
+    { hand: Phase; reward: number | null; solve: Phase; up: Phase; verify: Phase }
+  >
 }
 
 export type Runtime = {
@@ -35,14 +38,19 @@ export function create(options: create.Options) {
     script,
     destroy: () => call('destroy'),
     down: (slot: string) => call('down', slot),
-    envFile: (slot: string, name: 'env' | 'verifier.env') => home + '/slots/' + slot + '/' + name,
+    envFile: (slot: string, name: 'env' | 'solution.env' | 'verifier.env') =>
+      home + '/slots/' + slot + '/' + name,
     hand: (slot: string, input: { name: string; url: string }) =>
       call('hand', slot, input.url, input.name),
-    log: (slot: string, phase: 'ctrf' | 'hand' | 'setup' | 'up' | 'verify', bytes: number) =>
-      call('log', slot, phase, String(bytes)),
+    log: (
+      slot: string,
+      phase: 'ctrf' | 'hand' | 'setup' | 'solve' | 'up' | 'verify',
+      bytes: number,
+    ) => call('log', slot, phase, String(bytes)),
     probe: () => call('probe'),
     setup: (input: { docker: 'install' | 'keep'; runtime: Runtime }) =>
       call('setup', input.runtime.release, input.runtime.sha256, input.docker),
+    solve: (slot: string, timeoutSec: number) => call('solve', slot, String(Math.ceil(timeoutSec))),
     status: () => call('status'),
     taskFile: (slot: string) => home + '/slots/' + slot + '/task.tar',
     up: (
