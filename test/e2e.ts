@@ -25,6 +25,7 @@ const label =
   process.env['NANOEVAL_E2E_LABEL'] ??
   model + '-' + backend + (scenario === 'tasks' ? '' : '-' + scenario)
 const out = Path.resolve('output/e2e', label)
+const largeTestBytes = 3 * 1024 * 1024
 
 const solutions: [marker: string, right: string, wrong: string][] = [
   [
@@ -37,6 +38,7 @@ const solutions: [marker: string, right: string, wrong: string][] = [
     "tr '[:lower:]' '[:upper:]' < message.txt > message.upper.txt",
     'cp message.txt message.upper.txt',
   ],
+  ['large.bin', 'true', 'true'],
   ['slow.txt', 'sleep 30; echo late > slow.txt', 'true'],
   ['greeting.txt', "printf 'hello from nanoeval\\n' > greeting.txt", 'echo hi > greeting.txt'],
 ]
@@ -156,6 +158,40 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
   })
 }
 
+function containers(root: string): string[] {
+  return execFileSync('docker', [
+    'ps',
+    '-a',
+    '--filter',
+    'label=nanoeval',
+    '--format',
+    '{{.ID}}\t{{.Label "nanoeval"}}',
+  ])
+    .toString()
+    .split('\n')
+    .map((line) => line.split('\t'))
+    .filter(([, home]) => home?.startsWith(root + Path.sep))
+    .map(([id]) => id!)
+}
+
+function containerLimits(ids: readonly string[]): [name: string, limits: string][] {
+  if (!ids.length) return []
+  try {
+    return execFileSync('docker', [
+      'inspect',
+      '--format',
+      '{{.Name}}\t{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}}',
+      ...ids,
+    ])
+      .toString()
+      .trim()
+      .split('\n')
+      .map((line) => line.split('\t') as [string, string])
+  } catch {
+    return []
+  }
+}
+
 async function freePort(): Promise<number> {
   const probe = await listen(() => {})
   probe.close()
@@ -245,9 +281,12 @@ async function main(): Promise<void> {
     if (failures && model !== 'scripted')
       throw new Error('the failures scenario runs on the scripted model')
     const directories = failures
-      ? ['no-reward', 'slow-agent', ...(backend === 'docker' ? ['broken-environment'] : [])].map(
-          (name) => Path.join('test/fixtures', name),
-        )
+      ? [
+          'large-tests',
+          'no-reward',
+          'slow-agent',
+          ...(backend === 'docker' ? ['broken-environment'] : []),
+        ].map((name) => Path.join('test/fixtures', name))
       : taskNames.map((name) => Path.join('tasks', name))
     const agents: Config.Agent[] =
       failures || model !== 'scripted'
@@ -256,6 +295,10 @@ async function main(): Promise<void> {
             { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
             { id: 'wrong', model: 'claude-sonnet-4-6', provider: 'claude' },
           ]
+    const tasks = await Promise.all(directories.map((directory) => loadTask(directory)))
+    for (const task of tasks)
+      if (task.name === 'fixtures/large-tests')
+        task.files['tests/large.bin'] = Buffer.alloc(largeTestBytes).toString('base64')
     const config: Config.Config = {
       agents,
       attempts: failures ? 1 : attempts,
@@ -272,7 +315,7 @@ async function main(): Promise<void> {
         slots,
         timeoutSec: 3600,
       },
-      tasks: await Promise.all(directories.map((directory) => loadTask(directory))),
+      tasks,
     }
     const api = client({ token, url })
     const started = Date.now()
@@ -280,6 +323,15 @@ async function main(): Promise<void> {
     const total = directories.length * agents.length * config.attempts
     assert.equal(created.attempts, total)
 
+    const sandboxes = Path.join(out, 'sandboxes')
+    const observed = new Map<string, string>()
+    const allowed = new Set(
+      config.tasks.map((task) =>
+        limits === 'enforce'
+          ? task.environment.cpus * 1e9 + ' ' + task.environment.memoryMb * 1024 * 1024
+          : '0 0',
+      ),
+    )
     let status: Record<string, any>
     let peak = 0
     let restarted = false
@@ -289,6 +341,9 @@ async function main(): Promise<void> {
       peak = Math.max(peak, status['counts'].active)
       if (status['state'] === 'finished') break
       if (status['counts'].active > 0) activeAt ??= Date.now()
+      if (backend === 'docker' && scenario !== 'restart')
+        for (const [name, value] of containerLimits(containers(sandboxes)))
+          observed.set(name, value)
       if (
         scenario === 'restart' &&
         !restarted &&
@@ -312,21 +367,23 @@ async function main(): Promise<void> {
     assert.equal(status['sandboxes'].length, 1, 'every attempt shares one sandbox')
     assert.equal(status['sandboxes'][0].state, 'closed')
     if (backend === 'docker') {
-      const left = execFileSync('docker', ['ps', '-aq', '--filter', 'label=nanoeval'])
-        .toString()
-        .trim()
-      assert.equal(left, '', 'no slot container outlives the run')
+      assert.deepEqual(containers(sandboxes), [], 'no slot container outlives the run')
+      if (scenario !== 'restart') {
+        assert.ok(observed.size > 0, 'slot containers were seen while the run was active')
+        for (const [name, value] of observed)
+          assert.ok(
+            allowed.has(value),
+            name + ' ran with cpu and memory limits ' + value + ', limits is ' + limits,
+          )
+      }
     }
-    assert.deepEqual(
-      Fs.readdirSync(Path.join(out, 'sandboxes')),
-      [],
-      'no sandbox directory outlives the run',
-    )
+    assert.deepEqual(Fs.readdirSync(sandboxes), [], 'no sandbox directory outlives the run')
 
     if (failures) {
       const byTask = Object.fromEntries(
         (status['attempts'] as Record<string, any>[]).map((attempt) => [attempt['task'], attempt]),
       )
+      assert.equal(byTask['fixtures/large-tests'].outcome, 'passed')
       assert.equal(byTask['fixtures/no-reward'].outcome, 'errored')
       assert.equal(byTask['fixtures/no-reward'].failure.kind, 'verifier')
       assert.equal(byTask['fixtures/slow-agent'].outcome, 'failed')
