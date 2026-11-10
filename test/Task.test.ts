@@ -225,3 +225,30 @@ test('a slot network is one its backend has, and private by default on a local m
   assert.equal(Config.network({ backend: 'dir', provider: 'local' }), 'host')
   assert.equal(Config.network({ backend: 'docker', provider: 'e2b' }), 'bridge')
 })
+
+test('a task may answer with its final message and ask for a judge', async () => {
+  const extension = (body: string) => manifest('[metadata.nanoeval]\n' + body)
+  const plain = await Task.load(source(manifest()))
+  assert.equal(plain.verifier.finalMessage, undefined)
+  assert.equal(plain.verifier.judge, undefined)
+
+  const judged = await Task.load(source(extension('final_message = true\njudge = true')))
+  assert.equal(judged.verifier.finalMessage, true)
+  assert.equal(judged.verifier.judge, true)
+  assert.deepEqual(Task.parse(JSON.parse(JSON.stringify(judged))), judged)
+  assert.equal((await Task.load(source(extension('judge = false')))).verifier.judge, undefined)
+
+  await assert.rejects(Task.load(source(extension('judge = "yes"'))), Task.InvalidError)
+  await assert.rejects(
+    Task.load(source(extension('final_message = true')), { solution: true }),
+    /has no solution\/final_message.txt/,
+  )
+  const oracle = await Task.load(
+    source(extension('final_message = true'), { 'solution/final_message.txt': 'forty-two' }),
+    { solution: true },
+  )
+  assert.equal(
+    Bytes.toText(Bytes.fromBase64(oracle.files['solution/final_message.txt']!)),
+    'forty-two',
+  )
+})

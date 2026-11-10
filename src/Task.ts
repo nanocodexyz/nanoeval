@@ -27,7 +27,12 @@ export type Task = {
   instruction: string
   name: string
   solution?: { env: Record<string, string> }
-  verifier: { env: Record<string, string>; timeoutSec: number }
+  verifier: {
+    env: Record<string, string>
+    finalMessage?: true
+    judge?: true
+    timeoutSec: number
+  }
 }
 
 export type Source = {
@@ -36,6 +41,8 @@ export type Source = {
 }
 
 export const schemaVersion = '1.1'
+export const finalMessagePath = 'solution/final_message.txt'
+export const verifierInputs = 'tests/.nanoeval'
 
 const packageDirectories = ['environment', 'solution', 'steps', 'tests']
 const packageFiles = ['instruction.md', 'README.md', 'task.toml']
@@ -64,6 +71,9 @@ export async function load(source: Source, options: load.Options = {}): Promise<
   const verifier = table(raw, 'verifier')
   const environment = table(raw, 'environment')
   const metadata = raw['metadata'] === undefined ? {} : table(raw, 'metadata')
+  const extension = metadata['nanoeval'] === undefined ? {} : table(metadata, 'nanoeval')
+  const finalMessage = flag(extension, 'final_message')
+  const judge = flag(extension, 'judge')
 
   if (metadata['custom_docker_compose'] === true || environment['custom_docker_compose'] === true)
     throw new UnsupportedError('tasks with custom_docker_compose are not supported')
@@ -81,6 +91,8 @@ export async function load(source: Source, options: load.Options = {}): Promise<
 
   if (options.solution && !source.files['solution/solve.sh'])
     throw new InvalidError('the task has no solution/solve.sh')
+  if (options.solution && finalMessage && !source.files[finalMessagePath])
+    throw new InvalidError('the task answers with its final message and has no ' + finalMessagePath)
   const solution = raw['solution'] === undefined ? {} : table(raw, 'solution')
   const shipped = [
     ...(image === undefined ? ['environment/'] : []),
@@ -111,7 +123,12 @@ export async function load(source: Source, options: load.Options = {}): Promise<
     instruction: Bytes.toText(instruction),
     name: string(task, 'name'),
     ...(options.solution ? { solution: { env: strings(solution, 'env') } } : {}),
-    verifier: { env: strings(verifier, 'env'), timeoutSec: positive(verifier, 'timeout_sec') },
+    verifier: {
+      env: strings(verifier, 'env'),
+      ...(finalMessage ? { finalMessage } : {}),
+      ...(judge ? { judge } : {}),
+      timeoutSec: positive(verifier, 'timeout_sec'),
+    },
   }
 }
 
@@ -135,6 +152,11 @@ export function parse(value: unknown): Task {
     task.agent.timeoutSec > 0 &&
     Number.isFinite(task.verifier?.timeoutSec) &&
     task.verifier.timeoutSec > 0 &&
+    (task.verifier.finalMessage === undefined || task.verifier.finalMessage === true) &&
+    (task.verifier.judge === undefined || task.verifier.judge === true) &&
+    (!task.solution ||
+      !task.verifier.finalMessage ||
+      typeof task.files[finalMessagePath] === 'string') &&
     Number.isFinite(task.environment?.cpus) &&
     task.environment.cpus > 0 &&
     Number.isSafeInteger(task.environment?.memoryMb) &&
@@ -156,7 +178,7 @@ export function parse(value: unknown): Task {
   return task
 }
 
-async function checksum(files: Record<string, Uint8Array>): Promise<string> {
+export async function checksum(files: Record<string, Uint8Array>): Promise<string> {
   const packaged = Object.keys(files)
     .filter(
       (path) =>
@@ -167,6 +189,13 @@ async function checksum(files: Record<string, Uint8Array>): Promise<string> {
   const lines: string[] = []
   for (const path of packaged) lines.push(path + '\0' + (await Bytes.sha256(files[path]!)) + '\n')
   return Bytes.sha256(Bytes.fromText(lines.join('')))
+}
+
+function flag(table: Record<string, unknown>, key: string): true | undefined {
+  const value = table[key]
+  if (value !== undefined && typeof value !== 'boolean')
+    throw new InvalidError('metadata.nanoeval.' + key + ' must be true or false')
+  return value === true ? true : undefined
 }
 
 function number(table: Record<string, unknown>, key: string, fallback: number): number {
