@@ -31,6 +31,7 @@ export type Attempt = {
     thinking?: string
     usage: Atif.Usage | null
   }
+  oomKills?: number
   outcome: 'errored' | 'failed' | 'passed'
   reward: number | null
   sandbox: { backend: string; id: number; provider: string; slot: string } | null

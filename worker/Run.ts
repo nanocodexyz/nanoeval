@@ -420,6 +420,7 @@ export class Run extends DurableObject<Env> {
       failure: result?.failure ?? (row.failure ? JSON.parse(row.failure) : undefined),
       id: row.id,
       n: row.n,
+      oomKills: result?.oomKills,
       outcome: result?.outcome,
       phase: row.phase,
       reward: result?.reward,
@@ -1160,6 +1161,7 @@ export class Run extends DurableObject<Env> {
         this.update('attempts', row.id, { timing: this.timing(row, 'verifier', 'finish') })
         await this.finish(provider, this.attempt(row.id)!, {
           ...(failure ? { failure } : {}),
+          ...(state.oom ? { oomKills: state.oom } : {}),
           reward: failure && failure.kind !== 'agent_timeout' ? null : state.reward,
         })
         return
@@ -1227,7 +1229,7 @@ export class Run extends DurableObject<Env> {
   private async finish(
     provider: Sandbox.Provider,
     row: AttemptRow,
-    end: { failure?: Result.Failure; reward: number | null },
+    end: { failure?: Result.Failure; oomKills?: number; reward: number | null },
   ): Promise<void> {
     const config = this.config()
     const task = this.task(row.task)
@@ -1290,6 +1292,7 @@ export class Run extends DurableObject<Env> {
             },
           }
         : {}),
+      ...(end.oomKills ? { oomKills: end.oomKills } : {}),
       outcome: Result.outcome(end.reward, end.failure),
       reward: end.reward,
       sandbox:

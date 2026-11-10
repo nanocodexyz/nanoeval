@@ -247,6 +247,7 @@ export function summary(status: Record<string, any>): string {
           attempt['agent'],
           '#' + attempt['n'],
           attempt['outcome'] ?? attempt['phase'],
+          attempt['oomKills'] ? 'oom_kills=' + attempt['oomKills'] : '',
           attempt['failure']
             ? attempt['failure'].kind + ': ' + String(attempt['failure'].message).slice(0, 160)
             : '',

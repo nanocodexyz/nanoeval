@@ -55,6 +55,7 @@ const solutions: [marker: string, right: string, wrong: string][] = [
     "setsid sh -c 'echo $$ > background.pid; exec sleep 300.5' >/dev/null 2>&1 & while [ ! -s background.pid ]; do sleep 0.1; done",
     'true',
   ],
+  ['hog.txt', "x=$(head -c 400000000 /dev/zero | tr '\\0' x); echo ${#x} > hog.txt", 'true'],
   ['large.bin', 'true', 'true'],
   ['slow.txt', 'sleep 30; echo late > slow.txt', 'true'],
   ['greeting.txt', "printf 'hello from nanoeval\\n' > greeting.txt", 'echo hi > greeting.txt'],

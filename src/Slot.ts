@@ -17,7 +17,14 @@ export type Status = {
   setup: Phase
   slots: Record<
     string,
-    { hand: Phase; reward: number | null; solve: Phase; up: Phase; verify: Phase }
+    {
+      hand: Phase
+      oom: number | null
+      reward: number | null
+      solve: Phase
+      up: Phase
+      verify: Phase
+    }
   >
 }
 

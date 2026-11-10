@@ -1,6 +1,7 @@
 mod boot;
 mod copy;
 mod exec;
+mod kmsg;
 mod relay;
 mod unpack;
 
@@ -28,10 +29,22 @@ fn main() -> ExitCode {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     let Some(mode) = arguments.first() else {
         eprintln!(
-            "usage: nanoeval-krun-guest <disk|overlay> [rt] [private] [forward=ADDRESS:PORT...]"
+            "usage: nanoeval-krun-guest <disk|overlay> [rt] [private] [forward=ADDRESS:PORT...] | oom-kills"
         );
         return ExitCode::from(125);
     };
+    if mode == "oom-kills" {
+        return match kmsg::oom_kills() {
+            Ok(kills) => {
+                println!("{kills}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("nanoeval-krun-guest: {error}");
+                ExitCode::from(125)
+            }
+        };
+    }
     let has = |name: &str| arguments.iter().any(|argument| argument == name);
     let options = boot::Options {
         private: has(wire::PRIVATE),

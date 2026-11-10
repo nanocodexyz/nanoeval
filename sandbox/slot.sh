@@ -587,17 +587,30 @@ reward() {
   printf 'null'
 }
 
+oom() {
+  local value
+  value=$(cat "$1/oom" 2>/dev/null) || true
+  if [[ $value =~ ^[0-9]+$ ]]; then printf '%s' "$value"; else printf 'null'; fi
+}
+
+free_disk() {
+  local paths=("$home")
+  if [ -d "$cache" ]; then paths+=("$cache"); fi
+  if [ -s "$home/docker-root" ]; then paths+=("$(cat "$home/docker-root")"); fi
+  df --output=avail -BM "${paths[@]}" 2>/dev/null | awk 'NR > 1 { free = $1 + 0; if (least == "" || free < least) least = free } END { print least == "" ? 0 : least }'
+}
+
 cmd_status() {
   local first=1 dir slot
-  printf '{"setup":"%s","slots":{' "$(state "$home/setup.status")"
+  printf '{"disk_mb":%s,"setup":"%s","slots":{' "$(free_disk)" "$(state "$home/setup.status")"
   for dir in "$home"/slots/*/; do
     [ -d "$dir" ] || continue
     dir=${dir%/}
     slot=${dir##*/}
     [ "$first" = 1 ] || printf ','
     first=0
-    printf '"%s":{"hand":"%s","reward":%s,"solve":"%s","up":"%s","verify":"%s"}' \
-      "$slot" "$(state "$dir/hand.status")" "$(reward "$dir")" "$(state "$dir/solve.status")" "$(state "$dir/up.status")" "$(state "$dir/verify.status")"
+    printf '"%s":{"hand":"%s","oom":%s,"reward":%s,"solve":"%s","up":"%s","verify":"%s"}' \
+      "$slot" "$(state "$dir/hand.status")" "$(oom "$dir")" "$(reward "$dir")" "$(state "$dir/solve.status")" "$(state "$dir/up.status")" "$(state "$dir/verify.status")"
   done
   printf '}}\n'
 }
