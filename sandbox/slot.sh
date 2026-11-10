@@ -49,15 +49,17 @@ launcher() {
 }
 
 cmd_probe() {
-  local cpus memory docker=false kvm=false userns=false bwrap=false
+  local cpus memory docker=false kvm=false userns=false bwrap=false ca_bundle=false slot_env=false
   cpus=$(getconf _NPROCESSORS_ONLN)
   memory=$(awk '/MemTotal/ {print int($2 / 1024)}' /proc/meminfo)
   if has docker && docker info >/dev/null 2>&1; then docker=true; fi
   if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then kvm=true; fi
   if has unshare && unshare -U true >/dev/null 2>&1; then userns=true; fi
   if has bwrap; then bwrap=true; fi
-  printf '{"arch":"%s","bwrap":%s,"cpus":%s,"docker":%s,"kernel":"%s","kvm":%s,"memory_mb":%s,"userns":%s}\n' \
-    "$(uname -m)" "$bwrap" "$cpus" "$docker" "$(uname -r)" "$kvm" "$memory" "$userns"
+  if [ -f "$rt/trust" ]; then ca_bundle=true; fi
+  if [ -n "${NANOEVAL_SLOT_ENV:-}" ]; then slot_env=true; fi
+  printf '{"arch":"%s","bwrap":%s,"ca_bundle":%s,"cpus":%s,"docker":%s,"kernel":"%s","kvm":%s,"memory_mb":%s,"slot_env":%s,"userns":%s}\n' \
+    "$(uname -m)" "$bwrap" "$ca_bundle" "$cpus" "$docker" "$(uname -r)" "$kvm" "$memory" "$slot_env" "$userns"
 }
 
 cmd_setup() {

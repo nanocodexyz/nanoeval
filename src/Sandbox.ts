@@ -1,11 +1,13 @@
 export type Capabilities = {
   arch: string
   bwrap: boolean
+  ca_bundle: boolean
   cpus: number
   docker: boolean
   kernel: string
   kvm: boolean
   memory_mb: number
+  slot_env: boolean
   userns: boolean
 }
 
