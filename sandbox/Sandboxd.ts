@@ -118,8 +118,8 @@ export async function start(options: Options): Promise<Server> {
         () => false,
       )
       if (scripted)
-        await run('bash "$1" destroy', {
-          cwd: root,
+        await run('bash slot.sh destroy', {
+          cwd: directory,
           env: { ...env, NANOEVAL_HOME: directory },
           timeoutMs: options.execTimeoutMs,
         }).catch(() => undefined)
