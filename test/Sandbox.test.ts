@@ -499,6 +499,7 @@ test(
           'ls: /tests: No such file or directory\nls: /solution: No such file or directory\nwarn\n',
         stdout: '1\nnotes.md\n',
       })
+      assert.equal((await guest('cat /proc/sys/kernel/pid_max')).stdout, '32768\n')
       const memoryKb = Number((await guest("awk '/MemTotal/ { print $2 }' /proc/meminfo")).stdout)
       assert.ok(memoryKb > 0 && memoryKb < 2 * task.environment.memoryMb * 1024, memoryKb + ' kB')
 

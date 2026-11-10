@@ -10,6 +10,8 @@ use nix::{
 use crate::{NONE, step};
 
 const HOSTS: &str = "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n";
+const PID_MAX: &str = "/proc/sys/kernel/pid_max";
+const PID_MAX_DEFAULT: &str = "32768";
 const OVERLAY: &str = "lowerdir=/mnt/lower,upperdir=/mnt/upper/upper,workdir=/mnt/upper/work";
 const RESOLVER: &str = "/opt/nanoeval/krun/resolv.conf";
 const RUNTIME: &str = "/mnt/root/opt/nanoeval";
@@ -79,6 +81,10 @@ pub(crate) fn run(mode: &str, options: &Options) -> io::Result<()> {
     step("pivot the root", pivot_root(".", "."))?;
     step("detach the boot root", umount2(".", MntFlags::MNT_DETACH))?;
     step("enter /", chdir("/"))?;
+    step(
+        "raise the limit on process ids",
+        fs::write(PID_MAX, PID_MAX_DEFAULT),
+    )?;
     if mode == "overlay" {
         if options.private {
             let resolver = format!("nameserver {}\n", wire::GUEST_RESOLVER);
