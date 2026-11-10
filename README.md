@@ -24,6 +24,7 @@ This is a first version. The table says what was run.
 | Worker orchestrator (`Run` Durable Object), nanocode-ts harness sessions, CLI and API | Implemented. Tested end to end under local workerd |
 | Local sandbox provider (`nanoeval sandboxd`) | Implemented, tested |
 | Slot backends `docker` and `dir` | Implemented, tested: up to 64 attempts at once in one sandbox |
+| Slot backend `krun`, one libkrun microVM per slot | Implemented, tested on a Linux machine with KVM: every end-to-end lane, 32 microVMs at once, and four Terminal-Bench 2.1 tasks with their own solutions, of which three pass and one fails on a limit of the guest network |
 | Released `nanocode hand` in a slot, including Alpine images | Implemented, tested |
 | Real model run | Tested with `claude-haiku-4-5` through the Anthropic API and with `gpt-6-luna` on a ChatGPT plan login |
 | Oracle run (`nanoeval run --oracle`): each task's own solution instead of a model | Implemented, tested |
@@ -40,7 +41,7 @@ This is a first version. The table says what was run.
 | A certificate bundle and variables for slot containers (`sandboxd --ca-bundle`, `--slot-env`) | Implemented, tested |
 | Network isolation between local Docker slots | Missing. They share the host network, so attempts that listen on a fixed port are not isolated from each other |
 | Deployment to Cloudflare | Bundles with `wrangler deploy --dry-run`. Not deployed |
-| `krun` (libkrun microVM) and `bwrap` slot backends | Planned |
+| A private network for krun slots, and the `bwrap` slot backend | Planned |
 | `allow_internet = false`, Compose tasks, separate verifier environments | Refused at submission. Planned |
 | Reruns with lineage, prompt-cache cohorts, duration-ordered dispatch, R2 artifacts, MPP sessions | Planned |
 
@@ -83,6 +84,24 @@ The script needs Node 24, Docker and systemd. It writes two user services, `nano
 
 Two options are for a machine whose network stands between its containers and the internet. `--ca-bundle FILE` makes slot containers trust that bundle when the network re-signs TLS. `--slot-env FILE` starts them with the variables of that file, such as a package index or `UV_EXCLUDE_NEWER` where the registry holds back fresh releases.
 
+### krun slots
+
+`--backend krun` gives every slot its own microVM instead of a container. The machine needs:
+
+- Linux on x86_64 or aarch64 with `/dev/kvm` readable and writable by the user that runs `sandboxd`, usually through the `kvm` group.
+- [libkrunfw](https://github.com/containers/libkrunfw) 5 where the dynamic loader finds `libkrunfw.so.5`.
+- Docker, which still builds or pulls the task image, and `mke2fs` from e2fsprogs.
+- A Rust toolchain through rustup. The first sandbox builds the launcher in `krun/` (about a minute) and later ones reuse it. `NANOEVAL_KRUN` names a directory with a built `nanoeval-krun` and `nanoeval-krun-guest` instead.
+
+```sh
+node cli/nanoeval.ts run --url http://127.0.0.1:8787 --token "$TOKEN" \
+  --task tasks/extract-todos --task tasks/uppercase-message \
+  --agent haiku=claude:claude-haiku-4-5 \
+  --backend krun --attempts 2 --slots 4 --wait
+```
+
+Image disks are kept in `~/.cache/nanoeval/krun` and are not removed by a run. A krun slot shares the host's network as `--network host` does, with the limits listed in [DESIGN.md](DESIGN.md#krun-slots).
+
 ## Run it on E2B
 
 Not yet run against the real service. The intended flow:
@@ -113,6 +132,8 @@ npm run e2e           # local workerd + sandboxd + Docker slots + the scripted m
 NANOEVAL_E2E_MODEL=oracle npm run e2e      # the task solutions in place of a model
 NANOEVAL_E2E_MODEL=anthropic npm run e2e   # a real model with ANTHROPIC_API_KEY
 NANOEVAL_E2E_MODEL=codex-plan npm run e2e  # a real model on the ChatGPT plan of ~/.codex/auth.json
+NANOEVAL_E2E_BACKEND=krun npm run e2e      # microVM slots, skipped where krun cannot run
+(cd krun && cargo clippy --all-targets -- -D warnings && cargo test)   # the krun launcher
 ```
 
 The scripted model answers the harness with fixed tool calls, so the end-to-end test needs no API key. It still runs the real Worker, the real nanocode-ts harness, the released hand and the real verifiers.
@@ -124,6 +145,7 @@ The scripted model answers the harness with fixed tool calls, so the end-to-end 
 | `worker/` | The Worker: routes, the `Run` object, the harness sessions |
 | `src/` | Host-agnostic modules: tasks, results, admission, budget, providers |
 | `sandbox/` | `slot.sh`, the slot splitter, and `Sandboxd.ts`, the local sandbox daemon |
+| `krun/` | The Rust workspace of the krun backend: the libkrun binding, the launcher and the guest binary |
 | `cli/` | The `nanoeval` command |
 | `scripts/` | `install-linux.sh` and the E2B price quote |
 | `tasks/` | Three small Harbor tasks from gakonst/nanoeval |
