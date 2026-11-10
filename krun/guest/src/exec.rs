@@ -18,7 +18,7 @@ use nix::{
     fcntl::{FcntlArg, OFlag, fcntl},
     poll::{PollFd, PollFlags, PollTimeout, poll},
     sys::{
-        signal::{Signal, killpg},
+        signal::{Signal, kill},
         wait::{Id, WaitPidFlag, waitid},
     },
     unistd::Pid,
@@ -130,7 +130,7 @@ pub(crate) fn run(connection: &File, spec: &Spec) -> io::Result<i32> {
             });
         }
     };
-    let group = Pid::from_raw(
+    let process = Pid::from_raw(
         i32::try_from(child.id()).map_err(|_| invalid("the child id overflows".to_owned()))?,
     );
     let input = child.stdin.take();
@@ -145,23 +145,26 @@ pub(crate) fn run(connection: &File, spec: &Spec) -> io::Result<i32> {
             .map(|pipe| File::from(OwnedFd::from(pipe))),
     ];
     let exited = Arc::new(Mutex::new(false));
-    let kill = {
+    let end = {
         let exited = Arc::clone(&exited);
         move || {
             let exited = exited.lock().unwrap_or_else(PoisonError::into_inner);
             if !*exited {
-                let _ = killpg(group, Signal::SIGKILL);
+                let _ = kill(process, Signal::SIGTERM);
             }
         }
     };
 
     let reader = connection.try_clone()?;
-    let hang_up = kill.clone();
+    let hang_up = end.clone();
     thread::spawn(move || feed(reader, input, hang_up));
 
     let (done, finished) = io::pipe()?;
     let waiter = thread::spawn(move || {
-        let _ = waitid(Id::Pid(group), WaitPidFlag::WEXITED | WaitPidFlag::WNOWAIT);
+        let _ = waitid(
+            Id::Pid(process),
+            WaitPidFlag::WEXITED | WaitPidFlag::WNOWAIT,
+        );
         let mut exited = exited.lock().unwrap_or_else(PoisonError::into_inner);
         *exited = true;
         let status = child.wait();
@@ -171,7 +174,7 @@ pub(crate) fn run(connection: &File, spec: &Spec) -> io::Result<i32> {
 
     let forwarded = forward(&mut sources, &done, &mut writer);
     if forwarded.is_err() {
-        kill();
+        end();
     }
     let status = waiter
         .join()
