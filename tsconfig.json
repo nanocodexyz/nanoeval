@@ -12,5 +12,12 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable", "ESNext.Disposable"],
     "skipLibCheck": true
   },
-  "include": ["cli/*.ts", "sandbox/*.ts", "scripts/*.ts", "src/**/*.ts", "test/*.ts"]
+  "include": [
+    "cli/*.ts",
+    "datasets/*.ts",
+    "sandbox/*.ts",
+    "scripts/*.ts",
+    "src/**/*.ts",
+    "test/*.ts"
+  ]
 }

@@ -17,6 +17,7 @@
     "test": "node --test test/*.test.ts"
   },
   "dependencies": {
+    "hyparquet": "1.32.0",
     "mppx": "0.16.0",
     "nanocode-egress": "https://github.com/nanocodexyz/egress/releases/download/build-a0ff241/nanocode-egress-a0ff241.tgz",
     "nanocode-ts": "https://github.com/nanocodexyz/nanocode-ts/releases/download/build-751e03a/nanocode-ts-751e03a.tgz",
