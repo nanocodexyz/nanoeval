@@ -12,7 +12,7 @@ export function machines(root: string): string[] {
     )
 }
 
-export function missing(): string | undefined {
+export function missing(network: 'host' | 'private' = 'host'): string | undefined {
   try {
     Fs.accessSync('/dev/kvm', Fs.constants.R_OK | Fs.constants.W_OK)
   } catch {
@@ -29,6 +29,7 @@ export function missing(): string | undefined {
     Fs.existsSync(Path.join(Os.homedir(), '.cargo/bin/cargo'))
   if (!process.env['NANOEVAL_KRUN'] && !cargo)
     return 'cargo, or NANOEVAL_KRUN with the built launcher'
+  if (network === 'private' && spawnSync('passt', ['--version']).error) return 'passt'
   return undefined
 }
 

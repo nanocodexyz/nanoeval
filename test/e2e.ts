@@ -9,8 +9,9 @@ import * as Path from 'node:path'
 import { client, exportJob, loadTask, oracle, summary } from '../cli/nanoeval.ts'
 import * as Plan from '../cli/Plan.ts'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
-import type * as Config from '../src/Config.ts'
+import * as Config from '../src/Config.ts'
 import * as Krun from './Krun.ts'
+import * as Network from './Network.ts'
 
 const model = process.env['NANOEVAL_E2E_MODEL'] ?? 'scripted'
 const backend = (process.env['NANOEVAL_E2E_BACKEND'] ??
@@ -28,6 +29,9 @@ const login = process.env['NANOEVAL_E2E_LOGIN']
 const scenario = process.env['NANOEVAL_E2E_SCENARIO'] ?? 'tasks'
 const restartAfterMs = Number(process.env['NANOEVAL_E2E_RESTART_AFTER_MS'] ?? '0')
 const caBundle = process.env['NANOEVAL_E2E_CA_BUNDLE']
+const slotForward = process.env['NANOEVAL_E2E_SLOT_FORWARD']
+const network = (process.env['NANOEVAL_E2E_NETWORK'] ??
+  Config.network({ backend, provider: 'local' })) as Config.Config['sandbox']['network']
 const tickMs = process.env['NANOEVAL_E2E_TICK_MS'] ?? '500'
 const label =
   process.env['NANOEVAL_E2E_LABEL'] ??
@@ -54,6 +58,7 @@ const solutions: [marker: string, right: string, wrong: string][] = [
   ['large.bin', 'true', 'true'],
   ['slow.txt', 'sleep 30; echo late > slow.txt', 'true'],
   ['greeting.txt', "printf 'hello from nanoeval\\n' > greeting.txt", 'echo hi > greeting.txt'],
+  ['port.token', 'sh start.sh', 'true'],
 ]
 
 function sse(events: [string, unknown][]): string {
@@ -175,22 +180,6 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
   })
 }
 
-function containers(root: string): string[] {
-  return execFileSync('docker', [
-    'ps',
-    '-a',
-    '--filter',
-    'label=nanoeval',
-    '--format',
-    '{{.ID}}\t{{.Label "nanoeval"}}',
-  ])
-    .toString()
-    .split('\n')
-    .map((line) => line.split('\t'))
-    .filter(([, home]) => home?.startsWith(root + Path.sep))
-    .map(([id]) => id!)
-}
-
 function inspect(ids: readonly string[]): [name: string, limits: string, env: string][] {
   if (!ids.length) return []
   try {
@@ -216,7 +205,8 @@ async function freePort(): Promise<number> {
 }
 
 async function main(): Promise<void> {
-  const missing = backend === 'krun' ? Krun.missing() : undefined
+  const missing =
+    backend === 'krun' ? Krun.missing(network === 'private' ? 'private' : 'host') : undefined
   if (missing) {
     console.log('e2e skipped: ' + label + ' needs ' + missing)
     return
@@ -226,12 +216,23 @@ async function main(): Promise<void> {
   const token = Crypto.randomBytes(16).toString('hex')
   const sandboxToken = Crypto.randomBytes(16).toString('hex')
 
-  Fs.writeFileSync(Path.join(out, 'slot.env'), 'NANOEVAL_E2E_LABEL=' + label + '\n')
-  Fs.writeFileSync(Path.join(out, 'slot.env'), 'NANOEVAL_E2E_LABEL=' + label + '\n')
+  const port = await freePort()
+  const beacon = await listen((_, response) => void response.end('the host\n'))
+  Fs.writeFileSync(
+    Path.join(out, 'slot.env'),
+    'NANOEVAL_E2E_LABEL=' +
+      label +
+      '\nNANOEVAL_E2E_HOST_PORT=' +
+      new URL(beacon.url).port +
+      '\nNANOEVAL_E2E_SESSION_PORT=' +
+      port +
+      '\n',
+  )
   const sandboxd = await Sandboxd.start({
     env: {
       NANOEVAL_SLOT_ENV: Path.join(out, 'slot.env'),
       ...(caBundle ? { NANOEVAL_CA_BUNDLE: Path.resolve(caBundle) } : {}),
+      ...(slotForward ? { NANOEVAL_SLOT_FORWARD: slotForward } : {}),
     },
     execTimeoutMs: 600_000,
     host: '127.0.0.1',
@@ -249,7 +250,6 @@ async function main(): Promise<void> {
   if (plan?.expiresAt !== undefined && plan.expiresAt <= Date.now())
     throw new Error('the plan login expired at ' + new Date(plan.expiresAt).toISOString())
   const relay = model === 'codex-plan' ? await Plan.relay() : undefined
-  const port = await freePort()
   const url = 'http://127.0.0.1:' + port
   const vars: Record<string, string> = {
     ACCESS_TOKEN: token,
@@ -312,8 +312,18 @@ async function main(): Promise<void> {
     assert.equal(unauthorized.status, 401)
 
     const failures = scenario === 'failures'
+    const isolated = scenario === 'network'
     if (scenario !== 'tasks' && model !== 'scripted')
       throw new Error('the ' + scenario + ' scenario runs on the scripted model')
+    if (isolated) {
+      if (backend === 'dir') throw new Error('the network scenario runs on docker or krun slots')
+      await Network.isolation({
+        backend,
+        hostPort: Number(new URL(beacon.url).port),
+        network,
+        sandboxd: { token: sandboxToken, url: sandboxd.url },
+      })
+    }
     const directories = failures
       ? [
           'large-tests',
@@ -321,7 +331,9 @@ async function main(): Promise<void> {
           'slow-agent',
           ...(backend === 'dir' ? [] : ['background-process', 'broken-environment']),
         ].map((name) => Path.join('test/fixtures', name))
-      : taskNames.map((name) => Path.join('tasks', name))
+      : isolated
+        ? [Network.fixture]
+        : taskNames.map((name) => Path.join('tasks', name))
     const agents: Config.Agent[] =
       model === 'oracle'
         ? [oracle]
@@ -334,8 +346,14 @@ async function main(): Promise<void> {
                 ...(thinking ? { thinking } : {}),
               },
             ]
-          : failures || model !== 'scripted'
-            ? [{ id: failures ? 'right' : 'nanocode', model: realModel, provider: 'claude' }]
+          : failures || isolated || model !== 'scripted'
+            ? [
+                {
+                  id: failures || isolated ? 'right' : 'nanocode',
+                  model: realModel,
+                  provider: 'claude',
+                },
+              ]
             : [
                 { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
                 { id: 'wrong', model: 'claude-sonnet-4-6', provider: 'claude' },
@@ -348,7 +366,7 @@ async function main(): Promise<void> {
         task.files['tests/large.bin'] = Buffer.alloc(largeTestBytes).toString('base64')
     const config: Config.Config = {
       agents,
-      attempts: failures ? 1 : attempts,
+      attempts: failures ? 1 : isolated ? slots : attempts,
       budget: { modelUsd: 1, sandboxUsd: 0 },
       limits: { attachSec: 60, setupSec: 600, stepRetries: 3 },
       name: 'e2e-' + label,
@@ -357,7 +375,7 @@ async function main(): Promise<void> {
         docker: 'keep',
         limits,
         max: 1,
-        network: 'host',
+        network,
         provider: 'local',
         slots,
         timeoutSec: 3600,
@@ -395,7 +413,7 @@ async function main(): Promise<void> {
       if (status['state'] === 'finished') break
       if (status['counts'].active > 0) activeAt ??= Date.now()
       if (backend === 'docker' && scenario !== 'restart')
-        for (const [name, value, env] of inspect(containers(sandboxes)))
+        for (const [name, value, env] of inspect(Network.containers(sandboxes)))
           observed.set(name, { env: JSON.parse(env) as string[], limits: value })
       if (backend === 'krun') for (const size of Krun.sizes(sandboxes)) sizes.add(size)
       if (
@@ -421,8 +439,14 @@ async function main(): Promise<void> {
     assert.equal(status['sandboxes'][0].state, 'closed')
     assert.equal(status['sandboxes'][0].capabilities.ca_bundle, caBundle !== undefined)
     assert.equal(status['sandboxes'][0].capabilities.slot_env, true)
+    assert.equal(status['sandboxes'][0].capabilities.slot_forward, slotForward !== undefined)
+    assert.equal(status['sandboxes'][0].capabilities.network, network)
+    if (backend !== 'dir') {
+      assert.deepEqual(Network.networks(sandboxes), [], 'no slot network outlives the run')
+      assert.deepEqual(Network.relays(sandboxes), [], 'no relay outlives the run')
+    }
     if (backend === 'docker') {
-      assert.deepEqual(containers(sandboxes), [], 'no slot container outlives the run')
+      assert.deepEqual(Network.containers(sandboxes), [], 'no slot container outlives the run')
       if (scenario !== 'restart') {
         assert.ok(observed.size > 0, 'slot containers were seen while the run was active')
         for (const [name, seen] of observed) {
@@ -444,7 +468,7 @@ async function main(): Promise<void> {
     }
     if (backend === 'krun') {
       assert.deepEqual(Krun.machines(sandboxes), [], 'no microVM outlives the run')
-      assert.deepEqual(containers(sandboxes), [], 'no export container outlives the run')
+      assert.deepEqual(Network.containers(sandboxes), [], 'no export container outlives the run')
       if (scenario !== 'restart') {
         assert.ok(sizes.size > 0, 'microVMs were seen while the run was active')
         for (const size of sizes)
@@ -479,7 +503,14 @@ async function main(): Promise<void> {
     assert.equal(status['counts'].errored, 0, 'no attempt may end in an infrastructure error')
     assert.equal(status['counts'].passed + status['counts'].failed, total)
     assert.equal(peak, Math.min(slots, total), 'the sandbox fills every slot')
-    if (model === 'scripted') {
+    if (isolated) {
+      for (const attempt of status['attempts'] as { id: string; outcome: string }[])
+        assert.equal(
+          attempt.outcome,
+          'passed',
+          await api.artifact(created.id, attempt.id, 'verifier/test-stdout.txt'),
+        )
+    } else if (model === 'scripted') {
       assert.equal(status['agents'].right.passed, total / 2)
       assert.equal(status['agents'].wrong.failed, total / 2)
       assert.equal(status['agents'].right.passAtK['1'], 1)
@@ -534,6 +565,7 @@ async function main(): Promise<void> {
           : model === 'codex-plan'
             ? codexModel
             : model,
+      network,
       peakConcurrentAttempts: peak,
       slots,
       spend: status['spend'],
@@ -546,6 +578,7 @@ async function main(): Promise<void> {
     console.log('e2e passed: ' + label)
   } finally {
     await stop(worker, 'SIGTERM')
+    beacon.close()
     upstream.close()
     await relay?.close()
     Fs.rmSync(secrets, { force: true, recursive: true })

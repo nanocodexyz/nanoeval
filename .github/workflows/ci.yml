@@ -51,10 +51,19 @@ jobs:
         run: npm run e2e
         env:
           NANOEVAL_E2E_SCENARIO: restart
+      - name: End to end, slot networks
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: network
       - name: End to end, krun slots, skipped where krun cannot run
         run: npm run e2e
         env:
           NANOEVAL_E2E_BACKEND: krun
+      - name: End to end, krun slot networks, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: krun
+          NANOEVAL_E2E_SCENARIO: network
       - name: Keep the logs of a failed run
         if: failure()
         uses: actions/upload-artifact@v4
