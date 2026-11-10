@@ -219,6 +219,9 @@ export function summary(status: Record<string, any>): string {
         row.attempts +
         ', errored ' +
         row.errored +
+        (row.meanReward === null || row.meanReward === undefined
+          ? ''
+          : ', mean reward ' + Number(row.meanReward).toFixed(3)) +
         ', ' +
         Object.entries(row.passAtK as Record<string, number>)
           .map(([k, value]) => 'pass@' + k + ' ' + (value * 100).toFixed(1) + '%')

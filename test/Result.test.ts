@@ -162,6 +162,7 @@ test('pass@k counts a task solved when any of its first k attempts passed', () =
   assert.equal(summary.failed, 1)
   assert.equal(summary.errored, 1)
   assert.equal(summary.tasks, 2)
+  assert.ok(Math.abs(summary.meanReward! - 2 / 3) < 1e-9)
   assert.ok(Math.abs(summary.costUsd! - 0.0306) < 1e-9)
 })
 

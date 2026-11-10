@@ -54,6 +54,7 @@ export type AgentSummary = {
   failed: number
   inputTokens: number
   cachedTokens: number
+  meanReward: number | null
   outputTokens: number
   passAtK: Record<string, number>
   passed: number
@@ -77,6 +78,7 @@ export function summarize(attempts: readonly Attempt[]): Record<string, AgentSum
       failed: 0,
       inputTokens: 0,
       cachedTokens: 0,
+      meanReward: null,
       outputTokens: 0,
       passAtK: {},
       passed: 0,
@@ -97,6 +99,11 @@ export function summarize(attempts: readonly Attempt[]): Record<string, AgentSum
   for (const [agent, byTask] of Object.entries(tasks)) {
     const summary = agents[agent]!
     const groups = Object.values(byTask)
+    const rewards = groups
+      .flat()
+      .flatMap((attempt) => (attempt.reward === null ? [] : [attempt.reward]))
+    if (rewards.length)
+      summary.meanReward = rewards.reduce((total, reward) => total + reward, 0) / rewards.length
     summary.tasks = groups.length
     const trials = Math.min(...groups.map((group) => group.length))
     for (let k = 1; k <= trials; k++) {
