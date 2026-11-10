@@ -4,6 +4,7 @@ set -euo pipefail
 home=${NANOEVAL_HOME:-$HOME/.nanoeval}
 rt=$home/rt
 krun=$rt/krun
+net=$rt/nanoeval-net
 cache=${NANOEVAL_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/nanoeval}
 self=$(readlink -f "$0")
 trust='CARGO_HTTP_CAINFO CURL_CA_BUNDLE GIT_SSL_CAINFO NODE_EXTRA_CA_CERTS PIP_CERT REQUESTS_CA_BUNDLE SSL_CERT_FILE'
@@ -81,16 +82,44 @@ guest_copy() {
   rm -rf "$dir/io/$name"
 }
 
-stop_vm() {
+stop_process() {
   local dir=$1 pid
-  pid=$(cat "$dir/vm.pid" 2>/dev/null) || return 0
+  pid=$(cat "$dir/$2" 2>/dev/null) || return 0
   [ "$(readlink "/proc/$pid/cwd" 2>/dev/null)" = "$(readlink -f "$dir")" ] || return 0
   kill -KILL "$pid" 2>/dev/null || true
   tail --pid="$pid" -f /dev/null -s 0.01
 }
 
+forwards() {
+  local forward
+  for forward in ${NANOEVAL_SLOT_FORWARD:-}; do
+    [[ $forward =~ ^127(\.[0-9]{1,3}){3}:[0-9]{1,5}$ ]] || die "NANOEVAL_SLOT_FORWARD lists loopback ADDRESS:PORT pairs: $forward"
+    printf '%s\n' "$forward"
+  done
+}
+
+relay() {
+  local dir=$1
+  mkdir -p "$dir/net"
+  forwards >"$dir/forwards"
+  cp "$dir/forwards" "$dir/allow"
+  (cd "$dir" && exec "$net" detach relay.log host net/relay.sock allow) >"$dir/relay.pid"
+}
+
+session() {
+  local dir=$1 url=$2
+  [ "$(cat "$dir/network" 2>/dev/null)" = private ] || return 0
+  case $url in
+    wss://*) ;;
+    *)
+      [[ $url =~ ^ws://(127(\.[0-9]{1,3}){3}:[0-9]{1,5})(/|$) ]] || die "a private slot reaches its session over wss:// or at ws://127.x.x.x:PORT: $url"
+      printf '%s\n' "${BASH_REMATCH[1]}"
+      ;;
+  esac
+}
+
 cmd_probe() {
-  local cpus memory docker=false kvm=false microvm=false userns=false bwrap=false ca_bundle=false slot_env=false
+  local cpus memory docker=false kvm=false microvm=false userns=false bwrap=false ca_bundle=false slot_env=false slot_forward=false
   cpus=$(getconf _NPROCESSORS_ONLN)
   memory=$(awk '/MemTotal/ {print int($2 / 1024)}' /proc/meminfo)
   if has docker && docker info >/dev/null 2>&1; then docker=true; fi
@@ -100,8 +129,9 @@ cmd_probe() {
   if has bwrap; then bwrap=true; fi
   if [ -f "$rt/trust" ]; then ca_bundle=true; fi
   if [ -n "${NANOEVAL_SLOT_ENV:-}" ]; then slot_env=true; fi
-  printf '{"arch":"%s","bwrap":%s,"ca_bundle":%s,"cpus":%s,"docker":%s,"kernel":"%s","krun":%s,"kvm":%s,"memory_mb":%s,"slot_env":%s,"userns":%s}\n' \
-    "$(uname -m)" "$bwrap" "$ca_bundle" "$cpus" "$docker" "$(uname -r)" "$microvm" "$kvm" "$memory" "$slot_env" "$userns"
+  if [ -n "${NANOEVAL_SLOT_FORWARD:-}" ]; then slot_forward=true; fi
+  printf '{"arch":"%s","bwrap":%s,"ca_bundle":%s,"cpus":%s,"docker":%s,"kernel":"%s","krun":%s,"kvm":%s,"memory_mb":%s,"network":"%s","slot_env":%s,"slot_forward":%s,"userns":%s}\n' \
+    "$(uname -m)" "$bwrap" "$ca_bundle" "$cpus" "$docker" "$(uname -r)" "$microvm" "$kvm" "$memory" "$(cat "$home/network" 2>/dev/null || printf none)" "$slot_env" "$slot_forward" "$userns"
 }
 
 cmd_setup() {
@@ -112,27 +142,26 @@ cmd_setup() {
   spawn "$home/setup.status" "$home/setup.log" bash "$self" _setup "$@"
 }
 
-setup_krun() {
-  local arch guest host
-  [ -c /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ] || die 'the krun backend needs read and write access to /dev/kvm'
-  has docker || die 'the krun backend builds root filesystems from Docker images and found no docker'
+built() {
+  local package=$1 target=${2:-}
   if [ -n "${NANOEVAL_KRUN:-}" ]; then
-    host=$NANOEVAL_KRUN/nanoeval-krun
-    guest=$NANOEVAL_KRUN/nanoeval-krun-guest
+    printf '%s\n' "$NANOEVAL_KRUN/$package"
   elif [ -n "${NANOEVAL_KRUN_SOURCE:-}" ]; then
     has cargo || PATH=$HOME/.cargo/bin:$PATH
-    has cargo || die 'the krun backend builds its launcher with cargo, which is not installed'
-    arch=$(uname -m)
-    (
-      cd "$NANOEVAL_KRUN_SOURCE"
-      flock . cargo build --release --locked -p nanoeval-krun
-      flock . cargo build --release --locked -p nanoeval-krun-guest --target "$arch-unknown-linux-musl"
-    )
-    host=$NANOEVAL_KRUN_SOURCE/target/release/nanoeval-krun
-    guest=$NANOEVAL_KRUN_SOURCE/target/$arch-unknown-linux-musl/release/nanoeval-krun-guest
+    has cargo || die "$package is built with cargo, which is not installed"
+    (cd "$NANOEVAL_KRUN_SOURCE" && flock . cargo build --release --locked -p "$package" ${target:+--target "$target"}) >&2
+    printf '%s\n' "$NANOEVAL_KRUN_SOURCE/target/${target:+$target/}release/$package"
   else
-    die 'the krun backend needs NANOEVAL_KRUN, a directory with the built launcher, or NANOEVAL_KRUN_SOURCE, the krun workspace'
+    die "$package comes from NANOEVAL_KRUN, a directory with the built binaries, or from NANOEVAL_KRUN_SOURCE, the krun workspace"
   fi
+}
+
+setup_krun() {
+  local guest host
+  [ -c /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ] || die 'the krun backend needs read and write access to /dev/kvm'
+  has docker || die 'the krun backend builds root filesystems from Docker images and found no docker'
+  host=$(built nanoeval-krun)
+  guest=$(built nanoeval-krun-guest "$(uname -m)-unknown-linux-musl")
   mkdir -p "$krun/boot/dev" "$krun/boot/mnt" "$krun/boot/proc" "$krun/boot/sys" "$cache/krun"
   cp "$host" "$krun/nanoeval-krun"
   cp "$guest" "$krun/boot/nanoeval-krun-guest"
@@ -144,8 +173,23 @@ setup_krun() {
   "$krun/nanoeval-krun" check >/dev/null
 }
 
+setup_private() {
+  local backend=$1 helper
+  forwards >/dev/null
+  helper=$(built nanoeval-net "$(uname -m)-unknown-linux-musl")
+  mkdir -p "$rt/net"
+  cp "$helper" "$net"
+  if [ "$backend" = krun ]; then
+    has passt || die 'the private network of krun slots needs passt, which is not installed'
+  fi
+}
+
 cmd__setup() {
-  local release=$1 sum=$2 docker=${3:-keep} backend=${4:-docker} target tmp
+  local release=$1 sum=$2 docker=${3:-keep} backend=${4:-docker} network=${5:-host} target tmp
+  case $backend-$network in
+    dir-host | docker-bridge | docker-host | docker-private | krun-host | krun-private) ;;
+    *) die "the $backend backend has no $network network" ;;
+  esac
   if [ "$docker" = install ] && ! has docker; then
     curl -fsSL https://get.docker.com | sudo sh
     sudo chmod 666 /var/run/docker.sock
@@ -190,6 +234,8 @@ cmd__setup() {
   mapfile -t run < <(launcher "$rt")
   "${run[@]}" --version
   if [ "$backend" = krun ]; then setup_krun; fi
+  if [ "$network" = private ]; then setup_private "$backend"; fi
+  printf '%s\n' "$network" >"$home/network"
 }
 
 cmd_up() {
@@ -258,10 +304,12 @@ cmd__up() {
     enforce | none) ;;
     *) die "limits is enforce or none: $limits" ;;
   esac
-  case $network in
-    bridge | host) ;;
-    *) die "network is bridge or host: $network" ;;
+  case $backend-$network in
+    dir-host | docker-bridge | docker-host | docker-private | krun-host | krun-private) ;;
+    *) die "the $backend backend has no $network network" ;;
   esac
+  if [ "$network" = private ] && [ "$(cat "$home/network" 2>/dev/null)" != private ]; then die 'the sandbox was not set up for the private network'; fi
+  printf '%s\n' "$network" >"$dir/network"
   case $backend in
     dir)
       mkdir -p "$dir/work"
@@ -283,16 +331,28 @@ cmd__up() {
       if [ -f "$dir/env" ]; then options+=(--env-file "$dir/env"); fi
       docker rm -f "nanoeval-$slot" >/dev/null 2>&1 || true
       if [ "$limits" = enforce ]; then options+=(--cpus "$cpus" --memory "${memory}m"); fi
+      if [ "$network" = private ]; then
+        network=nanoeval-$(printf '%s' "$home" | sha256sum | cut -c1-12)
+        flock "$home/network.lock" bash -c 'docker network inspect "$1" >/dev/null 2>&1 || docker network create --label "nanoeval=$2" "$1" >/dev/null' bash "$network" "$home"
+        relay "$dir"
+        options+=(-v "$dir/net:/opt/nanoeval/net:ro")
+      fi
       docker run -d --name "nanoeval-$slot" --label "nanoeval=$home" \
         --network "$network" \
         -v "$rt:/opt/nanoeval:ro" "${options[@]}" \
         --entrypoint sh "$image" -c 'sleep infinity' >/dev/null
+      if [ -f "$dir/relay.pid" ]; then
+        docker exec --privileged -u 0 "nanoeval-$slot" /opt/nanoeval/nanoeval-net firewall
+        if [ -s "$dir/forwards" ]; then
+          mapfile -t listen <"$dir/forwards"
+          docker exec -u 0 "nanoeval-$slot" /opt/nanoeval/nanoeval-net detach /dev/null slot /opt/nanoeval/net/relay.sock "${listen[@]}" >/dev/null
+        fi
+      fi
       local workdir
       workdir=$(docker inspect -f '{{.Config.WorkingDir}}' "nanoeval-$slot")
       printf '%s\n' "${workdir:-/}" >"$dir/workdir"
       ;;
     krun)
-      [ "$network" = host ] || die 'krun slots reach the network through the host: network must be host'
       [ -x "$krun/nanoeval-krun" ] || die 'the sandbox was not set up for the krun backend'
       if [ -n "${NANOEVAL_SLOT_ENV:-}" ] && [ ! -f "$NANOEVAL_SLOT_ENV" ]; then die "NANOEVAL_SLOT_ENV is not a file: $NANOEVAL_SLOT_ENV"; fi
       image=$(environment "$dir" "$image")
@@ -308,7 +368,13 @@ cmd__up() {
       printf '%s\n' "${workdir:-/}" >"$dir/workdir"
       mkdir -p "$dir/io"
       format "$dir/upper.ext4" "$storage"
-      (cd "$dir" && exec "$krun/nanoeval-krun" vm --boot "$krun/boot" --rt "$rt" --io io --socket vm.sock --cpus "$vcpus" --memory-mib "$memory" --lower "$base.ext4" --upper upper.ext4) >"$dir/vm.log" 2>&1 </dev/null &
+      local options=() forward
+      if [ "$network" = private ]; then
+        relay "$dir"
+        options+=(--passt "$(command -v passt)" --relay net/relay.sock)
+        while IFS= read -r forward; do options+=(--forward "$forward"); done <"$dir/forwards"
+      fi
+      (cd "$dir" && exec "$krun/nanoeval-krun" vm --boot "$krun/boot" --rt "$rt" --io io --socket vm.sock --cpus "$vcpus" --memory-mib "$memory" --lower "$base.ext4" --upper upper.ext4 "${options[@]}") >"$dir/vm.log" 2>&1 </dev/null &
       printf '%s\n' "$!" >"$dir/vm.pid"
       vm "$dir" ready --log vm.log --pid "$!" --socket vm.sock
       ;;
@@ -322,14 +388,17 @@ cmd_hand() {
   local dir=$home/slots/$slot token
   [ "$(state "$dir/up.status")" = exit:0 ] || die "slot $slot is not up"
   if [ "$(state "$dir/hand.status")" = running ]; then return 0; fi
+  session "$dir" "$url" >/dev/null
   IFS= read -r token
   NANOCODE_RUNNER_TOKEN=$token spawn "$dir/hand.status" "$dir/hand.log" bash "$self" _hand "$slot" "$url" "$name"
 }
 
 cmd__hand() {
   local slot=$1 url=$2 name=$3
-  local dir=$home/slots/$slot workdir
+  local dir=$home/slots/$slot workdir session
   workdir=$(cat "$dir/workdir")
+  session=$(session "$dir" "$url")
+  if [ -n "$session" ]; then printf '%s\n' "$session" >>"$dir/allow"; fi
   case $(cat "$dir/backend") in
     dir)
       mapfile -t run < <(launcher "$rt")
@@ -343,8 +412,10 @@ cmd__hand() {
       if [ -f "$rt/ca.pem" ] && ! docker exec "nanoeval-$slot" sh -c 'test -f /etc/ssl/certs/ca-certificates.crt || test -f /etc/ssl/cert.pem || test -f /etc/pki/tls/certs/ca-bundle.crt'; then
         options+=(-e SSL_CERT_FILE=/opt/nanoeval/ca.pem)
       fi
+      local relayed=()
+      if [ -n "$session" ]; then relayed=(/opt/nanoeval/nanoeval-net slot /opt/nanoeval/net/relay.sock "$session" --); fi
       exec docker exec -i -e NANOCODE_RUNNER_TOKEN -e NANOCODE_HOME=/tmp/.nanoeval-hand "${options[@]}" -w "$workdir" "nanoeval-$slot" \
-        sh -c 'echo $$ >/tmp/.nanoeval-hand.pid; exec "$@"' sh "${run[@]}" hand "$url" --name "$name" -C "$workdir"
+        "${relayed[@]}" sh -c 'echo $$ >/tmp/.nanoeval-hand.pid; exec "$@"' sh "${run[@]}" hand "$url" --name "$name" -C "$workdir"
       ;;
     krun)
       mapfile -t run < <(launcher /opt/nanoeval)
@@ -352,6 +423,7 @@ cmd__hand() {
       if [ -f "$rt/ca.pem" ] && ! vm "$dir" exec "${options[@]}" -- sh -c 'test -f /etc/ssl/certs/ca-certificates.crt || test -f /etc/ssl/cert.pem || test -f /etc/pki/tls/certs/ca-bundle.crt'; then
         options+=(--env SSL_CERT_FILE=/opt/nanoeval/ca.pem)
       fi
+      if [ -n "$session" ]; then options+=(--forward "$session"); fi
       cd "$dir"
       printf '%s\n' "$$" >"$dir/hand.pid"
       exec "$krun/nanoeval-krun" exec "${options[@]}" --env NANOCODE_RUNNER_TOKEN --env NANOCODE_HOME=/tmp/.nanoeval-hand -- \
@@ -371,6 +443,10 @@ stop_hand() {
       docker exec "nanoeval-$slot" sh -c 'kill "$(cat /tmp/.nanoeval-hand.pid)" 2>/dev/null; rm -f /tmp/.nanoeval-hand.pid' >/dev/null 2>&1 || true
       ;;
   esac
+  if [ -f "$dir/forwards" ]; then
+    cp "$dir/forwards" "$dir/allow.tmp"
+    mv "$dir/allow.tmp" "$dir/allow"
+  fi
 }
 
 cmd_solve() {
@@ -468,8 +544,9 @@ cmd_down() {
   reap "$dir"
   case $(cat "$dir/backend" 2>/dev/null) in
     docker) docker rm -f "nanoeval-$slot" >/dev/null 2>&1 || true ;;
-    krun) stop_vm "$dir" ;;
+    krun) stop_process "$dir" vm.pid ;;
   esac
+  stop_process "$dir" relay.pid
   rm -rf "$dir"
 }
 
@@ -477,9 +554,11 @@ cmd_destroy() {
   local dir
   for dir in "$home" "$home"/slots/*/; do
     reap "$dir"
+    stop_process "$dir" relay.pid
   done
   if has docker; then
     docker ps -aq --filter "label=nanoeval=$home" | xargs -r docker rm -f >/dev/null 2>&1 || true
+    docker network ls -q --filter "label=nanoeval=$home" | xargs -r docker network rm >/dev/null 2>&1 || true
   fi
   pkill -f "$home/rt/nanocode hand" >/dev/null 2>&1 || true
   pkill -KILL -f "$krun/nanoeval-krun vm " >/dev/null 2>&1 || true

@@ -533,6 +533,13 @@ export class Run extends DurableObject<Env> {
             )
           if (config.sandbox.backend === 'krun' && !capabilities.krun)
             throw new Error('the sandbox cannot start libkrun microVMs for the krun backend')
+          if (capabilities.network !== config.sandbox.network)
+            throw new Error(
+              'the sandbox was set up for the ' +
+                capabilities.network +
+                ' network, and the run asks for ' +
+                config.sandbox.network,
+            )
           this.update('sandboxes', row.id, {
             capabilities: JSON.stringify(capabilities),
             state: 'ready',
@@ -593,6 +600,7 @@ export class Run extends DurableObject<Env> {
         slots.setup({
           backend: config.sandbox.backend,
           docker: config.sandbox.docker,
+          network: config.sandbox.network,
           runtime: Slot.runtime,
         }),
       )

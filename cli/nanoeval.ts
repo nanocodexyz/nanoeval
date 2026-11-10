@@ -5,18 +5,20 @@ import * as Os from 'node:os'
 import * as Path from 'node:path'
 import { parseArgs } from 'node:util'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
-import type * as Config from '../src/Config.ts'
+import * as Config from '../src/Config.ts'
 import * as Task from '../src/Task.ts'
 import * as Plan from './Plan.ts'
 
 const usage = `nanoeval <command>
 
   sandboxd  --token T [--host 127.0.0.1] [--port 8788] [--root DIR] [--exec-timeout-ms 600000]
-            [--ca-bundle FILE] [--slot-env FILE]
-            Serve this machine as a local sandbox provider. With --ca-bundle, slot containers
-            trust that certificate bundle, for a machine whose network re-signs TLS. With
+            [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
+            Serve this machine as a local sandbox provider. With --ca-bundle, slots trust
+            that certificate bundle, for a machine whose network re-signs TLS. With
             --slot-env, they start with the variables of that file, such as a proxy or a
-            package index the machine's network requires.
+            package index the machine's network requires. With --slot-forward, a slot on
+            a private network reaches that listener on this machine's loopback at the same
+            address, for a machine whose resolver names one.
   worker    --token T [--host 127.0.0.1] [--port 8787] [--state DIR] [--tick-ms 500]
             [--sandbox-url URL --sandbox-token T] [--claude-login FILE] [--codex-login FILE]
             Run the Worker under local workerd. Model API keys and base URLs are taken from
@@ -26,10 +28,12 @@ const usage = `nanoeval <command>
             is never refreshed, and reaches workerd through a private file.
   run       --url URL --token T --task DIR... (--agent ID=PROVIDER:MODEL[:THINKING]... | --oracle)
             [--attempts 1] [--provider local|e2b] [--backend docker|dir|krun] [--slots 4] [--sandboxes 1]
-            [--memory-mb N] [--limits enforce|none] [--network bridge|host] [--docker keep|install]
+            [--memory-mb N] [--limits enforce|none] [--network private|host|bridge] [--docker keep|install]
             [--template NAME] [--sandbox-timeout-sec 3600] [--sandbox-budget-usd 0] [--model-budget-usd N]
             [--setup-sec 600] [--attach-sec 60] [--step-retries 3] [--name NAME] [--wait] [--out DIR]
-            Submit a run. With --wait, poll until it finishes, print the summary and write
+            Submit a run. A slot of the local provider gets a network of its own (private)
+            unless --network host shares the machine's. With --wait, poll until it finishes,
+            print the summary and write
             the Harbor job to --out, or to a directory named after the run under
             NANOEVAL_RUNS_DIR when that is set.
             With --oracle no model runs: each task's solution/solve.sh is sent and run in its slot,
@@ -218,6 +222,7 @@ async function main(): Promise<void> {
       sandboxes: { default: '1', type: 'string' },
       'setup-sec': { default: '600', type: 'string' },
       'slot-env': { type: 'string' },
+      'slot-forward': { multiple: true, type: 'string' },
       slots: { default: '4', type: 'string' },
       state: { type: 'string' },
       'step-retries': { default: '3', type: 'string' },
@@ -240,6 +245,9 @@ async function main(): Promise<void> {
       env: {
         ...(values['ca-bundle'] ? { NANOEVAL_CA_BUNDLE: Path.resolve(values['ca-bundle']) } : {}),
         ...(values['slot-env'] ? { NANOEVAL_SLOT_ENV: Path.resolve(values['slot-env']) } : {}),
+        ...(values['slot-forward']
+          ? { NANOEVAL_SLOT_FORWARD: values['slot-forward'].join(' ') }
+          : {}),
       },
       execTimeoutMs: Number(values['exec-timeout-ms']),
       host: values.host,
@@ -334,6 +342,7 @@ async function main(): Promise<void> {
       (values.task ?? []).map((directory) => loadTask(directory, { solution: values.oracle })),
     )
     const provider = values.provider as Config.Config['sandbox']['provider']
+    const backend = values.backend as Config.Config['sandbox']['backend']
     const config: Config.Config = {
       agents: values.oracle ? [oracle] : (values.agent ?? []).map(parseAgent),
       attempts: Number(values.attempts),
@@ -349,14 +358,13 @@ async function main(): Promise<void> {
       name:
         values.name ?? 'nanoeval-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-'),
       sandbox: {
-        backend: values.backend as Config.Config['sandbox']['backend'],
+        backend,
         docker: values.docker as 'install' | 'keep',
         limits: values.limits as 'enforce' | 'none',
         max: Number(values.sandboxes),
         ...(values['memory-mb'] ? { memoryMb: Number(values['memory-mb']) } : {}),
-        network: (values.network ?? (provider === 'local' ? 'host' : 'bridge')) as
-          | 'bridge'
-          | 'host',
+        network: (values.network ??
+          Config.network({ backend, provider })) as Config.Config['sandbox']['network'],
         provider,
         slots: Number(values.slots),
         ...(values.template ? { template: values.template } : {}),

@@ -1,4 +1,4 @@
-import type * as Slot from './Slot.ts'
+import * as Slot from './Slot.ts'
 import * as Task from './Task.ts'
 
 export class InvalidError extends Error {
@@ -24,7 +24,7 @@ export type Config = {
     limits: 'enforce' | 'none'
     max: number
     memoryMb?: number
-    network: 'bridge' | 'host'
+    network: Slot.Network
     provider: 'e2b' | 'local'
     slots: number
     template?: string
@@ -34,6 +34,12 @@ export type Config = {
 }
 
 const thinking = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
+
+export function network(sandbox: Pick<Config['sandbox'], 'backend' | 'provider'>): Slot.Network {
+  if (sandbox.backend === 'dir') return 'host'
+  if (sandbox.provider === 'local') return 'private'
+  return sandbox.backend === 'docker' ? 'bridge' : 'host'
+}
 
 export function parse(value: unknown): Config {
   const config = value as Config
@@ -95,6 +101,9 @@ export function parse(value: unknown): Config {
       )
 
   const sandbox = config.sandbox ?? fail('sandbox is required')
+  const backend = choice(sandbox.backend, 'sandbox.backend', ['dir', 'docker', 'krun'])
+  if (!Slot.networks[backend].includes(sandbox.network))
+    fail('sandbox.network of the ' + backend + ' backend is ' + Slot.networks[backend].join(' or '))
   const budget = config.budget ?? fail('budget is required')
   const limits = config.limits ?? fail('limits is required')
   return {
@@ -113,14 +122,14 @@ export function parse(value: unknown): Config {
     },
     name: config.name,
     sandbox: {
-      backend: choice(sandbox.backend, 'sandbox.backend', ['dir', 'docker', 'krun']),
+      backend,
       docker: choice(sandbox.docker, 'sandbox.docker', ['install', 'keep']),
       limits: choice(sandbox.limits, 'sandbox.limits', ['enforce', 'none']),
       max: integer(sandbox.max, 'sandbox.max', 1),
       ...(sandbox.memoryMb === undefined
         ? {}
         : { memoryMb: integer(sandbox.memoryMb, 'sandbox.memoryMb', 1) }),
-      network: choice(sandbox.network, 'sandbox.network', ['bridge', 'host']),
+      network: sandbox.network,
       provider: choice(sandbox.provider, 'sandbox.provider', ['e2b', 'local']),
       slots: integer(sandbox.slots, 'sandbox.slots', 1),
       ...(typeof sandbox.template === 'string' ? { template: sandbox.template } : {}),

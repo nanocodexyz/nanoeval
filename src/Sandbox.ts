@@ -1,3 +1,5 @@
+import type * as Slot from './Slot.ts'
+
 export type Capabilities = {
   arch: string
   bwrap: boolean
@@ -8,7 +10,9 @@ export type Capabilities = {
   krun: boolean
   kvm: boolean
   memory_mb: number
+  network: Slot.Network | 'none'
   slot_env: boolean
+  slot_forward: boolean
   userns: boolean
 }
 

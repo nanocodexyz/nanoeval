@@ -94,7 +94,9 @@ test('slots in one sandbox verify their own workspaces with the dir backend', as
   assert.ok(capabilities.memory_mb > 0)
   assert.equal(typeof capabilities.kvm, 'boolean')
   assert.equal(capabilities.ca_bundle, false)
+  assert.equal(capabilities.network, 'none')
   assert.equal(capabilities.slot_env, false)
+  assert.equal(capabilities.slot_forward, false)
   assert.deepEqual(Slot.parseStatus(await Sandbox.run(sandbox, slots.status())), {
     setup: 'none',
     slots: {},
@@ -307,6 +309,35 @@ test('deleting a sandbox ends the work its slots still run', async () => {
   assert.ok(idle())
 })
 
+test('a slot refuses a network its backend does not have', async () => {
+  const provider = Local.create({ token, url: server.url })
+  const created = await provider.create({ metadata: {}, template: undefined, timeoutSec: 60 })
+  const sandbox = provider.connect(created.handle)
+  const slots = Slot.create({ home: created.handle.home })
+  await Sandbox.run(sandbox, 'mkdir -p ' + Sandbox.quote(created.handle.home + '/slots/alone'))
+  await sandbox.write(slots.script, script)
+  await sandbox.write(slots.taskFile('alone'), Tar.pack([]))
+  await Sandbox.run(
+    sandbox,
+    slots.up('alone', {
+      backend: 'dir',
+      cpus: 1,
+      image: undefined,
+      limits: 'none',
+      memoryMb: 256,
+      network: 'private',
+      storageMb: 1024,
+    }),
+  )
+  const status = async () => Slot.parseStatus(await Sandbox.run(sandbox, slots.status()))
+  assert.equal(await wait(async () => (await status()).slots['alone']!.up), 'exit:2')
+  assert.match(
+    await Sandbox.run(sandbox, slots.log('alone', 'up', 4096)),
+    /the dir backend has no private network/,
+  )
+  await provider.kill(created.handle)
+})
+
 test(
   'a krun slot runs the solution and the verifier in a microVM',
   { skip: Krun.missing() ?? false },
@@ -332,7 +363,7 @@ test(
       await sandbox.write(slots.script, script)
       await Sandbox.run(
         sandbox,
-        slots.setup({ backend: 'krun', docker: 'keep', runtime: Slot.runtime }),
+        slots.setup({ backend: 'krun', docker: 'keep', network: 'host', runtime: Slot.runtime }),
       )
       assert.equal(await wait(async () => (await status()).setup, 12_000), 'exit:0')
       const capabilities = JSON.parse(

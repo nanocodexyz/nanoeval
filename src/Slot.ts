@@ -2,6 +2,14 @@ import * as Sandbox from './Sandbox.ts'
 
 export type Backend = 'dir' | 'docker' | 'krun'
 
+export type Network = 'bridge' | 'host' | 'private'
+
+export const networks: Record<Backend, readonly Network[]> = {
+  dir: ['host'],
+  docker: ['bridge', 'host', 'private'],
+  krun: ['host', 'private'],
+}
+
 export type Phase = 'none' | 'running' | `exit:${number}`
 
 export type Status = {
@@ -48,8 +56,20 @@ export function create(options: create.Options) {
       bytes: number,
     ) => call('log', slot, phase, String(bytes)),
     probe: () => call('probe'),
-    setup: (input: { backend: Backend; docker: 'install' | 'keep'; runtime: Runtime }) =>
-      call('setup', input.runtime.release, input.runtime.sha256, input.docker, input.backend),
+    setup: (input: {
+      backend: Backend
+      docker: 'install' | 'keep'
+      network: Network
+      runtime: Runtime
+    }) =>
+      call(
+        'setup',
+        input.runtime.release,
+        input.runtime.sha256,
+        input.docker,
+        input.backend,
+        input.network,
+      ),
     solve: (slot: string, timeoutSec: number) => call('solve', slot, String(Math.ceil(timeoutSec))),
     status: () => call('status'),
     taskFile: (slot: string) => home + '/slots/' + slot + '/task.tar',
@@ -61,7 +81,7 @@ export function create(options: create.Options) {
         image: string | undefined
         limits: 'enforce' | 'none'
         memoryMb: number
-        network: 'bridge' | 'host'
+        network: Network
         storageMb: number
       },
     ) =>

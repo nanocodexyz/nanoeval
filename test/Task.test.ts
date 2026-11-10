@@ -182,3 +182,46 @@ test('a run configuration is validated and tasks without internet are refused', 
   const offline = await Task.load(source(manifest('allow_internet = false\n')))
   assert.throws(() => Config.parse({ ...config, tasks: [offline] }), Task.UnsupportedError)
 })
+
+test('a slot network is one its backend has, and private by default on a local machine', async () => {
+  const task = await Task.load(source(manifest()))
+  const config = (backend: string, network: string) => ({
+    agents: [{ id: 'haiku', model: 'claude-haiku-4-5', provider: 'claude' }],
+    attempts: 1,
+    budget: { sandboxUsd: 0 },
+    limits: { attachSec: 60, setupSec: 600, stepRetries: 3 },
+    name: 'example',
+    sandbox: {
+      backend,
+      docker: 'keep',
+      limits: 'enforce',
+      max: 1,
+      network,
+      provider: 'local',
+      slots: 4,
+      timeoutSec: 3600,
+    },
+    tasks: [task],
+  })
+  for (const [backend, network] of [
+    ['dir', 'host'],
+    ['docker', 'bridge'],
+    ['docker', 'host'],
+    ['docker', 'private'],
+    ['krun', 'host'],
+    ['krun', 'private'],
+  ] as const)
+    assert.equal(Config.parse(config(backend, network)).sandbox.network, network)
+  for (const [backend, network] of [
+    ['dir', 'bridge'],
+    ['dir', 'private'],
+    ['docker', 'none'],
+    ['krun', 'bridge'],
+  ] as const)
+    assert.throws(() => Config.parse(config(backend, network)), Config.InvalidError)
+
+  assert.equal(Config.network({ backend: 'docker', provider: 'local' }), 'private')
+  assert.equal(Config.network({ backend: 'krun', provider: 'local' }), 'private')
+  assert.equal(Config.network({ backend: 'dir', provider: 'local' }), 'host')
+  assert.equal(Config.network({ backend: 'docker', provider: 'e2b' }), 'bridge')
+})

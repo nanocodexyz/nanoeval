@@ -4,7 +4,8 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 install-linux.sh [--worker-port 8787] [--sandbox-port 8788] [--runs DIR]
-                 [--ca-bundle FILE] [--slot-env FILE] [--claude-login FILE] [--codex-login FILE]
+                 [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT]...
+                 [--claude-login FILE] [--codex-login FILE]
 
 Keep nanoeval running on this machine as two systemd user services on loopback,
 nanoeval-sandboxd and nanoeval-worker, and put a nanoeval command on the PATH that
@@ -31,6 +32,7 @@ while [ $# -gt 0 ]; do
       [ -f "$2" ] || die "$2 is not a file"
       sandboxd_options+=("$1" "$(readlink -f "$2")")
       ;;
+    --slot-forward) sandboxd_options+=("$1" "$2") ;;
     --claude-login | --codex-login)
       [ -f "$2" ] || die "$2 is not a file"
       worker_options+=("$1" "$(readlink -f "$2")")
