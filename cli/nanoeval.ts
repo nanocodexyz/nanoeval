@@ -4,6 +4,9 @@ import * as Fs from 'node:fs/promises'
 import * as Os from 'node:os'
 import * as Path from 'node:path'
 import { parseArgs } from 'node:util'
+import * as Catalog from '../datasets/Catalog.ts'
+import * as Dataset from '../datasets/Dataset.ts'
+import * as Source from '../datasets/Source.ts'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
 import * as Config from '../src/Config.ts'
 import * as Task from '../src/Task.ts'
@@ -26,7 +29,15 @@ const usage = `nanoeval <command>
             file (~/.claude/.credentials.json, ~/.codex/auth.json) makes that provider's
             agents run on the plan signed in there: its access token is read once at start,
             is never refreshed, and reaches workerd through a private file.
-  run       --url URL --token T --task DIR... (--agent ID=PROVIDER:MODEL[:THINKING]... | --oracle)
+  datasets  List the datasets that import knows, with the source each is pinned to and what
+            was run end to end.
+  import    DATASET --out DIR [--only ID]... [--limit N] [--sources DIR]
+            Write a dataset's tasks as Harbor task directories under DIR, and dataset.json with
+            the pinned source and the checksum of every task. Sources are downloaded once into
+            --sources (~/.cache/nanoeval/sources) and refused unless they match the digests
+            pinned in this repository. --only and --limit import part of a dataset.
+  run       --url URL --token T (--task DIR... | --dataset DIR [--only ID]... [--limit N])
+            (--agent ID=PROVIDER:MODEL[:THINKING]... | --oracle) [--judge PROVIDER:MODEL[:THINKING]]
             [--attempts 1] [--provider local|e2b] [--backend docker|dir|krun] [--slots 4] [--sandboxes 1]
             [--memory-mb N] [--limits enforce|none] [--network private|host|bridge] [--docker keep|install]
             [--template NAME] [--sandbox-timeout-sec 3600] [--sandbox-budget-usd 0] [--model-budget-usd N]
@@ -38,6 +49,9 @@ const usage = `nanoeval <command>
             NANOEVAL_RUNS_DIR when that is set.
             With --oracle no model runs: each task's solution/solve.sh is sent and run in its slot,
             then the verifier, to check environments and verifiers.
+            --dataset runs the tasks of an imported dataset after checking each against the
+            checksum in its dataset.json, and names the tasks it skips because no slot backend
+            runs them. --judge names the model that answers the verifiers of model-judged tasks.
   status    --url URL --token T RUN
   attempt   --url URL --token T RUN ATTEMPT [ARTIFACT]
   export    --url URL --token T RUN --out DIR
@@ -59,17 +73,55 @@ async function walk(
   return found
 }
 
-export async function loadTask(root: string, options: Task.load.Options = {}): Promise<Task.Task> {
+export async function readTask(root: string): Promise<Task.Source> {
   const entries = await walk(root)
   const files: Record<string, Uint8Array> = {}
   for (const entry of entries) files[entry.path] = await Fs.readFile(Path.join(root, entry.path))
-  return Task.load(
-    {
-      executable: entries.filter((entry) => entry.executable).map((entry) => entry.path),
-      files,
-    },
-    options,
-  )
+  return {
+    executable: entries.filter((entry) => entry.executable).map((entry) => entry.path),
+    files,
+  }
+}
+
+export async function loadTask(root: string, options: Task.load.Options = {}): Promise<Task.Task> {
+  return Task.load(await readTask(root), options)
+}
+
+export async function loadDataset(
+  directory: string,
+  options: Dataset.Selection & Task.load.Options,
+): Promise<{ skipped: { id: string; reason: string }[]; tasks: Task.Task[] }> {
+  const skipped: { id: string; reason: string }[] = []
+  const tasks: Task.Task[] = []
+  for (const entry of await Dataset.entries(directory, options)) {
+    const source = await readTask(entry.directory)
+    const checksum = 'sha256:' + (await Task.checksum(source.files))
+    if (checksum !== entry.checksum)
+      throw new Dataset.ManifestError(
+        entry.directory +
+          ' has the checksum ' +
+          checksum +
+          ', and its dataset.json pins ' +
+          entry.checksum,
+      )
+    try {
+      tasks.push(await Task.load(source, options.solution ? { solution: true } : {}))
+    } catch (error) {
+      if (!(error instanceof Task.UnsupportedError)) throw error
+      skipped.push({ id: entry.id, reason: error.message })
+    }
+  }
+  return { skipped, tasks }
+}
+
+export function parseJudge(text: string): Config.Judge {
+  const match = /^(claude|codex):([^:]+)(?::([a-z]+))?$/.exec(text)
+  if (!match) throw new Error('a judge is PROVIDER:MODEL[:THINKING], not ' + text)
+  return {
+    model: match[2]!,
+    provider: match[1] as Config.Judge['provider'],
+    ...(match[3] ? { thinking: match[3] } : {}),
+  }
 }
 
 export const oracle: Config.Agent = { id: 'oracle', model: 'solution', provider: 'oracle' }
@@ -202,14 +254,18 @@ async function main(): Promise<void> {
       'ca-bundle': { type: 'string' },
       'claude-login': { type: 'string' },
       'codex-login': { type: 'string' },
+      dataset: { type: 'string' },
       docker: { default: 'keep', type: 'string' },
       'exec-timeout-ms': { default: '600000', type: 'string' },
       host: { default: '127.0.0.1', type: 'string' },
+      judge: { type: 'string' },
+      limit: { type: 'string' },
       limits: { default: 'enforce', type: 'string' },
       'memory-mb': { type: 'string' },
       'model-budget-usd': { type: 'string' },
       name: { type: 'string' },
       network: { type: 'string' },
+      only: { multiple: true, type: 'string' },
       oracle: { default: false, type: 'boolean' },
       out: { type: 'string' },
       port: { type: 'string' },
@@ -224,6 +280,7 @@ async function main(): Promise<void> {
       'slot-env': { type: 'string' },
       'slot-forward': { multiple: true, type: 'string' },
       slots: { default: '4', type: 'string' },
+      sources: { type: 'string' },
       state: { type: 'string' },
       'step-retries': { default: '3', type: 'string' },
       task: { multiple: true, type: 'string' },
@@ -328,6 +385,45 @@ async function main(): Promise<void> {
     process.exit(code)
   }
 
+  const selection: Dataset.Selection = {
+    ...(values.limit ? { limit: Number(values.limit) } : {}),
+    ...(values.only?.length ? { only: values.only } : {}),
+  }
+
+  if (command === 'datasets') {
+    for (const adapter of Catalog.adapters)
+      console.log(
+        [
+          adapter.name + (adapter.state === 'verified' ? '' : ' (not verified end to end)'),
+          '  ' + adapter.description,
+          '  source: ' + JSON.stringify(adapter.source),
+          '  run: ' + adapter.proof,
+        ].join('\n'),
+      )
+    return
+  }
+
+  if (command === 'import') {
+    const adapter = Catalog.find(required(rest[0], 'DATASET'))
+    if (!adapter)
+      throw new Error(
+        'no dataset is named ' +
+          rest[0] +
+          ': import knows ' +
+          Catalog.adapters.map((candidate) => candidate.name).join(', '),
+      )
+    if (adapter.state !== 'verified')
+      console.error(adapter.name + ' is not verified end to end: ' + adapter.proof)
+    const out = required(values.out, 'out')
+    const manifest = await Dataset.write(adapter, {
+      ...selection,
+      out,
+      store: Source.create(values.sources ? Path.resolve(values.sources) : Source.defaultRoot()),
+    })
+    console.log(manifest.dataset + ': ' + manifest.tasks.length + ' tasks in ' + out)
+    return
+  }
+
   if (!command || !['attempt', 'cancel', 'export', 'run', 'status'].includes(command)) {
     console.log(usage)
     process.exitCode = command ? 2 : 0
@@ -341,6 +437,12 @@ async function main(): Promise<void> {
     const tasks = await Promise.all(
       (values.task ?? []).map((directory) => loadTask(directory, { solution: values.oracle })),
     )
+    if (values.dataset) {
+      const dataset = await loadDataset(values.dataset, { ...selection, solution: values.oracle })
+      for (const entry of dataset.skipped)
+        console.error('skipped ' + entry.id + ': ' + entry.reason)
+      tasks.push(...dataset.tasks)
+    }
     const provider = values.provider as Config.Config['sandbox']['provider']
     const backend = values.backend as Config.Config['sandbox']['backend']
     const config: Config.Config = {
@@ -350,6 +452,7 @@ async function main(): Promise<void> {
         ...(values['model-budget-usd'] ? { modelUsd: Number(values['model-budget-usd']) } : {}),
         sandboxUsd: Number(values['sandbox-budget-usd']),
       },
+      ...(values.judge ? { judge: parseJudge(values.judge) } : {}),
       limits: {
         attachSec: Number(values['attach-sec']),
         setupSec: Number(values['setup-sec']),

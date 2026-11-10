@@ -1,0 +1,15 @@
+{
+  "repo": "psf/requests",
+  "instance_id": "psf__requests-0001",
+  "base_commit": "0123456789abcdef0123456789abcdef01234567",
+  "patch": "diff --git a/requests/models.py b/requests/models.py\n--- a/requests/models.py\n+++ b/requests/models.py\n@@ -1 +1 @@\n-old-line\n+gold-line\n",
+  "test_patch": "diff --git a/test_requests.py b/test_requests.py\n--- a/test_requests.py\n+++ b/test_requests.py\n@@ -1 +1,2 @@\n import requests\n+def test_fixture(): assert requests\n",
+  "problem_statement": "A synthetic issue for the importer test.\n\nGET requests send a header they should not.\n",
+  "hints_text": "",
+  "created_at": "2013-01-01T00:00:00Z",
+  "version": "1.1",
+  "FAIL_TO_PASS": "[\"test_requests.py::test_fixture\"]",
+  "PASS_TO_PASS": "[]",
+  "environment_setup_commit": "0123456789abcdef0123456789abcdef01234567",
+  "difficulty": "<15 min fix"
+}
