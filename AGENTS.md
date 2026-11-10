@@ -31,6 +31,10 @@ These principles come from nanocodexyz/nanocode's `AGENTS.md` and nanocodexyz/na
 
 The conventions of nanocode-ts's `AGENTS.md` apply: erasable syntax only, `.ts` extensions on relative imports, module files imported as namespaces, functions and plain data instead of classes (errors and Durable Objects excepted), error names in the namespaced form such as `Task.InvalidError`, at most two positional parameters, alphabetical order where order has no meaning.
 
+## Rust Conventions
+
+`krun/` is the only Rust in the repository. The Rust conventions of nanocode-ts's `AGENTS.md` apply: edition 2024, the toolchain pinned in `krun/rust-toolchain.toml`, `#[expect(lint, reason = "...")]` instead of `#[allow]`, `pub(crate)` unless another crate needs the item, alphabetical order where order has no meaning, and no dependency a few lines would replace. `unsafe` is limited to the libkrun binding in `krun/nanovm` and to taking ownership of an accepted socket in the guest.
+
 ## Tooling
 
 - Use npm. Declare every dependency at an exact version. nanocode-ts is installed from its release tarball, as its README says.
@@ -43,6 +47,7 @@ The conventions of nanocode-ts's `AGENTS.md` apply: erasable syntax only, `.ts` 
 - `npm run check:types` runs `tsc` for the Node sources and for the Worker.
 - `npm test` runs the unit tests. `npm run e2e` runs the end-to-end test under local workerd.
 - `npm run dry-run` bundles the Worker without deploying it.
+- In `krun/`, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` check the launcher. `NANOEVAL_E2E_BACKEND=krun` runs an end-to-end lane on microVM slots.
 
 ## Git Conventions
 
