@@ -4,6 +4,7 @@ set -euo pipefail
 home=${NANOEVAL_HOME:-$HOME/.nanoeval}
 rt=$home/rt
 self=$(readlink -f "$0")
+trust='CARGO_HTTP_CAINFO CURL_CA_BUNDLE GIT_SSL_CAINFO NODE_EXTRA_CA_CERTS PIP_CERT REQUESTS_CA_BUNDLE SSL_CERT_FILE'
 
 die() {
   printf 'nanoeval-slot: %s\n' "$*" >&2
@@ -98,12 +99,18 @@ cmd__setup() {
       cp -L "$library" "$rt/lib/"
     done
   fi
-  for bundle in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
-    if [ -f "$bundle" ]; then
-      cp -L "$bundle" "$rt/ca.pem"
-      break
-    fi
-  done
+  if [ -n "${NANOEVAL_CA_BUNDLE:-}" ]; then
+    [ -f "$NANOEVAL_CA_BUNDLE" ] || die "NANOEVAL_CA_BUNDLE is not a file: $NANOEVAL_CA_BUNDLE"
+    cp -L "$NANOEVAL_CA_BUNDLE" "$rt/ca.pem"
+    : >"$rt/trust"
+  else
+    for bundle in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
+      if [ -f "$bundle" ]; then
+        cp -L "$bundle" "$rt/ca.pem"
+        break
+      fi
+    done
+  fi
   mapfile -t run < <(launcher "$rt")
   "${run[@]}" --version
 }
@@ -144,7 +151,10 @@ cmd__up() {
       else
         flock "$home/pull-$(printf '%s' "$image" | sha256sum | cut -c1-24).lock" bash -c 'docker image inspect "$1" >/dev/null 2>&1 || docker pull -q "$1"' bash "$image"
       fi
-      local options=()
+      local options=() name
+      if [ -f "$rt/trust" ]; then
+        for name in $trust; do options+=(-e "$name=/opt/nanoeval/ca.pem"); done
+      fi
       if [ -f "$dir/env" ]; then options+=(--env-file "$dir/env"); fi
       docker rm -f "nanoeval-$slot" >/dev/null 2>&1 || true
       case $limits in

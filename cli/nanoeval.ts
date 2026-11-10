@@ -9,7 +9,9 @@ import * as Task from '../src/Task.ts'
 const usage = `nanoeval <command>
 
   sandboxd  --token T [--host 127.0.0.1] [--port 8788] [--root DIR] [--exec-timeout-ms 600000]
-            Serve this machine as a local sandbox provider.
+            [--ca-bundle FILE]
+            Serve this machine as a local sandbox provider. With --ca-bundle, slot containers
+            trust that certificate bundle, for a machine whose network re-signs TLS.
   run       --url URL --token T --task DIR... (--agent ID=PROVIDER:MODEL[:THINKING]... | --oracle)
             [--attempts 1] [--provider local|e2b] [--backend docker|dir] [--slots 4] [--sandboxes 1]
             [--memory-mb N] [--limits enforce|none] [--network bridge|host] [--docker keep|install]
@@ -169,6 +171,7 @@ async function main(): Promise<void> {
       'attach-sec': { default: '60', type: 'string' },
       attempts: { default: '1', type: 'string' },
       backend: { default: 'docker', type: 'string' },
+      'ca-bundle': { type: 'string' },
       docker: { default: 'keep', type: 'string' },
       'exec-timeout-ms': { default: '600000', type: 'string' },
       host: { default: '127.0.0.1', type: 'string' },
@@ -203,6 +206,9 @@ async function main(): Promise<void> {
 
   if (command === 'sandboxd') {
     const server = await Sandboxd.start({
+      ...(values['ca-bundle']
+        ? { env: { NANOEVAL_CA_BUNDLE: Path.resolve(values['ca-bundle']) } }
+        : {}),
       execTimeoutMs: Number(values['exec-timeout-ms']),
       host: values.host,
       port: Number(values.port),

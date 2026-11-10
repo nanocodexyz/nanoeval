@@ -21,6 +21,7 @@ const limits = (process.env['NANOEVAL_E2E_LIMITS'] ?? 'enforce') as 'enforce' | 
 const realModel = process.env['NANOEVAL_E2E_ANTHROPIC_MODEL'] ?? 'claude-haiku-4-5'
 const scenario = process.env['NANOEVAL_E2E_SCENARIO'] ?? 'tasks'
 const restartAfterMs = Number(process.env['NANOEVAL_E2E_RESTART_AFTER_MS'] ?? '0')
+const caBundle = process.env['NANOEVAL_E2E_CA_BUNDLE']
 const label =
   process.env['NANOEVAL_E2E_LABEL'] ??
   model + '-' + backend + (scenario === 'tasks' ? '' : '-' + scenario)
@@ -176,19 +177,19 @@ function containers(root: string): string[] {
     .map(([id]) => id!)
 }
 
-function containerLimits(ids: readonly string[]): [name: string, limits: string][] {
+function inspect(ids: readonly string[]): [name: string, limits: string, env: string][] {
   if (!ids.length) return []
   try {
     return execFileSync('docker', [
       'inspect',
       '--format',
-      '{{.Name}}\t{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}}',
+      '{{.Name}}\t{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}}\t{{json .Config.Env}}',
       ...ids,
     ])
       .toString()
       .trim()
       .split('\n')
-      .map((line) => line.split('\t') as [string, string])
+      .map((line) => line.split('\t') as [string, string, string])
   } catch {
     return []
   }
@@ -207,6 +208,7 @@ async function main(): Promise<void> {
   const sandboxToken = Crypto.randomBytes(16).toString('hex')
 
   const sandboxd = await Sandboxd.start({
+    ...(caBundle ? { env: { NANOEVAL_CA_BUNDLE: Path.resolve(caBundle) } } : {}),
     execTimeoutMs: 600_000,
     host: '127.0.0.1',
     port: 0,
@@ -330,7 +332,7 @@ async function main(): Promise<void> {
     assert.equal(created.attempts, total)
 
     const sandboxes = Path.join(out, 'sandboxes')
-    const observed = new Map<string, string>()
+    const observed = new Map<string, { env: string[]; limits: string }>()
     const allowed = new Set(
       config.tasks.map((task) =>
         limits === 'enforce'
@@ -348,8 +350,8 @@ async function main(): Promise<void> {
       if (status['state'] === 'finished') break
       if (status['counts'].active > 0) activeAt ??= Date.now()
       if (backend === 'docker' && scenario !== 'restart')
-        for (const [name, value] of containerLimits(containers(sandboxes)))
-          observed.set(name, value)
+        for (const [name, value, env] of inspect(containers(sandboxes)))
+          observed.set(name, { env: JSON.parse(env) as string[], limits: value })
       if (
         scenario === 'restart' &&
         !restarted &&
@@ -376,11 +378,17 @@ async function main(): Promise<void> {
       assert.deepEqual(containers(sandboxes), [], 'no slot container outlives the run')
       if (scenario !== 'restart') {
         assert.ok(observed.size > 0, 'slot containers were seen while the run was active')
-        for (const [name, value] of observed)
+        for (const [name, seen] of observed) {
           assert.ok(
-            allowed.has(value),
-            name + ' ran with cpu and memory limits ' + value + ', limits is ' + limits,
+            allowed.has(seen.limits),
+            name + ' ran with cpu and memory limits ' + seen.limits + ', limits is ' + limits,
           )
+          assert.equal(
+            seen.env.includes('SSL_CERT_FILE=/opt/nanoeval/ca.pem'),
+            caBundle !== undefined,
+            name + ' trusts the sandbox bundle only when the sandbox was given one',
+          )
+        }
       }
     }
     assert.deepEqual(Fs.readdirSync(sandboxes), [], 'no sandbox directory outlives the run')
