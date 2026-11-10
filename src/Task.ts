@@ -41,6 +41,7 @@ export type Source = {
 }
 
 export const schemaVersion = '1.1'
+export const earlierVersion = '1.0'
 export const finalMessagePath = 'solution/final_message.txt'
 export const verifierInputs = 'tests/.nanoeval'
 
@@ -61,7 +62,8 @@ export async function load(source: Source, options: load.Options = {}): Promise<
   } catch (error) {
     throw new InvalidError('task.toml is not valid TOML: ' + (error as Error).message)
   }
-  if (raw['schema_version'] !== schemaVersion)
+  const earlier = raw['schema_version'] === undefined && raw['version'] === earlierVersion
+  if (raw['schema_version'] !== schemaVersion && !earlier)
     throw new UnsupportedError(
       'task schema_version must be ' + schemaVersion + ', not ' + String(raw['schema_version']),
     )

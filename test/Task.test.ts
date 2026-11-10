@@ -252,3 +252,13 @@ test('a task may answer with its final message and ask for a judge', async () =>
     'forty-two',
   )
 })
+
+test('a task of the earlier Harbor format, with version in place of schema_version, loads', async () => {
+  const earlier = manifest().replace('schema_version = "1.1"', 'version = "1.0"')
+  assert.equal((await Task.load(source(earlier))).name, 'suite/example')
+  for (const refused of ['version = "0.9"', 'schema_version = "2.0"', 'schema_version = "1.0"'])
+    await assert.rejects(
+      Task.load(source(manifest().replace('schema_version = "1.1"', refused))),
+      Task.UnsupportedError,
+    )
+})
