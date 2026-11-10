@@ -1,11 +1,14 @@
 export type Capacity = {
+  freeDiskMb?: number
   memoryMb: number
   slots: number
 }
 
 export type Load = {
+  freeDiskMb?: number
   memoryMb: number
   running: number
+  starting?: number
 }
 
 export function clamp(requestedMemoryMb: number, capacity: Capacity): number {
@@ -15,7 +18,9 @@ export function clamp(requestedMemoryMb: number, capacity: Capacity): number {
 export function admits(load: Load, capacity: Capacity, requestedMemoryMb: number): boolean {
   return (
     load.running < capacity.slots &&
-    load.memoryMb + clamp(requestedMemoryMb, capacity) <= capacity.memoryMb
+    load.memoryMb + clamp(requestedMemoryMb, capacity) <= capacity.memoryMb &&
+    (capacity.freeDiskMb === undefined ||
+      (!load.starting && (load.freeDiskMb ?? 0) >= capacity.freeDiskMb))
   )
 }
 

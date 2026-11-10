@@ -28,6 +28,8 @@ export type Config = {
   sandbox: {
     backend: Slot.Backend
     docker: 'install' | 'keep'
+    freeDiskMb?: number
+    images: 'keep' | 'remove'
     limits: 'enforce' | 'none'
     max: number
     memoryMb?: number
@@ -147,6 +149,10 @@ export function parse(value: unknown): Config {
     sandbox: {
       backend,
       docker: choice(sandbox.docker, 'sandbox.docker', ['install', 'keep']),
+      ...(sandbox.freeDiskMb === undefined
+        ? {}
+        : { freeDiskMb: integer(sandbox.freeDiskMb, 'sandbox.freeDiskMb', 1) }),
+      images: choice(sandbox.images ?? 'keep', 'sandbox.images', ['keep', 'remove']),
       limits: choice(sandbox.limits, 'sandbox.limits', ['enforce', 'none']),
       max: integer(sandbox.max, 'sandbox.max', 1),
       ...(sandbox.memoryMb === undefined

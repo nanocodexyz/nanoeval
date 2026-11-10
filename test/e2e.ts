@@ -368,10 +368,10 @@ async function main(): Promise<void> {
                 ...(thinking ? { thinking } : {}),
               },
             ]
-          : failures || isolated || model !== 'scripted'
+          : failures || isolated || packing || model !== 'scripted'
             ? [
                 {
-                  id: failures || isolated ? 'right' : 'nanocode',
+                  id: failures || isolated || packing ? 'right' : 'nanocode',
                   model: realModel,
                   provider: 'claude',
                 },
@@ -386,18 +386,39 @@ async function main(): Promise<void> {
     for (const task of tasks)
       if (task.name === 'fixtures/large-tests')
         task.files['tests/large.bin'] = Buffer.alloc(largeTestBytes).toString('base64')
+    if (packing) for (const task of tasks.slice(0, 2)) task.environment.memoryMb = 512
+    if (scenario === 'images') {
+      const [built, existing] = tasks
+      const dockerfile = Buffer.from(built!.files['environment/Dockerfile']!, 'base64').toString()
+      built!.files['environment/Dockerfile'] = Buffer.from(
+        dockerfile + '\nLABEL nanoeval.e2e=' + stamp + '\n',
+      ).toString('base64')
+      execFileSync('docker', [
+        'build',
+        '-q',
+        '-t',
+        keptImage,
+        Path.join('tasks', taskNames[1]!, 'environment'),
+      ])
+      existing!.environment.dockerImage = keptImage
+      for (const path of Object.keys(existing!.files))
+        if (path.startsWith('environment/')) delete existing!.files[path]
+    }
     const config: Config.Config = {
       agents,
-      attempts: failures ? 1 : isolated ? slots : attempts,
+      attempts: failures || packing ? 1 : isolated ? slots : attempts,
       budget: { modelUsd: 1, sandboxUsd: 0 },
       ...(judged ? { judge: { model: 'claude-haiku-4-5', provider: 'claude' as const } } : {}),
-      limits: { attachSec: 60, setupSec: 600, stepRetries: 3 },
+      limits: { attachSec: 60, setupSec: scenario === 'disk' ? 5 : 600, stepRetries: 3 },
       name: 'e2e-' + label,
       sandbox: {
         backend,
         docker: 'keep',
+        ...(scenario === 'disk' ? { freeDiskMb: 2 ** 40 } : {}),
+        images: scenario === 'images' ? 'remove' : 'keep',
         limits,
         max: 1,
+        ...(packing ? { memoryMb: 768 } : {}),
         network,
         provider: 'local',
         slots,
@@ -470,7 +491,7 @@ async function main(): Promise<void> {
     }
     if (backend === 'docker') {
       assert.deepEqual(Network.containers(sandboxes), [], 'no slot container outlives the run')
-      if (scenario !== 'restart') {
+      if (scenario !== 'restart' && scenario !== 'disk') {
         assert.ok(observed.size > 0, 'slot containers were seen while the run was active')
         for (const [name, seen] of observed) {
           assert.ok(
@@ -492,7 +513,7 @@ async function main(): Promise<void> {
     if (backend === 'krun') {
       assert.deepEqual(Krun.machines(sandboxes), [], 'no microVM outlives the run')
       assert.deepEqual(Network.containers(sandboxes), [], 'no export container outlives the run')
-      if (scenario !== 'restart') {
+      if (scenario !== 'restart' && scenario !== 'disk') {
         assert.ok(sizes.size > 0, 'microVMs were seen while the run was active')
         for (const size of sizes)
           assert.ok(sized.has(size), 'a microVM ran with ' + size + ' vCPUs and MiB')
@@ -570,6 +591,35 @@ async function main(): Promise<void> {
       )
       console.log('e2e passed: ' + label)
       return
+    }
+
+    if (scenario === 'disk') {
+      for (const attempt of status['attempts'] as Record<string, any>[]) {
+        assert.equal(attempt['outcome'], 'errored')
+        assert.equal(attempt['failure'].kind, 'environment')
+        assert.match(attempt['failure'].message, /MB of free disk with no attempt running/)
+      }
+      console.log('e2e passed: ' + label)
+      return
+    }
+
+    if (scenario === 'images') {
+      const images = (...filter: string[]) =>
+        execFileSync('docker', ['images', '-q', ...filter])
+          .toString()
+          .trim()
+      assert.equal(
+        images('--filter', 'label=nanoeval.e2e=' + stamp),
+        '',
+        'the image that the run built is removed with its last attempt',
+      )
+      assert.notEqual(images(keptImage), '', 'an image that the run did not add is kept')
+      if (backend === 'krun')
+        assert.deepEqual(
+          Fs.readdirSync(Path.join(out, 'cache', 'krun')).filter((name) => name.endsWith('.ext4')),
+          [],
+          'no image disk outlives the run',
+        )
     }
 
     assert.equal(status['counts'].errored, 0, 'no attempt may end in an infrastructure error')

@@ -65,6 +65,18 @@ jobs:
         run: npm run e2e
         env:
           NANOEVAL_E2E_SCENARIO: network
+      - name: End to end, image removal
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: images
+      - name: End to end, free disk floor
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: disk
+      - name: End to end, memory packing
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: packing
       - name: End to end, krun slots, skipped where krun cannot run
         run: npm run e2e
         env:

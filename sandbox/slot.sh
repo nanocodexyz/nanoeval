@@ -233,6 +233,7 @@ cmd__setup() {
   fi
   mapfile -t run < <(launcher "$rt")
   "${run[@]}" --version
+  if has docker; then docker info -f '{{.DockerRootDir}}' >"$home/docker-root" 2>/dev/null || true; fi
   if [ "$backend" = krun ]; then setup_krun; fi
   if [ "$network" = private ]; then setup_private "$backend"; fi
   printf '%s\n' "$network" >"$home/network"

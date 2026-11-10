@@ -645,18 +645,34 @@ export class Run extends DurableObject<Env> {
   private load(sandbox: number): Admission.Load {
     let memoryMb = 0
     let running = 0
+    let starting = 0
     for (const row of this.rows()) {
       if (row.sandbox !== sandbox || row.phase === 'done' || row.phase === 'pending') continue
       running++
+      if (row.phase === 'up') starting++
       memoryMb += this.task(row.task).environment.memoryMb
     }
-    return { memoryMb, running }
+    return { memoryMb, running, starting }
+  }
+
+  private async freeDisk(provider: Sandbox.Provider): Promise<Map<number, number>> {
+    const free = new Map<number, number>()
+    for (const row of this.sandboxes()) {
+      if (row.state !== 'ready') continue
+      const handle = JSON.parse(row.handle!) as Sandbox.Handle
+      const status = Slot.parseStatus(
+        await Sandbox.run(provider.connect(handle), Slot.create({ home: handle.home }).status()),
+      )
+      free.set(row.id, status.disk_mb)
+    }
+    return free
   }
 
   private capacity(row: SandboxRow): Admission.Capacity {
     const config = this.config()
     const capabilities = JSON.parse(row.capabilities!) as Sandbox.Capabilities
     return {
+      ...(config.sandbox.freeDiskMb === undefined ? {} : { freeDiskMb: config.sandbox.freeDiskMb }),
       memoryMb: config.sandbox.memoryMb ?? Math.floor(capabilities.memory_mb * hostUtilization),
       slots: config.sandbox.slots,
     }
@@ -667,6 +683,10 @@ export class Run extends DurableObject<Env> {
     const pending = this.rows()
       .filter((row) => row.phase === 'pending')
       .sort((left, right) => left.n - right.n || (left.id < right.id ? -1 : 1))
+    const free =
+      config.sandbox.freeDiskMb === undefined || !pending.length
+        ? undefined
+        : await this.freeDisk(provider)
 
     for (const row of pending) {
       if (config.budget.modelUsd !== undefined && this.modelSpent() >= config.budget.modelUsd) {
@@ -685,7 +705,7 @@ export class Run extends DurableObject<Env> {
       const lifetime =
         (task.agent.timeoutSec +
           task.verifier.timeoutSec +
-          (task.environment.buildTimeoutSec ?? config.limits.setupSec) +
+          Math.max(task.environment.buildTimeoutSec ?? 0, config.limits.setupSec) +
           config.limits.attachSec) *
         1000
       const ready = this.sandboxes()
@@ -696,12 +716,47 @@ export class Run extends DurableObject<Env> {
         )
         .map((sandbox) => ({
           capacity: this.capacity(sandbox),
-          load: this.load(sandbox.id),
+          load: {
+            ...this.load(sandbox.id),
+            ...(free ? { freeDiskMb: free.get(sandbox.id) ?? 0 } : {}),
+          },
           row: sandbox,
         }))
       const target = Admission.place(ready, task.environment.memoryMb)
+      const starved =
+        !target &&
+        free !== undefined &&
+        ready.length > 0 &&
+        ready.every(
+          (sandbox) =>
+            !sandbox.load.running && sandbox.load.freeDiskMb! < sandbox.capacity.freeDiskMb!,
+        )
+      const meta = this.meta()!
+      if (starved !== (meta.starvedAt !== undefined)) {
+        const { starvedAt: _, ...rest } = meta
+        this.setMeta(starved ? { ...rest, starvedAt: Date.now() } : rest)
+      }
       if (target) {
         await this.assign(provider, row, task, target.row)
+        continue
+      }
+      if (starved) {
+        if (Date.now() - (meta.starvedAt ?? Date.now()) > config.limits.setupSec * 1000)
+          await this.finish(provider, row, {
+            failure: {
+              at: Date.now(),
+              kind: 'environment',
+              message:
+                'the sandbox has ' +
+                Math.max(...ready.map((sandbox) => sandbox.load.freeDiskMb!)) +
+                ' MB of free disk with no attempt running, and the run has required ' +
+                config.sandbox.freeDiskMb +
+                ' MB for ' +
+                config.limits.setupSec +
+                ' s',
+            },
+            reward: null,
+          })
         continue
       }
 
@@ -727,8 +782,10 @@ export class Run extends DurableObject<Env> {
         })
         continue
       }
-      if (live.length < config.sandbox.max) await this.open(provider)
-      return
+      if (live.length < config.sandbox.max) {
+        await this.open(provider)
+        return
+      }
     }
   }
 
@@ -925,7 +982,7 @@ export class Run extends DurableObject<Env> {
       case 'up': {
         const code = Slot.exit(state.up)
         if (code === undefined) {
-          const setupSec = task.environment.buildTimeoutSec ?? config.limits.setupSec
+          const setupSec = Math.max(task.environment.buildTimeoutSec ?? 0, config.limits.setupSec)
           if (elapsed > setupSec * 1000)
             await fail(
               'environment',

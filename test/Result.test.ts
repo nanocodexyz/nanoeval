@@ -229,6 +229,20 @@ test('admission needs a free slot and memory at once, and clamps oversized tasks
   assert.equal(Admission.place(sandboxes.slice(0, 1), 256), undefined)
 })
 
+test('admission with a free disk floor waits for disk and for the environment being prepared', () => {
+  const capacity = { freeDiskMb: 4096, memoryMb: 1024, slots: 4 }
+  const idle = { memoryMb: 0, running: 0, starting: 0 }
+  assert.ok(Admission.admits({ ...idle, freeDiskMb: 4096 }, capacity, 256))
+  assert.ok(!Admission.admits({ ...idle, freeDiskMb: 4095 }, capacity, 256))
+  assert.ok(!Admission.admits(idle, capacity, 256))
+  assert.ok(
+    !Admission.admits({ freeDiskMb: 8192, memoryMb: 256, running: 1, starting: 1 }, capacity, 256),
+  )
+  assert.ok(
+    Admission.admits({ freeDiskMb: 8192, memoryMb: 256, running: 1, starting: 0 }, capacity, 256),
+  )
+})
+
 test('a budget refuses the charge that would pass its limit', () => {
   const budget = Budget.create({ limitUsd: 0.02, spentUsd: 0.008721 })
   budget.charge(0.008721, 'Create sandbox')

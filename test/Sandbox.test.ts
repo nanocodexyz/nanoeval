@@ -97,10 +97,10 @@ test('slots in one sandbox verify their own workspaces with the dir backend', as
   assert.equal(capabilities.network, 'none')
   assert.equal(capabilities.slot_env, false)
   assert.equal(capabilities.slot_forward, false)
-  assert.deepEqual(Slot.parseStatus(await Sandbox.run(sandbox, slots.status())), {
-    setup: 'none',
-    slots: {},
-  })
+  const empty = Slot.parseStatus(await Sandbox.run(sandbox, slots.status()))
+  assert.ok(empty.disk_mb > 0)
+  assert.deepEqual(empty, { disk_mb: empty.disk_mb, setup: 'none', slots: {} })
+  assert.throws(() => Slot.parseStatus('{"setup":"none","slots":{}}'))
 
   const task = await loadTask('tasks/extract-todos')
   const archive = Tar.pack(

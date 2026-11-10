@@ -14,6 +14,7 @@ export const networks: Record<Backend, readonly Network[]> = {
 export type Phase = 'none' | 'running' | `exit:${number}`
 
 export type Status = {
+  disk_mb: number
   setup: Phase
   slots: Record<
     string,

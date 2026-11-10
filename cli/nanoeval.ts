@@ -41,12 +41,20 @@ const usage = `nanoeval <command>
             [--attempts 1] [--provider local|e2b] [--backend docker|dir|krun] [--slots 4] [--sandboxes 1]
             [--memory-mb N] [--limits enforce|none] [--network private|host|bridge] [--docker keep|install]
             [--template NAME] [--sandbox-timeout-sec 3600] [--sandbox-budget-usd 0] [--model-budget-usd N]
-            [--setup-sec 600] [--attach-sec 60] [--step-retries 3] [--name NAME] [--wait] [--out DIR]
+            [--setup-sec 600] [--attach-sec 60] [--step-retries 3] [--images keep|remove]
+            [--free-disk-mb N] [--name NAME] [--wait] [--out DIR]
             Submit a run. A slot of the local provider gets a network of its own (private)
             unless --network host shares the machine's. With --wait, poll until it finishes,
             print the summary and write
             the Harbor job to --out, or to a directory named after the run under
             NANOEVAL_RUNS_DIR when that is set.
+            With --images remove, an environment image that a slot pulled or built, and the
+            krun disk made from it, are removed once no attempt of the run still needs them.
+            A task's environment, image pull included, has its build_timeout_sec or
+            --setup-sec, whichever is longer.
+            With --free-disk-mb, a sandbox takes a new attempt only while it has that much
+            free disk, and prepares one environment at a time. An attempt that still
+            waits for disk after --setup-sec with nothing running ends as an error.
             With --oracle no model runs: each task's solution/solve.sh is sent and run in its slot,
             then the verifier, to check environments and verifiers.
             --dataset runs the tasks of an imported dataset after checking each against the
@@ -271,8 +279,11 @@ async function main(): Promise<void> {
       'codex-login': { type: 'string' },
       dataset: { type: 'string' },
       docker: { default: 'keep', type: 'string' },
+      'dry-run': { default: false, type: 'boolean' },
       'exec-timeout-ms': { default: '600000', type: 'string' },
+      'free-disk-mb': { type: 'string' },
       host: { default: '127.0.0.1', type: 'string' },
+      images: { default: 'keep', type: 'string' },
       judge: { type: 'string' },
       limit: { type: 'string' },
       limits: { default: 'enforce', type: 'string' },
@@ -483,6 +494,8 @@ async function main(): Promise<void> {
       sandbox: {
         backend,
         docker: values.docker as 'install' | 'keep',
+        ...(values['free-disk-mb'] ? { freeDiskMb: Number(values['free-disk-mb']) } : {}),
+        images: values.images as 'keep' | 'remove',
         limits: values.limits as 'enforce' | 'none',
         max: Number(values.sandboxes),
         ...(values['memory-mb'] ? { memoryMb: Number(values['memory-mb']) } : {}),
