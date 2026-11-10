@@ -29,7 +29,9 @@ const usage = `nanoeval <command>
             [--memory-mb N] [--limits enforce|none] [--network bridge|host] [--docker keep|install]
             [--template NAME] [--sandbox-timeout-sec 3600] [--sandbox-budget-usd 0] [--model-budget-usd N]
             [--setup-sec 600] [--attach-sec 60] [--step-retries 3] [--name NAME] [--wait] [--out DIR]
-            Submit a run. With --wait, poll until it finishes and print the summary.
+            Submit a run. With --wait, poll until it finishes, print the summary and write
+            the Harbor job to --out, or to a directory named after the run under
+            NANOEVAL_RUNS_DIR when that is set.
             With --oracle no model runs: each task's solution/solve.sh is sent and run in its slot,
             then the verifier, to check environments and verifiers.
   status    --url URL --token T RUN
@@ -360,7 +362,18 @@ async function main(): Promise<void> {
       const status = await api.status(created.id)
       if (status['state'] === 'finished') {
         console.log(summary(status))
-        if (values.out) await exportJob(await api.harbor(created.id), values.out)
+        const out =
+          values.out ??
+          (process.env['NANOEVAL_RUNS_DIR']
+            ? Path.join(
+                process.env['NANOEVAL_RUNS_DIR'],
+                config.name + '-' + created.id.slice(0, 8),
+              )
+            : undefined)
+        if (out) {
+          await exportJob(await api.harbor(created.id), out)
+          console.log('job written to ' + out)
+        }
         process.exitCode = status['counts'].errored ? 1 : 0
         return
       }
