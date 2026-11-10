@@ -148,7 +148,7 @@ export class Run extends DurableObject<Env> {
         return await this.create(request, url.searchParams)
       if (!this.meta()) return json({ error: 'run not found' }, 404)
       if (request.method === 'GET' && parts[0] === 'status') return json(this.status())
-      if (request.method === 'GET' && parts[0] === 'harbor') return json({ files: this.harbor() })
+      if (request.method === 'GET' && parts[0] === 'harbor') return json(this.harbor())
       if (request.method === 'POST' && parts[0] === 'cancel') {
         this.setMeta({ ...this.meta()!, cancelled: true })
         this.ctx.waitUntil(this.tick())
@@ -443,31 +443,32 @@ export class Run extends DurableObject<Env> {
     }
   }
 
-  private harbor(): Record<string, string> {
+  private harbor() {
     const meta = this.meta()!
     const config = this.config()
     const rows = this.rows()
-    const artifacts: Record<string, Record<string, string>> = {}
-    for (const row of rows) {
-      if (!row.result) continue
-      const own: Record<string, string> = {}
-      for (const name of this.artifactNames(row.id)) own[name] = this.artifact(row.id, name)!
-      artifacts[row.id] = own
+    const attempts = this.results()
+    return {
+      artifacts: attempts.map((attempt) => ({
+        attempt: attempt.id,
+        names: this.artifactNames(attempt.id),
+        trial: Harbor.trialName(attempt),
+      })),
+      files: Harbor.files({
+        artifacts: {},
+        attempts,
+        job: {
+          finishedAt: meta.finishedAt,
+          id: meta.id,
+          name: config.name,
+          startedAt: meta.createdAt,
+        },
+        running: rows.filter((row) => row.phase !== 'pending' && row.phase !== 'done').length,
+        source: config.name,
+        total: rows.length,
+        version,
+      }),
     }
-    return Harbor.files({
-      artifacts,
-      attempts: this.results(),
-      job: {
-        finishedAt: meta.finishedAt,
-        id: meta.id,
-        name: config.name,
-        startedAt: meta.createdAt,
-      },
-      running: rows.filter((row) => row.phase !== 'pending' && row.phase !== 'done').length,
-      source: config.name,
-      total: rows.length,
-      version,
-    })
   }
 
   private tick(): Promise<void> {

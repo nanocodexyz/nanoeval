@@ -44,6 +44,7 @@ const solutions: [marker: string, right: string, wrong: string][] = [
     "tr '[:lower:]' '[:upper:]' < message.txt > message.upper.txt",
     'cp message.txt message.upper.txt',
   ],
+  ['background.pid', 'sleep 300.5 >/dev/null 2>&1 & echo $! > background.pid', 'true'],
   ['large.bin', 'true', 'true'],
   ['slow.txt', 'sleep 30; echo late > slow.txt', 'true'],
   ['greeting.txt', "printf 'hello from nanoeval\\n' > greeting.txt", 'echo hi > greeting.txt'],
@@ -307,7 +308,7 @@ async function main(): Promise<void> {
           'large-tests',
           'no-reward',
           'slow-agent',
-          ...(backend === 'docker' ? ['broken-environment'] : []),
+          ...(backend === 'docker' ? ['background-process', 'broken-environment'] : []),
         ].map((name) => Path.join('test/fixtures', name))
       : taskNames.map((name) => Path.join('tasks', name))
     const agents: Config.Agent[] =
@@ -396,8 +397,7 @@ async function main(): Promise<void> {
     const wallMs = Date.now() - started
     console.log(summary(status))
     Fs.writeFileSync(Path.join(out, 'status.json'), JSON.stringify(status, null, 2) + '\n')
-    const files = await api.harbor(created.id)
-    await exportJob(files, Path.join(out, 'harbor'))
+    const { files } = await exportJob(api, { out: Path.join(out, 'harbor'), run: created.id })
 
     assert.equal(status['sandboxes'].length, 1, 'every attempt shares one sandbox')
     assert.equal(status['sandboxes'][0].state, 'closed')
@@ -435,6 +435,7 @@ async function main(): Promise<void> {
       assert.equal(byTask['fixtures/slow-agent'].reward, 0)
       assert.equal(byTask['fixtures/slow-agent'].failure.kind, 'agent_timeout')
       if (backend === 'docker') {
+        assert.equal(byTask['fixtures/background-process'].outcome, 'passed')
         assert.equal(byTask['fixtures/broken-environment'].outcome, 'errored')
         assert.equal(byTask['fixtures/broken-environment'].failure.kind, 'environment')
       }
