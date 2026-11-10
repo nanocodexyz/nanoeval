@@ -53,11 +53,11 @@ A run is `tasks × agents × attempts`. Each attempt is one row in the run's SQL
 
 | Phase | Entered when | Work |
 | --- | --- | --- |
-| `pending` | The run is created | Waits for a slot. Admission needs a free slot and memory at once (`src/Admission.ts`) |
+| `pending` | The run is created | Waits for a slot. Admission needs a free slot and memory at once, and free disk when the run sets a floor (`src/Admission.ts`) |
 | `up` | A sandbox admits it | The task archive is written to the slot. `slot.sh up` builds or pulls the environment in the background |
 | `attach` | The environment is ready | The session mints a hand token. `slot.sh hand` starts the hand inside the slot |
 | `run` | The hand is listed | The instruction is submitted as one turn on that hand. The agent deadline is `agent.timeout_sec` |
-| `verify` | The turn completed, or its deadline passed and it was cancelled | The hand is stopped. `tests/` is copied in only now and `tests/test.sh` runs with `verifier.timeout_sec` |
+| `verify` | The turn completed, or its deadline passed and it was cancelled | The hand is stopped. `tests/` is copied in only now and `tests/test.sh` runs with `verifier.timeout_sec`. Every file it leaves under `/logs/verifier` is kept |
 | `judge` | The verifier wrote a judge request and no reward | Each prompt is one turn of its own session on the run's judge. The answers become a verifier input and the attempt returns to `verify` once |
 | `done` | The verifier reported, or a failure ended the attempt | Events, trajectory and verifier output are stored. The slot is removed and the session deleted |
 
@@ -65,7 +65,13 @@ Long work (image builds, the hand, the verifier) runs detached in the sandbox an
 
 An oracle run has no model. Its one agent has the provider `oracle`, every task is sent with its `solution/`, and the `run` phase starts `solution/solve.sh` in the slot with `slot.sh solve` under the agent deadline, where a model run submits a turn. The hand still attaches first, so an oracle run also shows that the hand starts in each task image. The solution's output is kept as `agent/oracle.txt`.
 
-Every attempt ends as `passed`, `failed` or `errored`, with the verifier reward kept beside it. A failure carries a kind: `agent`, `agent_timeout`, `verifier`, `verifier_timeout`, `environment`, `budget`, `cancelled` or `internal`. An agent timeout keeps its verifier reward, as Harbor does. Every other failure is an error with no reward, so an infrastructure failure never becomes a score of zero. Attempts are not retried.
+Every attempt ends as `passed`, `failed` or `errored`, with the verifier reward kept beside it. A failure carries a kind: `agent`, `agent_timeout`, `verifier`, `verifier_timeout`, `environment`, `budget`, `cancelled` or `internal`. An agent timeout keeps its verifier reward, as Harbor does, unless the verifier itself failed. Every other failure is an error with no reward, so an infrastructure failure never becomes a score of zero. Attempts are not retried.
+
+**Admission.** A pending attempt starts in the first sandbox with a free slot and room for its task's declared memory. It is first-fit: an attempt that fits nowhere waits, and the ones behind it are still tried, so one 8 GiB task does not hold back the 2 GiB tasks behind it. With `--free-disk-mb` a sandbox also takes an attempt only while its status reports that much free disk on the filesystems of its slots, its image cache and Docker, and only while no other attempt of it is preparing its environment, so each admission sees what the previous image took. The floor is reactive: what running attempts write later is not reserved, because the only declared figure, `storage_mb`, is the size of the machine a task asks for and not what it uses. An attempt that still waits for disk after `--setup-sec` with nothing running ends as an `environment` error.
+
+**A verifier that did not run its tests.** A Harbor verifier conventionally writes a CTRF report to `/logs/verifier/ctrf.json` and derives the reward from its test runner's exit code, so a verifier that cannot install the runner writes reward 0. nanoeval takes the report as the sign that tests ran: when `tests/test.sh` names `ctrf.json`, a reward other than 1 without that file is a `verifier` error. It reads no installer output and knows no benchmark. It does not cover a verifier that names no report, one whose runner starts and then fails to import a missing dependency, or a solution that could not install its own dependencies.
+
+**Memory.** After the verifier a slot counts the processes of the attempt that the kernel killed for memory, from `memory.events` of a container's cgroup and from the kernel log of a microVM. The attempt carries the count as `oomKills`. It does not change the score: a task's memory is part of the task.
 
 ## The slot splitter
 
@@ -77,6 +83,10 @@ Every attempt ends as `passed`, `failed` or `errored`, with the verifier reward 
 | `dir` | One directory per slot, no isolation. For development and tasks that need none | Implemented, tested |
 | `krun` | One libkrun microVM per slot, as in gakonst/nanoeval and `crates/nanocodex-vm`. The task image is the root filesystem, the task's CPUs, memory and storage size the machine, and the hand runs inside it. Needs `/dev/kvm`, libkrunfw and Docker | Implemented, tested |
 | `bwrap` | User namespaces and an overlay root, for sandboxes with neither Docker nor KVM | Planned |
+
+**Images.** A slot records in `$NANOEVAL_CACHE/images` each image it pulled or built that the machine did not have. With `--images remove`, the last attempt of a task takes that image away when its slot goes down, and a krun slot drops it as soon as its disk is made. An image that was there before is never removed. A slot holds a shared lock on its image while it prepares, and a microVM holds one on its disk while it runs, so removal and `nanoeval prune`, which clears every recorded image and every image disk of a machine, skip what is in use.
+
+**Users.** A slot removes and copies `/tests` and `/solution` and creates `/logs/verifier` as root, and leaves that directory writable by anyone. The hand, the solution and the verifier run as the user of the image.
 
 The hand binary is a glibc build. `slot.sh setup` downloads the pinned release, checks its SHA-256, and copies the binary with its loader and libraries into one read-only directory. Each container or microVM mounts it and starts the hand through that loader, so the hand runs in musl images such as Alpine without a change to the task image.
 
@@ -109,7 +119,7 @@ A krun slot is one libkrun microVM. In gakonst/nanoeval the harness stayed on th
 
 **Commands.** libkrun's init stays PID 1 and reaps. The guest binary listens on a vsock port that libkrun maps to a UNIX socket in the slot directory. `nanoeval-krun exec` sends a command with its environment, user and working directory, streams output, and returns the exit code, which is what `docker exec` is to a Docker slot. A closed connection sends SIGTERM to that command, which is how a hand is stopped and how a timeout ends a solution or a verifier. `tests/` and `solution/` reach the guest through the `io` share only in their own phase and are copied into the root, so the agent never sees them and they are ordinary files when they run.
 
-**Resources.** vCPUs are the task's `cpus` rounded up, memory is `memory_mb`, and the root can grow to `storage_mb`. They hold whatever `--limits` says. Admission is unchanged: a slot counts its task's declared memory. An idle guest costs the host far less, since libkrun backs guest memory on demand.
+**Resources.** vCPUs are the task's `cpus` rounded up, memory is `memory_mb`, and the root can grow to `storage_mb`. They hold whatever `--limits` says. Admission is unchanged: a slot counts its task's declared memory. An idle guest costs the host far less, since libkrun backs guest memory on demand. A Docker slot has the CPU and memory limits and no storage limit: Docker bounds a container's writable layer only on a few storage drivers, so what a task writes there is bounded by the machine's disk.
 
 **Network.** A krun slot has a private network by default, described under [Slot networks](#slot-networks). With `--network host` it uses libkrun's TSI instead: the VMM makes the guest's sockets on the host, and a connection to `127.0.0.1` that nothing in the guest listens on reaches the host's loopback. `bridge` is refused. The limits of TSI are why it is not the default:
 
@@ -172,11 +182,11 @@ The E2B JavaScript SDK is not used. It cannot pay, and it needs `nodejs_compat`.
 
 ## Tasks and results
 
-Tasks are Harbor task directories, schema 1.1, as Terminal-Bench 2.x ships them: `task.toml`, `instruction.md`, `environment/`, `tests/test.sh`. The verifier writes `/logs/verifier/reward.txt`. The CLI loads a directory and sends `tests/` with the run, and `environment/` when the task names no `docker_image`, since the image is then built from it. `solution/` leaves the machine only in an oracle run. The run stores a task's files in parts beside a small record of the task, so admission never reads the files. `environment.build_timeout_sec` bounds a task's environment setup when the task sets it. Tasks that need Compose, GPUs, a separate verifier environment or `allow_internet = false` are refused at submission. A task of the earlier Harbor format, which writes `version = "1.0"` where later tasks write `schema_version`, loads the same way: Terminal-Bench 2.0 is published in it.
+Tasks are Harbor task directories, schema 1.1, as Terminal-Bench 2.x ships them: `task.toml`, `instruction.md`, `environment/`, `tests/test.sh`. The verifier writes `/logs/verifier/reward.txt`. The CLI loads a directory and sends `tests/` with the run, and `environment/` when the task names no `docker_image`, since the image is then built from it. `solution/` leaves the machine only in an oracle run. The run stores a task's files in parts beside a small record of the task, so admission never reads the files. `environment.build_timeout_sec` bounds a task's environment setup when the task sets it. Tasks that ship a Compose file, declare MCP servers, or need GPUs, a separate verifier environment or `allow_internet = false` are refused at submission. Compose is recognized by `environment/docker-compose.yaml`, which is what Harbor acts on, not by a `[metadata]` flag. A task of the earlier Harbor format, which writes `version = "1.0"` where later tasks write `schema_version`, loads the same way: Terminal-Bench 2.0 is published in it.
 
 [Datasets](#datasets) describes where task directories come from, and [Final messages and judges](#final-messages-and-judges) the two additions to the task format.
 
-`nanoeval export` writes a Harbor job directory: `result.json` for the job, and per trial `result.json`, `agent/trajectory.json` (ATIF-v1.7), `agent/events.jsonl` and `verifier/test-stdout.txt`. The CLI reads the result files in one request and each artifact in its own. Token counts and the harness's cost estimate come from the session's events, per attempt.
+`nanoeval export` writes a Harbor job directory: `config.json` and `result.json` for the job, and per trial `config.json`, `result.json`, `agent/trajectory.json` (ATIF-v1.7), `agent/events.jsonl`, `verifier/test-stdout.txt` and every file the verifier wrote, such as `verifier/reward.txt` and `verifier/ctrf.json`, bytes intact. A verifier file over 4 MiB is named in `verifier-omitted.txt` instead, and a solution or verifier log keeps its last 4 MiB behind a line that says it was cut. The shapes are those of Harbor's `JobResult`, `TrialResult`, `JobConfig` and `TrialConfig`: a trial's id is the job's UUID with its last group replaced by the attempt number, its config names the task by path, and the job counts every trial with an exception as errored, as Harbor does, which includes an agent timeout that nanoeval scores. The CLI reads the result files in one request and each artifact in its own. Token counts and the harness's cost estimate come from the session's events, per attempt.
 
 ## Datasets
 
@@ -286,6 +296,10 @@ A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP c
 | A model request sent by the Worker itself for the judge | A plan login only works through the session protocol of nanocode-ts, so a second client for each provider would be needed beside it |
 | Asking the agent to write its answer to a file | It changes the dataset's prompt. The final message is what these datasets grade |
 | The solution's output as the final message of an oracle run | The log of a solution also holds what `docker cp` and the shell print. A file in `solution/` is exact |
+| Admission that reserves each task's `storage_mb` | Every Terminal-Bench 2.1 task declares 10 GiB and most write a few hundred MB, so a 12 GiB budget would run one attempt at a time. The floor on free disk admits by what is measured |
+| A storage limit on Docker slots | `--storage-opt size` needs overlay2 on xfs with project quotas or a few other drivers. On the machine this was run on (containerd snapshotter on ext4) Docker accepted `size=64M` and a container then wrote 200 MB. A limit that holds on some hosts only, and fails silently on the others, would not be one |
+| Recognizing a verifier's failed installs from its output | It needs the error texts of pip, uv, apt, npm and curl, and breaks with each release of each. The missing report is one fact |
+| The exit code of `tests/test.sh` as the sign of a broken verifier | Harbor's convention writes the reward from the runner's exit code and then exits 0 either way |
 
 ## Reused
 

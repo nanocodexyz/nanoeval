@@ -38,12 +38,19 @@ This is a first version. The table says what was run.
 | `healthbench-professional` | 410 cases imported. 2 ran with their physician answers on Docker and krun slots and 3 with `gpt-6-luna` on krun slots, all judged by `gpt-6-luna`. The 2 ran again on krun slots with a private network, with the same scores |
 | A task graded on the agent's final message, and a judge answered by the orchestrator | Implemented, tested end to end on Docker and krun slots with the scripted model, and with `gpt-6-luna`. On a private network the verifier cannot reach the Worker, and the judge still answers |
 | GraphWalks, MRCR, Arena-Hard, BrowseComp, GDPval, SWE-Atlas QnA, GeneBench Pro, ARC-AGI-3, Agents' Last Exam importers | Not ported. [Datasets](#datasets) says why |
-| Harbor job export and ATIF-v1.7 trajectories | Implemented. Shapes are unit tested. Not yet opened with `harbor view` |
+| Harbor job export and ATIF-v1.7 trajectories | Implemented. Exported jobs load with the models of Harbor 0.25.0 (`scripts/harbor-check.py`) and `harbor view` serves them. The shapes Harbor enforces are unit tested |
 | Failure kinds `verifier`, `agent_timeout`, `environment` | Implemented, tested |
+| A verifier that scores without the test report it names is an error, not a zero | Implemented, tested. Covers a verifier that could not install its test runner, not a solution that could not install its own dependencies |
+| Every file a verifier writes is kept, binary files included | Implemented, tested |
+| The count of processes a task's memory limit killed (`oomKills`) | Implemented, tested on docker and krun slots |
+| Images and krun disks removed when no attempt needs them (`--images remove`), and `nanoeval prune` | Implemented, tested |
+| A floor on free disk for admission (`--free-disk-mb`) | Implemented, tested. It is reactive: it does not reserve what running attempts write later |
 | Orchestrator restart during a run | Tested: the Worker is killed with attempts in flight, restarts on the same state, and the run finishes |
 | E2B over MPP provider | Implemented against E2B's documented protocol and tested against a local mock. The live `402` challenge is decoded by `scripts/e2b-quote.ts`. **No sandbox has been paid for or started yet** |
 | Docker installation inside an E2B sandbox (`--docker install`) | Written, not run |
 | Container CPU and memory limits (`--limits enforce`) | Implemented, tested: the end-to-end test reads the limits of every slot container |
+| `storage_mb` | The size of a krun slot's disk. Not enforced on Docker slots, where Docker cannot bound a container's writes on most hosts |
+| Images whose user is not root, and images without bash | Tested with a fixture: tests and solutions are put in place as root, and the agent and the verifier run as the image's user |
 | Codex models (`provider: codex`) | Tested on a ChatGPT plan login (`nanoeval worker --codex-login`). Not run with an OpenAI API key |
 | Claude plan login (`nanoeval worker --claude-login`) | Written, not run: no unexpired login was at hand |
 | Services on one Linux machine (`scripts/install-linux.sh`) | Implemented, run on one machine |
@@ -54,7 +61,7 @@ This is a first version. The table says what was run.
 | Listeners on the machine's loopback that private slots may reach (`sandboxd --slot-forward`) | Implemented, tested with a registry proxy on a machine's loopback |
 | Deployment to Cloudflare | Bundles with `wrangler deploy --dry-run`. Not deployed |
 | The `bwrap` slot backend | Planned |
-| `allow_internet = false`, Compose tasks, separate verifier environments | Refused at submission. Planned |
+| `allow_internet = false`, tasks with a Compose file or MCP servers, separate verifier environments, `reward.json` | Refused at submission, except `reward.json`, which is not read: a verifier that writes only it ends as a `verifier` error. Planned |
 | Reruns with lineage, prompt-cache cohorts, duration-ordered dispatch, R2 artifacts, MPP sessions | Planned |
 
 ## Run it locally
@@ -83,6 +90,8 @@ node cli/nanoeval.ts run --url http://127.0.0.1:8787 --token "$TOKEN" \
 Without an API key, a plan login works. `nanoeval worker --codex-login ~/.codex/auth.json` runs `codex` agents such as `--agent luna=codex:gpt-6-luna` on the ChatGPT plan signed in there, and `--claude-login ~/.claude/.credentials.json` does the same for `claude` agents. The access token is read once when the Worker starts and is never refreshed: sign in again with that tool and restart the Worker when it expires.
 
 To check task environments and verifiers without a model, `nanoeval run --oracle --task DIR... --wait` sends each task's `solution/` and runs `solution/solve.sh` in the slot in place of the agent. No other run sends a solution.
+
+A long run on a machine with little disk takes two more options. `--images remove` removes each environment image that a slot pulled or built, and the krun disk made from it, once no attempt of the run needs it, and never an image the machine already had. `--free-disk-mb N` starts a new attempt only while the machine has N MB free. `nanoeval prune` removes what earlier runs left: the images that slots added and the krun image disks, except those in use (`--dry-run` lists them).
 
 ## Datasets
 
@@ -163,7 +172,7 @@ node cli/nanoeval.ts run --url http://127.0.0.1:8787 --token "$TOKEN" \
   --backend krun --attempts 2 --slots 4 --wait
 ```
 
-Image disks are kept in `~/.cache/nanoeval/krun` and are not removed by a run. A krun slot has a private network like a Docker slot, described in [DESIGN.md](DESIGN.md#slot-networks). With `--network host` it shares the host's sockets, with the limits listed [there](DESIGN.md#krun-slots).
+Image disks are kept in `~/.cache/nanoeval/krun` (`NANOEVAL_CACHE` moves the cache) until `--images remove` or `nanoeval prune` removes them. A krun slot has a private network like a Docker slot, described in [DESIGN.md](DESIGN.md#slot-networks). With `--network host` it shares the host's sockets, with the limits listed [there](DESIGN.md#krun-slots).
 
 ## Run it on E2B
 
@@ -194,11 +203,13 @@ npm run dry-run       # bundle the Worker
 npm run e2e           # local workerd + sandboxd + Docker slots + the scripted model
 NANOEVAL_E2E_MODEL=oracle npm run e2e      # the task solutions in place of a model
 NANOEVAL_E2E_SCENARIO=judge npm run e2e    # final messages and a judge, with the scripted model
+NANOEVAL_E2E_SCENARIO=failures npm run e2e # failure kinds and fixtures; also restart, images, disk, packing
 NANOEVAL_E2E_MODEL=anthropic npm run e2e   # a real model with ANTHROPIC_API_KEY
 NANOEVAL_E2E_MODEL=codex-plan npm run e2e  # a real model on the ChatGPT plan of ~/.codex/auth.json
 NANOEVAL_E2E_BACKEND=krun npm run e2e      # microVM slots, skipped where krun cannot run
 NANOEVAL_E2E_SCENARIO=network npm run e2e  # what a private slot reaches and what reaches it
 (cd krun && cargo clippy --all-targets -- -D warnings && cargo test)   # the krun launcher
+python scripts/harbor-check.py output/job  # with Harbor's Python: load an exported job with Harbor's models
 ```
 
 The scripted model answers the harness with fixed tool calls, so the end-to-end test needs no API key. It still runs the real Worker, the real nanocode-ts harness, the released hand and the real verifiers.
@@ -213,7 +224,7 @@ The scripted model answers the harness with fixed tool calls, so the end-to-end 
 | `krun/` | The Rust workspace: the libkrun binding, the launcher and the guest binary of the krun backend, and `nanoeval-net`, the relay and inbound rule of a private slot |
 | `cli/` | The `nanoeval` command |
 | `datasets/` | The dataset importers, and the graders they write into tasks |
-| `scripts/` | `install-linux.sh` and the E2B price quote |
+| `scripts/` | `install-linux.sh`, the E2B price quote, and `harbor-check.py`, which loads an exported job with Harbor's own models |
 | `tasks/` | Three small Harbor tasks from gakonst/nanoeval |
 | `test/` | Unit tests, the end-to-end test and its failure fixtures |
 
