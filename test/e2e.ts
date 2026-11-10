@@ -45,7 +45,11 @@ const solutions: [marker: string, right: string, wrong: string][] = [
     "tr '[:lower:]' '[:upper:]' < message.txt > message.upper.txt",
     'cp message.txt message.upper.txt',
   ],
-  ['background.pid', 'sleep 300.5 >/dev/null 2>&1 & echo $! > background.pid', 'true'],
+  [
+    'background.pid',
+    "setsid sh -c 'echo $$ > background.pid; exec sleep 300.5' >/dev/null 2>&1 & while [ ! -s background.pid ]; do sleep 0.1; done",
+    'true',
+  ],
   ['large.bin', 'true', 'true'],
   ['slow.txt', 'sleep 30; echo late > slow.txt', 'true'],
   ['greeting.txt', "printf 'hello from nanoeval\\n' > greeting.txt", 'echo hi > greeting.txt'],
