@@ -135,7 +135,7 @@ export async function run(options: Options): Promise<void> {
       }
       if (response.ok) return (await response.json()) as T
       const reason = (await response.text()).slice(0, 500)
-      if (response.status === 409 || response.status === 404) throw new GoneError(reason)
+      if (response.status === 410 || response.status === 404) throw new GoneError(reason)
       if (response.status < 500 || Date.now() > deadline)
         throw new Error(path + ' answered ' + response.status + ': ' + reason)
       await new Promise((resolve) => setTimeout(resolve, wait))
@@ -160,7 +160,7 @@ export async function run(options: Options): Promise<void> {
         method: 'PUT',
       },
     )
-    if (response.status === 409) throw new GoneError(await response.text())
+    if (response.status === 410) throw new GoneError(await response.text())
     if (!response.ok)
       throw new Error(
         'storing ' + name + ' answered ' + response.status + ': ' + (await response.text()),
@@ -436,7 +436,7 @@ export async function run(options: Options): Promise<void> {
           await shell(slots.solve(item.row.slot, state.timeoutSec))
           return move(item, 'solve')
         }
-        if (state.state === 'running') return move(item, 'agent')
+        if (state.state !== 'waiting') return move(item, 'agent')
         const code = Slot.exit(await phase(Path.join(target, 'hand.status')))
         if (code !== undefined || elapsed > config.limits.attachSec * 1000) {
           const handLog = await slotLog(item, 'hand', Protocol.logBytes)
@@ -563,12 +563,32 @@ export async function run(options: Options): Promise<void> {
     }
     await new Promise((resolve) => setTimeout(resolve, 50))
   }
+  for (const name of await Fs.readdir(Path.join(home, 'slots'))) {
+    const saved = await text(Path.join(home, 'slots', name, 'row.json'))
+    if (!saved) {
+      await output(slots.down(name, 'keep'), env)
+      continue
+    }
+    const item: Work = {
+      ...(JSON.parse(saved) as Saved),
+      busy: false,
+      delay: firstPollMs,
+      errors: 0,
+      next: 0,
+    }
+    work.set(item.row.id, item)
+    log('resumed ' + item.row.id + ' in ' + item.stage)
+  }
+
   const capabilities = JSON.parse(await shell(slots.probe())) as Sandbox.Capabilities
   try {
-    await call<Config.Runner>('/hello', { capabilities, runner: config.runner })
+    await call<Config.Runner>('/hello', {
+      capabilities,
+      held: [...work.values()].map((item) => ({ claim: item.row.claim, id: item.row.id })),
+      runner: config.runner,
+    } satisfies Protocol.Hello)
   } catch (error) {
-    if (error instanceof GoneError) throw new RefusedError(error.message)
-    throw error
+    throw new RefusedError(error instanceof Error ? error.message : String(error))
   }
   const capacity: Admission.Capacity = {
     ...(config.freeDiskMb === undefined ? {} : { freeDiskMb: config.freeDiskMb }),
@@ -590,23 +610,6 @@ export async function run(options: Options): Promise<void> {
       config.network +
       ' network',
   )
-
-  for (const name of await Fs.readdir(Path.join(home, 'slots'))) {
-    const saved = await text(Path.join(home, 'slots', name, 'row.json'))
-    if (!saved) {
-      await output(slots.down(name, 'keep'), env)
-      continue
-    }
-    const item: Work = {
-      ...(JSON.parse(saved) as Saved),
-      busy: false,
-      delay: firstPollMs,
-      errors: 0,
-      next: 0,
-    }
-    work.set(item.row.id, item)
-    log('resumed ' + item.row.id + ' in ' + item.stage)
-  }
 
   const load = async (): Promise<Admission.Load> => ({
     ...(capacity.freeDiskMb === undefined ? {} : { freeDiskMb: await freeDiskMb([home, cache]) }),

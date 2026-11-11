@@ -547,6 +547,7 @@ async function main(): Promise<void> {
     )
     let status: Record<string, any>
     let restarted = false
+    let forgotten = 0
     let activeAt: number | undefined
     for (;;) {
       status = await api.status(created.id)
@@ -564,7 +565,7 @@ async function main(): Promise<void> {
           (attempt) =>
             attempt.runner !== null &&
             attempt.runner === runnerId(runners[0]?.home) &&
-            attempt.phase !== 'done',
+            !['claimed', 'done', 'unclaimed'].includes(attempt.phase),
         )
       if (
         ['lost', 'restart', 'resume'].includes(scenario) &&
@@ -582,11 +583,23 @@ async function main(): Promise<void> {
           runner.child.kill('SIGKILL')
           await exited
           if (scenario === 'resume') {
+            const held = (
+              (await api.status(created.id))['attempts'] as { id: string; phase: string }[]
+            ).filter((attempt) => !['done', 'unclaimed'].includes(attempt.phase))
+            const slot = Fs.readdirSync(Path.join(runner.home, 'slots')).find((name) =>
+              held.some((attempt) => name.includes('-' + attempt.id + '-')),
+            )
+            if (slot) {
+              Fs.rmSync(Path.join(runner.home, 'slots', slot, 'row.json'), { force: true })
+              forgotten = 1
+            }
             runners.shift()
+            const output = Fs.openSync(Path.join(out, 'runner-' + runner.name + '.log'), 'a')
             const resumed = spawn(process.execPath, runner.child.spawnargs.slice(1), {
               env: { ...process.env, NANOEVAL_TOKEN: token },
-              stdio: 'ignore',
+              stdio: ['ignore', output, output],
             })
+            Fs.closeSync(output)
             runners.push({ ...runner, child: resumed })
           }
         }
@@ -658,8 +671,22 @@ async function main(): Promise<void> {
             )
           }
       }
-      if (scenario === 'resume')
-        assert.equal(status['lostClaims'], 0, 'a runner that comes back keeps its rows')
+      if (scenario === 'resume') {
+        assert.equal(
+          status['lostClaims'],
+          forgotten,
+          'a runner that comes back keeps the rows it saved and gives back the one it did not',
+        )
+        assert.ok(wallMs < leaseSec * 1000, 'no row waited for its lease to end')
+        for (const attempt of status['attempts'] as { claims: number; id: string }[])
+          if (attempt.claims === 2)
+            assert.deepEqual(
+              (await api.attempt(created.id, attempt.id))['claims'].map(
+                (claim: { ending: string }) => claim.ending,
+              ),
+              ['released', 'finished'],
+            )
+      }
     } else {
       assert.equal(status['sandboxes'].length, 1, 'every attempt shares one sandbox')
       assert.equal(status['sandboxes'][0].state, 'closed')

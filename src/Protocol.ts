@@ -16,9 +16,9 @@ export type Report = {
   unfit?: boolean
 }
 
-export type Hello = { capabilities: Sandbox.Capabilities; runner: number }
-
 export type Held = { claim: string; id: string }
+
+export type Hello = { capabilities: Sandbox.Capabilities; held: readonly Held[]; runner: number }
 
 export type ClaimRequest = { offer: Admission.Offer; report: Report; runner: number }
 
