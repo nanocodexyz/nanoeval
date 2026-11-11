@@ -14,8 +14,16 @@ export function environment(base: NodeJS.ProcessEnv = process.env): NodeJS.Proce
   }
 }
 
+let writes = 0
+
+async function replace(file: string, content: string): Promise<void> {
+  const temporary = file + '.' + process.pid + '.' + ++writes
+  await FsPromises.writeFile(temporary, content)
+  await FsPromises.rename(temporary, file)
+}
+
 export async function describe(prefix: string, meta: Eval.Meta): Promise<void> {
-  await FsPromises.writeFile(prefix + '.env', meta.env.map((line) => line + '\n').join(''))
-  await FsPromises.writeFile(prefix + '.user', meta.user + '\n')
-  await FsPromises.writeFile(prefix + '.workdir', meta.workdir + '\n')
+  await replace(prefix + '.env', meta.env.map((line) => line + '\n').join(''))
+  await replace(prefix + '.user', meta.user + '\n')
+  await replace(prefix + '.workdir', meta.workdir + '\n')
 }
