@@ -1453,3 +1453,48 @@ Computed from the pinned files and not run: GPQA's `--limit 5` keeps four of the
 - README and DESIGN.md said that a build step gets no host policy, that `allow_internet = false` is refused, that nothing cuts a slot's connections, and that the verifier cache waits for a measurement: all four are rewritten.
 - `src/Task.ts` refused `environment_mode = "shared"`, which is what Harbor 0.25.0 writes, and a `[verifier.environment]` table was not refused: fixed, with tests.
 - The usage text of `import --limit` did not say which order it counts in, and it counted in two: see the HealthBench section.
+
+### The installed command
+
+`scripts/install-linux.sh --name NAME` on other ports with the store, cache, layers and state on another filesystem, `--krun` on a built launcher, and `--ca-bundle`, `--slot-env` and two `--slot-forward`: the configuration of the installed command holds the three as `NANOEVAL_CA_BUNDLE`, `NANOEVAL_SLOT_ENV` and `NANOEVAL_SLOT_FORWARD`. `NAME import --task test/fixtures/package-installs`, with no option of its own, converted the Dockerfile in 8.8 s through the installed services, `NAME run --oracle --wait` passed 1 of 1 on the runner that `sandboxd` started, and `--remove` left no unit, command or configuration. The services the machine already ran were not touched.
+
+### Every check, from a fresh clone
+
+From a fresh clone of `1662b44`, with no built launcher named, so that cargo built it in the clone, load average 8 to 27: `npm ci`, `npm run lint`, `npm run check:types`, `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`, `npm test` (84 tests, none skipped) and `npm run dry-run` passed, and then every lane of `ci.yml`, one run each:
+
+| Lane | krun | dir |
+| --- | --- | --- |
+| Scripted model | passed, 2.3 s, and 5.7 s with three tasks | passed, 2.4 s |
+| Oracle | passed, 1.7 s | passed, 1.1 s |
+| Blobs in R2 through the Worker | passed, 3.1 s | passed, 3.3 s |
+| Final messages and a judge | passed, 2.7 s | passed, 3.6 s |
+| Final messages and a judge, oracle | passed, 1.6 s | |
+| Failure kinds, then a rerun | passed | passed |
+| Orchestrator restart | passed, 7.9 s | passed, 4.1 s |
+| Slot networks | passed, 1.9 s | |
+| Closed networks | passed, 13.7 s | passed: the run is refused |
+| Verifier cache | passed | |
+| Disk removal | passed, 4.6 s | |
+| Free disk floor | passed | passed |
+| Memory packing | passed | passed |
+| Two attached runners | passed, 2.7 s | passed, 2.6 s |
+| A runner lost during the run | passed, 5.3 s | passed, 5.1 s |
+| A runner restarted during the run | passed, 2.0 s | passed, 1.4 s |
+
+The figure is the wall time of the run, where the lane prints one. One lane did not pass by itself the first time: see the next section. After the last commit, which changes this file only, `npm run lint` and `npm test` ran again.
+
+### A builder microVM that stopped reading
+
+Twice in about a hundred conversions of this entry, both with a load average above 20, `image build` stopped at its first layer: the launcher blocked writing the layer to the guest's socket, and the guest, which had answered the ping before it, sat idle with both of its virtual CPUs blocked. The second time was the import of the two-runners lane of the fresh clone, a Dockerfile of `FROM`, `WORKDIR` and `COPY` with no network device and no host policy. After 75 s a ping on the same guest's socket from another process was answered at once, and the stopped build went on and finished, as did the lane. The lane then passed in 6 s when it was run again. So the guest had not been told of a connection that was waiting for it, and the next connection told it: a wakeup lost between the VMM's vsock device and the guest. libkrun is pinned where the entries above pinned it. Eight repeats of the first build that stopped, and one with the guest's binary replaced during the build, all completed. It was not reproduced on demand and is not fixed. An import that meets it waits until something else talks to that guest, which for a builder is never. A slot has other connections to its guest during an attempt, and none of the attempts of this entry showed it.
+
+### Not verified
+
+- CI on GitHub. Nothing is pushed.
+- The lost wakeup above: its cause, how often it happens on a quiet machine, and whether a verifier that starts in a slot can meet it.
+- A closed phase under a model. The lane uses the scripted model. No dataset here writes a task that closes a phase: GPQA and HealthBench are closed-book and their importers still leave the network open, since changing them changes the checksum of every task and the scores recorded so far.
+- A network allowlist, a closed phase on `--network host`, on `dir` slots or in a sandbox without KVM, and a closed agent whose Worker is deployed: all refused. No slot backend other than krun and dir exists in this tree.
+- What the gate costs a task that moves much data through its network. Only tasks that close a phase have one.
+- The verifier cache on the other 79 Terminal-Bench tasks, with a model's attempts, on images with musl, and with a uv other than 0.9.5. Verifiers that install with pip, and every `apt-get`, are as slow as before.
+- Dockerfile builds of the other 84 Terminal-Bench tasks, heredocs and the other instructions the builder refuses, and linux/arm64.
+- `--remove` on the layer cache and the store of the Terminal-Bench 2.1 import, which were only listed, and the prune commands beside a checkout from before them, which takes neither lock.
+- The HealthBench items its own section lists.
