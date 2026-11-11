@@ -2,6 +2,7 @@ mod build;
 mod dockerfile;
 mod machine;
 mod oci;
+mod pack;
 mod reference;
 mod registry;
 mod store;
@@ -18,13 +19,15 @@ use sha2::{Digest, Sha256};
 
 const HEX: &[u8; 16] = b"0123456789abcdef";
 const SECTOR: u64 = 512;
-const USAGE: &str = "usage: nanoeval-krun image <build|tree> ...";
+const USAGE: &str = "usage: nanoeval-krun image <build|pack|tree|unpack> ...";
 
 pub(crate) fn run(mut arguments: impl Iterator<Item = OsString>) -> Result<u8, String> {
     let command = arguments.next().unwrap_or_default();
     match command.to_str() {
         Some("build") => build::command(arguments),
+        Some("pack") => pack::pack(arguments),
         Some("tree") => machine::tree(arguments),
+        Some("unpack") => pack::unpack(arguments),
         _ => Err(USAGE.to_owned()),
     }
 }
