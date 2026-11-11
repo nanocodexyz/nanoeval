@@ -11,6 +11,7 @@ Evaluations for [nanocode](https://nanocode.xyz) agents with the harness outside
 ```
 
 - **Harness outside.** Model credentials and the event journal stay in the Worker. A task image gets no agent CLI, runtime or CA bundle installed.
+- **Other harnesses beside it.** An agent of a run can also be Codex CLI or Claude Code: a pinned release that runs inside the slot and sends its model requests through the run, so one run compares them with nanocode on the same rows, and no model credential enters a slot either way.
 - **Converted once.** `nanoeval import` runs a dataset's adapter, keeps each task's instruction, tests and solution apart as blobs, and converts its environment into the ext4 disk a microVM boots. Nothing is pulled or built when an attempt starts.
 - **No container engine.** The launcher of the microVM backend reads a task's image from its registry, or runs its Dockerfile in a builder microVM, and writes the disk itself. No machine needs Docker, at import or at run time.
 - **A durable table.** An eval version is named by a digest over its tasks and never changes. A run names it as `NAME@DIGEST`, and its rows hold every attempt, claim and result.
@@ -37,6 +38,8 @@ The table says what was run. "The first version" is the flow before the eval tab
 | A runner restarted during a run | Tested: it goes on with the slots it had and loses no claim |
 | Rerun lineage (`nanoeval run --rerun RUN [--failed\|--errored]`) | Implemented, tested end to end: each row names the attempt it retries |
 | nanocode-ts harness sessions | Implemented. Tested end to end under local workerd |
+| Installed agents (`codex-cli`, `claude-code`): the vendor's command line inside the slot, its model requests through an endpoint of the run that adds the credential | Implemented, tested: unit tests for the agent syntax, the commands, the credential swap and the usage meter, and end-to-end lanes with a scripted command on directory and krun slots (tasks, failure kinds, a restarted and a lost runner). Codex CLI 0.166.0 ran 6 Terminal-Bench 2.1 tasks on krun slots through a ChatGPT plan login beside a nanocode session on the same model: 6 passed for each. The Claude Code 2.1.318 binaries ran on krun slots in an Alpine and a Debian image against a scripted Messages endpoint. **Claude Code has not run against Anthropic**: no valid login was at hand. See [DESIGN.md](DESIGN.md#installed-agents) |
+| `nanoeval compare RUN...`: the agents of one or more runs in one table | Implemented, tested |
 | Local sandbox provider (`nanoeval sandboxd`) | Implemented, tested |
 | Slot backend `krun`, one libkrun microVM per slot | Implemented, tested on a Linux machine with KVM: every end-to-end lane, 32 microVMs at once, and Terminal-Bench 2.1 with the tasks' own solutions, imported once and run by two runners: 82 of the 89 pass, and all 89 rows end as they did when slots pulled images. [DECISIONS.md](DECISIONS.md#2026-11-11-no-container-engine-at-import-or-at-run-time) has the table |
 | Slot backend `dir` | Implemented, tested. For development and for lanes on a machine without KVM |
@@ -66,7 +69,7 @@ The table says what was run. "The first version" is the flow before the eval tab
 | `storage_mb` | The size of a krun slot's copy-on-write disk |
 | Images whose user is not root, and images without bash | Tested with a fixture: tests and solutions are put in place as root, and the agent and the verifier run as the image's user |
 | Codex models (`provider: codex`) | Tested on a ChatGPT plan login (`nanoeval worker --codex-login`). Not run with an OpenAI API key |
-| Claude plan login (`nanoeval worker --claude-login`) | Written, not run: no unexpired login was at hand |
+| Claude plan login (`nanoeval worker --claude-login`) | Run once, on the first flow: `claude-haiku-4-5` on `uppercase-message` reached the model through the plan and ended `failed`. The hand's `Bash` tool needs bash, which that Alpine image lacks, see [DECISIONS.md](DECISIONS.md#2026-11-11-installed-agents-and-nanocode-beside-codex-cli). Not run on the eval table: the login had expired and its tool could not renew it without a browser |
 | Services on one Linux machine (`scripts/install-linux.sh`) | Implemented, tested: installed under a second name on other ports with the store, cache, layers and state on chosen paths, ran an import and a run through the installed services, and removed again |
 | A certificate bundle and variables for slots (`sandboxd --ca-bundle`, `--slot-env`) | Implemented, tested |
 | A private network per slot (`--network private`, the default for `krun` slots) | Implemented, tested on a Linux machine with KVM: a slot has its own loopback and ports, reaches the internet, and is reached neither by another slot nor by the host |
@@ -125,6 +128,16 @@ Each claims rows up to its own slots and memory and leaves when the run is finis
 Every krun slot gets a network of its own (`--network private`): its own loopback and ports, the internet, and no way in from another slot or from the machine. A hand dials `ws://127.0.0.1`, which nanocode accepts only on loopback, so each slot relays that one address to the Worker. `--network host` puts the slots on the machine's network instead, where they share its ports.
 
 Without an API key, a plan login works. `nanoeval worker --codex-login ~/.codex/auth.json` runs `codex` agents such as `--agent luna=codex:gpt-6-luna` on the ChatGPT plan signed in there, and `--claude-login ~/.claude/.credentials.json` does the same for `claude` agents. The access token is read once when the Worker starts and is never refreshed: sign in again with that tool and restart the Worker when it expires.
+
+An agent whose harness is `codex-cli` or `claude-code` runs that vendor's command line inside the slot instead of a nanocode session outside it, on the same credentials of the Worker, and `nanoeval compare` puts the agents of one or more runs in one table:
+
+```sh
+node cli/nanoeval.ts run --eval terminal-bench-2.1 --only fix-git --only regex-log \
+  --agent nano=codex:gpt-6.1-sol:high --agent cli=codex-cli:gpt-6.1-sol:high --wait
+node cli/nanoeval.ts compare RUN
+```
+
+The first such run on a machine downloads the pinned release of the command into the cache and checks it against its SHA-256: an archive of 200 MB for Codex CLI, 517 MB unpacked, and 632 MB for the two builds of Claude Code. The task image is not changed, and the credential stays in the Worker: the command gets an address and a token that are good for that attempt only. Prompts and tools are each harness's own, see [DESIGN.md](DESIGN.md#installed-agents) for what such a comparison holds equal. A `codex-cli` agent has token counts and no cost estimate, so `--model-budget-usd` does not bound it.
 
 To check task environments and verifiers without a model, `nanoeval run --oracle --eval NAME --wait` runs each task's `solution/solve.sh` in the slot in place of the agent. A solution is a blob of its own, and only an oracle run is told its digest.
 
@@ -249,6 +262,7 @@ npm run dry-run       # bundle the Worker
 npm run e2e           # local workerd + sandboxd + a runner + krun slots + the scripted model, skipped where krun cannot run
 NANOEVAL_E2E_BACKEND=dir npm run e2e       # the same on directory slots, anywhere
 NANOEVAL_E2E_MODEL=oracle npm run e2e      # the task solutions in place of a model
+NANOEVAL_E2E_MODEL=installed npm run e2e   # installed agents, with a scripted command in place of the vendor's
 NANOEVAL_E2E_STORE=r2 npm run e2e          # blobs in R2 through the Worker
 NANOEVAL_E2E_SCENARIO=judge npm run e2e    # final messages and a judge, with the scripted model
 NANOEVAL_E2E_SCENARIO=failures npm run e2e # failure kinds and fixtures, then a rerun of what errored

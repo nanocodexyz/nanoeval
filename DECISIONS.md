@@ -1498,3 +1498,92 @@ Twice in about a hundred conversions of this entry, both with a load average abo
 - Dockerfile builds of the other 84 Terminal-Bench tasks, heredocs and the other instructions the builder refuses, and linux/arm64.
 - `--remove` on the layer cache and the store of the Terminal-Bench 2.1 import, which were only listed, and the prune commands beside a checkout from before them, which takes neither lock.
 - The HealthBench items its own section lists.
+
+## 2026-11-11: installed agents, and nanocode beside Codex CLI
+
+A run could compare nanocode sessions with each other and with nothing else. This entry adds a second kind of agent, a vendor's command line inside the slot, and the first table that nanoeval itself produced of nanocode beside Codex CLI. [DESIGN.md](DESIGN.md#installed-agents) has the design and what such a comparison holds equal. All of it ran on a 32-core Linux machine with KVM that other work kept busy: its load average was between 15 and 50 for every measurement here.
+
+### What was established
+
+- **A command line can run in a task image that was not built for it.** Codex CLI 0.166.0 ships a package of static binaries. Claude Code 2.1.318 ships a glibc binary that links librt, libc, libpthread, libdl and libm and asks for no symbol later than GLIBC_2.26, and a musl binary that links musl's libc and nothing else. So the releases are fetched once per machine, checked against a pinned SHA-256, and shared read-only with every slot, as the hand is. Both builds of Claude Code ran in krun slots, the musl one in an Alpine image and the glibc one in a Debian 12 image, with no Node in either.
+- **The lone `codex` binary is not enough.** With only `codex-x86_64-unknown-linux-musl` in place, every tool call of a turn failed with "Code Mode is unavailable because failed to spawn code-mode host", and the model answered that it could not write the file. The package `codex-package-<arch>-unknown-linux-musl.tar.gz` holds `codex-code-mode-host` and `rg` beside it, and with it the same prompt wrote the file. The package is what is pinned.
+- **Codex CLI works on a ChatGPT plan with no login in the guest.** A model provider given on the command line (`base_url`, `env_key`, `wire_api = "responses"`) makes it send `POST <base_url>/responses` with the value of that variable as its bearer token, `store: false` and `stream: true`, and nothing to any other address. The run swaps the token for the plan's and sends the request to `/backend-api/codex/responses` through the relay that sessions use. chatgpt.com answered 200 to each of the 38 model requests of the seven Codex CLI attempts below that ran to their end. The usage the endpoint read from the `response.completed` event of each response summed to what the command printed for its turn: 46,354 input tokens, 21,888 of them cached, and 1,280 output tokens in the first attempt.
+- **Claude Code can be pointed at the run the same way.** With `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` it sends `POST /v1/messages?beta=true` to the endpoint, and the scripted Messages endpoint behind the run saw the deployment's `x-api-key`, no `authorization` header, the model and `{"effort":"high"}`. It ran its `Bash` tool in the guest and the fixture passed. That is the plumbing. Whether Anthropic accepts its requests through this endpoint, with an API key or with a plan token, was not tried, see below.
+- **`CODEX_HOME` under `/tmp` costs Codex CLI its helper commands.** It printed "Refusing to create helper binaries under temporary dir". The agent's state directory is `/var/lib/nanoeval-agent` for that reason, made as root with the sticky bit so that an image's own user can use it, and removed before the verifier.
+- **A refusal must read the request first.** A model request whose token is refused was answered before its body was read, and local workerd then failed one such request in a test with "Can't read from request stream after response has been sent" and a 500. A refusal now drains the body.
+- **A row that was claimed twice has the requests of both claims**, each marked with its claim, and counts only the last. The lanes with a restarted and a lost runner found this in the test's own expectation, not in the count.
+
+### The first comparison
+
+One run at `3cfde90`, of six Terminal-Bench 2.1 tasks of `terminal-bench-2.1@14f3a1e5` that pass with their own solutions and are quick, one attempt each for two agents on `gpt-6.1-sol` at high thinking through one ChatGPT plan login: a nanocode session, and Codex CLI 0.166.0 in the slot. Four krun slots on a private network, one runner, the host policy of the earlier runs.
+
+```sh
+nanoeval run --eval terminal-bench-2.1 --only openssl-selfsigned-cert --only fix-git --only git-leak-recovery \
+  --only sqlite-db-truncate --only regex-log --only log-summary-date-ranges \
+  --agent nano-codex=codex:gpt-6.1-sol:high --agent codex-cli=codex-cli:gpt-6.1-sol:high \
+  --attempts 1 --slots 4 --model-budget-usd 25 --wait
+nanoeval compare RUN
+```
+
+| Arm | Harness | Model | Attempts | Passed | Failed | Errored | Agent time | Attempt time | Input tokens (cached) | Output tokens | Estimated cost |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| nano-codex | nanocode | codex:gpt-6.1-sol:high | 6 | 6 | 0 | 0 | 5 min 9 s | 6 min 9 s | 456,293 (366,080) | 11,327 | $0.3303 |
+| codex-cli | codex-cli 0.166.0 | codex:gpt-6.1-sol:high | 6 | 6 | 0 | 0 | 6 min 36 s | 7 min 44 s | 466,407 (330,880) | 15,323 | not known |
+
+| Task | nano-codex | codex-cli |
+| --- | --- | --- |
+| fix-git | passed 35 s | passed 39 s |
+| git-leak-recovery | passed 1 min 1 s | passed 2 min 6 s |
+| log-summary-date-ranges | passed 44 s | passed 25 s |
+| openssl-selfsigned-cert | passed 54 s | passed 1 min 1 s |
+| regex-log | passed 1 min 26 s | passed 1 min 42 s |
+| sqlite-db-truncate | passed 29 s | passed 43 s |
+
+**This is a smoke test, not a benchmark result.** Six easy tasks and one attempt say that both arms run end to end on the same rows and that the table can be made, and nothing about which harness is better: every attempt passed, and a difference of a minute on one task is one sample on a busy machine. The run took 254 s from its creation to its end. The nanocode arm made 32 model calls and 60 tool calls, the Codex CLI arm 34 and 39. The cost of the nanocode arm is the harness's estimate. Codex CLI prints none, so its tokens are known and its cost is not. The exported job loads with the models of Harbor 0.25.0 (`scripts/harbor-check.py`: 39 files, none refused), with `codex-cli` and its version as the agent of its trials.
+
+Before it, at the working tree that became `fcb298d`: one attempt of `openssl-selfsigned-cert` with `codex-cli:gpt-6.1-sol:low` passed in 36 s of agent time, and a run cancelled 14 s into `fix-git` ended its attempt as `cancelled` with no command, microVM or sandbox directory left.
+
+### The Claude arms were not run
+
+No Claude login was valid. The plan login at hand had expired, and one run of the official command line to let it renew answered "OAuth session expired and could not be refreshed". Renewing needs a browser sign-in, which was not worked around. That run also left the login file with an empty access token and an empty refresh token, which is what the tool does when a refresh is refused: a Worker started with `--claude-login` on that file now stops at "holds no Claude plan login" instead of starting with an expired token. So `claude:...` and `claude-code:...` agents are not verified against Anthropic on this flow, and the table has no Claude rows. After a new sign-in on the machine, start the Worker with `--claude-login` and run:
+
+```sh
+nanoeval run --task tasks/extract-todos --task tasks/uppercase-message --task tasks/write-greeting \
+  --agent haiku=claude:claude-haiku-4-5 --agent code=claude-code:claude-haiku-4-5 --wait
+nanoeval run --eval terminal-bench-2.1 --only openssl-selfsigned-cert --only fix-git --only git-leak-recovery \
+  --only sqlite-db-truncate --only regex-log --only log-summary-date-ranges \
+  --agent nano-claude=claude:claude-opus-5-5:high --agent claude-code=claude-code:claude-opus-5-5:high --wait
+nanoeval compare RUN RUN
+```
+
+**Why the one earlier Claude attempt failed.** The first flow ran `claude-haiku-4-5` once on `uppercase-message` with a valid plan login, and its verifier answered "message transformation is missing or incorrect". Its kept trajectory says why. The model's first choice was the Claude harness's `Bash` tool, and the hand answered "command executor: Bash executable not found" twice: the fixture's image is Alpine, which has no bash, and the string is in the released `nanocode hand` binary, not in nanoeval or nanocode-ts. `exec_command` worked in the same image. The model then read the file with `Read`, whose result is numbered lines, rebuilt the text from them, and wrote `NANOEVAL\nRUNS IN PARALLEL` with `Write`, without the final newline that the task asks for. So the reward of 0 is the model's, on a path it took because a tool of its harness needs a shell the image does not have. Nothing in nanoeval is wrong there, and a slot adds no shell to an image. For nanocode: the hand's `Bash` tool could fall back to `sh`, as a slot does for a solution and a verifier. Terminal-Bench images have bash, so its tasks are not affected.
+
+### What ran
+
+- `npm test`: 12 new tests for installed agents and one for the comparison table, among them the two commands started through `sh` with a stand-in binary, the credential swap for an API key and for a plan login of each provider, the usage meter over responses cut at every byte, and a release refused for its checksum.
+- End-to-end, a scripted command in place of the vendor's, which asks the run's endpoint for what to do with the token it was given, behind a model endpoint that refuses anything but the deployment's credential: tasks, failure kinds with a rerun, a runner restarted and a runner lost, each on directory and on krun slots. All passed. The lanes check the token counts of each attempt against what the endpoint sent, that the cost a command reports counts against the model budget, and that the endpoint of a finished attempt answers 401.
+- A slow agent ends as `agent_timeout` with its verifier reward, and a command that exits with another code as an `agent` error.
+
+### The full campaign
+
+Not run. Four arms, 89 tasks and two attempts are 712 attempts:
+
+```sh
+nanoeval run --eval terminal-bench-2.1 --attempts 2 --slots 8 \
+  --agent nano-codex=codex:gpt-6.1-sol:high --agent codex-cli=codex-cli:gpt-6.1-sol:high \
+  --agent nano-claude=claude:claude-opus-5-5:high --agent claude-code=claude-code:claude-opus-5-5:high \
+  --wait --out output/tb21-four-arms
+nanoeval compare RUN
+```
+
+The Worker needs both logins for the whole run, and it reads an access token once: a Claude plan token lives for hours, so the two Claude arms may need a run of their own that ends inside one token, and `nanoeval compare RUN RUN` joins the two.
+
+How long it takes cannot be read off six easy tasks. What was measured: 51 s and 66 s of agent time per attempt on them, 6 % and 7 % of their 900 s timeout, and about 10 s of verifier. What is known of the rest: the agent timeouts of the 89 tasks sum to 151,950 s, 900 s for 48 of them and 1,800 s or more for 34. Three figures for 8 slots, with no allowance for plan rate limits:
+
+| Assumption | Slot time | Wall time at 8 slots |
+| --- | ---: | ---: |
+| Every attempt as quick as the six | 49,000 s | 1.7 h |
+| An attempt takes a quarter of its timeout and a minute of verifier. This is an assumption, not a measurement | 347,000 s | 12 h |
+| Every attempt runs to its timeout | 1,260,000 s | 44 h |
+
+Eight slots were chosen for the CPUs of the machine, which other work shares, and because two arms of a provider draw on one plan. Its memory would admit more: 68 of the 89 tasks ask for 2 GiB.

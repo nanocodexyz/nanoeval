@@ -37,6 +37,7 @@ The shape of the second is the shape here: import once, a durable table, runners
 | `worker/Evals.ts`, `src/Eval.ts` | Durable Object | One eval: its tasks and its versions |
 | `worker/Blobs.ts` | Worker | The R2 side of the blob store |
 | `worker/Run.ts`, `src/Ledger.ts` | Durable Object | One run: rows, claims, leases, sessions, budgets, results. The ledger is plain SQL over an interface, so it is unit tested without workerd |
+| `src/Installed.ts`, `src/Proxy.ts`, `worker/Model.ts` | Worker and sandbox host | [Installed agents](#installed-agents): a vendor's command line inside the slot, and the endpoint of the run that its model requests go through |
 | `worker/Sessions.ts` | Durable Object | `App.create` from `nanocode-ts/cloudflare`: one harness session per claim, model requests forwarded with the deployment's API key or plan login |
 | `sandbox/Runner.ts` | Sandbox host | A task runner: claims rows, fetches blobs, drives `slot.sh`, reports to the run |
 | `sandbox/slot.sh` | Sandbox host | One attempt in one slot: environment up, hand, solution, verifier, down |
@@ -47,6 +48,7 @@ The shape of the second is the shape here: import once, a durable table, runners
 | `src/Payment.ts`, `src/Budget.ts` | Worker | MPP charges through mppx, refused past the run's budget, recorded in the ledger |
 | `src/Task.ts`, `src/Atif.ts`, `src/Harbor.ts`, `src/Result.ts`, `src/Verdict.ts` | Worker and CLI | Harbor task loading, ATIF-v1.7 trajectories, Harbor job export, outcomes, and what a verifier's facts mean |
 | `src/Judge.ts` | Worker | The judge request a verifier writes and the answer it reads |
+| `src/Compare.ts` | CLI | The table of `nanoeval compare`: the agents of one or more runs side by side |
 | `datasets/` | Node | The dataset adapters behind `nanoeval import` |
 | `cli/nanoeval.ts`, `cli/Import.ts`, `cli/Plan.ts` | Node | Import, run, read status and artifacts, serve `sandboxd`, attach a runner, start the Worker under local workerd with its credentials |
 
@@ -55,6 +57,8 @@ The shape of the second is the shape here: import once, a durable table, runners
 The harness is a nanocode-ts session in a Durable Object. The sandbox holds only the task environment and a hand. A hand is the nanocode process that runs an agent's Code Mode cells and tools on a machine, while inference, subagents and durability stay with the brain. The released `nanocode hand <url> --token <token>` binary dials the session's `/sessions/<name>/hands` WebSocket with a token that the session mints (`nch_…`), so the sandbox needs no inbound port.
 
 This is the placement that `HARNESS_PLACEMENT.md` in gakonst/nanoeval argued for: model credentials and the authoritative event journal never enter the untrusted task environment, a lost sandbox is an environment error instead of a lost harness, and no agent CLI, Node runtime or CA bundle is installed into task images. In July 2026 this needed a custom guest (`nanocodex-vm-guest`) and a typed RPC over a virtio console. Today the hand protocol is that boundary, and nanoeval uses it unchanged.
+
+An [installed agent](#installed-agents) is the one exception: a vendor's command line inside the slot, for comparing nanocode with it. Its model credential stays outside as well.
 
 A runner is on the host side of that boundary, like the orchestrator: it is nanoeval's own process on the sandbox host, outside every guest. It holds a token that is good for the runner routes of one run and nothing else, and no model credential.
 
@@ -453,6 +457,58 @@ Three things grow on a machine. A runner's cache is cleared by `nanoeval prune`,
 
 **Limits.** The two locks exclude only processes that take them. An import or a launcher from a checkout before this change takes neither, and a removal beside one can take a blob it is about to use: the import then fails on that task, or its version names a blob that is gone and a run of it ends as an `environment` error. Nothing is corrupted, since every reader verifies digests. `flock` is local to a machine. A cache or store whose files another user owns cannot have its access times set, and a build from it fails with the file's name. An eval whose first version was created and whose entry in the list of evals was not written is not seen, until it is imported again.
 
+## Installed agents
+
+An agent of a run is one of two kinds. A session agent (`claude`, `codex`) is the design of this document: a nanocode-ts session outside the slot, and a hand inside it. An installed agent (`claude-code`, `codex-cli`) is a vendor's own command line running inside the slot. It exists so that one run compares nanocode with the harness each vendor ships, on the same rows, disks, verifiers and scoring. It gives up the placement this document argues for: the harness, its tool loop and its event stream are in the task environment. Its credential is not.
+
+```
+ runner ─ slot.sh agents ─▶ <cache>/agents/<kind>-<version>    the pinned release, fetched once per machine, SHA-256 checked
+                             └ linked into rt/agents/<kind>     which every microVM mounts read-only under /opt/nanoeval
+ runner ─ endpoint ───────▶ run: a token of this claim, and the address /v1/runs/RUN/model/ROW
+ runner ─ slot.sh agent ──▶ slot: sh -c COMMAND, the instruction on its input, the token in one variable
+                             command ─ http://127.0.0.1:P ─ the slot's relay ─▶ Worker /v1/runs/RUN/model/ROW/...
+                                                                               the token is checked against the row's claim
+                                                                               the credential is added, the request forwarded,
+                                                                               its status and usage written to the run
+ runner ◀─ agent.status, agent.out, agent.err ─ then the verifier, as for every agent
+```
+
+| Piece | Where | Role |
+| --- | --- | --- |
+| `src/Installed.ts` | Worker and runner | The two commands: the pinned release of each, the shell command that starts it, and what its event stream means |
+| `src/Proxy.ts`, `worker/Model.ts` | Worker | The model endpoint: which routes it forwards, how the token of an attempt becomes the credential of the deployment, and the usage read from a response as it passes |
+| `slot.sh agents`, `slot.sh agent` | Sandbox host | Fetching a release into the cache of the machine, and one agent in one slot as a detached phase with a status file |
+
+| | Codex CLI | Claude Code |
+| --- | --- | --- |
+| Agent | `ID=codex-cli:MODEL[:THINKING]` | `ID=claude-code:MODEL[:THINKING]` |
+| Pinned release | 0.166.0: `codex-package-<arch>-unknown-linux-musl.tar.gz` of the GitHub release `rust-v0.166.0` | 2.1.318: the native binaries `linux-<arch>` and `linux-<arch>-musl` of the release bucket, with the checksums of its manifest |
+| Runs in | Any image: every binary of the package is static. The package is needed, not the lone `codex` binary, which fails every tool call without `codex-code-mode-host` beside it | An image with glibc 2.26 or later takes the glibc build, an image with musl the musl build, which needs nothing but musl's libc. The command chooses by the loader the image has, and ends as an `agent` error in an image with neither |
+| Does not run | The npm package: it needs Node in the image | The npm package, and the binary through a loader of ours: it reads itself from `/proc/self/exe` |
+| Pointed at the run by | `-c model_provider` and `-c model_providers.nanoeval={base_url, env_key, wire_api="responses"}` | `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` |
+| Started as | `codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -m MODEL -c model_reasoning_effort="THINKING" -` | `claude -p --output-format stream-json --verbose --dangerously-skip-permissions --model MODEL --effort THINKING`, with `IS_SANDBOX=1` so that it accepts root |
+| Its own state | `CODEX_HOME` | `CLAUDE_CONFIG_DIR` |
+
+**The release.** Nothing is installed into a task image, at import or at run time. `slot.sh agents` downloads the release of the machine's architecture into `<cache>/agents` under a lock, refuses it when its SHA-256 is not the pinned one, and links it into the directory that slots already mount read-only for the hand. A second sandbox of the machine takes it from the cache. `NANOEVAL_AGENT_CODEX_CLI` and `NANOEVAL_AGENT_CLAUDE_CODE` name a file to run instead, which is how the end-to-end lanes run a scripted command.
+
+**The command.** It runs as the image's user in the task's working directory with the task's variables, like the hand. The instruction is its standard input, unchanged. Its state directory is `/var/lib/nanoeval-agent`, made before it starts and removed before the verifier, so nothing of it is left when the tests run except what the agent did to the task. Nothing else is written into the guest: the command line is an argument of the exec request.
+
+**The endpoint.** A run forwards model requests for its installed agents at `/v1/runs/RUN/model/ROW/`. The token is an HMAC over the row and its current claim under a secret of the run, so it names one claim and needs no table. A request is served only while that claim holds the row, the row is in its `run` phase, and the agent's deadline has not passed: a finished agent, a verifier and a lost claim have no endpoint. Only the generation routes of the agent's provider are forwarded, `responses` and `responses/compact` for Codex, `v1/messages` and `v1/messages/count_tokens` for Claude. The credential is the one sessions use, see [Model credentials](#model-credentials): the plan login when the deployment has one, the API key otherwise, and for a ChatGPT plan the same loopback relay. The token, and any account or relay header the guest sent, are dropped before the request leaves. On a private network the slot relays the Worker's loopback address for exactly as long as the agent runs, as it does for a hand, and the allow list is reset before the verifier.
+
+**Accounting.** The run writes each request before it forwards it, and its status, duration and usage when the response has passed: the usage is read from the provider's events as they stream through. The attempt's token counts are the sum over the requests of its last claim, the requests are kept as `agent/model-requests.jsonl`, and a lost claim's tokens are recorded with that claim. The cost is what the command itself reports: Claude Code prints one, Codex CLI none, so a `codex-cli` attempt has tokens and no cost, and `--model-budget-usd` does not bound it.
+
+**What is the same as for a session agent.** The row, its claims and leases, admission, the disk and the copy-on-write disk, the network, the user, the verifier and the judge, the export. The agent's timeout is the task's: `timeout` ends the command, and the attempt is an `agent_timeout` that keeps its verifier reward. A command that exits with another code is an `agent` error with what it printed. The command is a detached phase of the slot, so a runner that restarts goes on with it, a lost runner's row is claimed again from an empty environment, and a cancelled run takes the slot down with the command in it.
+
+**What the comparison does and does not control.** One run holds the task, its instruction, the environment disk, the resources, the network, the timeout, the verifier and the scoring equal, and the model and its thinking level by name. It does not hold equal what makes a harness a harness:
+
+- **Prompts and tools.** Each harness sends its own system prompt and its own tools: nanocode its Code Mode cells, Codex CLI its shell and patch tools, Claude Code its Bash, Read and Edit. Context management, compaction, retries and what a thinking level means are each harness's own. That is the thing compared.
+- **Where the harness runs.** An installed agent spends the task's CPU and memory: the command is a process of a few hundred MB in a guest of the task's size, and the task's memory limit can end it. A session agent spends none, and pays a round trip to the Worker for each tool call.
+- **The trajectory.** A session's events are the harness's journal. An installed agent's are what its command prints: `agent/events.jsonl` is that stream unchanged, and `agent/trajectory.json` the ATIF steps made from it. Lost on the way: the time of each step, which neither stream carries. For Codex CLI the tokens of each model call, since its stream reports usage once per turn, and reasoning beyond the summaries it prints. For Claude Code the completion tokens of a step, which its stream reports as they were when the message began. The totals of both come from the endpoint, not from the stream.
+- **The plan.** Both arms of a provider use one credential, so they share its rate limits when they run at once.
+- **Versions.** The commands are pinned here, the nanocode release in `src/Slot.ts`. A comparison names them, and the export carries them.
+
+**Not verified.** Claude Code against Anthropic, with an API key or a plan login: no valid login was at hand, see [DECISIONS.md](DECISIONS.md#2026-11-11-installed-agents-and-nanocode-beside-codex-cli). Its release was run on krun slots against a scripted Messages endpoint. For a plan login the endpoint adds the `oauth-2025-04-20` beta as nanocode-egress does, and whether Anthropic accepts a plan token on the requests Claude Code makes in this mode has not been tried. A deployed Worker reached over `https://`, and aarch64, have not been run either.
+
 ## Sandbox providers
 
 A provider creates a sandbox, runs a command in it, writes a file to it, and kills it (`src/Sandbox.ts`). The contract is unchanged, and a run now asks one thing of a sandbox: it writes `runner.json` into it and runs `nanoeval runner --detach --config runner.json`. Everything else is between that runner and the run.
@@ -577,6 +633,11 @@ A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP c
 | gvproxy for the guest network, as in gakonst/nanoeval | As released (v0.8.9, read from its source) it maps an address of the guest's network to the host's `127.0.0.1` and serves its port-forwarding API to the guest at the gateway, so a guest could reach the host's loopback and ask for listeners on the host. Closing both needs a configuration file or a build of our own. It is a 12.9 MB Go binary to fetch where passt is a distribution package |
 | TSI with a port map, or TSI for outbound connections only | libkrun hijacks every guest socket or none. A listener is still bound on the host, and the socket options that fail still fail |
 | libkrun's own DHCP client for the guest's address | It gives up 100 ms after its request. The address plan is fixed, so the guest agent sets it and a slow passt cannot leave a guest without an address |
+| The login file of a plan copied into the slot for an installed agent, as Harbor's installed agents get theirs | It is a refresh token for the whole plan, in an environment that the task's code and the model both control, and every attempt would refresh it against the others. The endpoint of the run gives an attempt a token that is worth nothing after it |
+| The vendor's command line installed into the image, at import or when an attempt starts | It changes the task image, needs Node and a registry in it, and costs every attempt an install. A static or libc-only binary shared read-only needs none of that |
+| A proxy with the credential on the runner's machine | A runner holds no model credential. The Worker already forwards for sessions, and one place counts the tokens of a run |
+| Intercepting the command's own traffic to its vendor with a certificate in the guest | The command would still need the credential, and the image a certificate authority of ours |
+| The vendor's command line outside the slot, with its tools sent into the slot | Neither command has a hand protocol. Replacing its tools with ours would compare something neither vendor ships |
 | The session relay inside `sandboxd` or the runner | It would end every hand when either restarts. A slot's processes outlive both |
 | A listener for the Worker on the bridge's gateway, or TLS in front of it | Every slot could reach the first, and the second needs a certificate that every hand trusts |
 | A Rust crate beside `krun/` for the importers, reusing the earlier adapters as they are | They are written against `nanocodex-eval`'s import store, case plans and task format, about 3,300 lines that no longer exist, so little would be reused as it is. The task loader, the checksum and the CLI they must agree with are TypeScript, and a second binary would have to be built on every machine that imports. What ports unchanged is the data: the pins, the prompts and the graders |
@@ -676,7 +737,7 @@ The eval stack of nanocode at `2d4a4c539^` (`crates/experimental/nanocodex-eval`
 | Verifier-dependency cache (`vm.rs`) | The `apt` and `uv` setup of Terminal-Bench verifiers kept on a cache disk that was mounted over `/var/cache/apt/archives`, `/var/lib/apt/lists`, `/root/.cache/uv` and `/root/.local`, with the setup lines cut from the script on a hit | Back in a smaller form, off by default: what uv downloads, in directories of its own that two variables name, see [Verifier cache](#verifier-cache). apt is not cached and no script is changed |
 | Rerun lineage (`eval/run/retained.rs`, later the workset) | A run that retries what an earlier one did not pass. At `2d4a4c539^` the workset kept no pointer between them: a retry was a new generation or another attempt row | Back with the pointer: `run --rerun`, see [Runs](#runs) |
 | Profiles (`profile.rs`, `nanocodex.toml`) | Named recipes of benchmarks, harnesses, models and thinking levels | Not needed yet: a run is a command line over dataset directories. A run file is the equivalent when one is wanted |
-| Capture proxy (`capture_proxy.rs`) | Recorded the model traffic of other harnesses for comparison | Not needed: nanoeval runs nanocode sessions, whose events are the record |
+| Capture proxy (`capture_proxy.rs`) | Recorded the model traffic of other harnesses for comparison | Back as the model endpoint of a run, see [Installed agents](#installed-agents). It adds the credential as well as recording the usage, so the other harness holds none |
 | Coordinator and pull workers (`coordinator.rs`, `cluster.rs`) | One HTTP owner of the ledger, workers that claim tasks, a host load sampler | Back as the Run object and its runners. The load sampler is not carried over: a runner admits by declared memory and measured free disk |
 | Named rewards and scoring policies (`reward.json`) | Several rewards per attempt and a rule for passing | Not carried over. A grader writes one `reward.txt`, and the summary reports the mean reward beside the pass rate |
 | Image builds without a container engine (`nanocodex-vm/src/image`) | OCI pulls and Dockerfile builds straight to a disk | Back as `nanoeval-krun image build`, see [Image disks](#image-disks), and the only way an environment is made |
