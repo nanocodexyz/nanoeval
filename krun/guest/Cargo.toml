@@ -9,9 +9,11 @@ publish.workspace = true
 
 [dependencies]
 net.workspace = true
-nix = { workspace = true, features = ["fs", "mount", "poll", "process", "signal", "socket"] }
+nix = { workspace = true, features = ["fs", "mount", "poll", "process", "sched", "signal", "socket"] }
+sha2.workspace = true
 tar.workspace = true
 wire.workspace = true
+xattr.workspace = true
 
 [lints]
 workspace = true
