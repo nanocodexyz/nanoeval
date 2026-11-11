@@ -1,8 +1,11 @@
 use std::{
     ffi::OsString,
-    fs::{self, File},
+    fs::{self, File, Permissions},
     io::{self, BufReader, BufWriter, Read, Write},
-    os::{fd::AsFd, unix::fs::FileExt},
+    os::{
+        fd::AsFd,
+        unix::fs::{FileExt, PermissionsExt},
+    },
     path::Path,
     thread,
     time::Instant,
@@ -15,11 +18,12 @@ use nix::{
 use sha2::Digest;
 use zstd::stream::{read::Decoder, write::Encoder};
 
-use super::{Hashing, Lock, absolute, allocated, beside, failed, hex};
+use super::{Hashing, Lock, absolute, allocated, beside, failed, hex, sha256};
 use crate::Arguments;
 
 const BLOCK: usize = 4096;
 const DIGEST: usize = 32;
+const DISK_MODE: u32 = 0o444;
 const LEVEL: i32 = 3;
 const LOCK: &str = ".lock";
 const MAGIC: [u8; 8] = *b"NKRDISK1";
@@ -246,31 +250,43 @@ pub(crate) fn unpack(arguments: impl Iterator<Item = OsString>) -> Result<u8, St
     let file = absolute(file)?;
     let out = absolute(arguments.one("out")?)?;
     let _lock = Lock::take(beside(&out, LOCK))?;
-    let temporary = beside(&out, TEMPORARY);
-    let disk = File::create(&temporary).map_err(|error| failed(&temporary, &error))?;
-    let restored = restore(&file, &disk).and_then(|(digest, size)| {
-        match arguments
-            .maybe("sha256")
-            .map(|wanted| wanted.to_string_lossy())
-        {
-            Some(wanted) if wanted.trim_start_matches("sha256:") != digest => Err(format!(
-                "{} hashes to {digest}, not {wanted}",
-                file.display()
-            )),
-            _ => disk
-                .sync_all()
+    let wanted = |digest: &str| match arguments
+        .maybe("sha256")
+        .map(|wanted| wanted.to_string_lossy())
+    {
+        Some(wanted) if wanted.trim_start_matches("sha256:") != digest => Err(format!(
+            "{} hashes to {digest}, not {wanted}",
+            file.display()
+        )),
+        _ => Ok(()),
+    };
+    let (digest, size) = if out.is_file() {
+        let digest = sha256(&file)?;
+        wanted(&digest)?;
+        let size = fs::metadata(&out)
+            .map_err(|error| failed(&out, &error))?
+            .len();
+        eprintln!("nanoeval-krun: {} is already unpacked", out.display());
+        (digest, size)
+    } else {
+        let temporary = beside(&out, TEMPORARY);
+        let disk = File::create(&temporary).map_err(|error| failed(&temporary, &error))?;
+        let restored = restore(&file, &disk).and_then(|(digest, size)| {
+            wanted(&digest)?;
+            disk.set_permissions(Permissions::from_mode(DISK_MODE))
+                .and_then(|()| disk.sync_all())
+                .and_then(|()| fs::rename(&temporary, &out))
                 .map(|()| (digest, size))
-                .map_err(|error| failed(&temporary, &error)),
-        }
-    });
-    let (digest, size) = match restored {
-        Ok(restored) => restored,
-        Err(message) => {
-            let _ = fs::remove_file(&temporary);
-            return Err(message);
+                .map_err(|error| failed(&out, &error))
+        });
+        match restored {
+            Ok(restored) => restored,
+            Err(message) => {
+                let _ = fs::remove_file(&temporary);
+                return Err(message);
+            }
         }
     };
-    fs::rename(&temporary, &out).map_err(|error| failed(&out, &error))?;
     println!(
         "{}",
         serde_json::json!({
