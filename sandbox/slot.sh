@@ -154,7 +154,7 @@ built() {
     has cargo || PATH=$HOME/.cargo/bin:$PATH
     has cargo || die "$package is built with cargo, which is not installed"
     (cd "$NANOEVAL_KRUN_SOURCE" && flock . cargo build --release --locked -p "$package" ${target:+--target "$target"}) >&2
-    printf '%s\n' "$NANOEVAL_KRUN_SOURCE/target/${target:+$target/}release/$package"
+    printf '%s\n' "${CARGO_TARGET_DIR:-$NANOEVAL_KRUN_SOURCE/target}/${target:+$target/}release/$package"
   else
     die "$package comes from NANOEVAL_KRUN, a directory with the built binaries, or from NANOEVAL_KRUN_SOURCE, the krun workspace"
   fi
