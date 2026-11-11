@@ -42,6 +42,7 @@ const usage = `nanoeval <command>
   import    --url URL --token T (DATASET | --task DIR...) [--eval NAME] [--only ID]... [--limit N]
             [--backend krun|dir] [--store DIR|r2] [--cache DIR] [--layers DIR] [--sources DIR]
             [--report FILE] [--keep-going]
+            [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
             Import a dataset, or local task directories, as a version of a durable eval:
             the adapter writes each task, its instruction, tests and solution become blobs
             kept apart, and its environment is converted once into the disk a microVM boots
@@ -52,7 +53,10 @@ const usage = `nanoeval <command>
             after the dataset unless --eval names it. --report writes the time each
             task took in the adapter, the conversion, the packing and the upload. With
             --keep-going, a task whose environment does not convert is named and left out,
-            and the rest become the version.
+            and the rest become the version. The RUN steps of a task's Dockerfile get the
+            host policy that slots get, from --ca-bundle, --slot-env and --slot-forward or
+            from NANOEVAL_CA_BUNDLE, NANOEVAL_SLOT_ENV and NANOEVAL_SLOT_FORWARD, and the
+            disk keeps none of it.
   import    DATASET --out DIR [--only ID]... [--limit N] [--sources DIR]
             Write the dataset's tasks as Harbor task directories instead, with dataset.json.
   evals     --url URL --token T
@@ -324,6 +328,7 @@ export async function importEval(
     layers: string
     log?(line: string): void
     name: string
+    policy?: Converter.Policy
     refused?(id: string, error: Error): void
     source: Record<string, string>
     store: Store.Store
@@ -334,6 +339,7 @@ export async function importEval(
     converter: Converter.create({
       home: Path.join(input.cache, 'converter'),
       layers: input.layers,
+      ...(input.policy ? { policy: input.policy } : {}),
     }),
     format: input.backend === 'krun' ? 'disk' : 'dir',
     ...(input.log ? { log: input.log } : {}),
@@ -651,6 +657,7 @@ async function main(): Promise<void> {
     return
   }
 
+  const policy = Converter.policy({ ...process.env, ...hostPolicy })
   const refusals: { error: string; id: string }[] = []
   const imported = async (
     source: AsyncIterable<Dataset.Case>,
@@ -672,6 +679,7 @@ async function main(): Promise<void> {
       layers: Path.resolve(values.layers ?? Converter.defaultLayers(cache)),
       log: (line) => console.error(line),
       name: target.name,
+      policy,
       source: target.source,
       store: blobStore(values.store, access),
     })
@@ -681,6 +689,11 @@ async function main(): Promise<void> {
         JSON.stringify(
           {
             name: target.name,
+            policy: {
+              caBundle: policy.caBundle !== undefined,
+              slotEnv: policy.envFile !== undefined,
+              slotForward: policy.forwards !== undefined,
+            },
             refused: refusals,
             timings: result.timings,
             version: result.version,

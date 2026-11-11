@@ -38,6 +38,9 @@ cache=
 layers=
 state=
 krun=
+ca_bundle=
+slot_env=
+slot_forward=
 remove=false
 sandboxd_options=()
 worker_options=()
@@ -63,8 +66,12 @@ while [ $# -gt 0 ]; do
     --ca-bundle | --slot-env)
       [ -f "$2" ] || die "$2 is not a file"
       sandboxd_options+=("$1" "$(readlink -f "$2")")
+      if [ "$1" = --ca-bundle ]; then ca_bundle=$(readlink -f "$2"); else slot_env=$(readlink -f "$2"); fi
       ;;
-    --slot-forward) sandboxd_options+=("$1" "$2") ;;
+    --slot-forward)
+      sandboxd_options+=("$1" "$2")
+      slot_forward=${slot_forward:+$slot_forward }$2
+      ;;
     --claude-login | --codex-login)
       [ -f "$2" ] || die "$2 is not a file"
       worker_options+=("$1" "$(readlink -f "$2")")
@@ -128,6 +135,9 @@ NANOEVAL_CACHE=$cache
 NANOEVAL_LAYERS=$layers
 EOF
   if [ -n "$krun" ]; then printf 'NANOEVAL_KRUN=%s\n' "$krun" >>"$config/env.tmp"; fi
+  if [ -n "$ca_bundle" ]; then printf 'NANOEVAL_CA_BUNDLE=%s\n' "$ca_bundle" >>"$config/env.tmp"; fi
+  if [ -n "$slot_env" ]; then printf 'NANOEVAL_SLOT_ENV=%s\n' "$slot_env" >>"$config/env.tmp"; fi
+  if [ -n "$slot_forward" ]; then printf 'NANOEVAL_SLOT_FORWARD="%s"\n' "$slot_forward" >>"$config/env.tmp"; fi
 )
 mv "$config/env.tmp" "$config/env"
 

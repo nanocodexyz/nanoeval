@@ -1,0 +1,18 @@
+schema_version = "1.1"
+
+[task]
+name = "fixtures/package-installs"
+description = "A fixture whose Dockerfile installs from the Python and npm registries."
+
+[agent]
+timeout_sec = 60.0
+
+[verifier]
+timeout_sec = 30.0
+
+[environment]
+cpus = 1
+memory_mb = 512
+storage_mb = 1024
+gpus = 0
+allow_internet = true

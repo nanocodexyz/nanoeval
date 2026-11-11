@@ -22,6 +22,12 @@ export type Converter = {
   unpack(file: string, disk: string): Promise<void>
 }
 
+export type Policy = {
+  caBundle?: string
+  envFile?: string
+  forwards?: readonly string[]
+}
+
 export type Built = {
   config: {
     architecture: string
@@ -44,6 +50,15 @@ export function defaultLayers(
   env: Record<string, string | undefined> = process.env,
 ): string {
   return env['NANOEVAL_LAYERS'] ?? Path.join(cache, 'oci')
+}
+
+export function policy(env: Record<string, string | undefined> = process.env): Policy {
+  const forwards = (env['NANOEVAL_SLOT_FORWARD'] ?? '').split(' ').filter(Boolean)
+  return {
+    ...(env['NANOEVAL_CA_BUNDLE'] ? { caBundle: env['NANOEVAL_CA_BUNDLE'] } : {}),
+    ...(env['NANOEVAL_SLOT_ENV'] ? { envFile: env['NANOEVAL_SLOT_ENV'] } : {}),
+    ...(forwards.length ? { forwards } : {}),
+  }
 }
 
 export function meta(built: Built): Eval.Meta {
@@ -84,7 +99,7 @@ function run(step: string, command: readonly [program: string, ...arguments: str
   })
 }
 
-export function create(options: { home: string; layers: string }): Converter {
+export function create(options: { home: string; layers: string; policy?: Policy }): Converter {
   const krun = Path.join(options.home, 'rt', 'krun', 'nanoeval-krun')
   let tools: Promise<unknown> | undefined
   const image = async (step: string, rest: readonly string[]) => {
@@ -104,7 +119,13 @@ export function create(options: { home: string; layers: string }): Converter {
       const file = disk + '.meta.json'
       await image('build', [
         ...(environment.image === undefined
-          ? ['--dockerfile', environment.context ?? '']
+          ? [
+              '--dockerfile',
+              environment.context ?? '',
+              ...(options.policy?.caBundle ? ['--ca-bundle', options.policy.caBundle] : []),
+              ...(options.policy?.envFile ? ['--env-file', options.policy.envFile] : []),
+              ...(options.policy?.forwards ?? []).flatMap((forward) => ['--forward', forward]),
+            ]
           : ['--ref', environment.image]),
         '--size-mb',
         String(environment.storageMb),
