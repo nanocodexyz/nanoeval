@@ -58,3 +58,4 @@ The conventions of nanocode-ts's `AGENTS.md` apply: erasable syntax only, `.ts` 
 - Conventional commits, lowercase, no trailing period: `feat:`, `fix:`, `perf:`, `refactor:`, `docs:`, `chore:`. Scope optional.
 - State the change, not the reason for it. Keep the body short: the problem, the resulting behavior, and one validation line.
 - Never force push and never amend a pushed commit.
+- Land a change by pushing it to `main`. No pull request. Run every step of `ci.yml` from a fresh clone first, and push only a head on which all of them pass.
