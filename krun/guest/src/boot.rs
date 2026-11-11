@@ -102,11 +102,11 @@ pub(crate) fn run(mode: &str, options: &Options) -> io::Result<()> {
     if mode == "overlay" {
         if options.private {
             let resolver = format!("nameserver {}\n", wire::GUEST_RESOLVER);
-            seed(Path::new("/etc/resolv.conf"), resolver.as_bytes())?;
+            provide(Path::new("/etc/resolv.conf"), resolver.as_bytes())?;
         } else if let Ok(resolver) = fs::read(RESOLVER) {
-            seed(Path::new("/etc/resolv.conf"), &resolver)?;
+            provide(Path::new("/etc/resolv.conf"), &resolver)?;
         }
-        seed(Path::new("/etc/hosts"), HOSTS.as_bytes())?;
+        provide(Path::new("/etc/hosts"), HOSTS.as_bytes())?;
     }
     Ok(())
 }
@@ -203,14 +203,11 @@ fn overlay() -> io::Result<()> {
     )
 }
 
-fn seed(path: &Path, content: &[u8]) -> io::Result<()> {
-    match fs::metadata(path) {
-        Ok(metadata) if metadata.len() > 0 => return Ok(()),
-        Ok(_) => {}
+fn provide(path: &Path, content: &[u8]) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => fs::remove_file(path)?,
         Err(_) => {
-            if fs::symlink_metadata(path).is_ok() {
-                fs::remove_file(path)?;
-            }
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
             }
