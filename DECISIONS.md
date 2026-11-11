@@ -831,3 +831,239 @@ The exported job did not load with Harbor's models at first: a Codex model calls
 - A lost row starts again from an empty environment, so the work of the lost claim is paid twice. Its model usage is counted against the budget.
 - `scripts/install-linux.sh` was changed for the store and the cache and not run again. The services installed from the earlier commit were left as they were.
 - CI on a hosted runner runs the directory lanes. The krun lanes skip there, as before, and with the Docker lanes gone no hosted lane isolates an attempt any more.
+
+## 2026-11-11: task images become disks without Docker
+
+Machine for every measurement in this entry: the 32-core Linux machine with KVM of the entries above (kernel 6.8, libkrunfw 5, e2fsprogs 1.47.0), shared with other work throughout, with a load average between 6 and 9 before the lanes. Every lane is one run at commit `2d270e4`, the last code commit of the branch, except the levels of the packed form, which need a launcher built for each. Docker 29.9.3 with BuildKit was on the machine only as the other side of the comparisons below: the converter ran under an emptied environment whose `PATH` is one directory that holds a link to `passt` and nothing else, and in the tests an empty directory.
+
+### What was wrong
+
+A krun slot got its root disk from Docker. `slot.sh up` pulled or built the task image, created a container, and streamed `docker export` into a builder microVM. So every krun host carried a Docker daemon that it used only for this, an image was stored twice (in Docker and as a disk) until one of them was removed, the conversion ran inside an attempt's setup time on the machine that ran the attempt, and the disk held a container, not the image: Docker's own files were in it and some of the image's were not.
+
+The eval stack this repository revives did not need Docker for that (`crates/nanocodex-vm/src/image` in nanocode at `2d4a4c539^`). DESIGN.md listed it as not carried over.
+
+### What was built
+
+`nanoeval-krun image build` makes the disk from an image reference or from a Dockerfile, `image pack` and `image unpack` move it, and `image tree` lists one. [DESIGN.md](DESIGN.md#image-disks) has the format and the rules. Nothing in `sandbox/slot.sh`, the Worker or the CLI uses it yet: this entry is the converter alone.
+
+It adds 39 packages to the lockfile of `krun/` (130 to 169): ureq with rustls and ring, serde, sha2, and what they need. The launcher grows from 4.5 MB to 7.8 MB and the guest from 0.78 MB to 0.91 MB. The registry of this machine refused three releases for being younger than a week, so sha2 is 0.10.9, rustls-pki-types is 1.15.1, and ureq is built without its bundled roots, which the converter does not want anyway: it trusts `SSL_CERT_FILE` or the system bundle.
+
+### What came from the earlier code
+
+From `nanocodex-vm/src/image/mod.rs`: the store of blobs by digest with a lock and a digest check per blob, the choice of the platform's manifest from an index, the layer media types, and a Dockerfile as stages that a builder VM runs, with earlier stages and other images attached as disks. Three things did not come:
+
+- `arcbox-ext4`, which wrote the ext4 on the host from the layers. A `RUN` step needs a kernel on the disk whatever writes the layers, and the builder microVM that makes disks from archives was already here, so a kernel writes all of it, as root, with no root on the host.
+- `oci-client`, with tokio and reqwest under it. The converter is one blocking process and makes three kinds of request.
+- Its cache of base disks and their reflink copies. A stage unpacks its base again: `python:3.13-slim-bookworm` takes 0.7 s.
+
+### No container tool runs
+
+`strace -f -e trace=execve` over one conversion from a reference (`alexgshaw/mailman:20251031`) and one from a Dockerfile (`tasks/write-greeting`):
+
+| Conversion | Programs started |
+| --- | --- |
+| Reference | `nanoeval-krun` twice (itself and its builder microVM), `mke2fs` from `/usr/sbin` |
+| Dockerfile | The same, and `passt` for the network of its `RUN` step |
+
+No docker, containerd, podman, skopeo, buildah, runc or crun in either.
+
+### The same tree as the docker export path
+
+Eight images were converted twice, to disks of 10,240 MiB: by `nanoeval-krun image build --ref NAME@sha256:…` with the digest Docker's copy of the image has, and by the path of `slot.sh` at `3a59f6e` with the binaries of that commit (`docker create`, `docker export` into the builder microVM). `image tree` then listed both disks: path, type, mode, owner, group, size, time, SHA-256 of every regular file, link target, the first name of a hard-linked file, and extended attributes.
+
+| Image | Layers | Entries | Regular files | docker export path | Converter, without the download |
+| --- | --- | --- | --- | --- | --- |
+| `alpine:3.21` | 1 | 520 | 88 | 1.18 s | 0.21 s |
+| `ubuntu:24.04` | 1 | 3,443 | 2,587 | 0.81 s | 0.53 s |
+| `python:3.13-slim-bookworm` | 4 | 6,572 | 5,025 | 1.16 s | 0.70 s |
+| `python:3.13-bookworm` | 7 | 30,151 | 24,531 | 5.21 s | 3.99 s |
+| `alexgshaw/build-pmars:20251031` | 4 | 5,702 | 4,560 | 1.13 s | 0.82 s |
+| `alexgshaw/mailman:20251031` | 5 | 16,623 | 13,675 | 2.68 s | 2.01 s |
+| `alexgshaw/extract-elf:20251031` | 5 | 46,011 | 38,295 | 6.68 s | 4.91 s |
+| `alexgshaw/write-compressor:20251031` | 6 | 6,610 | 5,279 | 2.51 s | 2.71 s |
+
+The four official images also downloaded their layers in that run, in 1.2 to 1.8 s each. The export path had its images in Docker already.
+
+Every entry of the converter's disk is in the other with the same type, mode, owner, group, size, content, link target, hard links and time, except for these, in all eight images, and each is what `docker create` puts into a container or what `mke2fs` leaves:
+
+- `/.dockerenv` and `lost+found` are only in the export. The converter removes `lost+found`.
+- `/etc/hostname`, `/etc/hosts` and `/etc/resolv.conf` are empty in the export, with mode 755 and the time of the container, and created there when the image has none. They are Docker's mount points. On the converter's disk they are the image's: Alpine ships an `/etc/hosts`, Ubuntu and Debian the hostname of the machine that built them, and the Debian images an `/etc/resolv.conf` that names `1.1.1.1` and `1.0.0.1`.
+- `/etc/mtab` is Docker's link to `/proc/mounts` in the export, and the image's own link (`../proc/mounts` in Alpine, `../proc/self/mounts` in `mailman`) or absent on the converter's disk.
+- `/dev`, `/etc`, `/proc` and `/sys` have the time of the container in the export and the image's time on the converter's disk, and `/proc` of Alpine has the image's mode 555 where the export has 755.
+
+The resolver file is why the guest changed: it used to write `/etc/resolv.conf` and `/etc/hosts` only where they were empty, which was always. It now writes both over what the image has, as Docker does, or a slot from a Debian image would have asked `1.1.1.1` in place of the machine's resolver.
+
+None of the eight images has an extended attribute, so those are checked by the test image below and by the listing of the 89 disks.
+
+### Dockerfiles against BuildKit
+
+Two Dockerfiles written for this were built by the converter and by `docker build`, and the two trees compared the same way. They cover two stages, `ARG` before `FROM` and in a stage, `ENV` with expansion, `RUN` as root and as a user, `COPY` of a file, of several, of a directory with and without a trailing slash, into a new and into an existing directory, over existing files, of a link, `COPY --from` a stage and an image, `USER`, and `WORKDIR` absolute, relative and under a setgid directory.
+
+The trees were equal but for Docker's files above and for one line: `id` in a `RUN` step as a user printed that user's supplementary group under BuildKit and not here. That is the guest's `exec`, in a slot as well, and it is listed under the limits.
+
+What BuildKit does, and the converter now does too, was not all what its documentation says:
+
+- A directory made as the destination of a copy belongs to root with mode 755 even when the source directory was copied from a stage and had another owner, and takes the time of the source directory. An existing destination directory takes that time too and keeps its mode.
+- A directory below it that exists on both sides takes the mode and owner of the source.
+- A link named as a source is followed, inside the tree it is in. A link below a copied directory stays a link.
+- A link copied over a directory fails the build. The converter refuses a file over a directory and a directory over a file as well, which were not tried with BuildKit.
+- `WORKDIR` creates directories as the current `USER`, and they inherit the setgid bit of their parent.
+
+The Dockerfiles of this repository: 13 of the 14 under `tasks/` and `test/fixtures/` built in 0.8 to 1.4 s each and booted under an overlay, `plain-user` as its user `worker`. The fourteenth is `broken-environment`, which is there to fail, and did with `line 3: RUN ended with 7`. The unit test `a krun slot runs the solution and the verifier in a microVM` of `test/Sandbox.test.ts` passed unchanged with a disk of the converter in place of Docker's: a line added to a copy of the test converted the environment and recorded the disk where `slot.sh` looks for one it has made, and a script named `docker` that fails every call but `info` stood first in the `PATH`. It was called for `info`, for the lookup of the image that sends `slot.sh` to the recorded disk, and for the container and network listings of `destroy`.
+
+Eight Dockerfiles of Terminal-Bench 2.1 were built as well, to see the instructions they use at work. Seven built: `financial-document-processor` (two stages, `COPY --from` an image on ghcr.io and from a stage, `uv run`) in 5.2 s, `kv-store-grpc` 1.2 s, `log-summary-date-ranges` 1.8 s, `git-leak-recovery` 6.4 s, `build-pmars` 7.7 s, `cobol-modernization` 8.7 s and `mailman` 24.2 s. `fix-git` did not: its `setup.sh` clones a repository on GitHub that now asks for a login, and `git` had no terminal to ask on. Their trees were not compared with the published images, which were built months ago from package archives that have moved on.
+
+### All 89 images of Terminal-Bench 2.1
+
+One run converted and packed the image of every task, four at a time, from an empty blob store: `image build --ref` with the `docker_image` of each `task.toml` (79 with the tag `20251031`, 6 with `20260403`, 4 with `20260430`) and `--size-mb 10240`, the `storage_mb` of all 89, then `image pack`. All 89 converted, in 99 s of wall time. No request was tried twice and Docker Hub refused none.
+
+| | Sum | Median | Smallest | Largest |
+| --- | --- | --- | --- | --- |
+| Layers | 595 | 7 | 2 | 14 |
+| Compressed layers, as the manifests give them | 20.97 GB | 149 MB | 30 MB | 1,432 MB |
+| Download | 134 s | 1.3 s | | 8.5 s |
+| Convert | 199 s | 1.6 s | | 15.3 s |
+| Disk, allocated | 53.86 GB | 380 MB | 93 MB | 4,607 MB |
+| Pack | 51 s | 0.31 s | | 4.7 s |
+| Packed | 19.16 GB | 133 MB | 27 MB | 1,400 MB |
+
+319 of the 595 layers are distinct, so the store holds 16.70 GB in 501 blobs, the manifests and configs among them. The packed disks are 9 % smaller than the layers they were made from are in the registry. `custom-memory-heap-crash` is the largest: 11 layers, 1.27 GB compressed, 15.3 s to convert, 4.6 GB on disk, 1.04 GB packed in 4.7 s.
+
+`image tree` then listed all 89 disks: 1,318,421 entries, of which 1,088,352 are regular files, 138,275 directories and 91,794 links. 5,598 names are hard links to an earlier name, 1,086 files are setuid or setgid, and three files in three images carry a `security.capability` attribute. No image holds a device or a fifo.
+
+| Task | Tag | Manifest | Layers | Compressed | Download | Convert | Allocated | Packed |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `adaptive-rejection-sampler` | 20251031 | `985bed39e844` | 3 | 30 MB | 1.2 s | 0.5 s | 93 MB | 27 MB |
+| `bn-fit-modify` | 20251031 | `5aeb11ca6e80` | 4 | 262 MB | 1.9 s | 2.5 s | 704 MB | 245 MB |
+| `break-filter-js-from-html` | 20251031 | `d7bfb45e47cf` | 9 | 382 MB | 1.8 s | 3.9 s | 1103 MB | 349 MB |
+| `build-cython-ext` | 20251031 | `3612a38fadb8` | 7 | 303 MB | 1.7 s | 3.0 s | 860 MB | 272 MB |
+| `build-pmars` | 20251031 | `57a82706f749` | 4 | 61 MB | 1.7 s | 0.8 s | 162 MB | 56 MB |
+| `build-pov-ray` | 20251031 | `874baf49341e` | 5 | 163 MB | 1.3 s | 1.6 s | 423 MB | 151 MB |
+| `caffe-cifar-10` | 20260403 | `929a6d631b59` | 4 | 213 MB | 1.5 s | 2.0 s | 557 MB | 198 MB |
+| `cancel-async-tasks` | 20251031 | `84c7fae6b256` | 5 | 44 MB | 0.8 s | 0.7 s | 139 MB | 39 MB |
+| `chess-best-move` | 20251031 | `bb447f94d9e2` | 12 | 240 MB | 1.4 s | 2.3 s | 624 MB | 213 MB |
+| `circuit-fibsqrt` | 20251031 | `29783439f529` | 9 | 149 MB | 1.1 s | 1.5 s | 406 MB | 133 MB |
+| `cobol-modernization` | 20251031 | `593ab9df3d83` | 9 | 162 MB | 1.3 s | 1.6 s | 449 MB | 149 MB |
+| `code-from-image` | 20251031 | `2be9cdb746ed` | 6 | 44 MB | 0.9 s | 0.8 s | 139 MB | 39 MB |
+| `compile-compcert` | 20260403 | `f60236a4fe55` | 3 | 30 MB | 1.1 s | 0.4 s | 93 MB | 27 MB |
+| `configure-git-webserver` | 20251031 | `9e48389b917f` | 3 | 72 MB | 1.0 s | 0.7 s | 159 MB | 69 MB |
+| `constraints-scheduling` | 20251031 | `567ce5a189f8` | 4 | 50 MB | 1.1 s | 0.8 s | 164 MB | 45 MB |
+| `count-dataset-tokens` | 20251031 | `9c513c4ba342` | 5 | 44 MB | 0.8 s | 0.7 s | 139 MB | 39 MB |
+| `crack-7z-hash` | 20251031 | `0f4453abd774` | 8 | 356 MB | 1.4 s | 2.6 s | 790 MB | 341 MB |
+| `custom-memory-heap-crash` | 20251031 | `1895d7d6240d` | 11 | 1268 MB | 2.8 s | 15.3 s | 4607 MB | 1045 MB |
+| `db-wal-recovery` | 20251031 | `0e33ea5ec823` | 5 | 175 MB | 1.2 s | 1.9 s | 543 MB | 163 MB |
+| `distribution-search` | 20251031 | `1448f7aa1c60` | 7 | 181 MB | 1.4 s | 1.6 s | 442 MB | 168 MB |
+| `dna-assembly` | 20251031 | `d1adf6835f1d` | 3 | 30 MB | 0.9 s | 0.5 s | 93 MB | 27 MB |
+| `dna-insert` | 20251031 | `4dd8760694e3` | 3 | 30 MB | 0.9 s | 0.5 s | 93 MB | 27 MB |
+| `extract-elf` | 20251031 | `6932e4cb3184` | 5 | 347 MB | 1.8 s | 4.2 s | 1154 MB | 320 MB |
+| `extract-moves-from-video` | 20260403 | `74ef87375ce2` | 3 | 42 MB | 1.1 s | 0.6 s | 105 MB | 39 MB |
+| `feal-differential-cryptanalysis` | 20251031 | `bea93bafe9ea` | 7 | 52 MB | 1.1 s | 0.8 s | 161 MB | 46 MB |
+| `feal-linear-cryptanalysis` | 20251031 | `ea78749a8422` | 13 | 151 MB | 1.4 s | 1.6 s | 424 MB | 139 MB |
+| `filter-js-from-html` | 20251031 | `92acda0f124b` | 7 | 378 MB | 2.1 s | 3.6 s | 1092 MB | 347 MB |
+| `financial-document-processor` | 20251031 | `ef6c9cfaaf14` | 4 | 52 MB | 1.1 s | 0.7 s | 143 MB | 47 MB |
+| `fix-code-vulnerability` | 20251031 | `cac325252991` | 12 | 191 MB | 1.5 s | 2.3 s | 508 MB | 174 MB |
+| `fix-git` | 20260403 | `389b9c824761` | 10 | 156 MB | 1.5 s | 1.4 s | 330 MB | 147 MB |
+| `fix-ocaml-gc` | 20251031 | `66a1e2293076` | 5 | 765 MB | 2.3 s | 3.6 s | 1065 MB | 613 MB |
+| `gcode-to-text` | 20251031 | `0979ef40c6a3` | 7 | 45 MB | 1.1 s | 0.7 s | 141 MB | 39 MB |
+| `git-leak-recovery` | 20251031 | `62160e522a42` | 6 | 96 MB | 1.3 s | 1.0 s | 242 MB | 89 MB |
+| `git-multibranch` | 20251031 | `5bc449921c13` | 6 | 222 MB | 1.4 s | 2.4 s | 678 MB | 204 MB |
+| `gpt2-codegolf` | 20251031 | `537e7bd26b02` | 5 | 614 MB | 2.3 s | 3.0 s | 871 MB | 605 MB |
+| `headless-terminal` | 20251031 | `eb7e209672bf` | 7 | 62 MB | 1.1 s | 1.0 s | 166 MB | 56 MB |
+| `hf-model-inference` | 20260430 | `a88d98a849e8` | 6 | 329 MB | 1.9 s | 4.2 s | 1235 MB | 277 MB |
+| `install-windows-3.11` | 20251031 | `c6695097316e` | 14 | 573 MB | 1.9 s | 5.3 s | 1654 MB | 535 MB |
+| `kv-store-grpc` | 20251031 | `3399400800dc` | 5 | 44 MB | 0.8 s | 0.7 s | 139 MB | 39 MB |
+| `large-scale-text-editing` | 20251031 | `719adca3f138` | 8 | 73 MB | 1.1 s | 1.0 s | 275 MB | 55 MB |
+| `largest-eigenval` | 20251031 | `cb9e3e3b09d0` | 8 | 85 MB | 1.1 s | 1.0 s | 239 MB | 77 MB |
+| `llm-inference-batching-scheduler` | 20251031 | `19e79aa49be4` | 6 | 44 MB | 0.9 s | 0.8 s | 139 MB | 39 MB |
+| `log-summary-date-ranges` | 20251031 | `cbeb6ba905c2` | 8 | 45 MB | 1.1 s | 0.7 s | 145 MB | 39 MB |
+| `mailman` | 20251031 | `04fac73db7e2` | 5 | 162 MB | 1.4 s | 2.1 s | 412 MB | 110 MB |
+| `make-doom-for-mips` | 20251031 | `80a9459f1b94` | 12 | 190 MB | 1.2 s | 1.9 s | 492 MB | 173 MB |
+| `make-mips-interpreter` | 20251031 | `082fc8821b31` | 12 | 519 MB | 1.9 s | 4.9 s | 1604 MB | 463 MB |
+| `mcmc-sampling-stan` | 20251031 | `073fc36a3347` | 5 | 238 MB | 1.5 s | 2.2 s | 638 MB | 222 MB |
+| `merge-diff-arc-agi-task` | 20251031 | `bfc2a235f2ce` | 3 | 30 MB | 0.9 s | 0.5 s | 93 MB | 27 MB |
+| `model-extraction-relu-logits` | 20251031 | `52fe1f089f38` | 7 | 84 MB | 1.2 s | 1.1 s | 236 MB | 76 MB |
+| `modernize-scientific-stack` | 20251031 | `64e69cee13bf` | 8 | 347 MB | 1.4 s | 3.5 s | 1062 MB | 306 MB |
+| `mteb-leaderboard` | 20260430 | `3eb9e900bf0a` | 7 | 664 MB | 2.5 s | 7.7 s | 2356 MB | 574 MB |
+| `mteb-retrieve` | 20260430 | `8b3220cd2548` | 9 | 629 MB | 2.4 s | 7.5 s | 2244 MB | 542 MB |
+| `multi-source-data-merger` | 20251031 | `8b32782078ff` | 8 | 221 MB | 1.4 s | 2.1 s | 576 MB | 206 MB |
+| `nginx-request-logging` | 20251031 | `693e64431a0d` | 7 | 67 MB | 1.1 s | 0.9 s | 179 MB | 61 MB |
+| `openssl-selfsigned-cert` | 20251031 | `4c948a4e630a` | 6 | 44 MB | 0.9 s | 0.7 s | 139 MB | 39 MB |
+| `overfull-hbox` | 20260403 | `7dca952bb673` | 6 | 132 MB | 1.4 s | 1.5 s | 351 MB | 119 MB |
+| `password-recovery` | 20251031 | `15fcd84bf3b0` | 5 | 62 MB | 1.1 s | 1.0 s | 216 MB | 56 MB |
+| `path-tracing-reverse` | 20251031 | `7911e42479d8` | 6 | 171 MB | 1.6 s | 1.7 s | 432 MB | 162 MB |
+| `path-tracing` | 20251031 | `4b44725102cd` | 7 | 399 MB | 2.0 s | 4.3 s | 1143 MB | 374 MB |
+| `polyglot-c-py` | 20251031 | `0f1c3b7816d7` | 3 | 149 MB | 1.4 s | 1.6 s | 363 MB | 140 MB |
+| `polyglot-rust-c` | 20251031 | `3ba84f0e138a` | 3 | 271 MB | 1.6 s | 2.4 s | 801 MB | 248 MB |
+| `portfolio-optimization` | 20251031 | `93461db3cec6` | 12 | 196 MB | 1.6 s | 2.4 s | 602 MB | 171 MB |
+| `protein-assembly` | 20260403 | `602c467ae6b6` | 8 | 44 MB | 1.1 s | 0.9 s | 139 MB | 39 MB |
+| `prove-plus-comm` | 20251031 | `e26741d01681` | 4 | 491 MB | 2.4 s | 4.2 s | 1329 MB | 474 MB |
+| `pypi-server` | 20251031 | `d18bb30f47c7` | 8 | 84 MB | 1.1 s | 1.2 s | 235 MB | 75 MB |
+| `pytorch-model-cli` | 20251031 | `c996884b5fb5` | 6 | 44 MB | 0.9 s | 0.8 s | 140 MB | 39 MB |
+| `pytorch-model-recovery` | 20260430 | `63c804250786` | 9 | 270 MB | 2.0 s | 4.0 s | 1006 MB | 229 MB |
+| `qemu-alpine-ssh` | 20251031 | `541e8214a8c4` | 7 | 1309 MB | 3.5 s | 6.3 s | 1847 MB | 1284 MB |
+| `qemu-startup` | 20251031 | `1a666e049db5` | 7 | 1309 MB | 3.4 s | 6.3 s | 1847 MB | 1284 MB |
+| `query-optimize` | 20251031 | `28de7da87004` | 7 | 120 MB | 1.2 s | 1.3 s | 212 MB | 93 MB |
+| `raman-fitting` | 20251031 | `401fa95d5d49` | 6 | 44 MB | 0.9 s | 0.9 s | 139 MB | 39 MB |
+| `regex-chess` | 20251031 | `e3b6d61d2d39` | 7 | 56 MB | 1.2 s | 1.0 s | 158 MB | 50 MB |
+| `regex-log` | 20251031 | `90101b2e8153` | 2 | 30 MB | 0.9 s | 0.6 s | 93 MB | 27 MB |
+| `reshard-c4-data` | 20251031 | `92d209e70478` | 9 | 1432 MB | 8.5 s | 9.3 s | 2810 MB | 1400 MB |
+| `rstan-to-pystan` | 20251031 | `b23d48839408` | 9 | 51 MB | 1.2 s | 0.9 s | 166 MB | 46 MB |
+| `sam-cell-seg` | 20251031 | `d76bdeef19d8` | 11 | 411 MB | 1.8 s | 4.2 s | 1196 MB | 366 MB |
+| `sanitize-git-repo` | 20251031 | `4b5234da5bb0` | 9 | 203 MB | 1.6 s | 1.7 s | 380 MB | 192 MB |
+| `schemelike-metacircular-eval` | 20251031 | `b485be38bf80` | 7 | 44 MB | 1.1 s | 0.8 s | 139 MB | 39 MB |
+| `sparql-university` | 20251031 | `92fa4304e511` | 3 | 30 MB | 0.9 s | 0.5 s | 93 MB | 27 MB |
+| `sqlite-db-truncate` | 20251031 | `aabac93c93bd` | 6 | 44 MB | 0.9 s | 0.8 s | 139 MB | 39 MB |
+| `sqlite-with-gcov` | 20251031 | `f986820b00c7` | 3 | 42 MB | 1.0 s | 0.6 s | 106 MB | 40 MB |
+| `torch-pipeline-parallelism` | 20251031 | `3cb7b39d86f1` | 2 | 30 MB | 0.8 s | 0.6 s | 93 MB | 27 MB |
+| `torch-tensor-parallelism` | 20251031 | `c50ac169e114` | 2 | 30 MB | 0.8 s | 0.6 s | 93 MB | 27 MB |
+| `train-fasttext` | 20251031 | `3c77da9617e7` | 12 | 509 MB | 1.9 s | 3.3 s | 876 MB | 491 MB |
+| `tune-mjcf` | 20251031 | `56c197739db2` | 8 | 80 MB | 1.1 s | 1.5 s | 286 MB | 70 MB |
+| `video-processing` | 20251031 | `a2c0f39e3ab0` | 8 | 312 MB | 1.4 s | 2.6 s | 744 MB | 289 MB |
+| `vulnerable-secret` | 20251031 | `61ebb40454dd` | 10 | 134 MB | 1.2 s | 1.6 s | 390 MB | 119 MB |
+| `winning-avg-corewars` | 20251031 | `ad7a6b1c53ae` | 7 | 294 MB | 1.8 s | 3.0 s | 778 MB | 276 MB |
+| `write-compressor` | 20251031 | `3618e1f8a997` | 6 | 292 MB | 1.6 s | 2.7 s | 800 MB | 269 MB |
+
+### Not the same bytes twice
+
+Four images were converted twice from one store, and the two disks of each compared in blocks of 4 KiB:
+
+| Image | Blocks that differ | Trees | Packed files |
+| --- | --- | --- | --- |
+| `alpine:3.21` | 142 of 3,186 | Equal, 520 entries | 3,588,344 and 3,588,328 bytes |
+| `python:3.13-slim-bookworm` | 1,152 of 34,127 | Equal, 6,572 entries | 38,708,424 and 38,708,387 bytes |
+| `alexgshaw/build-pmars:20251031` | 2,107 of 39,439 | Equal, 5,702 entries | 55,587,468 and 55,585,254 bytes |
+| `alexgshaw/mteb-leaderboard:20260430` | 204,264 of 575,152 | Equal, 59,391 entries | 574,324,155 and 574,464,668 bytes |
+
+In the three small images the blocks that differ are 3 to 5 % of the disk: a kernel wrote the inodes and the superblock and stamped them with its clock. In the image of 2.2 GiB more than a third differ, because the kernel also put the data of files in other places. The listings of the two disks were the same file every time, times included. A file listing in directory order was also the same between the two (`ls -fR` of `/usr`, `/etc` and `/var` of the Python image), and differed from the disk of the export path, because the directory hash seed comes from the image digest.
+
+So an environment has two digests, and DESIGN.md says which is for what: the image digest for what the files are, the packed digest for which bytes a run boots. A disk that follows from the image byte for byte would need ext4 written without a kernel, which is what was not ported.
+
+### The packed form
+
+`alexgshaw/mteb-leaderboard:20260430`, 2.36 GB of blocks in use on a 10 GiB disk, packed with four zstd workers by launchers that differ from the commit only in the level:
+
+| Level | Packed | Time | CPU | Unpack |
+| --- | --- | --- | --- | --- |
+| 1 | 673 MB | 2.8 s | 4.4 s | 2.9 s |
+| 3 | 574 MB | 1.6 s | 5.8 s | 3.0 s |
+| 6 | 530 MB | 3.4 s | 14.2 s | 3.3 s |
+| 9 | 499 MB | 6.3 s | 25.0 s | 3.1 s |
+| 19 | 438 MB | 139.1 s | 547.3 s | 3.3 s |
+
+Level 1 ran first, on a cold page cache. Level 3 is the level: a third more CPU than level 1 for 15 % fewer bytes, and level 9 costs 4.3 times its CPU for 13 %. Zero blocks are dropped by content, 4 KiB at a time, so an unpacked disk packs to the same file again, which the test checks.
+
+An idle read-write mount of a fresh 10 GiB disk allocated 36 kB in four minutes, so the lazy initialization of inode tables is not what a disk's size comes from, and the build disk is mounted without `noinit_itable`.
+
+### A converter that is killed
+
+A converter killed with `SIGKILL` in the middle of a 347 MB image left its lock file and its work directory. Its builder microVM was gone within a second: it watches its parent. The next conversion of the same output removed both and finished. Two converters started on one output at once built it once.
+
+### Limits of this version
+
+- Nothing uses the converter yet. `slot.sh` still asks Docker, and the test that proves the two fit together is a copy outside the repository.
+- A command that runs as a user of the image has that user's primary group and no supplementary groups, in a `RUN` step and in a slot. Rust's `Command` drops them, and setting them needs a helper in the guest.
+- Registries are read without credentials. Docker Hub counts manifest requests of an address, 100 an hour here. A `429` waits and tries again. Docker Hub refused none of the requests of the 89 conversions, which it made inside 99 s, so that wait is written and has not run.
+- A `RUN` step sees the network as a slot does, without the certificate bundle and the forwards of `sandboxd`. On a machine whose network re-signs TLS or keeps registries on its loopback, a Dockerfile that installs from such a registry does not build, where a reference converts.
+- Refused in a Dockerfile: wildcards, `--chown`, `--chmod`, `--mount`, heredocs, `ADD` of a URL or an archive, an ignore file, a stage as a base, `--platform`, `ONBUILD`. None of the 89 Dockerfiles of Terminal-Bench 2.1 or of the 14 here uses one.
+- Only linux/amd64 ran. The arm64 path is written and not run.
+- The trees were compared for eight images. The other 81 disks were listed, not compared.
