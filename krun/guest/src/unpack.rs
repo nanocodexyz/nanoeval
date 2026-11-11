@@ -1,13 +1,8 @@
 use std::{
-    ffi::OsStr,
     fs::{self, File, Permissions},
     io::{self, Read},
-    os::unix::{
-        ffi::OsStrExt,
-        fs::{PermissionsExt, lchown},
-    },
+    os::unix::fs::{PermissionsExt, lchown},
     path::Path,
-    time::{Duration, UNIX_EPOCH},
 };
 
 use nix::{
@@ -17,7 +12,7 @@ use nix::{
         time::TimeSpec,
     },
 };
-use tar::{Archive, Entry, EntryType};
+use tar::{Entry, EntryType};
 use wire::Frame;
 
 use crate::step;
@@ -110,41 +105,4 @@ impl Read for Input<'_> {
         self.offset += length;
         Ok(length)
     }
-}
-
-pub(crate) fn run(connection: &File, to: &[u8]) -> io::Result<()> {
-    let to = Path::new(OsStr::from_bytes(to));
-    let mut archive = Archive::new(Input::new(connection));
-    archive.set_overwrite(true);
-    archive.set_preserve_mtime(true);
-    archive.set_preserve_ownerships(true);
-    archive.set_preserve_permissions(true);
-    archive.set_unpack_xattrs(true);
-    let mut directories = Vec::new();
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        match entry.header().entry_type() {
-            EntryType::Block | EntryType::Char | EntryType::Fifo => {
-                node(&entry, &to.join(entry.path()?))?;
-            }
-            EntryType::Directory => directories.push(entry),
-            _ => {
-                entry.unpack_in(to)?;
-            }
-        }
-    }
-    directories.sort_by(|left, right| right.path_bytes().cmp(&left.path_bytes()));
-    for directory in directories {
-        let header = directory.header();
-        let path = to.join(directory.path()?);
-        fs::create_dir_all(&path)?;
-        lchown(
-            &path,
-            Some(u32::try_from(header.uid()?).map_err(io::Error::other)?),
-            Some(u32::try_from(header.gid()?).map_err(io::Error::other)?),
-        )?;
-        fs::set_permissions(&path, Permissions::from_mode(header.mode()?))?;
-        File::open(&path)?.set_modified(UNIX_EPOCH + Duration::from_secs(header.mtime()?))?;
-    }
-    Ok(())
 }

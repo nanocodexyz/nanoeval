@@ -53,16 +53,13 @@ pub(crate) fn run(mode: &str, options: &Options) -> io::Result<()> {
         return build(&options.build);
     }
     fs::create_dir("/mnt/root")?;
-    match mode {
-        "disk" => disk("the disk", "/dev/vda", "/mnt/root", MsFlags::empty())?,
-        "overlay" => overlay()?,
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("unknown boot mode: {mode}"),
-            ));
-        }
+    if mode != "overlay" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unknown boot mode: {mode}"),
+        ));
     }
+    overlay()?;
     for name in ["dev", "proc", "sys"] {
         let target = format!("/mnt/root/{name}");
         fs::create_dir_all(&target)?;
@@ -99,16 +96,13 @@ pub(crate) fn run(mode: &str, options: &Options) -> io::Result<()> {
         "raise the limit on process ids",
         fs::write(PID_MAX, PID_MAX_DEFAULT),
     )?;
-    if mode == "overlay" {
-        if options.private {
-            let resolver = format!("nameserver {}\n", wire::GUEST_RESOLVER);
-            provide(Path::new("/etc/resolv.conf"), resolver.as_bytes())?;
-        } else if let Ok(resolver) = fs::read(RESOLVER) {
-            provide(Path::new("/etc/resolv.conf"), &resolver)?;
-        }
-        provide(Path::new("/etc/hosts"), HOSTS.as_bytes())?;
+    if options.private {
+        let resolver = format!("nameserver {}\n", wire::GUEST_RESOLVER);
+        provide(Path::new("/etc/resolv.conf"), resolver.as_bytes())?;
+    } else if let Ok(resolver) = fs::read(RESOLVER) {
+        provide(Path::new("/etc/resolv.conf"), &resolver)?;
     }
-    Ok(())
+    provide(Path::new("/etc/hosts"), HOSTS.as_bytes())
 }
 
 fn build(options: &Build) -> io::Result<()> {

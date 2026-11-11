@@ -26,8 +26,7 @@ const GUEST: &str = "/nanoeval-krun-guest";
 const LEASH_EXIT: i32 = 125;
 const LEASH_POLL: Duration = Duration::from_millis(200);
 const READY_POLL: Duration = Duration::from_millis(20);
-const USAGE: &str =
-    "usage: nanoeval-krun <check|copy-in|copy-out|exec|image|ready|stop|unpack|vm> ...";
+const USAGE: &str = "usage: nanoeval-krun <check|copy-in|copy-out|exec|image|ready|stop|vm> ...";
 
 pub(crate) struct Arguments {
     options: Vec<(String, OsString)>,
@@ -113,7 +112,6 @@ fn main() -> ExitCode {
         Some("image") => image::run(arguments),
         Some("ready") => ready(arguments),
         Some("stop") => stop(arguments),
-        Some("unpack") => unpack(arguments),
         Some("vm") => vm(arguments),
         _ => Err(USAGE.to_owned()),
     };
@@ -140,7 +138,6 @@ fn vm(arguments: impl Iterator<Item = OsString>) -> Result<u8, String> {
             "build",
             "context",
             "cpus",
-            "disk",
             "forward",
             "io",
             "leash",
@@ -207,22 +204,14 @@ fn disks(arguments: &Arguments, mut config: VmConfig) -> Result<(VmConfig, Guest
     let mut command = GuestCommand::new(GUEST);
     let sources = arguments.all("source");
     let builds = arguments.maybe("build").is_some() || !sources.is_empty();
-    match (
-        arguments.maybe("disk"),
-        arguments.maybe("lower"),
-        arguments.maybe("upper"),
-    ) {
-        (Some(disk), None, None) if !builds => {
-            config = config.block_device(BlockDevice::read_write("disk", disk));
-            command = command.arg("disk");
-        }
-        (None, Some(lower), Some(upper)) if !builds => {
+    match (arguments.maybe("lower"), arguments.maybe("upper")) {
+        (Some(lower), Some(upper)) if !builds => {
             config = config
                 .block_device(BlockDevice::read_only("lower", lower))
                 .block_device(BlockDevice::read_write("upper", upper));
             command = command.arg("overlay");
         }
-        (None, None, None) if builds => {
+        (None, None) if builds => {
             command = command.arg(wire::BUILD);
             if let Some(build) = arguments.maybe("build") {
                 config = config.block_device(BlockDevice::read_write("build", build));
@@ -242,9 +231,7 @@ fn disks(arguments: &Arguments, mut config: VmConfig) -> Result<(VmConfig, Guest
             }
         }
         _ => {
-            return Err(
-                "vm takes --disk, --lower with --upper, or --build with --source".to_owned(),
-            );
+            return Err("vm takes --lower with --upper, or --build with --source".to_owned());
         }
     }
     Ok((config, command))
@@ -336,16 +323,6 @@ fn copy(arguments: impl Iterator<Item = OsString>, into_guest: bool) -> Result<u
 fn stop(arguments: impl Iterator<Item = OsString>) -> Result<u8, String> {
     let arguments = Arguments::parse(arguments, &["socket"])?;
     converse(arguments.one("socket")?, &Request::Stop, false)
-}
-
-fn unpack(arguments: impl Iterator<Item = OsString>) -> Result<u8, String> {
-    let arguments = Arguments::parse(arguments, &["socket", "to"])?;
-    let request = Request::Unpack {
-        to: arguments
-            .maybe("to")
-            .map_or_else(|| b"/".to_vec(), |to| to.as_bytes().to_vec()),
-    };
-    converse(arguments.one("socket")?, &request, true)
 }
 
 fn ready(arguments: impl Iterator<Item = OsString>) -> Result<u8, String> {
