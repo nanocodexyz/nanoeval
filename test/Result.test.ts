@@ -88,7 +88,7 @@ const attempt = (overrides: Partial<Result.Attempt>): Result.Attempt => ({
   index: 1,
   outcome: 'passed',
   reward: 1,
-  sandbox: { backend: 'docker', id: 1, provider: 'local', slot: 'run-a00001' },
+  sandbox: { backend: 'dir', id: 1, provider: 'e2b', slot: 'run-a00001' },
   session: 'run-a00001',
   startedAt: 1000,
   task: { checksum: 'sha256:00', name: 'suite/one' },
@@ -233,7 +233,6 @@ test('a run exports as a Harbor job directory', () => {
 
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
   const stamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/
-  const environments = ['docker', 'e2b']
   const ids = new Set<string>()
   for (const name of ['one__haiku__1', 'one__haiku__2']) {
     const result = JSON.parse(files[name + '/result.json']!)
@@ -246,7 +245,7 @@ test('a run exports as a Harbor job directory', () => {
     assert.equal(result.config.trial_name, name)
     assert.equal(result.trial_name, name)
     assert.equal(typeof result.config.agent.kwargs, 'object')
-    assert.ok(environments.includes(result.config.environment.type))
+    assert.equal(result.config.environment.type, 'e2b')
     assert.equal(typeof result.agent_info.name, 'string')
     assert.equal(typeof result.agent_info.version, 'string')
     assert.equal(typeof result.task_checksum, 'string')

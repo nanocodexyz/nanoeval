@@ -268,7 +268,7 @@ test('a slot network is one its backend has, and private by default for microVMs
   for (const [backend, network] of [
     ['dir', 'bridge'],
     ['dir', 'private'],
-    ['docker', 'host'],
+    ['container', 'host'],
     ['krun', 'bridge'],
   ] as const)
     assert.throws(() => Config.parse(config(backend, network)), Config.InvalidError)
