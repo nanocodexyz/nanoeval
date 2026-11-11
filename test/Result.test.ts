@@ -129,6 +129,25 @@ test('session events project to an ATIF-v1.7 trajectory', () => {
   })
 })
 
+test('a tool call whose input is plain text is an object in the trajectory, as Harbor wants', () => {
+  const trajectory = Atif.fromEvents(
+    [
+      agentEvent(1, 'user.input', { text: 'Do it.' }),
+      agentEvent(2, 'tool.call', {
+        arguments: 'await tools.exec_command({ cmd: "true" })',
+        call_id: 'call_1',
+        tool: 'exec',
+      }),
+      agentEvent(3, 'tool.call', { call_id: 'call_2', tool: 'noop' }),
+    ],
+    { model: 'gpt-6-luna', name: 'nanocode', session: 'session', version: 'test' },
+  )
+  assert.deepEqual(
+    trajectory.steps.flatMap((step) => step.tool_calls ?? []).map((call) => call.arguments),
+    [{ input: 'await tools.exec_command({ cmd: "true" })' }, {}],
+  )
+})
+
 test('usage is absent cost, not zero cost, when no run reports one', () => {
   assert.equal(Atif.usage(events.slice(0, 5)).costUsd, undefined)
 })

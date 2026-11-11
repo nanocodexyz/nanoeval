@@ -43,7 +43,7 @@ export type Step = {
 export type ToolCall = {
   tool_call_id: string
   function_name: string
-  arguments: unknown
+  arguments: Record<string, unknown>
   extra?: { parent_call_id: string }
 }
 
@@ -136,7 +136,7 @@ export function fromEvents(
         step.tool_calls.push({
           tool_call_id: String(payload['call_id']),
           function_name: String(payload['tool']),
-          arguments: payload['arguments'] ?? {},
+          arguments: argumentsOf(payload['arguments']),
           ...(payload['parent_call_id']
             ? { extra: { parent_call_id: String(payload['parent_call_id']) } }
             : {}),
@@ -261,4 +261,10 @@ function count(value: unknown): number {
 
 function iso(milliseconds: number): string {
   return new Date(milliseconds).toISOString()
+}
+
+function argumentsOf(value: unknown): Record<string, unknown> {
+  if (value === undefined || value === null) return {}
+  if (typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>
+  return { input: value }
 }
