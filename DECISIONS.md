@@ -1543,6 +1543,10 @@ nanoeval compare RUN
 
 Before it, at the working tree that became `fcb298d`: one attempt of `openssl-selfsigned-cert` with `codex-cli:gpt-6.1-sol:low` passed in 36 s of agent time, and a run cancelled 14 s into `fix-git` ended its attempt as `cancelled` with no command, microVM or sandbox directory left.
 
+### An image without glibc
+
+One run at `3cfde90`, of the two Alpine fixtures `extract-todos` and `write-greeting` with both agents on `gpt-6.1-sol` at low thinking, one attempt each. Codex CLI passed both: its package is static, and it ran its commands through `/bin/sh -lc`, so it needs neither glibc nor bash in an image. The nanocode session passed `extract-todos` and failed `write-greeting`: it wrote `/greeting.txt` with its `Write` tool, and the working directory of the task is `/app`. In the Claude trajectory below the model likewise looked for its file in `/tmp` before it ran `pwd`. Two samples do not settle it, but they suggest that a session does not tell the model the working directory of its hand, where both command lines tell theirs. That is nanocode's prompt and not nanoeval's to add to, and it is one of the ways the two arms of a comparison differ.
+
 ### The Claude arms were not run
 
 No Claude login was valid. The plan login at hand had expired, and one run of the official command line to let it renew answered "OAuth session expired and could not be refreshed". Renewing needs a browser sign-in, which was not worked around. That run also left the login file with an empty access token and an empty refresh token, which is what the tool does when a refresh is refused: a Worker started with `--claude-login` on that file now stops at "holds no Claude plan login" instead of starting with an expired token. So `claude:...` and `claude-code:...` agents are not verified against Anthropic on this flow, and the table has no Claude rows. After a new sign-in on the machine, start the Worker with `--claude-login` and run:
