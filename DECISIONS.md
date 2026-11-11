@@ -1215,3 +1215,241 @@ The figure is the wall time of the run, where the lane prints one. The first fre
 - krun slots on `--network host` in this flow, and runners on more than one machine.
 - SWE-bench beyond one instance, GPQA and HealthBench with a model on an imported eval, and the HealthBench rewards against the earlier ones.
 - The upgrade of a Worker state directory written before the eval table.
+
+## 2026-11-11: the smaller gaps
+
+Machine: the 32-core Linux machine with KVM of the entries above (kernel 6.8, libkrunfw 5.5.0, passt as a system package, Node 24.22.2, rustc 1.97.0), shared with other work throughout: its load average was between 11 and 70 while this was measured, and each section says what it was. Its network re-signs TLS to outside registries, its resolver sends the Python and npm registries to a proxy on its loopback, and its registries hold back releases younger than about a week. Each figure is one run unless it gives several.
+
+Six things the entries above left open: a Dockerfile that installs packages did not build on such a network, a task that closes its network was refused, nothing pruned layers or blobs, verifiers installed their tools in every attempt, two HealthBench entries disagreed, and two documents said things that were no longer so.
+
+### Dockerfile builds under the host's policy
+
+**What was wrong.** A `RUN` step had the image's trust and nothing of the machine's. On this machine `pip install` in a step ended with "Connection refused" for the registry, which the resolver puts on the loopback, and the import refused the task: `line 4: RUN ended with 1` for the fixture below.
+
+**What changed.** `nanoeval-krun image build` takes `--ca-bundle`, `--env-file` and `--forward`, and `nanoeval import` passes them from `--ca-bundle`, `--slot-env` and `--slot-forward` or from the three variables that `scripts/install-linux.sh` now writes into the configuration of the installed command. The bundle is a file on a tmpfs mounted at `/opt/nanoeval` in the mount namespace of one step, the variables are part of a step's request and never of the build's `ENV`, and a forward is a listener on the builder's loopback that the launcher relays to the machine's, with the relay code `nanoeval-net` already had. The guest protocol is `NKR4`.
+
+**The fixture.** `test/fixtures/package-installs` is `FROM python:3.12-alpine` with `apk add nodejs npm`, `pip install six==1.16.0` and `npm install -g is-number@7.0.0`. Load average 30 to 40.
+
+| | Result |
+| --- | --- |
+| `nanoeval import --task` without the options | Refused in 10.5 s: `line 4: RUN ended with 1`, pip had no route to the registry |
+| With `--ca-bundle`, `--slot-env` and `--slot-forward` | Imported, conversion 7.6 s, packed 46.6 MB |
+| `nanoeval run --oracle` on it | Passed in 2.1 s: `six` imports and `is-number` loads in the slot |
+
+**The disk holds none of it.** The same Dockerfile was built with a bundle that carries a marker line and a variables file that carries a marker variable. `image tree` lists 6,110 entries: none under `opt/nanoeval`, none with the bundle's hash, and `/opt` has the time the image gave it. `grep` over the raw disk, which also reads the blocks of removed files, finds 0 occurrences of the marker, of `/opt/nanoeval`, of the marker variable, of `UV_EXCLUDE_NEWER` and of the forward's address. `test/Image.test.ts` checks the same on every machine with KVM and passt, with a base that has no `/opt`: a step reads the bundle, a variable that overrides an `ENV` of the image and a listener on the test's loopback, the same Dockerfile fails without the three, the configuration keeps the image's value, and the disk has no `/opt` and none of the four strings.
+
+**Five Terminal-Bench 2.1 tasks from their Dockerfiles.** `regex-chess`, `largest-eigenval`, `feal-differential-cryptanalysis`, `tune-mjcf` and `portfolio-optimization`: each Dockerfile is `FROM python:3.13-slim-bookworm` with `pip install`, and the last also installs with apt. All five built with the three options, in 5.5 to 19.8 s against 1.4 to 2.8 s for the published image from cached layers. Each tree was compared with the tree of the disk made from the task's published image (`alexgshaw/<task>:20251031`), three times, because the tag a Dockerfile names has moved:
+
+| Base of the Dockerfile build | What differs from the published image |
+| --- | --- |
+| `python:3.13-slim-bookworm` as the Dockerfile says, today | 2,037 to 6,219 entries of each tree: the tag is Python 3.13.18 now and the published images hold 3.13.7 |
+| `python:3.13.7-slim-bookworm` | 1,324 to 5,504 entries: 777 files of Debian itself, since that tag was built again on 2025-09-29 and the published images sit on a base of 2025-08-11 |
+| The four base layers of the published image itself, as an image in the layer cache | The table below |
+
+| Task | Entries, image and build | Same in everything | Only the time differs | Content differs | What differs |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `regex-chess` | 7,090 and 7,091 | 6,461 | 597 | 19, and 13 and 14 entries on one side | pip's HTTP cache and self-check file, 8 `.pyc` files, and `RECORD` and `WHEEL` of `chess`, a wheel that pip builds from a source archive |
+| `largest-eigenval` | 8,483 and 8,483 | 6,460 | 1,607 | 416 | 409 `.pyc` files and pip's cache |
+| `feal-differential-cryptanalysis` | 8,027 and 8,027 | 6,461 | 1,204 | 362 | 355 `.pyc` files and pip's cache |
+| `tune-mjcf` | 15,418 and 15,400 | 6,461 | 4,592 | 4,205, and 160 and 142 on one side | `mujoco==3.3.5` is pinned and its dependencies are not: `absl-py` 2.3.1 became 2.5.1, with `etils` and others, and their `.pyc` files |
+| `portfolio-optimization` | 15,928 and 15,928 | 7,516 | 7,470 | 942 | 766 `.pyc` files, and what `apt-get install` brings a year later: 117 files of `dpkg`, `perl` and others, 58 of dpkg's records, `ld.so.cache` |
+
+The image configuration, environment, working directory, user and command, is equal in all five. Every difference is one of four kinds: the time of what a step wrote, a `.pyc` file, which holds the time of its source, a cache of the installer, and a package that the Dockerfile does not pin and its registry has moved. None is the builder's or the policy's: the files of `COPY` are equal in content, mode and owner, no tree has an entry the policy made, and `grep` over the five raw disks finds neither `/opt/nanoeval`, `UV_EXCLUDE_NEWER` nor the forward's address. A build from a Dockerfile is therefore not the published image, and the reason is the Dockerfile's: it names a tag and unpinned packages. Leaderboard runs use the published images, and so does the import.
+
+### A task that closes its network
+
+**What was wrong.** A private slot had every connection out, so a task with `allow_internet = false` was refused when a run was created.
+
+**What the format says.** Harbor 0.25.0, read from its source on the machine: `[environment] network_mode` is `public`, `no-network` or `allowlist`, `[agent]` and `[verifier]` may each override it for their phase, and `allow_internet` is deprecated and means `no-network` when it is false and no `network_mode` is given. So the format has a verifier setting, and a closed agent with an open verifier is a task one can write. The loader also took `environment_mode = "same"` where Harbor writes `shared`: both load now.
+
+**What changed.** `src/Task.ts` resolves the two phases. A row keeps `network.allowInternet` for the agent and adds `network.verifierInternet` only when the verifier differs, so no row of an eval imported before changes its digest. A krun slot on a private network whose task closes a phase runs its network device behind a gate in the VMM, `vm --gate FILE`, and `slot.sh` opens and closes the gate and the relay's allow list for each phase. DESIGN.md has the picture and the alternatives it rejects.
+
+**The lane.** `NANOEVAL_E2E_SCENARIO=closed npm run e2e` on krun slots, scripted model, three fixtures at once, with a listener of the test on the machine's loopback given to slots as a forward. In each phase the fixture probes `https://example.com/`, `1.1.1.1:80`, the forward, the gateway's address and the session, each under six seconds.
+
+| Fixture | Agent phase | Verifier phase | Result |
+| --- | --- | --- | --- |
+| `closed-network`, `allow_internet = false` | Reaches the session only | Reaches nothing | passed |
+| `closed-agent`, `[agent] network_mode = "no-network"` | Reaches the session only | Reaches the internet and the forward, not the gateway or the session | passed |
+| `closed-verifier`, `[verifier] network_mode = "no-network"` | Reaches the internet, the forward and the session, not the gateway | Reaches nothing | passed |
+
+The run took 16.2 s with the three attempts side by side, load average 40 to 70. The first version of the fixture probed one after another and the agent's turn ended before the probes did: an agent's tool call returns after ten seconds, so the probes run side by side now. `NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=closed` asserts that the run is refused: "closes the network of its agent, which only krun slots on a private network enforce". The network lane, the default lane and the judge lane passed after the change.
+
+### Pruning the layer cache and the blob store
+
+Machine: the 32-core Linux machine with KVM of the entries above (kernel 6.8, Node 24.22.2, rustc 1.97.0, `flock` of util-linux 2.39.3, an ext4 data filesystem mounted `relatime`), shared with other work throughout: the load average was between 12 and 23 during the measurements and 36 to 39 during the checks. Commit `6f425fd`. Each figure is one run.
+
+#### What was wrong
+
+Nothing evicted the layer cache of imports, and nothing removed a blob from a directory store. One Terminal-Bench 2.1 import leaves 16 GB of layers and 19 GB of packed disks, and every import that fails or is repeated with other tasks leaves blobs that no version names. `nanoeval prune` cleared only a runner's cache.
+
+#### What was built
+
+| | |
+| --- | --- |
+| `nanoeval-krun image prune --cache DIR --days N [--remove]` | Lists what the layer cache holds that was not used for N days, and removes it with `--remove` |
+| The launcher's store | Sets a blob's access time when it serves one from the cache, and holds a shared lock on the cache while a build has it open |
+| `nanoeval prune layers --days N [--remove]` | Finds the launcher as an import does and runs the above on `--layers` |
+| `nanoeval prune store [--remove] [--allow-empty]` | Lists the blobs of a directory store that no version of any eval names, with the staged files of dead imports, and removes them with `--remove` |
+| `Store.lock` and `importEval` | A lock file per directory store, held shared by an import until its version exists and exclusively by a removal |
+
+Bare `nanoeval prune` is unchanged, and still removes unless `--dry-run` is given.
+
+#### What was decided
+
+- **A dry run is the default, and it writes nothing.** No lock is taken and no file is created. Removing is the explicit act.
+- **Last use is the later of access and modification time.** The store sets the access time itself, so a `noatime` mount records uses, and a cache from before this change is aged by what its filesystem kept.
+- **A removal never waits.** It is refused while a build holds the cache or an import holds the store, with a message that says nothing was removed. An import or a build waits for a removal, which is short.
+- **`--days` has no default.** It is host policy.
+- **A removal that would empty the store is refused**, not only one against a Worker with no eval. A Worker with evals of another store names nothing here either, and the narrower rule would have let it take everything: the second Worker of the lab below is that case. `--allow-empty` overrides it.
+- **Unknown files are left.** A prune removes blobs and what the store's own writer stages, by name.
+- **Eval versions are not removed.** Runs name them and the Worker cannot list its runs.
+- **R2 is not pruned.** There is no route to list a bucket.
+
+#### The layer cache, on a copy
+
+40 blobs of the layer cache of the Terminal-Bench 2.1 import, 19,178,113 bytes, copied with their times. 10 were set 10 days back, 10 were set 3 days back, and 20 kept their own times, 0.6 days back.
+
+| `nanoeval prune layers --days` | Unused | Kept |
+| --- | --- | --- |
+| 0 | 40 files, 19,178,113 bytes | 0 |
+| 2 | 20 files, 8,896,976 bytes | 20 files, 10,281,137 bytes |
+| 7 | 10 files, 3,718,550 bytes | 30 files, 15,459,563 bytes |
+| 30 | 0 | 40 files, 19,178,113 bytes |
+
+`nanoeval-krun image build --ref alpine:3.21` on that cache took 1.39 s. Two `image prune --days 7 --remove` started during it, 0.5 s apart, and both ended with `an image build is using the layer cache ...: nothing was removed` and exit 125. The build succeeded and left 44 blobs. The same removal after it removed the 10 blobs, 3,718,550 bytes, kept 34 with 19,095,826 bytes, and left no `.part` file. Through the CLI, `nanoeval prune layers --days 2 --remove` then removed the 10 blobs of 3 days, 5,178,426 bytes, and kept 24.
+
+The four blobs of `alpine:3.21` were then set 10 days back, and `--days 7` listed the four. After a second build, which read them from the cache, it listed none: the layer's access time was the build's and its modification time was still 10 days back. On this `relatime` mount the kernel would have moved that access time as well, so this run does not tell the two apart. The unit test does: `Store::fetch` of a cached blob does not read it.
+
+#### A store of two tasks
+
+A Worker and `sandboxd` from this checkout, with their own state, store, cache and layer cache. `nanoeval import --eval samples` of `tasks/extract-todos` and `tasks/uppercase-message` took 3.0 s and left 8 blobs. The same import again took 0.16 s, named the same version and left 8. A dry run listed nothing.
+
+A second Worker on another state then imported `tasks/write-greeting` into the same store, in 2.2 s. Three `nanoeval prune store --remove` against the first Worker, 0.3 s apart during that import, each ended with `Store.LockedError: the store ... is held by an import or by a prune` and removed nothing. A 100,000-byte file under its digest and a 5,000-byte staged file were added by hand, for 14 files.
+
+| Against the first Worker | Unreferenced | Kept |
+| --- | --- | --- |
+| Dry run | 5 blobs and 1 staged file, 4,425,899 bytes | 8 blobs, 7,132,066 bytes |
+| `--remove` | The same 6 removed | 8 blobs, 7,132,066 bytes |
+| Dry run again | 0 | 8 blobs |
+
+`nanoeval run --eval samples --oracle --wait` after the removal, on krun slots with a runner cache that held no blob, passed 2 of 2 in 4.4 s. Against the second Worker a dry run said that its 4 blobs were not in the store and that all 8 were unreferenced, and `--remove` was refused: `the 1 evals of the Worker name no blob of ...: removing would empty the store`.
+
+#### The data of the Terminal-Bench 2.1 import, dry run only
+
+Nothing was removed there. Other work on the machine was writing to that layer cache: it held 512 files eleven minutes before the run and 533 at the time of it.
+
+| Command | Would remove | Would keep |
+| --- | --- | --- |
+| `image prune --days 0` on the layer cache | 533 blobs, 16,862,423,654 bytes, each last used 0.6 days back | 0 |
+| `image prune --days 1` | 0 | 533 blobs, 16,862,423,654 bytes |
+| `image prune --days 7` | 0 | 533 blobs, 16,862,423,654 bytes |
+| `prune store` against a Worker on a copy of the state | 0 | 355 blobs, 19,183,662,200 bytes |
+
+Each `image prune` took under 0.01 s, and `prune store` 0.31 s with its three requests. The Worker listed one eval with one version, `terminal-bench-2.1@14f3a1e5`, whose 89 rows name 355 blobs, all in the store. A listing of every path with its type, size, mode and three times was taken before and after. The store's was identical. The layer cache's differed in one line, the access time of the `blobs/sha256` directory itself, which the kernel moves when a directory is listed. No blob's times changed and no lock file was created.
+
+#### Checks
+
+At `6f425fd`: `npm ci`, `npm run lint`, `npm run check:types`, `npm test` (78 tests, 8 of them new), `npm run dry-run`, `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings` and `cargo test --locked` (6 new unit tests, and the two integration tests ran) passed. `npm run e2e` passed on directory slots, on krun slots, and on krun slots with the oracle, one run each.
+
+#### Not verified
+
+- A cache on a `noatime` mount. The machine has none that could be written without privileges.
+- A removal beside an import or a launcher from a checkout before this change, which takes neither lock.
+- `--remove` on a cache or a store of a real dataset. The two above were only listed.
+- A store on a filesystem shared by several machines.
+- A cache whose files another user owns.
+- The end-to-end lanes import through `Import.cases` and not through `importEval`, so no lane holds the store's lock.
+- CI on GitHub. Nothing is pushed.
+
+### A verifier cache
+
+**Measured first.** Ten Terminal-Bench 2.1 tasks with their own solutions, `nanoeval run --eval terminal-bench-2.1 --oracle --sandboxes 0` with `--only` for `build-pmars`, `cancel-async-tasks`, `fix-git`, `git-leak-recovery`, `largest-eigenval`, `log-summary-date-ranges`, `nginx-request-logging`, `openssl-selfsigned-cert`, `regex-log` and `sqlite-db-truncate`, on the imported eval `terminal-bench-2.1@14f3a1e5`, one attached runner with 4 slots and the machine's `--ca-bundle`, `--slot-env` and `--slot-forward`. The time of the tests is what pytest prints at its end, and the setup is the rest of the verifier phase.
+
+| Run | Option | Load average | Passed | Verifier, ten tasks | Tests | Setup |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | off | 31 | 10 | 118.2 s | 17.4 s | 100.8 s, 85 % |
+| 2, the oracle fills the cache | on, ten misses | 34 | 10 | 119.8 s | 17.5 s | 102.3 s |
+| 3 | on, nine hits | 20 to 34 | 10 | 59.9 s | 17.0 s | 42.9 s |
+| 4 | off | 11 to 17 | 10 | 102.9 s | 17.0 s | 86.0 s, 84 % |
+
+Setup was 8.6 to 13.8 s of every verifier in run 1 and 6.7 to 12.0 s in run 4. One command at a time, by hand in a slot on the disk of `fix-git`, whose image has Python 3.13: `apt-get update` 0.99 s, `apt-get install -y curl` 0.70 s, the uv installer 0.60 s, `uvx -p 3.13 -w pytest==8.4.1 -w pytest-json-ctrf==0.3.5` 5.49 s, and 0.17 s when it is run again in the same slot. On the disk of `regex-log`, which has no Python 3.13, `uvx` took 6.04 s and downloaded a CPython of 32 MiB. So the larger half of the setup is uv's downloads, and the rest is apt.
+
+**What was built.** `nanoeval run --verifier-cache`, off by default: DESIGN.md describes it. A hit copies the kept directory into the slot when the verifier phase starts, 0.24 s for the 1,167 files and 50 MB of `regex-log`, and `uvx` then took 1.05 s there, which includes unpacking the cached CPython. apt is not cached: `apt-get update` asks the mirrors of the day, and lists from a cache would decide which packages a later `apt-get install` asks for, which is what broke `build-pmars` in the entry above.
+
+**The same outcomes, and the time.** All ten rows passed in all four runs. Per task, run 4 against run 3:
+
+| Task | Setup without | Setup with a hit | Saved |
+| --- | ---: | ---: | ---: |
+| `build-pmars` | 7.05 s | 3.24 s | 3.8 s |
+| `cancel-async-tasks` | 8.55 s | 3.48 s | 5.1 s |
+| `fix-git` | 7.84 s | 3.26 s | 4.6 s |
+| `git-leak-recovery` | 10.47 s | 4.64 s | 5.8 s |
+| `log-summary-date-ranges` | 8.05 s | 2.81 s | 5.2 s |
+| `nginx-request-logging` | 6.65 s | 2.58 s | 4.1 s |
+| `openssl-selfsigned-cert` | 7.10 s | 4.10 s | 3.0 s |
+| `regex-log` | 10.39 s | 7.12 s | 3.3 s |
+| `sqlite-db-truncate` | 7.81 s | 3.59 s | 4.2 s |
+| `largest-eigenval`, whose verifier uses pip and has no cache | 12.04 s | 8.11 s | Not the cache: 13.83 s and 12.75 s in runs 1 and 2 |
+
+Ten verifiers took 59.9 s with the cache against 102.9 s and 118.2 s without, so 43 to 58 s less, 4 to 6 s an attempt. The nine caches are 230 MB, 18 to 50 MB each. `largest-eigenval` shows what one run is worth on this machine: its setup moved by 5.7 s between runs with no cache at all.
+
+**The lane.** `NANOEVAL_E2E_SCENARIO=cache npm run e2e` on krun slots, with a fixture whose verifier writes 1,500 files where `UV_CACHE_DIR` says, or where uv would keep them without it: a model's attempt on an empty cache runs with the variable unset and keeps nothing, the oracle's attempt runs with it and keeps the files, the next attempts of the model and of the oracle find them, and a run without the option does not.
+
+**Found on the way.** Copying the first cache out of a slot ended with "No file descriptors available" at 1,167 files. A share keeps a descriptor on the host for every file its guest has looked up, and the VMM ran with the usual soft limit of 1024. So a task whose `tests/` holds more than about a thousand files could not have been verified either. The VMM raises the limit to its hard limit now, 524,288 on this machine.
+
+### HealthBench Professional: the two pairs of rewards were two pairs of cases
+
+Machine: the 32-core Linux machine with KVM of the entries above, shared with other work (load average 51 at the start of the first run below and 35 at the second). Each figure is one run. The judge is `gpt-6-luna` at low thinking on a ChatGPT plan login, and cost is the harness's estimate.
+
+The entry of 2026-11-10 recorded rewards 0.643 and 0.028 for two cases with their physician answers. The entry of 2026-11-11 recorded −0.006 and 0.426 and could not say whether the cases were the same. They were not, and nothing moved the judge.
+
+| Entry | How two cases were chosen | Order | Cases | Rewards |
+| --- | --- | --- | --- | --- |
+| 2026-11-10 | The whole dataset written with `import --out`, then `run --dataset DIR --limit 2` | Ids, as `dataset.json` lists them | `004691ba3ff3eec87d6a5598d9e1b04b`, `0187e39434668c08c7b18b8e81cc3604` | 0.028, 0.643 |
+| 2026-11-11 | `import healthbench-professional --limit 2` | Rows of the source file | `9566084de89c416408691006a6f06f9c`, `c19c2113ba68bb3c4a3e63836e31b558` | −0.006, 0.426 |
+
+The second pair is named by the job directories of that entry's run and rerun, which were still on the machine with their judge requests, answers and judgments. Nothing of 2026-11-10 names the first pair. Three things do:
+
+- Arithmetic over the pinned file. For each of the 525 rows, every reward its physician answer can get was computed: each subset of its rubric items met, and the length adjustment on the answer's characters. One row can score 0.643, and it is `0187e394…`, the second id of the 410 cases of one message. Fifteen rows can score 0.028, and `004691ba…`, the first id, is one of them, with no item met. The second pair can score neither: `9566084d…` reaches −0.006, 0.460, 0.527 and 0.994, and `c19c2113…` 14 values from 0.026 up.
+- That entry's cost note, "the three judgments of one HealthBench case took 28,008 input tokens and 128 output tokens". `004691ba…` has three rubric items, and its three judge turns took 28,008 input tokens in both runs below. The second pair has two and five items.
+- The run below.
+
+**The first pair again.** At `dca3463`: `nanoeval import healthbench-professional --only 004691ba3ff3eec87d6a5598d9e1b04b --only 0187e39434668c08c7b18b8e81cc3604`, then `nanoeval run --eval NAME --oracle --judge codex:gpt-6-luna:low --sandboxes 0` and one attached runner with two krun slots on the private network.
+
+| Case | Rubric points | Met | Raw score | Characters | Length adjustment | Reward |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| `004691ba…` | 8, 8, 8 | None | 0 | 1,052 | +0.027871 | 0.027871 |
+| `0187e394…` | 10, 8, 9, −9 | The second and the third | 17/27 = 0.629630 | 1,545 | +0.013377 | 0.643007 |
+
+It cost $0.0060 for seven judge turns: 28,008 input tokens for three and 37,948 for four, about 9,400 a turn. The runner worked 6.2 s, and the judge took 3.8 s and 4.4 s of it.
+
+The second pair, read from the judgments of its two surviving runs: `9566084d…` has items of 7 and 8 points, none met, 2,215 characters, reward −0.006321. `c19c2113…` has items of 8, 8, 7, 9 and 8 points, the second and the fifth met, 16/40, 1,099 characters, reward 0.426489.
+
+**What was ruled out.**
+
+- The text that is graded. The grader's `response_chars` equals the characters of `physician_response` in the source for all four cases. The answer of `9566084d…` is 2,298 bytes of UTF-8 and was counted as 2,215, so characters are counted and not bytes. The oracle hands over `solution/final_message.txt` as the import wrote it: no newline is added, and the output of `solve.sh` is not used.
+- The grader and the judge. `git diff 4d11381 af57dc7` is empty for `datasets/`, `src/Judge.ts`, `worker/Harness.ts`, `worker/Sessions.ts` and `package.json`: the same prompt, parser, arithmetic and nanocode-ts release under both entries. Both versions of `worker/Run.ts` submit each rubric item as a session of its own with the judge's model and thinking level.
+- The port. The prompt template, `parse_grade` and the arithmetic are identical, line for line, to the `grade.py` of the earlier adapter. The arithmetic is that of `calculate_score` and `calculate_length_adjusted_score` in OpenAI's `simple-evals` at `652c89d`. The prompt is not the `simple-evals` template: the earlier adapter had shortened it, and it stays as ported.
+- The judge's own variation. Each of the four cases ran twice on a byte-identical request file: the run and the rerun of 2026-11-11, and the two runs here. All 14 verdicts were the same both times. The explanations were not: 12 of 14 differ in wording, and one is in the language of the question instead of English. That is two samples an item.
+
+**What was a defect.** `--limit N` meant two things. `import D --limit N` took the first N rows of the source for GPQA, HealthBench and SWE-bench, and the first N ids for the registry datasets. `run --eval D --limit N` and `dataset.json` take the first N ids. `f238c1f` orders every selection by id in `datasets/Dataset.ts`, so a limit names the same tasks at import and in a run.
+
+After it, `nanoeval import healthbench-professional --limit 2` imported `004691ba…` and `0187e394…` as the version `e1f586d9…` that the `--only` import had made, and the same oracle run scored 0.027871 and 0.643007 again for $0.0060 (runner 6.5 s). `--only 9566084de89c416408691006a6f06f9c --only c19c2113ba68bb3c4a3e63836e31b558` names the pair of 2026-11-11.
+
+Computed from the pinned files and not run: GPQA's `--limit 5` keeps four of the five tasks it named before, since its rows are almost in id order, and the first three SWE-bench instances are the same in both orders.
+
+**Cost.** $0.0120 for 14 judge turns in two runs.
+
+**Not verified.**
+
+- That the directory of 2026-11-10 held the whole dataset. It is gone, and the three points above are what says so.
+- The three cases that ran with `gpt-6-luna` on 2026-11-10 (0.357, 0.617 and 1.031). By the same rule they are the first three ids. They were not run again.
+- A model's answers on an imported HealthBench eval, and a judge's verdicts beyond two samples an item.
+- `grade.py` reads the final message as text, so Python would count a `\r\n` as one character where `simple-evals` counts two. None of the 410 physician answers has a carriage return, so no recorded score depends on it. It was left as it is: changing the grader changes the checksum of every HealthBench task.
+- `python:3.12-slim` is a tag. The packed disk of this import is 38,115,789 bytes and the one of 2026-11-11 was 37,942,168: the tag had moved, and the import read seven new blobs from the registry. The grader uses only Python's standard library.
+
+### What the documents said that was no longer so
+
+- README and DESIGN.md said that a build step gets no host policy, that `allow_internet = false` is refused, that nothing cuts a slot's connections, and that the verifier cache waits for a measurement: all four are rewritten.
+- `src/Task.ts` refused `environment_mode = "shared"`, which is what Harbor 0.25.0 writes, and a `[verifier.environment]` table was not refused: fixed, with tests.
+- The usage text of `import --limit` did not say which order it counts in, and it counted in two: see the HealthBench section.

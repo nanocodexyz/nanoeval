@@ -93,6 +93,11 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: dir
           NANOEVAL_E2E_SCENARIO: packing
+      - name: End to end, directory slots, a task that closes its network is refused
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: closed
       - name: End to end, krun slots, skipped where krun cannot run
         run: npm run e2e
       - name: End to end, krun slots, oracle, skipped where krun cannot run
@@ -128,6 +133,14 @@ jobs:
         run: npm run e2e
         env:
           NANOEVAL_E2E_SCENARIO: network
+      - name: End to end, krun slots, closed networks, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: closed
+      - name: End to end, krun slots, verifier cache, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: cache
       - name: End to end, krun slots, disk removal, skipped where krun cannot run
         run: npm run e2e
         env:

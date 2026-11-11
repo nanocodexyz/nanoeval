@@ -119,7 +119,7 @@ It runs the launcher of the microVM backend and nothing else:
 
 **Once per source.** The import keeps a record of each conversion under its inputs (converter, source and size), so the 198 GPQA tasks that share one image convert it once, and importing again converts nothing. The layers, configs and manifests read from a registry are kept by digest in the layer cache, `--layers` (`NANOEVAL_LAYERS`, `oci` under the cache by default). It is host policy, like the blob store, and a second import of a dataset downloads no layer.
 
-**A Dockerfile on a restricted network.** A `RUN` step runs in the builder microVM on a private network, like a slot, with what the image trusts and none of the host's policy: not the certificate bundle of `--ca-bundle`, not the variables of `--slot-env`, not the listeners of `--slot-forward`. On a machine whose network re-signs TLS to package registries, or keeps them behind a proxy on its loopback, a step that installs from such a registry fails, and the import refuses the task and names the step. A task that names an image converts there, because the launcher trusts the machine's own bundle (`SSL_CERT_FILE` or the system one). Every dataset shipped here names images, and the Dockerfiles of this repository's own tasks reach only Alpine's package mirror, which the test machine did not re-sign. No option for build steps exists until a dataset needs one.
+**A Dockerfile on a restricted network.** A `RUN` step runs in the builder microVM on a private network, like a slot, and gets the host policy a slot gets: `image build --ca-bundle FILE`, `--env-file FILE` and `--forward ADDRESS:PORT`, which `nanoeval import` passes from `--ca-bundle`, `--slot-env` and `--slot-forward` or from `NANOEVAL_CA_BUNDLE`, `NANOEVAL_SLOT_ENV` and `NANOEVAL_SLOT_FORWARD`, the variables the installed command reads. So a step that installs with pip or npm builds on a machine whose network re-signs TLS or keeps registries behind a proxy on its loopback. The policy belongs to the machine and not to the environment, and none of it reaches the disk or the row, see [Image disks](#image-disks). A task that names an image needs none of it: the launcher reads registries with the machine's own bundle (`SSL_CERT_FILE` or the system one). What a registry behind such a proxy served is what the disk holds, as it is for a slot that installs through it.
 
 ## What a machine needs
 
@@ -181,7 +181,7 @@ A runner is one Node process on a sandbox host, `nanoeval runner`. A run starts 
 
 - **It drives `slot.sh` and does not replace it.** The slot functions of the microVM backend were kept instead of being folded into the runner. A phase of a slot runs detached and leaves a status file, so the microVM, the hand and a running verifier outlive the runner. A runner that is restarted in the same directory reads each slot's saved row and goes on from the phase it was in, with the same runner id and claims. It tells the run which rows it still holds, and the run puts back at once any other row that the ledger gave it, such as one it claimed and had not saved when it died. The calls of a row can be repeated in any phase after the one they belong to, so a runner that is a step behind the ledger catches up instead of failing. The runner reads those status files itself every 25 ms, where the orchestrator used to ask for them through the provider once per tick.
 - **Calls that wait on the Worker back off** from 25 ms to `--poll-ms` (250 ms by default): the hand's attach, the turn and the judge. A deployed Worker wants a larger value, since each poll is a request.
-- **The cache of a machine** is `$NANOEVAL_CACHE` (`~/.cache/nanoeval`): `blobs/<digest>` for verified blobs and `disks/<digest>.ext4` for unpacked disks with their metadata. A microVM holds a shared lock on its disk while it runs. With `--disks remove` a runner deletes the packed blob as soon as its disk is unpacked, and removes a disk that it unpacked for this run when the run says no other row needs it. A disk that was in the cache before is kept. `nanoeval prune` removes every cached disk that no microVM holds, and every cached blob.
+- **The cache of a machine** is `$NANOEVAL_CACHE` (`~/.cache/nanoeval`): `blobs/<digest>` for verified blobs and `disks/<digest>.ext4` for unpacked disks with their metadata. A microVM holds a shared lock on its disk while it runs. With `--disks remove` a runner deletes the packed blob as soon as its disk is unpacked, and removes a disk that it unpacked for this run when the run says no other row needs it. A disk that was in the cache before is kept. `nanoeval prune` removes every cached disk that no microVM holds, every cached blob and every [verifier cache](#verifier-cache).
 - **A stopped runner** (SIGTERM) releases its rows, which makes them claimable at once, and takes its slots down. A killed one is found by its leases.
 - **Host policy stays with the host**: `--ca-bundle`, `--slot-env` and `--slot-forward` are options of `sandboxd` or of an attached runner, and the capabilities a runner reports record them.
 
@@ -221,16 +221,16 @@ A krun slot is one libkrun microVM. In gakonst/nanoeval the harness stayed on th
 | Piece | Runs | Role |
 | --- | --- | --- |
 | `krun/nanovm` | Host | The libkrun binding: one VM's disks, shares, vsock ports and command |
-| `krun/host`, `nanoeval-krun` | Host | `vm` is the VMM process of one microVM. `exec`, `copy-in`, `copy-out`, `stop` and `ready` talk to a guest. `check` says whether this machine can start one. `image` makes the disk of a task environment, see [Image disks](#image-disks) |
+| `krun/host`, `nanoeval-krun` | Host | `vm` is the VMM process of one microVM, with the gate of a slot that closes a phase. `exec`, `copy-in`, `copy-out`, `stop` and `ready` talk to a guest. `check` says whether this machine can start one. `image` makes the disk of a task environment, see [Image disks](#image-disks) |
 | `krun/guest`, `nanoeval-krun-guest` | Guest | A static musl binary. Mounts the disks, pivots into the overlay, then serves requests on a vsock port. In build mode it keeps the disk at `/mnt/root` and applies layers and Dockerfile steps to it |
 | `krun/wire` | Both | The request and frame encoding of that port, and the address plan of a private guest |
-| `krun/net`, `nanoeval-net` | Host and slot | The relay of a private slot, on both sides. A static binary, which the guest uses as a library |
+| `krun/net`, `nanoeval-net` | Host and slot | The relay of a private slot, on both sides. A static binary, which the guest and the launcher use as a library |
 
 **Root filesystem.** The environment disk of the row is the root, unpacked once per machine into the runner's cache under the digest of its blob, beside the image's environment, working directory and user from the row. Nothing is pulled or built when a slot comes up. Every slot attaches the disk read-only and adds a sparse ext4 of its own, of the task's `storage_mb`, as the upper layer of an overlay that the guest mounts, so what an attempt writes never reaches the disk or another attempt. Taking a slot down deletes that file. The disk was written by a kernel when it was converted, so owners, modes, devices and links are real, with no root and no fakeroot on the host.
 
 **Commands.** libkrun's init stays PID 1 and reaps. The guest binary listens on a vsock port that libkrun maps to a UNIX socket in the slot directory. `nanoeval-krun exec` sends a command with its environment, user and working directory, streams output, and returns the exit code. The guest leaves the session of the console once it has booted, so a command has no controlling terminal: a program that asks `/dev/tty` for a password fails instead of stopping. A closed connection sends SIGTERM to that command, which is how a hand is stopped and how a timeout ends a solution or a verifier. `tests/` and `solution/` reach the guest through the `io` share only in their own phase and are copied into the root, so the agent never sees them and they are ordinary files when they run.
 
-**Resources.** vCPUs are the task's `cpus` rounded up, memory is `memory_mb`, and the root can grow to `storage_mb`. A runner counts a slot's declared memory. An idle guest costs the host far less, since libkrun backs guest memory on demand.
+**Resources.** vCPUs are the task's `cpus` rounded up, memory is `memory_mb`, and the root can grow to `storage_mb`. A runner counts a slot's declared memory. An idle guest costs the host far less, since libkrun backs guest memory on demand. The VMM raises its limit on open files to the hard limit: a share keeps a descriptor on the host for every file its guest has looked up, and a tree of more than about a thousand files did not copy under the usual soft limit of 1024.
 
 **Network.** A krun slot has a private network by default, described under [Slot networks](#slot-networks). With `--network host` it uses libkrun's TSI instead: the VMM makes the guest's sockets on the host, and a connection to `127.0.0.1` that nothing in the guest listens on reaches the host's loopback. The limits of TSI are why it is not the default:
 
@@ -247,6 +247,7 @@ A krun slot is one libkrun microVM. In gakonst/nanoeval the harness stayed on th
 
 ```
  nanoeval-krun image build (--ref NAME | --dockerfile DIR) --size-mb N --out DISK.ext4 --meta META.json
+                           [--ca-bundle FILE] [--env-file FILE]... [--forward ADDRESS:PORT]...
    registry     the manifest for the platform, through an index, fetched by digest
    blob store   layers, configs and manifests in <cache>/blobs/sha256, one lock and one download per blob
    mke2fs       an empty sparse ext4 of N MiB
@@ -291,6 +292,16 @@ The guest applies a layer as a container engine does: `.wh.NAME` removes `NAME`.
 | `ONBUILD` and anything else | Refused by name, with the line |
 
 A `RUN` step gets `/proc`, `/dev` and `/sys`, a resolver file and a hosts file, mounted in a mount namespace of its own thread, so they are gone with the step and the image's own `/etc/resolv.conf` and `/etc/hosts` are what the disk keeps. Its network is a slot's: `--network private`, the default, is passt and needs it installed, and `--network host` is TSI with the machine's resolver. A step has no terminal and no input.
+
+**Host policy in a step.** The three options change what a step reaches and nothing the disk keeps.
+
+| Option | In a step | How it stays out of the disk |
+| --- | --- | --- |
+| `--ca-bundle FILE` | The bundle is at `/opt/nanoeval/ca.pem`, where a slot has it, and the variables a slot names point at it: `CARGO_HTTP_CAINFO`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, `NODE_EXTRA_CA_CERTS`, `PIP_CERT`, `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE` | It is a file on a tmpfs that the guest mounts at `/opt/nanoeval` in the mount namespace of that step's thread, so the disk never holds it. A directory made for the mount point is removed after the step and its parent's times are set back |
+| `--env-file FILE` | Its variables, after the image's `ENV` and `ARG` and after the trust variables, so the machine's value wins | They are added to the step's request only. `ENV` state, and so the image's configuration and the row, never sees them |
+| `--forward ADDRESS:PORT` | A private builder listens on that loopback address and relays to the machine's, as a slot does. With `--network host` the guest reaches the machine's loopback already | The relay is the launcher's own thread behind a socket in its scratch directory, with the forwards as its allow list |
+
+`META.json` says which were applied, as `policy`, with the names of the variables and not their values, and the import's report says which were set. They are not part of an environment's identity: the same context under another policy is the same source, and a conversion record is reused. What a step itself writes from them stays, such as a lock file that names an index, and a step that removes `/opt` fails while the bundle is mounted there.
 
 `COPY` follows what BuildKit was measured to do, in [DECISIONS.md](DECISIONS.md#2026-11-11-task-images-become-disks-without-docker): files from the context belong to root, files from a stage or an image keep their owner, modes and times are kept, a link named as a source is followed inside its own tree, a directory's contents are copied, a destination directory made on the way belongs to root with mode 755 and takes only the time of the source directory, a directory met on both sides takes the source's mode and owner, and a directory on one side against a file on the other is an error. `WORKDIR` makes missing directories as the current `USER`.
 
@@ -350,7 +361,7 @@ For a reference, `image_digest` is the digest of the platform's manifest. For a 
 
 A block of zeros is left out whether the file system had allocated it or not, so the packed bytes follow from the disk's bytes alone, and packing a restored disk gives the same file. The SHA-256 of the packed file is its address. `image unpack` writes the runs into a sparse, read-only file, checks the digest inside and, with `--sha256`, the one of the file, and keeps nothing when either is wrong. Both hold a lock on their output while they write it, and `image unpack` keeps a disk it finds once it has the lock, so of two runners that restore one disk at once the second writes nothing. A disk is therefore named by the digest of its file, as a runner's cache names it.
 
-**Limits.** A command that runs as a user of the image, in a `RUN` step as in a slot, has that user's primary group and no supplementary groups. Hard links between the files of one `COPY` become separate files. A `RUN` step sees none of the host's network policy, see [Environment conversion](#environment-conversion). Registries are read without credentials. Every image is a whole disk: images that share base layers share them in the layer cache and not in the store.
+**Limits.** A command that runs as a user of the image, in a `RUN` step as in a slot, has that user's primary group and no supplementary groups. Hard links between the files of one `COPY` become separate files. Registries are read without credentials. Every image is a whole disk: images that share base layers share them in the layer cache and not in the store.
 
 ## Slot networks
 
@@ -378,7 +389,69 @@ A `krun` slot gets a network of its own (`--network private`, the default): its 
 
 **Forwards.** A machine's resolver may answer a name with an address on the machine's own loopback, where a proxy for package registries listens. A private slot would find nothing there. `sandboxd --slot-forward ADDRESS:PORT` names such listeners, and every slot then listens on the same address of its own loopback for its whole life and relays to the host's, through the same socket and allow list. It is host policy like `--ca-bundle`, and the runner's capabilities record it as `slot_forward`.
 
+**Closed phases.** Harbor's task format says what each phase may reach: `network_mode` in `[environment]` is the baseline, `public` or `no-network`, `[agent]` and `[verifier]` may each override it, and `allow_internet = false` is the deprecated way to write `no-network`. `src/Task.ts` reads them as Harbor 0.25.0 resolves them, and refuses `allowlist` and `allowed_hosts`. A row records the agent's network as `network.allowInternet` and the verifier's as `network.verifierInternet` only when it differs, so the rows of every eval imported before are unchanged.
+
+```
+ slot                                   host
+ eth0 ─ virtio-net ─ VMM ─ gate ─ passt        frames pass only while slots/<slot>/net/open exists
+ 127.0.0.1:P ─ vsock ─ relay.sock ─ allow      the list holds the forwards only in an open phase,
+                                               and the session only while the hand runs
+```
+
+A slot whose task closes a phase starts its microVM with `vm --gate net/open`. The gate is two threads of the VMM between its network device and passt. Each reads one frame, four bytes of length and the frame, and writes it on only if the file exists, so a closed phase drops every frame in both directions, at a frame boundary, and nothing is queued for later. `slot.sh` writes the file and the relay's allow list when the slot comes up, for the agent's phase, and again in `verify`, after the hand is stopped and before the tests are copied in. The file is in the slot's directory on the host, which no guest can write. A slot that closes nothing has no gate and runs as before.
+
+| Phase closed | Reaches | Does not reach |
+| --- | --- | --- |
+| The agent's | Its own loopback, and its session through the relay while the hand runs | Any address by name or number, the gateway, a forward of the machine |
+| The verifier's | Its own loopback | The same, and the session, which the relay forgot when the hand stopped |
+
+So the hand still attaches and the turn still runs, since both go through the relay and model requests leave from the Worker. A closed agent phase needs a session at `ws://127.x.x.x`: a hand cannot dial a deployed Worker over `wss://` without a network, and the slot refuses. Processes the agent left running are still there when the verifier's phase opens the network, as in Harbor, where both phases share one environment. Only krun slots on a private network can close a phase. A run on `--network host` or on `dir` slots that selects such a task is refused when it is created, and `slot.sh up` refuses it again.
+
 **What is not isolated.** A private slot reaches whatever the machine serves on its other addresses, such as its LAN address. It has IPv4 only. While the hand runs, the Worker's port on the slot's loopback is taken.
+
+## Verifier cache
+
+A Terminal-Bench verifier installs its tools in every attempt: `apt-get update`, `apt-get install -y curl`, the uv installer, and `uvx` with a Python and the test runner. On ten tasks that was 84 to 85 % of the verifier's time, see [DECISIONS.md](DECISIONS.md). `nanoeval run --verifier-cache`, off by default, keeps the part of it that is a download with a cache of its own: what uv fetches.
+
+```
+ runner       slots/<slot>/verifier.cache: KEY and read, or write for the attempt of an oracle
+ slot.sh verify
+   hit        <cache>/verifier/KEY is copied through the io share into /var/cache/nanoeval-verifier,
+              after the tests, and the verifier starts with UV_CACHE_DIR and UV_PYTHON_CACHE_DIR in it
+   miss, model    nothing: the verifier runs as it does without the option
+   miss, oracle   the verifier starts with the two variables in an empty directory, and what uv wrote
+                  there is copied out and kept as <cache>/verifier/KEY when test.sh ended with 0
+```
+
+- **Two variables, no mounts and no changed script.** uv keeps wheels, index answers and built environments in `UV_CACHE_DIR` and the archives of the Pythons it downloads in `UV_PYTHON_CACHE_DIR`. Both are download caches: uv decides which Python and which versions to use as it does without them, and takes the bytes from the directory when it has them. Nothing is mounted over a directory the agent may have written, and `tests/test.sh` runs unchanged. A verifier sees the two variables and the directory, and finds its tools sooner.
+- **Only an oracle fills it.** The processes of an agent are still in the environment while the verifier runs. A cache that any attempt may write would carry what one agent left there into every later verifier of that task. An oracle's attempt runs the task's own solution, so the cache holds what the task's own verifier downloaded on a solved environment. An attempt reads a copy and never writes back.
+- **Nothing before the verifier.** The directory reaches the slot as `tests/` does, through the share and only in `verify`, so the agent cannot see which tools its verifier uses.
+- **The key** is a digest over the environment's blob, the tests archive, the verifier's variables and the variables the host gives its slots (`--slot-env`, which may hold `UV_EXCLUDE_NEWER` or an index). It is per task, so the cache helps the second and later attempts of a task on one machine, which is every attempt of a model after an oracle run.
+- **Not cached:** `apt-get update` and `apt-get install`, whose results depend on the day and on what the agent did to the package lists, the uv installer, which is fetched over TLS from a release, and pip. `dir` slots have no cache.
+
+## Pruning
+
+Three things grow on a machine. A runner's cache is cleared by `nanoeval prune`, see [Runners](#runners). The layer cache of imports and the directory blob store had nothing that removed from them. `nanoeval prune layers` and `nanoeval prune store` do, and both only list, one line per file with its size and then a total, until `--remove` is given.
+
+```
+ nanoeval prune layers --days N [--remove]     sandbox/Prune.ts ─▶ nanoeval-krun image prune --cache LAYERS --days N [--remove]
+ nanoeval prune store [--remove]               sandbox/Prune.ts: GET /v1/evals, /v1/evals/NAME/versions, /v1/evals/NAME@DIGEST?tasks=1
+                                               every blob of every row of every version is kept, the rest is listed
+```
+
+**The layer cache, by last use.** A layer, config or manifest is unused when its last use is N days back or more. The last use is the later of the file's access time and its modification time. The launcher's store sets the access time itself whenever it serves a blob from the cache (`Store::fetch` when the file is there, `Store::document` when it reads one), so the record does not depend on how the filesystem is mounted, and a cache written before this is aged by what its filesystem recorded. Partial downloads (`<digest>.part`) and temporary manifests (`<digest>.<pid>.tmp`) that old are listed and removed the same way. A name that is none of these is reported as `ignored` and left. `--days` has no default: how long a layer is worth keeping is host policy.
+
+**A removal and a build exclude each other.** `image build` holds a shared `flock` on `<cache>/lock` for as long as it has the store open, which is the whole conversion. `image prune --remove` takes that lock exclusively without waiting, and when a build holds it, it removes nothing and says so. A build that starts during a removal waits for it. Under that lock a removal still takes each blob's own download lock, the `flock` on `<digest>.part` that `Store::fetch` takes, reads the file's times again, and removes it only if it is still unused. A partial download whose lock is held is a download in progress and is kept. A dry run takes no lock and creates no file. It reads the directory and the metadata of its entries, so it changes no blob's times.
+
+**The store, by reference.** A blob of a directory store is referenced when a row of any version of any eval of the Worker names it: the instruction, the tests, the solution archive and the environment disk or files. Versions are never removed and a run names one version, so a blob no version names is one no run can ask for. Everything else under `<root>/sha256` with a digest for a name is unreferenced. Files that `put` stages beside a blob (`<digest>.<pid>-<hex>`) are leftovers of an import that died and are removed with them. A file that is neither is reported as `unknown` and left.
+
+**A removal and an import exclude each other.** An import uploads its blobs before its version exists, so they are unreferenced while it runs. A directory store has a lock file, `<root>/lock`. `importEval` holds it shared from before the first blob is looked up until the Worker has created the version, and `prune store --remove` holds it exclusively, without waiting, from before it reads the versions until the last file is removed. So a removal sees every version of every import that finished, is refused while one runs, and an import that starts during it waits. Node has no `flock`. `Store.lock` runs `flock FILE sh -c 'echo held && exec cat'` with a pipe for its input: the line says the lock is held, and the lock is released when the pipe closes, which is when the holder releases it, exits or is killed. `slot.sh` already needs `flock`. A dry run takes no lock, so during an import it lists that import's blobs.
+
+**The wrong Worker.** The reference set comes from one Worker. Pointed at a Worker with another state, a removal would take every blob. So `--remove` is refused when the Worker names no blob that the store holds, which includes a Worker with no eval, unless `--allow-empty` says that emptying the store is meant. A store that two Workers import into must not be pruned against either.
+
+**Not pruned.** Blobs in R2: the Worker has no route that lists a bucket, and `prune store --store r2` is refused. Eval versions: a version is immutable and runs name it, and the Worker cannot list its runs, so nothing can say that a version is unused.
+
+**Limits.** The two locks exclude only processes that take them. An import or a launcher from a checkout before this change takes neither, and a removal beside one can take a blob it is about to use: the import then fails on that task, or its version names a blob that is gone and a run of it ends as an `environment` error. Nothing is corrupted, since every reader verifies digests. `flock` is local to a machine. A cache or store whose files another user owns cannot have its access times set, and a build from it fails with the file's name. An eval whose first version was created and whose entry in the list of evals was not written is not seen, until it is imported again.
 
 ## Sandbox providers
 
@@ -401,7 +474,7 @@ The E2B JavaScript SDK is not used. It cannot pay, and it needs `nodejs_compat`.
 
 ## Tasks and results
 
-Tasks are Harbor task directories, schema 1.1, as Terminal-Bench 2.x ships them: `task.toml`, `instruction.md`, `environment/`, `tests/test.sh`. The verifier writes `/logs/verifier/reward.txt`. An import turns each directory into a row of an eval, see [Evals](#evals), and a run carries rows and no files. `environment.build_timeout_sec` bounds a slot's start when the task sets it, and `--setup-sec` otherwise. Tasks that ship a Compose file, declare MCP servers, or need GPUs, a separate verifier environment or `allow_internet = false` are refused: Compose, MCP servers, GPUs and a separate verifier when the task is imported, `allow_internet = false` when a run is created. Compose is recognized by `environment/docker-compose.yaml`, which is what Harbor acts on, not by a `[metadata]` flag. A task of the earlier Harbor format, which writes `version = "1.0"` where later tasks write `schema_version`, loads the same way: Terminal-Bench 2.0 is published in it.
+Tasks are Harbor task directories, schema 1.1, as Terminal-Bench 2.x ships them: `task.toml`, `instruction.md`, `environment/`, `tests/test.sh`. The verifier writes `/logs/verifier/reward.txt`. An import turns each directory into a row of an eval, see [Evals](#evals), and a run carries rows and no files. `environment.build_timeout_sec` bounds a slot's start when the task sets it, and `--setup-sec` otherwise. Tasks that ship a Compose file, declare MCP servers, or need GPUs, a separate verifier environment or a network allowlist are refused when they are imported. A task that closes the network of a phase is refused when a run is created on slots that cannot close it, see [Closed phases](#slot-networks). `verifier.environment_mode` is `shared`, as Harbor 0.25.0 writes it, or `same`, as the earlier loader did. Compose is recognized by `environment/docker-compose.yaml`, which is what Harbor acts on, not by a `[metadata]` flag. A task of the earlier Harbor format, which writes `version = "1.0"` where later tasks write `schema_version`, loads the same way: Terminal-Bench 2.0 is published in it.
 
 [Datasets](#datasets) describes where task packages come from, and [Final messages and judges](#final-messages-and-judges) the two additions to the task format.
 
@@ -421,6 +494,8 @@ A dataset adapter turns a published benchmark into task packages in the Harbor l
  nanoeval import NAME --out DIR
    datasets/Dataset.ts   writes DIR/<task>/ and DIR/dataset.json instead, to read or to hand to Harbor
 ```
+
+**Selection.** `--only ID` names tasks, and `--limit N` takes the first N in the order of their ids, compared as strings. `Dataset.select` orders the ids of every adapter before it chooses, `dataset.json` lists tasks in the same order, and the rows of an eval are read in it, so `import D --limit N` makes the rows that `run --eval D --limit N` takes from a whole import. The order of the rows in a source file is not used: a run could not recover it from rows.
 
 **Pins.** A source is a file with a SHA-256 written in the adapter, or a set of task packages with a digest over their digests. A download that does not match is refused and not kept. The eval's version records the dataset and the pins, and every row its id, its name and its package checksum, the same checksum a run reports. Importing part of a dataset (`--only`, `--limit`) adds to the eval as a new version. An eval holds one dataset from one source. `dataset.json` (`nanoeval-dataset-v1`) records the same for a directory written with `--out`.
 
@@ -467,6 +542,8 @@ judge = true           # the verifier may ask a model
 - A request is read only when the first round wrote no reward and the task says `judge = true`. It is at most 2 MiB, the limit of the earlier judge service. A malformed request, a failed judge turn, or a second round without a reward is a `verifier` error, never a score.
 - The second round starts from an empty `/logs/verifier`, so a grader must produce the same prompts twice. There is one judge round.
 - Judge sessions use the credentials and the egress of agent sessions. Their tokens are kept beside the attempt as `judge` and count against the model budget. The request and the answers are artifacts of the attempt.
+- In an oracle run the graded text is `solution/final_message.txt` as the import wrote it, not what `solve.sh` printed. A grader that measures the answer, as the length adjustment of HealthBench does, measures the dataset's own text, in characters.
+- The HealthBench grader keeps the prompt, the parser and the arithmetic of the earlier adapter. The arithmetic is that of `calculate_score` and `calculate_length_adjusted_score` in OpenAI's `simple-evals`. The prompt is shorter than the `simple-evals` template, and an answer that is not the JSON object is a `verifier` error where `simple-evals` asks again.
 - The judge is a nanocode session, so the model sees nanocode's system prompt before the grader's prompt. In the earlier stack the judge was also an agent turn without tools. A judge call cost about 9,300 input tokens of that prompt in the runs recorded in DECISIONS.md.
 
 ## Model credentials
@@ -534,7 +611,16 @@ A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP c
 | `tar --sparse`, `zstd --sparse` or qcow2 as the packed form | Each needs a tool on every host, and none gives the same bytes for the same disk when the holes of the file differ |
 | zstd above level 3 for the packed form | On a disk with 2.2 GiB of data, level 9 gave 13 % fewer bytes for 4.3 times the CPU, and level 19 took 139 s against 1.6 s |
 | The unpacker of the earlier packed form kept beside the new one | It would keep GNU tar and zstd on every runner for evals that take minutes to import again. A row names its form, and a runner refuses one it does not unpack |
-| A certificate bundle, variables and forwards for the `RUN` steps of a build, as slots have | No dataset here builds from a Dockerfile, and the Dockerfiles of this repository need none. An image that installed through a re-signing proxy would also carry what that proxy served. A task that names an image converts on such a machine |
+| The bundle of `--ca-bundle` copied into the disk for its `RUN` steps, or appended to the image's own | It is the machine's, and it would be in every slot of every machine that runs the eval. A mount in the step's namespace is gone with the step |
+| The variables of `--env-file` as `ENV` of the build | They would be in the row and in every slot. They are part of a step's request only |
+| A closed slot as a microVM with no network device | The verifier of a task may have a network when its agent has none, and libkrun cannot add a device to a running guest |
+| passt started when a phase opens and killed when it closes | Frames a closed guest sent wait in the socket and reach the internet when passt starts, and a passt killed in the middle of a frame leaves the stream out of step |
+| A firewall inside the guest for a closed phase | The agent is root in its guest |
+| The verifier cache as a disk attached when the microVM boots, as the earlier runner had it | A guest sees every device from its start, so the agent could read it, and one that is writable is written by the agent's processes |
+| The cache mounted over `/root/.cache/uv`, `/root/.local`, `/var/lib/apt/lists` and `/var/cache/apt/archives` | It hides what the agent wrote there, which may be what the task asked for, and the lists of another day decide which packages `apt-get install` asks a mirror for |
+| The setup lines cut from a verifier on a hit | It is the task's verifier. A cache may only make its downloads cheaper |
+| A verifier cache that the first attempt of any agent fills | The processes of that agent are alive in the environment while the verifier downloads, and every later attempt would run what they left in the cache |
+| The dependency setup of a verifier run in a spare microVM to fill the cache | A verifier on an unsolved environment can run until its timeout, 900 s for some tasks, and an oracle run already does the same work on a solved one |
 | A second launcher protocol for disks made from one archive | Only the export of a container needed it. The request, its command and the boot on one writable disk went with their caller |
 | A registry mirror or a login, to stay under Docker Hub's anonymous limit | The limit counts manifest requests, and a conversion makes one or two. 89 images converted from an empty store without meeting it. A `429` waits instead |
 
@@ -585,9 +671,9 @@ The eval stack of nanocode at `2d4a4c539^` (`crates/experimental/nanocodex-eval`
 | Dataset adapters and import store (`nanocodex-eval-adapters`, `import/mod.rs`) | Pinned sources normalized into task packages, stored under a digest | Back for five datasets as adapters, and as the eval table and blob store, see [Evals](#evals). The rest are listed in the README with what each needs |
 | Judge service (`judge.rs`) | An OpenAI-compatible endpoint on the host for verifiers | Replaced by the judge request file |
 | Separate verifier environment (`vm.rs`, `tests/Dockerfile`) | The verifier in a fresh machine from its own image, with only named artifacts carried over | Refused at submission. Planned: GDPval, SWE-Atlas QnA and GeneBench Pro need it |
-| Network modes (`network_mode`, `allow_internet = false`) | A candidate without a network and a verifier with one | Refused. Planned, on top of the private network a slot now has, which still allows every connection out. Closed-book datasets need it |
+| Network modes (`network_mode`, `allow_internet = false`) | A candidate without a network and a verifier with one | Back for krun slots on a private network, per phase, see [Closed phases](#slot-networks). An allowlist is refused |
 | Transcripts (`transcript.json`) | A prompt of several messages | Not carried over. Planned: MRCR and 115 HealthBench cases need it |
-| Verifier-dependency cache (`vm.rs`) | The `apt` and `uv` setup of Terminal-Bench verifiers kept on a cache disk | Not carried over. Planned after a measurement: verifiers that install their tools took 14 to 46 s of each attempt here |
+| Verifier-dependency cache (`vm.rs`) | The `apt` and `uv` setup of Terminal-Bench verifiers kept on a cache disk that was mounted over `/var/cache/apt/archives`, `/var/lib/apt/lists`, `/root/.cache/uv` and `/root/.local`, with the setup lines cut from the script on a hit | Back in a smaller form, off by default: what uv downloads, in directories of its own that two variables name, see [Verifier cache](#verifier-cache). apt is not cached and no script is changed |
 | Rerun lineage (`eval/run/retained.rs`, later the workset) | A run that retries what an earlier one did not pass. At `2d4a4c539^` the workset kept no pointer between them: a retry was a new generation or another attempt row | Back with the pointer: `run --rerun`, see [Runs](#runs) |
 | Profiles (`profile.rs`, `nanocodex.toml`) | Named recipes of benchmarks, harnesses, models and thinking levels | Not needed yet: a run is a command line over dataset directories. A run file is the equivalent when one is wanted |
 | Capture proxy (`capture_proxy.rs`) | Recorded the model traffic of other harnesses for comparison | Not needed: nanoeval runs nanocode sessions, whose events are the record |

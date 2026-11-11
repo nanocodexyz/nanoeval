@@ -30,6 +30,7 @@ The table says what was run. "The first version" is the flow before the eval tab
 | Blob store by SHA-256: a directory on a machine | Implemented, tested. Terminal-Bench 2.1 is imported into one: 89 tasks, 19.2 GB of packed disks, in under 5 minutes |
 | Blob store by SHA-256: R2 through the Worker | Implemented, tested end to end under local workerd with small evals, single-request blobs only. Multipart uploads are unit tested against a mock. Not run against Cloudflare's R2 |
 | Environment conversion at import (`sandbox/Converter.ts`), with no container engine | Implemented, tested: `nanoeval-krun image build`, `pack` and `unpack`. The 89 images of Terminal-Bench 2.1, one SWE-bench instance image, `python:3.12-slim` and the 14 Dockerfiles of this repository converted. The 89 disks have the same trees as disks made from `docker export`, apart from the files an engine adds. See [DESIGN.md](DESIGN.md#environment-conversion) for what a Dockerfile may use |
+| Host policy for the `RUN` steps of a Dockerfile (`import --ca-bundle`, `--slot-env`, `--slot-forward`) | Implemented, tested on a Linux machine whose network re-signs TLS and serves the Python and npm registries on its loopback: a fixture that installs with pip and npm is refused without the options and imports with them, five Terminal-Bench 2.1 tasks built from their Dockerfiles, and no disk holds the bundle, a variable or a forward. On the base layers of the published images the trees differ only in what the day of a build decides, see [DECISIONS.md](DECISIONS.md#2026-11-11-the-smaller-gaps) |
 | Run table (`Run` Durable Object): rows, claims, leases, CLI and API | Implemented, tested: unit tests for claims, leases, expiry and fencing, and end to end under local workerd |
 | Task runners (`nanoeval runner`), started by a run through a sandbox or attached by hand | Implemented, tested: two runners with separate caches on one machine work one run |
 | A runner lost during a run: its rows are claimed again, at most `--claims` times, and nothing scores twice | Implemented, tested end to end: a killed runner's rows end scored by the other runner, with the lost claims recorded |
@@ -56,6 +57,9 @@ The table says what was run. "The first version" is the flow before the eval tab
 | Every file a verifier writes is kept, binary files included | Implemented, tested |
 | The count of processes a task's memory limit killed (`oomKills`) | Implemented, tested on krun slots |
 | Cached disks removed when no row needs them (`--disks remove`), and `nanoeval prune` | Implemented, tested |
+| The layer cache pruned by days since last use (`nanoeval prune layers`) | Implemented, tested: unit tests on temporary caches, and on a Linux machine with KVM: a removal during an image build was refused, the build succeeded, and the next removal took 10 of 44 blobs. Listed only, not removed, on the 16 GB cache of the Terminal-Bench 2.1 import |
+| Unreferenced blobs of a directory store pruned (`nanoeval prune store`) | Implemented, tested: unit tests on temporary stores, and on a Linux machine with KVM: a removal during an import was refused, the next removed 6 of 14 files, and an oracle run of the eval passed afterwards. Listed only on the store of the Terminal-Bench 2.1 import, where every blob is referenced. Blobs in R2 are not pruned, and eval versions are never removed |
+| What uv downloads for a verifier, kept per task (`run --verifier-cache`, off by default) | Implemented for krun slots, tested end to end with a fixture, and on ten Terminal-Bench 2.1 tasks with their solutions: the same ten outcomes with and without it, and 60 s of verifier time against 103 to 120 s. Only an oracle's attempt fills it. apt and pip are not cached |
 | A floor on free disk for claims (`--free-disk-mb`) | Implemented, tested. It is reactive: it does not reserve what running attempts write later |
 | Orchestrator restart during a run | Tested: the Worker is killed with attempts in flight, restarts on the same state, and the run finishes |
 | E2B over MPP provider | Implemented against E2B's documented protocol and tested against a local mock. **No sandbox has been paid for or started.** A runner there has not run. Nobody has checked whether an E2B sandbox has KVM: without it, it runs `dir` environments only |
@@ -71,7 +75,8 @@ The table says what was run. "The first version" is the flow before the eval tab
 | Listeners on the machine's loopback that private slots may reach (`sandboxd --slot-forward`) | Implemented, tested with a registry proxy on a machine's loopback |
 | Deployment to Cloudflare | Bundles with `wrangler deploy --dry-run`. Not deployed |
 | The `bwrap` slot backend | Planned |
-| `allow_internet = false`, tasks with a Compose file or MCP servers, separate verifier environments, `reward.json` | Refused, except `reward.json`, which is not read: a verifier that writes only it ends as a `verifier` error. Planned |
+| A task that closes the network of its agent, its verifier or both (`allow_internet = false`, Harbor's `network_mode`) | Implemented for krun slots on a private network, tested end to end: a closed phase reaches neither the internet, by name or by address, nor the machine, and the attempt completes. Refused on `dir` slots and on `--network host`. A network allowlist is refused. No dataset shipped here closes a phase yet |
+| Tasks with a Compose file or MCP servers, separate verifier environments, `reward.json` | Refused, except `reward.json`, which is not read: a verifier that writes only it ends as a `verifier` error. Planned |
 | Prompt-cache cohorts, duration-ordered dispatch, R2 artifacts, MPP sessions | Planned |
 
 ## Run it locally
@@ -123,7 +128,11 @@ Without an API key, a plan login works. `nanoeval worker --codex-login ~/.codex/
 
 To check task environments and verifiers without a model, `nanoeval run --oracle --eval NAME --wait` runs each task's `solution/solve.sh` in the slot in place of the agent. A solution is a blob of its own, and only an oracle run is told its digest.
 
-A long run on a machine with little disk takes two more options. `--disks remove` makes a runner delete each packed disk once it is unpacked, and each disk it unpacked once no row of the run needs it, and never a disk its cache already had. `--free-disk-mb N` makes a runner claim only while its machine has N MB free. `nanoeval prune` removes what earlier runs left in the cache: the disks that no microVM holds and the blobs (`--dry-run` lists them).
+A long run on a machine with little disk takes two more options. `--disks remove` makes a runner delete each packed disk once it is unpacked, and each disk it unpacked once no row of the run needs it, and never a disk its cache already had. `--free-disk-mb N` makes a runner claim only while its machine has N MB free. `nanoeval prune` removes what earlier runs left in the cache: the disks that no microVM holds, the blobs and the verifier caches (`--dry-run` lists them).
+
+Two more commands prune what imports leave, and both only list until `--remove` is given. `nanoeval prune layers --days N` lists the layers, configs and manifests of the layer cache that no import used for N days, with abandoned downloads, each with its size. `nanoeval prune store` asks the Worker for every version of every eval and lists the blobs of the directory store that none of them names, with the files an import that died left staged. A removal is refused while an import is converting from that cache or writing to that store, and `prune store --remove` is refused when the Worker names no blob of the store, unless `--allow-empty` says that emptying it is meant: a Worker started on the wrong state would otherwise take everything. Eval versions are never removed, and blobs in R2 are not pruned. [DESIGN.md](DESIGN.md#pruning) has the rules.
+
+`--verifier-cache` makes the verifier of a task find what uv downloaded for it before: an oracle run with the option keeps it in the runner's cache, and later attempts of that task on the machine start their verifier with it. It is off by default, and [DESIGN.md](DESIGN.md#verifier-cache) says what it does and does not change.
 
 ## Datasets
 
@@ -147,7 +156,7 @@ node cli/nanoeval.ts run --eval healthbench-professional --agent luna=codex:gpt-
 node cli/nanoeval.ts import terminal-bench-2.1 --out datasets/terminal-bench-2.1
 ```
 
-Importing part of a dataset (`--only`, `--limit`) and importing more later each make a new version that holds the earlier tasks too. `--keep-going` leaves out a task whose environment does not convert and names it.
+Importing part of a dataset (`--only`, `--limit`) and importing more later each make a new version that holds the earlier tasks too. `--limit N` takes the first N tasks in the order of their ids, at import and in a run, so both name the same tasks. `--keep-going` leaves out a task whose environment does not convert and names it.
 
 | Dataset | Pinned source | Tasks | Environment | Graded by |
 | --- | --- | --- | --- | --- |
@@ -161,8 +170,8 @@ What to know before reading a score:
 
 - **Final messages.** GPQA and HealthBench send the dataset's prompt unchanged and grade the agent's last message. The orchestrator hands that message to the verifier. Nothing asks the agent to write a file.
 - **Judges.** A judged verifier writes its prompts to a file, and the run answers them with the model of `--judge`. No model credential and no judge endpoint enters a slot. [DESIGN.md](DESIGN.md#final-messages-and-judges) has the protocol.
-- **HealthBench scores are not pass or fail.** The reward is the length-adjusted rubric score, which can exceed 1. An attempt counts as passed only at exactly 1, so read `mean reward` in the summary. The 115 cases with earlier turns are left out, since a task carries one instruction.
-- **GPQA and HealthBench are closed-book and slots are not.** A slot on a private network still has connections out, and nothing cuts them yet, so an agent could search.
+- **HealthBench scores are not pass or fail.** The reward is the length-adjusted rubric score, which can exceed 1. An attempt counts as passed only at exactly 1, so read `mean reward` in the summary. A physician's answer is not a perfect one: under a `gpt-6-luna` judge the first two cases by id score 0.028 and 0.643 with theirs. The 115 cases with earlier turns are left out, since a task carries one instruction.
+- **GPQA and HealthBench are closed-book, and their tasks do not say so yet.** A task that sets `allow_internet = false` or Harbor's `network_mode = "no-network"` runs on a krun slot without a network, but these two importers still write tasks that leave it open, so an agent could search.
 - **SWE-bench needs the network in the verifier**, which installs `uv` and `swebench`, and each instance image becomes a disk of its own in the store. A machine whose network holds back fresh packages needs `sandboxd --slot-env` with `UV_EXCLUDE_NEWER`, and one whose registries sit behind a proxy on its loopback needs `--slot-forward`.
 - **Instance images are named by tag**, as the official harness names them. Only the dataset is pinned by digest.
 
@@ -202,9 +211,9 @@ Where things live is host policy, and each has an option:
 | `--krun DIR` | A built launcher to use instead of building `krun/` with cargo | Built on first use |
 | `--name NAME` | The prefix of the two services, the configuration directory and the command, for a second installation beside the first | `nanoeval` |
 
-Put the store, the cache, the layers and the state on a filesystem with room: one Terminal-Bench 2.1 eval is 18 GB of packed disks and 16 GB of layers, and its unpacked disks take 51 GB when all are cached. Run the script again to change an option, `scripts/install-linux.sh --remove` to take the services, the command and the configuration away again (the data stays), and `loginctl enable-linger` to keep the services after you log out. The Worker runs from this checkout, and wrangler reloads it when the sources change. A Worker state directory written before the eval table is not migrated: point `--state` at a new directory and keep earlier runs as their exported jobs.
+Put the store, the cache, the layers and the state on a filesystem with room: one Terminal-Bench 2.1 eval is 18 GB of packed disks and 16 GB of layers, and its unpacked disks take 51 GB when all are cached. `nanoeval prune layers` and `nanoeval prune store` list what can go from the layers and the store, see [Run it locally](#run-it-locally). Run the script again to change an option, `scripts/install-linux.sh --remove` to take the services, the command and the configuration away again (the data stays), and `loginctl enable-linger` to keep the services after you log out. The Worker runs from this checkout, and wrangler reloads it when the sources change. A Worker state directory written before the eval table is not migrated: point `--state` at a new directory and keep earlier runs as their exported jobs.
 
-Three options are for a machine whose network stands between its slots and the internet. `--ca-bundle FILE` makes slots trust that bundle when the network re-signs TLS. `--slot-env FILE` starts them with the variables of that file, such as a package index or `UV_EXCLUDE_NEWER` where the registry holds back fresh releases. `--slot-forward ADDRESS:PORT`, which may repeat, lets private slots reach a listener on the machine's loopback at that same address, for a machine whose resolver sends package registries to a proxy there. An attached runner takes the same three.
+Three options are for a machine whose network stands between its slots and the internet. `--ca-bundle FILE` makes slots trust that bundle when the network re-signs TLS. `--slot-env FILE` starts them with the variables of that file, such as a package index or `UV_EXCLUDE_NEWER` where the registry holds back fresh releases. `--slot-forward ADDRESS:PORT`, which may repeat, lets private slots reach a listener on the machine's loopback at that same address, for a machine whose resolver sends package registries to a proxy there. An attached runner takes the same three, and so does `nanoeval import`, for the `RUN` steps of a task's Dockerfile.
 
 ### krun slots
 
@@ -216,7 +225,7 @@ Three options are for a machine whose network stands between its slots and the i
 - A Rust toolchain through rustup. The first import or runner builds the launcher in `krun/` (about a minute) and later ones reuse it. `NANOEVAL_KRUN` names a directory with a built `nanoeval-krun`, `nanoeval-krun-guest` and `nanoeval-net` instead.
 - [passt](https://passt.top) installed as a system package (`apt install passt`), for the private network of slots and of a Dockerfile's `RUN` steps. A copy in a user's directory cannot sandbox itself where unprivileged user namespaces are restricted. `--network host` does not need it.
 
-The machine that imports needs the same things and nothing more: the launcher pulls images and builds Dockerfiles itself, see [DESIGN.md](DESIGN.md#image-disks). No Docker, containerd or podman is used or needed, and none is called if one is installed. A Dockerfile whose `RUN` steps install from a registry that the machine's network re-signs or keeps on its loopback does not build, because a build step gets none of `--ca-bundle`, `--slot-env` and `--slot-forward`. Tasks that name an image are not affected.
+The machine that imports needs the same things and nothing more: the launcher pulls images and builds Dockerfiles itself, see [DESIGN.md](DESIGN.md#image-disks). No Docker, containerd or podman is used or needed, and none is called if one is installed. A Dockerfile whose `RUN` steps install from a registry that the machine's network re-signs or keeps on its loopback builds when the import has the machine's policy, `--ca-bundle`, `--slot-env` and `--slot-forward`, which the installed command has from the installation. The disk keeps none of the three. Tasks that name an image need none.
 
 Unpacked disks are kept in `~/.cache/nanoeval/disks` (`NANOEVAL_CACHE` moves the cache) until `--disks remove` or `nanoeval prune` removes them. With `--network host` a slot shares the host's sockets, with the limits listed in [DESIGN.md](DESIGN.md#krun-slots).
 
@@ -248,6 +257,8 @@ NANOEVAL_E2E_SCENARIO=runners npm run e2e  # two attached runners with separate 
 NANOEVAL_E2E_SCENARIO=lost NANOEVAL_E2E_LEASE_SEC=3 npm run e2e  # a runner killed: its rows are claimed again
 NANOEVAL_E2E_SCENARIO=resume NANOEVAL_E2E_SLOTS=8 npm run e2e  # a runner killed and started again: it goes on
 NANOEVAL_E2E_SCENARIO=network npm run e2e  # what a private slot reaches and what reaches it
+NANOEVAL_E2E_SCENARIO=closed npm run e2e   # tasks that close the network of the agent, the verifier or both
+NANOEVAL_E2E_SCENARIO=cache npm run e2e    # a verifier that finds what an oracle run kept for it
 NANOEVAL_E2E_SCENARIO=disks npm run e2e    # cached disks removed when no row needs them; also disk, packing
 NANOEVAL_E2E_MODEL=anthropic npm run e2e   # a real model with ANTHROPIC_API_KEY
 NANOEVAL_E2E_MODEL=codex-plan npm run e2e  # a real model on the ChatGPT plan of ~/.codex/auth.json
@@ -265,7 +276,7 @@ CI runs these on a GitHub-hosted runner, which has no libkrunfw: the `krun` lane
 | --- | --- |
 | `worker/` | The Worker: routes, the `Evals` and `Run` objects, the R2 blob routes, the harness sessions |
 | `src/` | Host-agnostic modules: the eval row and its versions, the run ledger, the runner protocol, tasks, results, admission, budget, providers |
-| `sandbox/` | `Runner.ts`, the task runner. `slot.sh`, one attempt in one slot. `Store.ts`, the blob store and the cache. `Converter.ts`, where an environment becomes a disk through the launcher. `Sandboxd.ts`, the local sandbox daemon |
+| `sandbox/` | `Runner.ts`, the task runner. `slot.sh`, one attempt in one slot. `Store.ts`, the blob store and the cache. `Converter.ts`, where an environment becomes a disk through the launcher. `Prune.ts`, what can go from the layer cache and from a directory store. `Sandboxd.ts`, the local sandbox daemon |
 | `krun/` | The Rust workspace: the libkrun binding, the launcher and the guest binary of the krun backend, the image converter (`nanoeval-krun image`), and `nanoeval-net`, the relay of a private slot |
 | `cli/` | The `nanoeval` command and the import pipeline |
 | `datasets/` | The dataset adapters, and the graders they write into tasks |
