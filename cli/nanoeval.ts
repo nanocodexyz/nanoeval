@@ -71,7 +71,8 @@ const usage = `nanoeval <command>
             [--memory-mb N] [--network private|host] [--template NAME] [--sandbox-timeout-sec 3600]
             [--sandbox-budget-usd 0] [--model-budget-usd N] [--setup-sec 600] [--attach-sec 60]
             [--lease-sec 60] [--claims 3] [--step-retries 3] [--poll-ms 250]
-            [--disks keep|remove] [--free-disk-mb N] [--name NAME] [--wait] [--out DIR]
+            [--disks keep|remove] [--free-disk-mb N] [--verifier-cache] [--name NAME] [--wait]
+            [--out DIR]
             Create the rows of a run, task x agent x attempt, against one version of an eval.
             Task runners claim the rows: the run starts one in each sandbox it opens
             (--sandboxes, with --slots attempts at once each), and nanoeval runner attaches
@@ -84,6 +85,8 @@ const usage = `nanoeval <command>
             With --disks remove, a runner removes each environment disk it unpacked once no
             row of the run needs it. With --free-disk-mb, a runner claims only while its
             machine has that much free disk, and prepares one environment at a time.
+            With --verifier-cache, the verifier of a krun slot finds what uv downloaded for
+            the same task on this machine before, when an oracle run with the option kept it.
             With --oracle no model runs: each task's solution is run in its slot, then the
             verifier. --judge names the model that answers the verifiers of judged tasks.
             With --wait, poll until the run finishes, print the summary and write the Harbor
@@ -447,6 +450,7 @@ async function main(): Promise<void> {
       'tick-ms': { default: '500', type: 'string' },
       token: { default: process.env['NANOEVAL_TOKEN'], type: 'string' },
       url: { default: process.env['NANOEVAL_URL'], type: 'string' },
+      'verifier-cache': { default: false, type: 'boolean' },
       wait: { default: false, type: 'boolean' },
     },
   })
@@ -875,6 +879,9 @@ async function main(): Promise<void> {
         slots: Number(values.slots ?? '4'),
         ...(values.template ? { template: values.template } : {}),
         timeoutSec: Number(values['sandbox-timeout-sec']),
+        ...(values['verifier-cache'] || parent?.sandbox.verifierCache
+          ? { verifierCache: true as const }
+          : {}),
       },
     }
     const created = await api.create(config)

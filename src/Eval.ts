@@ -67,6 +67,7 @@ export type Selection = { limit?: number; only?: readonly string[] }
 
 export const schema = 'nanoeval-eval-v1'
 export const taskSchema = 'nanoeval-eval-task-v1'
+export const verifierCacheSchema = 'nanoeval-verifier-cache-v1'
 
 export const tables = [
   `CREATE TABLE IF NOT EXISTS tasks (digest TEXT PRIMARY KEY, id TEXT NOT NULL, name TEXT NOT NULL, body TEXT NOT NULL)`,
@@ -282,6 +283,23 @@ export function offline(task: Pick<Task, 'network'>): Phase[] {
     ...(allowInternet ? [] : ['agent' as const]),
     ...(verifierInternet ? [] : ['verifier' as const]),
   ]
+}
+
+export function verifierCache(task: Task, host: string): Promise<string> {
+  const { environment } = task
+  return Bytes.sha256(
+    Bytes.fromText(
+      verifierCacheSchema +
+        '\0' +
+        canonical({
+          env: task.verifier.env,
+          environment:
+            environment.kind === 'disk' ? environment.disk.digest : environment.files.digest,
+          host,
+          tests: task.tests.digest,
+        }),
+    ),
+  )
 }
 
 export function blobs(task: Task, options: { solution: boolean }): Blob[] {

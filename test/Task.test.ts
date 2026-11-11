@@ -415,3 +415,47 @@ test('only krun slots on a private network run a task that closes its network', 
     })
   }
 })
+
+test('a verifier cache is named by the disk, the tests, the verifier variables and the host', async () => {
+  const row = Rows.row(await Task.load(source(manifest())))
+  const key = await Eval.verifierCache(row, 'host')
+  assert.match(key, /^[0-9a-f]{64}$/)
+  assert.equal(await Eval.verifierCache(structuredClone(row), 'host'), key)
+  const other = (change: (task: Eval.Task) => void, host = 'host') => {
+    const changed = structuredClone(row)
+    change(changed)
+    return Eval.verifierCache(changed, host)
+  }
+  const keys = await Promise.all([
+    other((task) => (task.tests.digest = 'e'.repeat(64))),
+    other((task) => (task.verifier.env['UV_INDEX_URL'] = 'https://example.com/simple')),
+    other((task) => {
+      if (task.environment.kind === 'disk') task.environment.disk.digest = 'f'.repeat(64)
+    }),
+    other(() => undefined, 'another host'),
+  ])
+  assert.equal(new Set([key, ...keys]).size, 5)
+  assert.equal(await other((task) => (task.instruction.digest = 'e'.repeat(64))), key)
+
+  const config = (sandbox: Record<string, unknown>) => ({
+    agents: [{ id: 'haiku', model: 'claude-haiku-4-5', provider: 'claude' }],
+    attempts: 1,
+    budget: { sandboxUsd: 0 },
+    eval: { name: 'example' },
+    limits: { attachSec: 60, claims: 3, leaseSec: 60, setupSec: 600, stepRetries: 3 },
+    name: 'example',
+    sandbox: { max: 1, pollMs: 250, provider: 'local', slots: 4, timeoutSec: 60, ...sandbox },
+  })
+  const krun = { backend: 'krun', network: 'private' }
+  assert.equal(Config.parse(config(krun)).sandbox.verifierCache, undefined)
+  assert.equal(
+    Config.parse(config({ ...krun, verifierCache: false })).sandbox.verifierCache,
+    undefined,
+  )
+  assert.equal(Config.parse(config({ ...krun, verifierCache: true })).sandbox.verifierCache, true)
+  assert.throws(
+    () => Config.parse(config({ backend: 'dir', network: 'host', verifierCache: true })),
+    Config.InvalidError,
+  )
+  assert.throws(() => Config.parse(config({ ...krun, verifierCache: 'yes' })), Config.InvalidError)
+})

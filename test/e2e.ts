@@ -73,6 +73,7 @@ const solutions: [marker: string, right: string, wrong: string][] = [
   ['greeting.txt', "printf 'hello from nanoeval\\n' > greeting.txt", 'echo hi > greeting.txt'],
   ['port.token', 'sh start.sh', 'true'],
   ['network.checks', 'sh check.sh', 'true'],
+  ['cached.txt', 'echo ready > cached.txt', 'true'],
 ]
 
 function sse(events: [string, unknown][]): string {
@@ -370,6 +371,7 @@ async function main(): Promise<void> {
     assert.equal(unauthorized.status, 401)
 
     const failures = scenario === 'failures'
+    const cached = scenario === 'cache'
     const closed = scenario === 'closed'
     const isolated = scenario === 'network'
     const judged = scenario === 'judge'
@@ -409,7 +411,9 @@ async function main(): Promise<void> {
               ? ['closed-agent', 'closed-network', 'closed-verifier'].map((name) =>
                   Path.join('test/fixtures', name),
                 )
-              : taskNames.map((name) => Path.join('tasks', name))
+              : cached
+                ? [Path.join('test/fixtures', 'cached-verifier')]
+                : taskNames.map((name) => Path.join('tasks', name))
     const agents: Config.Agent[] =
       model === 'oracle'
         ? [oracle]
@@ -422,10 +426,10 @@ async function main(): Promise<void> {
                 ...(thinking ? { thinking } : {}),
               },
             ]
-          : closed || failures || isolated || packing || model !== 'scripted'
+          : cached || closed || failures || isolated || packing || model !== 'scripted'
             ? [
                 {
-                  id: closed || failures || isolated || packing ? 'right' : 'nanocode',
+                  id: cached || closed || failures || isolated || packing ? 'right' : 'nanocode',
                   model: realModel,
                   provider: 'claude',
                 },
@@ -511,7 +515,7 @@ async function main(): Promise<void> {
 
     const config: Config.Config = {
       agents,
-      attempts: closed || failures || packing ? 1 : isolated ? slots : attempts,
+      attempts: cached || closed || failures || packing ? 1 : isolated ? slots : attempts,
       budget: { modelUsd: 1, sandboxUsd: 0 },
       eval: { name: evalName, version: version.digest },
       ...(judged ? { judge: { model: 'claude-haiku-4-5', provider: 'claude' as const } } : {}),
@@ -534,6 +538,7 @@ async function main(): Promise<void> {
         provider: 'local',
         slots,
         timeoutSec: 3600,
+        ...(cached ? { verifierCache: true as const } : {}),
       },
     }
     if (closed && !(backend === 'krun' && network === 'private')) {
@@ -878,7 +883,35 @@ async function main(): Promise<void> {
     assert.equal(status['counts'].errored, 0, 'no attempt may end in an infrastructure error')
     assert.equal(status['counts'].passed + status['counts'].failed, total)
     if (!attached) assert.equal(peak, Math.min(slots, total), 'the sandbox fills every slot')
-    if (closed || isolated) {
+    if (cached) {
+      if (backend !== 'krun') throw new Error('the cache scenario runs on krun slots')
+      const kept = Path.join(cache, 'verifier')
+      const verified = async (run: string) => {
+        let finished: Record<string, any>
+        for (;;) {
+          finished = await api.status(run)
+          if (finished['state'] === 'finished') break
+          if (Date.now() - started > 20 * 60_000)
+            throw new Error('the run did not finish:\n' + summary(finished))
+          await new Promise((resolve) => setTimeout(resolve, 100))
+        }
+        const attempt = finished['attempts'][0] as { id: string; outcome: string }
+        assert.equal(attempt.outcome, 'passed', summary(finished))
+        const read = (name: string) => api.artifact(run, attempt.id, 'verifier/' + name)
+        return [(await read('cache.txt')).trim(), (await read('variable.txt')).trim()]
+      }
+      const directory = '/var/cache/nanoeval-verifier/uv'
+      assert.deepEqual(await verified(created.id), ['miss', 'unset'])
+      assert.ok(!Fs.existsSync(kept), 'the attempt of a model keeps nothing for later verifiers')
+      const solved = { ...config, agents: [oracle], name: config.name + '-oracle' }
+      assert.deepEqual(await verified((await api.create(solved)).id), ['miss', directory])
+      assert.equal(Fs.readdirSync(kept).length, 1, 'the attempt of the oracle kept its downloads')
+      assert.deepEqual(await verified((await api.create(config)).id), ['hit', directory])
+      assert.deepEqual(await verified((await api.create(solved)).id), ['hit', directory])
+      const plain = { ...config, sandbox: { ...config.sandbox, verifierCache: undefined } }
+      assert.deepEqual(await verified((await api.create(plain)).id), ['miss', 'unset'])
+      assert.equal(Fs.readdirSync(kept).length, 1)
+    } else if (closed || isolated) {
       for (const attempt of status['attempts'] as { id: string; outcome: string }[])
         assert.equal(
           attempt.outcome,

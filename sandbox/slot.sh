@@ -8,6 +8,7 @@ net=$rt/nanoeval-net
 cache=${NANOEVAL_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/nanoeval}
 disks=$cache/disks
 self=$(readlink -f "$0")
+tools=/var/cache/nanoeval-verifier
 trust='CARGO_HTTP_CAINFO CURL_CA_BUNDLE GIT_SSL_CAINFO NODE_EXTRA_CA_CERTS PIP_CERT REQUESTS_CA_BUNDLE SSL_CERT_FILE'
 
 die() {
@@ -453,8 +454,39 @@ cmd__verify() {
       mapfile -t options < <(guest_options "$dir")
       vm "$dir" exec "${options[@]}" --user 0 -- sh -c 'rm -rf /logs/verifier && mkdir -p /logs/verifier && chmod 777 /logs/verifier'
       guest_copy "$dir" tests "${options[@]}"
+      local kept='' fill='' key mode user
+      if [ -f "$dir/verifier.cache" ]; then
+        read -r key mode <"$dir/verifier.cache"
+        kept=$cache/verifier/$key
+        if [ -d "$kept" ]; then
+          rm -rf "$dir/io/cache"
+          cp -R "$kept" "$dir/io/cache"
+          vm "$dir" exec "${options[@]}" --user 0 -- rm -rf "$tools"
+          vm "$dir" copy-in --socket vm.sock cache "$tools"
+          rm -rf "$dir/io/cache"
+        elif [ "$mode" = write ]; then
+          fill=1
+          vm "$dir" exec "${options[@]}" --user 0 -- sh -c 'rm -rf "$1" && mkdir -p "$1"' sh "$tools"
+        else
+          kept=''
+        fi
+      fi
+      if [ -n "$kept" ]; then
+        user=$(cat "$dir/user")
+        if [ -n "$user" ]; then vm "$dir" exec "${options[@]}" --user 0 -- chown -R "$user" "$tools"; fi
+        options+=(--env "UV_CACHE_DIR=$tools/uv" --env "UV_PYTHON_CACHE_DIR=$tools/python")
+      fi
       if [ -f "$dir/verifier.env" ]; then options+=(--env-file "$dir/verifier.env"); fi
       (cd "$dir" && timeout -k 10 "$seconds" "$krun/nanoeval-krun" exec "${options[@]}" -- sh -c "$run" sh /tests/test.sh) || code=$?
+      if [ -n "$fill" ] && [ "$code" = 0 ]; then
+        rm -rf "$dir/io/cache"
+        if vm "$dir" copy-out --socket vm.sock "$tools" cache && [ -n "$(ls -A "$dir/io/cache")" ]; then
+          mkdir -p "$cache/verifier"
+          mv "$dir/io/cache" "$kept.$$"
+          mv -T "$kept.$$" "$kept" 2>/dev/null || rm -rf "$kept.$$"
+        fi
+        rm -rf "$dir/io/cache"
+      fi
       rm -rf "$dir/io/verifier"
       if vm "$dir" copy-out --socket vm.sock /logs/verifier verifier; then cp -R "$dir/io/verifier/." "$dir/verifier/"; fi
       vm "$dir" exec "${options[@]}" --user 0 -- /opt/nanoeval/krun/boot/nanoeval-krun-guest oom-kills >"$dir/oom" 2>/dev/null || true
@@ -499,6 +531,15 @@ cmd_prune() {
       printf 'removed disk %s\n' "$base.ext4"
     else
       printf 'kept disk %s\n' "$base.ext4"
+    fi
+  done
+  for base in "$cache"/verifier/*; do
+    [ -d "$base" ] || continue
+    if [ "$mode" = dry-run ]; then
+      printf 'verifier cache %s\n' "$base"
+    else
+      rm -rf "$base"
+      printf 'removed verifier cache %s\n' "$base"
     fi
   done
   for blob in "$cache"/blobs/*; do

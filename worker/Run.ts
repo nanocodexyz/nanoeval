@@ -817,6 +817,7 @@ export class Run extends DurableObject<Env> {
       slots: config.sandbox.slots,
       token: meta.runnerToken,
       url: meta.publicUrl,
+      ...(config.sandbox.verifierCache ? { verifierCache: true as const } : {}),
     }
   }
 

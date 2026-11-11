@@ -52,6 +52,7 @@ export type Config = {
     slots: number
     template?: string
     timeoutSec: number
+    verifierCache?: true
   }
 }
 
@@ -70,6 +71,7 @@ export type Runner = {
   slots: number
   token: string
   url: string
+  verifierCache?: true
 }
 
 const thinking = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -146,6 +148,10 @@ export function parse(value: unknown): Config {
   const backend = choice(sandbox.backend, 'sandbox.backend', ['dir', 'krun'])
   if (!Slot.networks[backend].includes(sandbox.network))
     fail('sandbox.network of the ' + backend + ' backend is ' + Slot.networks[backend].join(' or '))
+  if (sandbox.verifierCache !== undefined && typeof sandbox.verifierCache !== 'boolean')
+    fail('sandbox.verifierCache is true or false')
+  if (sandbox.verifierCache && backend !== 'krun')
+    fail('sandbox.verifierCache needs the krun backend')
   const budget = config.budget ?? fail('budget is required')
   const limits = config.limits ?? fail('limits is required')
   return {
@@ -196,6 +202,7 @@ export function parse(value: unknown): Config {
       slots: integer(sandbox.slots, 'sandbox.slots', 1),
       ...(typeof sandbox.template === 'string' ? { template: sandbox.template } : {}),
       timeoutSec: integer(sandbox.timeoutSec, 'sandbox.timeoutSec', 1),
+      ...(sandbox.verifierCache ? { verifierCache: true as const } : {}),
     },
   }
 }

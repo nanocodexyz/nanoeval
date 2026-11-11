@@ -4,6 +4,7 @@ import * as Path from 'node:path'
 import * as Admission from '../src/Admission.ts'
 import type * as Config from '../src/Config.ts'
 import * as Eval from '../src/Eval.ts'
+import * as Bytes from '../src/internal/Bytes.ts'
 import * as Judge from '../src/Judge.ts'
 import * as Protocol from '../src/Protocol.ts'
 import type * as Result from '../src/Result.ts'
@@ -267,6 +268,11 @@ export async function run(options: Options): Promise<void> {
     return prefix
   }
 
+  const hostPolicy = Fs.readFile(process.env['NANOEVAL_SLOT_ENV'] ?? '').then(
+    (variables) => Bytes.sha256(variables),
+    () => '',
+  )
+
   const prepare = async (item: Work) => {
     const task = item.row.task
     const target = directory(item)
@@ -294,6 +300,12 @@ export async function run(options: Options): Promise<void> {
     for (const [name, values] of variables)
       if (Object.keys(values).length)
         await Fs.writeFile(slots.envFile(item.row.slot, name), Slot.envFile(values))
+    if (config.verifierCache && task.environment.kind === 'disk')
+      await Fs.writeFile(
+        slots.verifierCacheFile(item.row.slot),
+        (await Eval.verifierCache(task, await hostPolicy)) +
+          (item.row.agent.oracle ? ' write\n' : ' read\n'),
+      )
     const offline = Eval.offline(task)
     if (offline.length)
       await Fs.writeFile(slots.offlineFile(item.row.slot), offline.join('\n') + '\n')

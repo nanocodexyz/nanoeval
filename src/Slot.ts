@@ -98,6 +98,7 @@ export function create(options: create.Options) {
         String(input.storageMb),
         ...(input.disk ? [input.disk] : []),
       ),
+    verifierCacheFile: (slot: string) => home + '/slots/' + slot + '/verifier.cache',
     verifierInput: (slot: string, name: string) =>
       home + '/slots/' + slot + '/task/' + Task.verifierInputs + '/' + name,
     verify: (slot: string, timeoutSec: number) =>
