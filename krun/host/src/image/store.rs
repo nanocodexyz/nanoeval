@@ -1,9 +1,10 @@
 use std::{
-    fs::{self, OpenOptions, Permissions},
-    io,
+    fs::{self, File, FileTimes, OpenOptions, Permissions},
+    io::{self, Read},
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     process,
+    time::SystemTime,
 };
 
 use sha2::{Digest, Sha256};
@@ -11,16 +12,41 @@ use sha2::{Digest, Sha256};
 use super::{failed, hex, oci::Descriptor, reference::Reference, registry::Registry, sha256};
 
 const BLOB_MODE: u32 = 0o444;
+const LOCK: &str = "lock";
+pub(super) const PARTIAL: &str = "part";
+pub(super) const TEMPORARY: &str = "tmp";
 
 pub(crate) struct Store {
     blobs: PathBuf,
+    _lock: File,
+}
+
+pub(super) fn blobs(root: &Path) -> PathBuf {
+    root.join("blobs").join("sha256")
+}
+
+pub(super) fn lock(root: &Path) -> Result<(File, PathBuf), String> {
+    let path = root.join(LOCK);
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|error| failed(&path, &error))?;
+    Ok((file, path))
+}
+
+fn used(file: &File) -> io::Result<()> {
+    file.set_times(FileTimes::new().set_accessed(SystemTime::now()))
 }
 
 impl Store {
     pub(crate) fn open(root: &Path) -> Result<Self, String> {
-        let blobs = root.join("blobs").join("sha256");
+        let blobs = blobs(root);
         fs::create_dir_all(&blobs).map_err(|error| failed(&blobs, &error))?;
-        Ok(Self { blobs })
+        let (lock, path) = lock(root)?;
+        lock.lock_shared().map_err(|error| failed(&path, &error))?;
+        Ok(Self { blobs, _lock: lock })
     }
 
     fn path(&self, digest: &str) -> PathBuf {
@@ -35,8 +61,14 @@ impl Store {
         digest: &str,
     ) -> Result<Vec<u8>, String> {
         let path = self.path(digest);
-        match fs::read(&path) {
-            Ok(body) => return Ok(body),
+        match File::open(&path) {
+            Ok(mut file) => {
+                let mut body = Vec::new();
+                file.read_to_end(&mut body)
+                    .and_then(|_| used(&file))
+                    .map_err(|error| failed(&path, &error))?;
+                return Ok(body);
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(failed(&path, &error)),
         }
@@ -48,7 +80,7 @@ impl Store {
                 reference.repository
             ));
         }
-        let temporary = path.with_extension(format!("{}.tmp", process::id()));
+        let temporary = path.with_extension(format!("{}.{TEMPORARY}", process::id()));
         fs::write(&temporary, &body)
             .and_then(|()| fs::set_permissions(&temporary, Permissions::from_mode(BLOB_MODE)))
             .and_then(|()| fs::rename(&temporary, &path))
@@ -64,9 +96,12 @@ impl Store {
     ) -> Result<PathBuf, String> {
         let path = self.path(&descriptor.digest);
         if path.is_file() {
+            File::open(&path)
+                .and_then(|file| used(&file))
+                .map_err(|error| failed(&path, &error))?;
             return Ok(path);
         }
-        let partial = path.with_extension("part");
+        let partial = path.with_extension(PARTIAL);
         let part = OpenOptions::new()
             .create(true)
             .read(true)
