@@ -15,6 +15,7 @@ export type Timing = {
   adapterMs: number
   convertMs: number
   id: string
+  packMs: number
   packedBytes: number
   reused: boolean
   uploadMs: number
@@ -47,7 +48,13 @@ async function convert(
   item: Dataset.Case,
   task: Task.Task,
   options: Options,
-): Promise<{ convertMs: number; environment: Conversion; reused: boolean; uploadMs: number }> {
+): Promise<{
+  convertMs: number
+  environment: Conversion
+  packMs: number
+  reused: boolean
+  uploadMs: number
+}> {
   const image = task.environment.dockerImage
   const context = image === undefined ? archive(item, 'environment') : undefined
   const source =
@@ -67,7 +74,7 @@ async function convert(
     () => undefined,
   )
   if (known && (await options.store.has(known.disk.digest)))
-    return { convertMs: 0, environment: known, reused: true, uploadMs: 0 }
+    return { convertMs: 0, environment: known, packMs: 0, reused: true, uploadMs: 0 }
 
   const scratch = Path.join(options.cache, 'scratch', key + '-' + process.pid)
   await Fs.rm(scratch, { force: true, recursive: true })
@@ -90,6 +97,7 @@ async function convert(
       },
       disk,
     )
+    const built = Date.now()
     const packed = Path.join(scratch, 'disk.packed')
     await options.converter.pack(disk, packed)
     const converted = Date.now()
@@ -104,8 +112,9 @@ async function convert(
     await Fs.mkdir(Path.dirname(record), { recursive: true })
     await Fs.writeFile(record, JSON.stringify(environment))
     return {
-      convertMs: converted - started,
+      convertMs: built - started,
       environment,
+      packMs: converted - built,
       reused: false,
       uploadMs: Date.now() - converted,
     }
@@ -131,6 +140,7 @@ export async function normalize(
     throw new Task.InvalidError(item.id + ' has an instruction.md that is not UTF-8')
 
   let convertMs = 0
+  let packMs = 0
   let uploadMs = 0
   let reused = false
   let environment: Eval.Environment
@@ -143,7 +153,7 @@ export async function normalize(
   }
   if (options.format === 'disk') {
     const converted = await convert(item, task, options)
-    ;({ convertMs, environment, reused } = converted)
+    ;({ convertMs, environment, packMs, reused } = converted)
     uploadMs += converted.uploadMs
   } else {
     environment = {
@@ -192,6 +202,7 @@ export async function normalize(
     timing: {
       convertMs,
       id: item.id,
+      packMs,
       packedBytes: environment.kind === 'disk' ? environment.disk.bytes : environment.files.bytes,
       reused,
       uploadMs,
@@ -229,7 +240,9 @@ export async function cases(
         timing.convertMs +
         ' ms' +
         (timing.reused ? ' (reused)' : '') +
-        ', upload ' +
+        ', pack ' +
+        timing.packMs +
+        ' ms, upload ' +
         timing.uploadMs +
         ' ms, environment ' +
         timing.packedBytes +
