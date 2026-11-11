@@ -31,7 +31,7 @@ fn main() -> ExitCode {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     let Some(mode) = arguments.first() else {
         eprintln!(
-            "usage: nanoeval-krun-guest <disk|overlay> [rt] [private] [forward=ADDRESS:PORT...] | build [root] [sources=COUNT] [context] [private] | oom-kills"
+            "usage: nanoeval-krun-guest overlay [rt] [private] [forward=ADDRESS:PORT...] | build [root] [sources=COUNT] [context] [private] | oom-kills"
         );
         return ExitCode::from(125);
     };
@@ -199,7 +199,6 @@ fn handle(mut connection: File) {
             .map(|()| 0)
         }
         Request::Tree { root } => build::tree(&connection, &root).map(|()| 0),
-        Request::Unpack { to } => unpack::run(&connection, &to).map(|()| 0),
     });
     let code = outcome.unwrap_or_else(|error| {
         let mut message = error.to_string();

@@ -17,7 +17,7 @@ pub const GUEST_MTU: u32 = 65_520;
 pub const GUEST_PREFIX: u8 = 24;
 pub const GUEST_RESOLVER: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 3);
 pub const IO_TAG: &str = "io";
-pub const MAGIC: [u8; 4] = *b"NKR2";
+pub const MAGIC: [u8; 4] = *b"NKR3";
 pub const PORT: u32 = 1024;
 pub const PRIVATE: &str = "private";
 pub const READY: &str = "nanoeval-krun-guest: listening";
@@ -71,9 +71,6 @@ pub enum Request {
     Stop,
     Tree {
         root: Vec<u8>,
-    },
-    Unpack {
-        to: Vec<u8>,
     },
 }
 
@@ -161,12 +158,8 @@ impl Request {
             }
             Self::Ping => buffer.push(3),
             Self::Stop => buffer.push(4),
-            Self::Unpack { to } => {
-                buffer.push(5);
-                write_bytes(&mut buffer, to)?;
-            }
             Self::Apply { root } => {
-                buffer.push(6);
+                buffer.push(5);
                 write_bytes(&mut buffer, root)?;
             }
             Self::Install {
@@ -177,7 +170,7 @@ impl Request {
                 sources,
                 to,
             } => {
-                buffer.push(7);
+                buffer.push(6);
                 write_bytes(&mut buffer, from)?;
                 buffer.push(u8::from(*into));
                 buffer.push(u8::from(*keep_owner));
@@ -186,7 +179,7 @@ impl Request {
                 write_bytes(&mut buffer, to)?;
             }
             Self::Mkdir { path, root, user } => {
-                buffer.push(8);
+                buffer.push(7);
                 write_bytes(&mut buffer, path)?;
                 write_bytes(&mut buffer, root)?;
                 write_bytes(&mut buffer, user)?;
@@ -199,7 +192,7 @@ impl Request {
                 root,
                 user,
             } => {
-                buffer.push(9);
+                buffer.push(8);
                 write_list(&mut buffer, arguments)?;
                 write_bytes(&mut buffer, directory)?;
                 write_list(&mut buffer, environment)?;
@@ -208,7 +201,7 @@ impl Request {
                 write_bytes(&mut buffer, user)?;
             }
             Self::Tree { root } => {
-                buffer.push(10);
+                buffer.push(9);
                 write_bytes(&mut buffer, root)?;
             }
         }
@@ -244,13 +237,10 @@ impl Request {
             }),
             3 => Ok(Self::Ping),
             4 => Ok(Self::Stop),
-            5 => Ok(Self::Unpack {
-                to: read_bytes(reader)?,
-            }),
-            6 => Ok(Self::Apply {
+            5 => Ok(Self::Apply {
                 root: read_bytes(reader)?,
             }),
-            7 => Ok(Self::Install {
+            6 => Ok(Self::Install {
                 from: read_bytes(reader)?,
                 into: read_flag(reader)?,
                 keep_owner: read_flag(reader)?,
@@ -258,12 +248,12 @@ impl Request {
                 sources: read_list(reader)?,
                 to: read_bytes(reader)?,
             }),
-            8 => Ok(Self::Mkdir {
+            7 => Ok(Self::Mkdir {
                 path: read_bytes(reader)?,
                 root: read_bytes(reader)?,
                 user: read_bytes(reader)?,
             }),
-            9 => Ok(Self::Run {
+            8 => Ok(Self::Run {
                 arguments: read_list(reader)?,
                 directory: read_bytes(reader)?,
                 environment: read_list(reader)?,
@@ -271,7 +261,7 @@ impl Request {
                 root: read_bytes(reader)?,
                 user: read_bytes(reader)?,
             }),
-            10 => Ok(Self::Tree {
+            9 => Ok(Self::Tree {
                 root: read_bytes(reader)?,
             }),
             _ => Err(invalid("unknown request kind")),
@@ -380,7 +370,6 @@ mod tests {
             Request::Tree {
                 root: b"/mnt/source/0".to_vec(),
             },
-            Request::Unpack { to: b"/".to_vec() },
         ];
         for request in requests {
             let mut bytes = Vec::new();
