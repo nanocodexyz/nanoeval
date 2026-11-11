@@ -546,12 +546,10 @@ async function main(): Promise<void> {
       imported.tasks.map((task) => Math.ceil(task.resources.cpus) + ' ' + task.resources.memoryMb),
     )
     let status: Record<string, any>
-    let peak = 0
     let restarted = false
     let activeAt: number | undefined
     for (;;) {
       status = await api.status(created.id)
-      peak = Math.max(peak, status['counts'].active)
       if (status['state'] === 'finished') break
       if (status['counts'].active > 0) activeAt ??= Date.now()
       if (backend === 'krun')
@@ -603,6 +601,21 @@ async function main(): Promise<void> {
     console.log(summary(status))
     Fs.writeFileSync(Path.join(out, 'status.json'), JSON.stringify(status, null, 2) + '\n')
     const { files } = await exportJob(api, { out: Path.join(out, 'harbor'), run: created.id })
+    const details: Record<string, any>[] = []
+    for (const attempt of status['attempts'] as { id: string }[])
+      details.push(await api.attempt(created.id, attempt.id))
+    const edges = details
+      .filter((detail) => detail['result'].sandbox !== null)
+      .flatMap((detail) => [
+        [detail['result'].startedAt as number, 1],
+        [detail['result'].finishedAt as number, -1],
+      ])
+      .sort((left, right) => left[0]! - right[0]! || left[1]! - right[1]!)
+    let peak = 0
+    for (let index = 0, running = 0; index < edges.length; index++) {
+      running += edges[index]![1]!
+      peak = Math.max(peak, running)
+    }
 
     assert.deepEqual(status['eval'], { name: evalName, version: version.digest })
     if (attached) {
@@ -779,11 +792,9 @@ async function main(): Promise<void> {
 
     if (packing) {
       const started: Record<string, number> = {}
-      for (const attempt of status['attempts'] as Record<string, any>[]) {
-        assert.equal(attempt['outcome'], 'passed')
-        started[attempt['task']] = (await api.attempt(created.id, attempt['id']))[
-          'result'
-        ].startedAt
+      for (const detail of details) {
+        assert.equal(detail['attempt'].outcome, 'passed')
+        started[detail['attempt'].task] = detail['result'].startedAt
       }
       assert.equal(peak, 2, 'two attempts fit the memory of the sandbox at once')
       assert.ok(
@@ -841,8 +852,8 @@ async function main(): Promise<void> {
     }
 
     const phases: Record<string, number[]> = {}
-    for (const attempt of status['attempts'] as { id: string }[]) {
-      const detail = await api.attempt(created.id, attempt.id)
+    for (const detail of details) {
+      const attempt = detail['attempt'] as { id: string }
       assert.ok(detail['artifacts'].includes('verifier/test-stdout.txt'))
       if (judged) {
         const graded = detail['attempt'].task === 'fixtures/judged-answer'
