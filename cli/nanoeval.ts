@@ -335,25 +335,30 @@ export async function importEval(
     store: Store.Store
   },
 ): Promise<{ tasks: Eval.Task[]; timings: Import.Timing[]; version: Eval.Version }> {
-  const { tasks, timings } = await Import.cases(input.cases, {
-    cache: input.cache,
-    converter: Converter.create({
-      home: Path.join(input.cache, 'converter'),
-      layers: input.layers,
-      ...(input.policy ? { policy: input.policy } : {}),
-    }),
-    format: input.backend === 'krun' ? 'disk' : 'dir',
-    ...(input.log ? { log: input.log } : {}),
-    ...(input.refused ? { refused: input.refused } : {}),
-    store: input.store,
-  })
-  if (!tasks.length) throw new Error('the import selected no task')
-  const { version } = await api.putVersion(input.name, {
-    dataset: input.dataset,
-    source: input.source,
-    tasks,
-  })
-  return { tasks, timings, version }
+  const held = await input.store.hold()
+  try {
+    const { tasks, timings } = await Import.cases(input.cases, {
+      cache: input.cache,
+      converter: Converter.create({
+        home: Path.join(input.cache, 'converter'),
+        layers: input.layers,
+        ...(input.policy ? { policy: input.policy } : {}),
+      }),
+      format: input.backend === 'krun' ? 'disk' : 'dir',
+      ...(input.log ? { log: input.log } : {}),
+      ...(input.refused ? { refused: input.refused } : {}),
+      store: input.store,
+    })
+    if (!tasks.length) throw new Error('the import selected no task')
+    const { version } = await api.putVersion(input.name, {
+      dataset: input.dataset,
+      source: input.source,
+      tasks,
+    })
+    return { tasks, timings, version }
+  } finally {
+    await held.release()
+  }
 }
 
 export function blobStore(

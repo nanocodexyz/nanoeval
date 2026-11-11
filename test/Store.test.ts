@@ -1,11 +1,17 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import * as Crypto from 'node:crypto'
 import * as Fs from 'node:fs'
 import * as Os from 'node:os'
 import * as Path from 'node:path'
 import { test } from 'node:test'
+import * as Import from '../cli/Import.ts'
+import { client, importEval } from '../cli/nanoeval.ts'
 import * as Store from '../sandbox/Store.ts'
 
+const patienceMs = 30_000
+const pauseMs = 200
+const pause = () => new Promise((resolve) => setTimeout(resolve, pauseMs))
 const temporary = () => Fs.mkdtempSync(Path.join(Os.tmpdir(), 'nanoeval-store-'))
 const sha256 = (bytes: Uint8Array) => Crypto.createHash('sha256').update(bytes).digest('hex')
 
@@ -142,5 +148,103 @@ test('the remote store uploads small blobs whole and large ones in parts', async
     token: 'wrong',
   })
   await assert.rejects(denied.has(first.digest), Store.RequestError)
+  Fs.rmSync(root, { force: true, recursive: true })
+})
+
+test('an exclusive lock is refused while the store is held, and a holder waits for it', async () => {
+  const root = temporary()
+  const store = Store.directory(root)
+  const first = await store.hold()
+  const second = await store.hold()
+  await assert.rejects(Store.lock(root, 'exclusive'), Store.LockedError)
+  await first.release()
+  await assert.rejects(Store.lock(root, 'exclusive'), Store.LockedError)
+  await second.release()
+
+  const exclusive = await Store.lock(root, 'exclusive')
+  await assert.rejects(Store.lock(root, 'exclusive'), Store.LockedError)
+  let entered = false
+  const waiting = store.hold().then((held) => {
+    entered = true
+    return held
+  })
+  await pause()
+  assert.equal(entered, false)
+  await exclusive.release()
+  await (await waiting).release()
+  assert.equal(entered, true)
+  await (await Store.lock(root, 'exclusive')).release()
+  Fs.rmSync(root, { force: true, recursive: true })
+})
+
+test('the lock of a holder that is killed is released', { timeout: patienceMs }, async () => {
+  const root = temporary()
+  const holder = spawn(
+    process.execPath,
+    [
+      '--input-type=module',
+      '--eval',
+      'const Store = await import(process.argv[1]); await Store.lock(process.argv[2], "shared"); console.log("held"); setInterval(() => {}, 1000)',
+      Path.resolve(import.meta.dirname, '../sandbox/Store.ts'),
+      root,
+    ],
+    { stdio: ['ignore', 'pipe', 'inherit'] },
+  )
+  await new Promise((resolve) => holder.stdout.once('data', resolve))
+  await assert.rejects(Store.lock(root, 'exclusive'), Store.LockedError)
+  holder.kill('SIGKILL')
+  await new Promise((resolve) => holder.once('exit', resolve))
+  let held: Store.Held | undefined
+  while (!held)
+    held = await Store.lock(root, 'exclusive').catch(async (error: unknown) => {
+      if (!(error instanceof Store.LockedError)) throw error
+      await pause()
+      return undefined
+    })
+  await held.release()
+  Fs.rmSync(root, { force: true, recursive: true })
+})
+
+test('an import holds its store until its version exists', async () => {
+  const root = temporary()
+  const directory = Path.join(root, 'store')
+  let versions = 0
+  const api: ReturnType<typeof client> = {
+    ...client({ token: 'unused', url: 'http://127.0.0.1:9' }),
+    putVersion: async (name, body) => {
+      await assert.rejects(Store.lock(directory, 'exclusive'), Store.LockedError)
+      versions++
+      return {
+        name,
+        version: {
+          createdAt: 0,
+          dataset: body.dataset,
+          digest: '0'.repeat(64),
+          parent: null,
+          source: body.source,
+          tasks: body.tasks.length,
+        },
+      }
+    },
+  }
+  const input = {
+    backend: 'dir' as const,
+    cache: Path.join(root, 'cache'),
+    dataset: 'local',
+    layers: Path.join(root, 'layers'),
+    name: 'local',
+    source: {},
+    store: Store.directory(directory),
+  }
+  await importEval(api, {
+    ...input,
+    cases: Import.directories([Path.resolve(import.meta.dirname, '../tasks/write-greeting')]),
+  })
+  assert.equal(versions, 1)
+  await (await Store.lock(directory, 'exclusive')).release()
+
+  await assert.rejects(importEval(api, { ...input, cases: Import.directories([]) }))
+  assert.equal(versions, 1)
+  await (await Store.lock(directory, 'exclusive')).release()
   Fs.rmSync(root, { force: true, recursive: true })
 })

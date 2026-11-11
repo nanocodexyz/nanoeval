@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import * as Crypto from 'node:crypto'
 import * as Fs from 'node:fs'
 import * as FsPromises from 'node:fs/promises'
@@ -11,6 +12,14 @@ export class DigestError extends Error {
   override name = 'Store.DigestError'
 }
 
+export class LockError extends Error {
+  override name = 'Store.LockError'
+}
+
+export class LockedError extends Error {
+  override name = 'Store.LockedError'
+}
+
 export class MissingError extends Error {
   override name = 'Store.MissingError'
 }
@@ -19,12 +28,17 @@ export class RequestError extends Error {
   override name = 'Store.RequestError'
 }
 
+export type Held = { release(): Promise<void> }
+
 export type Store = {
   readonly name: string
   fetch(digest: string, file: string): Promise<boolean>
   has(digest: string): Promise<boolean>
+  hold(): Promise<Held>
   put(digest: string, file: string): Promise<void>
 }
+
+const flockConflict = 1
 
 export const partBytes = 64 * 1024 * 1024
 
@@ -67,6 +81,57 @@ async function place(source: string, target: string): Promise<void> {
   }
 }
 
+export async function lock(root: string, mode: 'exclusive' | 'shared'): Promise<Held> {
+  await FsPromises.mkdir(root, { recursive: true })
+  const child = spawn(
+    'flock',
+    [
+      ...(mode === 'exclusive' ? ['--exclusive', '--nonblock'] : ['--shared']),
+      Path.join(root, 'lock'),
+      'sh',
+      '-c',
+      'echo held && exec cat',
+    ],
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  )
+  let errors = ''
+  child.stderr.on('data', (chunk: Buffer) => (errors += chunk.toString()))
+  const ended = new Promise<void>((resolve) => {
+    child.once('close', () => resolve())
+    child.once('error', () => resolve())
+  })
+  const failure = await new Promise<Error | undefined>((resolve) => {
+    child.stdout.once('data', () => resolve(undefined))
+    child.once('error', (error) =>
+      resolve(new LockError('flock of util-linux did not start: ' + error.message)),
+    )
+    child.once('close', (code) =>
+      resolve(
+        code === flockConflict
+          ? new LockedError('the store ' + root + ' is held by an import or by a prune')
+          : new LockError(
+              'the store ' +
+                root +
+                ' was not locked: ' +
+                (errors.trim() || 'flock exited with ' + code),
+            ),
+      ),
+    )
+  })
+  if (failure) throw failure
+  let lost = false
+  let released = false
+  void ended.then(() => (lost = !released))
+  return {
+    async release() {
+      released = true
+      child.stdin.end()
+      await ended
+      if (lost) throw new LockError('the lock of the store ' + root + ' was lost while it was held')
+    },
+  }
+}
+
 export function directory(root: string): Store {
   const path = (name: string) => Path.join(root, 'sha256', name.slice(0, 2), name)
   const exists = (name: string) =>
@@ -82,6 +147,7 @@ export function directory(root: string): Store {
       return true
     },
     has: exists,
+    hold: () => lock(root, 'shared'),
     async put(name, file) {
       if (await exists(name)) return
       await place(file, path(name))
@@ -129,6 +195,7 @@ export function remote(options: remote.Options): Store {
       const response = await call('/' + name, { method: 'HEAD' }, [404])
       return response.ok
     },
+    hold: async () => ({ release: async () => {} }),
     async put(name, file) {
       const { size } = await FsPromises.stat(file)
       if (size <= partBytes) {
