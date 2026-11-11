@@ -1,42 +1,19 @@
 import assert from 'node:assert/strict'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import * as Fs from 'node:fs'
 import * as Net from 'node:net'
 import * as Path from 'node:path'
 import { loadTask } from '../cli/nanoeval.ts'
+import * as Converter from '../sandbox/Converter.ts'
+import * as Host from '../sandbox/Host.ts'
 import type * as Config from '../src/Config.ts'
-import * as Bytes from '../src/internal/Bytes.ts'
 import * as Local from '../src/Local.ts'
 import * as Sandbox from '../src/Sandbox.ts'
 import * as Slot from '../src/Slot.ts'
-import * as Tar from '../src/Tar.ts'
 import * as Krun from './Krun.ts'
 
 export const fixture = 'test/fixtures/fixed-port'
 const port = 5329
-
-export function containers(root: string): string[] {
-  return labelled(root, ['ps', '-a'])
-}
-
-export function networks(root: string): string[] {
-  return labelled(root, ['network', 'ls'])
-}
-
-function labelled(root: string, list: readonly string[]): string[] {
-  return execFileSync('docker', [
-    ...list,
-    '--filter',
-    'label=nanoeval',
-    '--format',
-    '{{.ID}}\t{{.Label "nanoeval"}}',
-  ])
-    .toString()
-    .split('\n')
-    .map((line) => line.split('\t'))
-    .filter(([, home]) => home?.startsWith(root + Path.sep))
-    .map(([id]) => id!)
-}
 
 export function relays(root: string): string[] {
   const resolved = Fs.realpathSync(root)
@@ -84,14 +61,11 @@ export async function isolation(options: isolation.Options): Promise<void> {
   }
   const inside = (slot: string, command: string) =>
     sandbox.exec(
-      (backend === 'docker'
-        ? 'docker exec ' + Sandbox.quote('nanoeval-' + slot)
-        : 'cd ' +
-          Sandbox.quote(home + '/slots/' + slot) +
-          ' && ' +
-          Sandbox.quote(home + '/rt/krun/nanoeval-krun') +
-          ' exec --socket vm.sock --cwd /app --') +
-        ' sh -c ' +
+      'cd ' +
+        Sandbox.quote(home + '/slots/' + slot) +
+        ' && ' +
+        Sandbox.quote(home + '/rt/krun/nanoeval-krun') +
+        ' exec --socket vm.sock --cwd /app -- sh -c ' +
         Sandbox.quote(command),
     )
   const answer = async (slot: string, address: string) =>
@@ -100,10 +74,7 @@ export async function isolation(options: isolation.Options): Promise<void> {
   try {
     await Sandbox.run(sandbox, 'mkdir -p ' + Sandbox.quote(home + '/slots'))
     await sandbox.write(slots.script, Fs.readFileSync('sandbox/slot.sh'))
-    await Sandbox.run(
-      sandbox,
-      slots.setup({ backend, docker: 'keep', network, runtime: Slot.runtime }),
-    )
+    await Sandbox.run(sandbox, slots.setup({ backend, network, runtime: Slot.runtime }))
     assert.equal(await wait(async () => (await status()).setup), 'exit:0')
     const capabilities = JSON.parse(
       await Sandbox.run(sandbox, slots.probe()),
@@ -111,23 +82,22 @@ export async function isolation(options: isolation.Options): Promise<void> {
     assert.equal(capabilities.network, network)
 
     const task = await loadTask(fixture)
-    const archive = Tar.pack(
-      Object.entries(task.files).map(([path, data]) => ({
-        data: Bytes.fromBase64(data),
-        executable: task.executable.includes(path),
-        path,
-      })),
+    const disk = home + '/disk'
+    await Host.describe(
+      disk,
+      await Converter.create({ home: home + '/converter' }).convert(
+        { context: fixture + '/environment', storageMb: task.environment.storageMb },
+        disk + '.ext4',
+      ),
     )
     for (const slot of [quiet, serving]) {
       await Sandbox.run(sandbox, 'mkdir -p ' + Sandbox.quote(home + '/slots/' + slot))
-      await sandbox.write(slots.taskFile(slot), archive)
       await Sandbox.run(
         sandbox,
         slots.up(slot, {
           backend,
           cpus: task.environment.cpus,
-          image: undefined,
-          limits: 'enforce',
+          disk,
           memoryMb: task.environment.memoryMb,
           network,
           storageMb: task.environment.storageMb,
@@ -156,23 +126,8 @@ export async function isolation(options: isolation.Options): Promise<void> {
       'a slot reached the listener of another slot on its loopback',
     )
     const gateway = (await inside(quiet, "ip route | awk '/^default/ { print $3 }'")).stdout.trim()
-    const addresses =
-      backend === 'docker'
-        ? execFileSync('docker', [
-            'inspect',
-            '--format',
-            '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}',
-            'nanoeval-' + serving,
-          ])
-            .toString()
-            .split(/\s+/)
-            .filter(Boolean)
-        : []
-    if (network === 'private') {
-      assert.ok(gateway, 'a private slot has a default route')
-      if (backend === 'docker') assert.equal(addresses.length, 1)
-    }
-    for (const address of [gateway, ...addresses].filter(Boolean)) {
+    if (network === 'private') assert.ok(gateway, 'a private slot has a default route')
+    for (const address of [gateway].filter(Boolean)) {
       assert.notEqual(
         await answer(quiet, address),
         token,
@@ -204,8 +159,6 @@ export async function isolation(options: isolation.Options): Promise<void> {
     await provider.kill(created.handle)
   }
   const root = Path.dirname(home)
-  assert.deepEqual(containers(root), [], 'no container outlives its sandbox')
-  assert.deepEqual(networks(root), [], 'no network outlives its sandbox')
   assert.deepEqual(relays(root), [], 'no relay outlives its sandbox')
   assert.deepEqual(Krun.machines(root), [], 'no microVM outlives its sandbox')
   assert.ok(!Fs.existsSync(home), 'no sandbox directory outlives its sandbox')
@@ -213,7 +166,7 @@ export async function isolation(options: isolation.Options): Promise<void> {
 
 export declare namespace isolation {
   type Options = {
-    backend: Exclude<Config.Config['sandbox']['backend'], 'dir'>
+    backend: 'krun'
     hostPort: number
     network: Config.Config['sandbox']['network']
     sandboxd: { token: string; url: string }

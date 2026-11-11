@@ -8,20 +8,28 @@ import * as Catalog from '../datasets/Catalog.ts'
 import * as Dataset from '../datasets/Dataset.ts'
 import * as Source from '../datasets/Source.ts'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
+import * as Converter from '../sandbox/Converter.ts'
+import * as Runner from '../sandbox/Runner.ts'
+import * as Store from '../sandbox/Store.ts'
 import * as Config from '../src/Config.ts'
+import type * as Eval from '../src/Eval.ts'
+import type * as Ledger from '../src/Ledger.ts'
 import * as Task from '../src/Task.ts'
+import * as Import from './Import.ts'
 import * as Plan from './Plan.ts'
 
 const usage = `nanoeval <command>
 
   sandboxd  --token T [--host 127.0.0.1] [--port 8788] [--root DIR] [--exec-timeout-ms 600000]
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
-            Serve this machine as a local sandbox provider. With --ca-bundle, slots trust
-            that certificate bundle, for a machine whose network re-signs TLS. With
-            --slot-env, they start with the variables of that file, such as a proxy or a
-            package index the machine's network requires. With --slot-forward, a slot on
-            a private network reaches that listener on this machine's loopback at the same
-            address, for a machine whose resolver names one.
+            [--store DIR] [--cache DIR]
+            Serve this machine as a local sandbox provider: a run starts one task runner in
+            each sandbox it opens here. With --ca-bundle, slots trust that certificate bundle,
+            for a machine whose network re-signs TLS. With --slot-env, they start with the
+            variables of that file. With --slot-forward, a slot on a private network reaches
+            that listener on this machine's loopback at the same address. --store names the
+            directory blob store its runners read, and --cache where they keep verified blobs
+            and unpacked environment disks.
   worker    --token T [--host 127.0.0.1] [--port 8787] [--state DIR] [--tick-ms 500]
             [--sandbox-url URL --sandbox-token T] [--claude-login FILE] [--codex-login FILE]
             Run the Worker under local workerd. Model API keys and base URLs are taken from
@@ -31,43 +39,61 @@ const usage = `nanoeval <command>
             is never refreshed, and reaches workerd through a private file.
   datasets  List the datasets that import knows, with the source each is pinned to and what
             was run end to end.
+  import    --url URL --token T (DATASET | --task DIR...) [--eval NAME] [--only ID]... [--limit N]
+            [--backend krun|dir] [--store DIR|r2] [--cache DIR] [--sources DIR] [--report FILE]
+            [--keep-going]
+            Import a dataset, or local task directories, as a version of a durable eval:
+            the adapter writes each task, its instruction, tests and solution become blobs
+            kept apart, and its environment is converted once into the disk a microVM boots
+            (krun) or kept as files (dir). Blobs go to a directory store (--store DIR,
+            ~/.local/share/nanoeval/store) or to R2 through the Worker (--store r2). The eval
+            is named after the dataset unless --eval names it. --report writes the time each
+            task took in the adapter, the conversion and the upload. With --keep-going, a
+            task whose environment does not convert is named and left out, and the rest
+            become the version.
   import    DATASET --out DIR [--only ID]... [--limit N] [--sources DIR]
-            Write a dataset's tasks as Harbor task directories under DIR, and dataset.json with
-            the pinned source and the checksum of every task. Sources are downloaded once into
-            --sources (~/.cache/nanoeval/sources) and refused unless they match the digests
-            pinned in this repository. --only and --limit import part of a dataset.
-  run       --url URL --token T (--task DIR... | --dataset DIR [--only ID]... [--limit N])
+            Write the dataset's tasks as Harbor task directories instead, with dataset.json.
+  evals     --url URL --token T
+  eval      --url URL --token T NAME[@DIGEST]
+            List the imported evals, or the versions and tasks of one.
+  run       --url URL --token T (--eval NAME[@DIGEST] [--only ID]... [--limit N] | --task DIR...
+            | --rerun RUN [--failed | --errored])
             (--agent ID=PROVIDER:MODEL[:THINKING]... | --oracle) [--judge PROVIDER:MODEL[:THINKING]]
-            [--attempts 1] [--provider local|e2b] [--backend docker|dir|krun] [--slots 4] [--sandboxes 1]
-            [--memory-mb N] [--limits enforce|none] [--network private|host|bridge] [--docker keep|install]
-            [--template NAME] [--sandbox-timeout-sec 3600] [--sandbox-budget-usd 0] [--model-budget-usd N]
-            [--setup-sec 600] [--attach-sec 60] [--step-retries 3] [--images keep|remove]
-            [--free-disk-mb N] [--name NAME] [--wait] [--out DIR]
-            Submit a run. A slot of the local provider gets a network of its own (private)
-            unless --network host shares the machine's. With --wait, poll until it finishes,
-            print the summary and write
-            the Harbor job to --out, or to a directory named after the run under
-            NANOEVAL_RUNS_DIR when that is set.
-            With --images remove, an environment image that a slot pulled or built, and the
-            krun disk made from it, are removed once no attempt of the run still needs them.
-            A task's environment, image pull included, has its build_timeout_sec or
-            --setup-sec, whichever is longer.
-            With --free-disk-mb, a sandbox takes a new attempt only while it has that much
-            free disk, and prepares one environment at a time. An attempt that still
-            waits for disk after --setup-sec with nothing running ends as an error.
-            With --oracle no model runs: each task's solution/solve.sh is sent and run in its slot,
-            then the verifier, to check environments and verifiers.
-            --dataset runs the tasks of an imported dataset after checking each against the
-            checksum in its dataset.json, and names the tasks it skips because no slot backend
-            runs them. --judge names the model that answers the verifiers of model-judged tasks.
+            [--attempts 1] [--provider local|e2b] [--backend krun|dir] [--slots 4] [--sandboxes 1]
+            [--memory-mb N] [--network private|host] [--template NAME] [--sandbox-timeout-sec 3600]
+            [--sandbox-budget-usd 0] [--model-budget-usd N] [--setup-sec 600] [--attach-sec 60]
+            [--lease-sec 60] [--claims 3] [--step-retries 3] [--poll-ms 250]
+            [--disks keep|remove] [--free-disk-mb N] [--name NAME] [--wait] [--out DIR]
+            Create the rows of a run, task x agent x attempt, against one version of an eval.
+            Task runners claim the rows: the run starts one in each sandbox it opens
+            (--sandboxes, with --slots attempts at once each), and nanoeval runner attaches
+            more from any machine. --sandboxes 0 waits for attached runners only. --task
+            imports the directories into the eval named local first. --rerun makes a run of
+            the attempts of RUN that did not pass (--failed or --errored narrow it), each
+            pointing at the attempt it retries, on the same eval version and agents.
+            A row whose runner stops answering for --lease-sec is claimable again, at most
+            --claims times in all, and then ends as an error.
+            With --disks remove, a runner removes each environment disk it unpacked once no
+            row of the run needs it. With --free-disk-mb, a runner claims only while its
+            machine has that much free disk, and prepares one environment at a time.
+            With --oracle no model runs: each task's solution is run in its slot, then the
+            verifier. --judge names the model that answers the verifiers of judged tasks.
+            With --wait, poll until the run finishes, print the summary and write the Harbor
+            job to --out, or under NANOEVAL_RUNS_DIR when that is set.
+  runner    --url URL --token T --run RUN [--home DIR] [--slots N] [--memory-mb N]
+            [--free-disk-mb N] [--poll-ms N] [--store DIR] [--cache DIR]
+            [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
+            Attach a task runner on this machine to a run: it claims rows up to its own
+            capacity, fetches their blobs by digest, boots each environment disk under a
+            copy-on-write disk of its own, and reports to the run until the run is finished.
   status    --url URL --token T RUN
   attempt   --url URL --token T RUN ATTEMPT [ARTIFACT]
   export    --url URL --token T RUN --out DIR
             Write the run as a Harbor job directory.
   cancel    --url URL --token T RUN
-  prune     [--dry-run]
-            On this machine, remove the environment images that slots pulled or built and
-            the krun image disks, except those a slot is using.
+  prune     [--dry-run] [--cache DIR]
+            On this machine, remove the cached environment disks that no slot is using and
+            the cached blobs.
 `
 
 async function walk(
@@ -96,33 +122,6 @@ export async function readTask(root: string): Promise<Task.Source> {
 
 export async function loadTask(root: string, options: Task.load.Options = {}): Promise<Task.Task> {
   return Task.load(await readTask(root), options)
-}
-
-export async function loadDataset(
-  directory: string,
-  options: Dataset.Selection & Task.load.Options,
-): Promise<{ skipped: { id: string; reason: string }[]; tasks: Task.Task[] }> {
-  const skipped: { id: string; reason: string }[] = []
-  const tasks: Task.Task[] = []
-  for (const entry of await Dataset.entries(directory, options)) {
-    const source = await readTask(entry.directory)
-    const checksum = 'sha256:' + (await Task.checksum(source.files))
-    if (checksum !== entry.checksum)
-      throw new Dataset.ManifestError(
-        entry.directory +
-          ' has the checksum ' +
-          checksum +
-          ', and its dataset.json pins ' +
-          entry.checksum,
-      )
-    try {
-      tasks.push(await Task.load(source, options.solution ? { solution: true } : {}))
-    } catch (error) {
-      if (!(error instanceof Task.UnsupportedError)) throw error
-      skipped.push({ id: entry.id, reason: error.message })
-    }
-  }
-  return { skipped, tasks }
 }
 
 export function parseJudge(text: string): Config.Judge {
@@ -160,6 +159,42 @@ export function client(options: { token: string; url: string }) {
     return response
   }
   return {
+    attach: async (run: string) =>
+      (await (
+        await call('/v1/runs/' + run + '/runners', { method: 'POST' })
+      ).json()) as Config.Runner,
+    config: async (run: string) =>
+      (await (await call('/v1/runs/' + run + '/config')).json()) as Config.Config & {
+        eval: { name: string; version: string }
+      },
+    eval: async (reference: string, options: { tasks?: boolean } = {}) =>
+      (await (
+        await call('/v1/evals/' + encodeURIComponent(reference) + (options.tasks ? '?tasks=1' : ''))
+      ).json()) as { entries: Eval.Entry[]; tasks?: Eval.Task[]; version: Eval.Version },
+    evals: async () =>
+      (await (await call('/v1/evals')).json()) as {
+        evals: { dataset: string; digest: string; name: string; tasks: number; updatedAt: number }[]
+      },
+    putVersion: async (
+      name: string,
+      body: {
+        base?: string | null
+        dataset: string
+        source: Record<string, string>
+        tasks: readonly Eval.Task[]
+      },
+    ) =>
+      (await (
+        await call('/v1/evals/' + encodeURIComponent(name), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+      ).json()) as { name: string; version: Eval.Version },
+    versions: async (name: string) =>
+      (await (await call('/v1/evals/' + encodeURIComponent(name) + '/versions')).json()) as {
+        versions: Eval.Version[]
+      },
     artifact: async (run: string, attempt: string, name: string) =>
       (
         await call(
@@ -187,7 +222,7 @@ export function client(options: { token: string; url: string }) {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(config),
         })
-      ).json()) as { attempts: number; id: string },
+      ).json()) as { attempts: number; eval: { name: string; version: string }; id: string },
     harbor: async (run: string) =>
       (await (await call('/v1/runs/' + run + '/harbor')).json()) as Job,
     status: async (run: string) =>
@@ -249,6 +284,10 @@ export function summary(status: Record<string, any>): string {
           .map(([k, value]) => 'pass@' + k + ' ' + (value * 100).toFixed(1) + '%')
           .join(', '),
     )
+  if (status['eval'])
+    lines.splice(1, 0, 'eval: ' + status['eval'].name + '@' + status['eval'].version)
+  if (status['rerunOf'])
+    lines.splice(2, 0, 'rerun of ' + status['rerunOf'].run + ' (' + status['rerunOf'].select + ')')
   for (const attempt of status['attempts'] as Record<string, any>[])
     lines.push(
       '  ' +
@@ -259,6 +298,10 @@ export function summary(status: Record<string, any>): string {
           '#' + attempt['n'],
           attempt['outcome'] ?? attempt['phase'],
           attempt['oomKills'] ? 'oom_kills=' + attempt['oomKills'] : '',
+          attempt['claims'] > 1 ? 'claims=' + attempt['claims'] : '',
+          attempt['retryOf']
+            ? 'retries ' + attempt['retryOf'].run.slice(0, 8) + '/' + attempt['retryOf'].attempt
+            : '',
           attempt['failure']
             ? attempt['failure'].kind + ': ' + String(attempt['failure'].message).slice(0, 160)
             : '',
@@ -269,6 +312,46 @@ export function summary(status: Record<string, any>): string {
   return lines.join('\n')
 }
 
+export async function importEval(
+  api: ReturnType<typeof client>,
+  input: {
+    backend: Config.Config['sandbox']['backend']
+    cache: string
+    cases: AsyncIterable<Dataset.Case>
+    dataset: string
+    log?(line: string): void
+    name: string
+    refused?(id: string, error: Error): void
+    source: Record<string, string>
+    store: Store.Store
+  },
+): Promise<{ tasks: Eval.Task[]; timings: Import.Timing[]; version: Eval.Version }> {
+  const { tasks, timings } = await Import.cases(input.cases, {
+    cache: input.cache,
+    converter: Converter.create({ home: Path.join(input.cache, 'converter') }),
+    format: input.backend === 'krun' ? 'disk' : 'dir',
+    ...(input.log ? { log: input.log } : {}),
+    ...(input.refused ? { refused: input.refused } : {}),
+    store: input.store,
+  })
+  if (!tasks.length) throw new Error('the import selected no task')
+  const { version } = await api.putVersion(input.name, {
+    dataset: input.dataset,
+    source: input.source,
+    tasks,
+  })
+  return { tasks, timings, version }
+}
+
+export function blobStore(
+  name: string | undefined,
+  api: { token: string; url: string },
+): Store.Store {
+  return name === 'r2'
+    ? Store.remote({ base: api.url.replace(/\/+$/, '') + '/v1/blobs', token: api.token })
+    : Store.directory(Path.resolve(name ?? Store.defaultRoot()))
+}
+
 async function main(): Promise<void> {
   const { positionals, values } = parseArgs({
     allowPositionals: true,
@@ -276,20 +359,27 @@ async function main(): Promise<void> {
       agent: { multiple: true, type: 'string' },
       'attach-sec': { default: '60', type: 'string' },
       attempts: { default: '1', type: 'string' },
-      backend: { default: 'docker', type: 'string' },
+      backend: { default: 'krun', type: 'string' },
       'ca-bundle': { type: 'string' },
+      cache: { type: 'string' },
+      claims: { default: '3', type: 'string' },
       'claude-login': { type: 'string' },
       'codex-login': { type: 'string' },
-      dataset: { type: 'string' },
-      docker: { default: 'keep', type: 'string' },
+      config: { type: 'string' },
+      detach: { default: false, type: 'boolean' },
+      disks: { default: 'keep', type: 'string' },
       'dry-run': { default: false, type: 'boolean' },
+      errored: { default: false, type: 'boolean' },
+      eval: { type: 'string' },
       'exec-timeout-ms': { default: '600000', type: 'string' },
+      failed: { default: false, type: 'boolean' },
       'free-disk-mb': { type: 'string' },
+      home: { type: 'string' },
       host: { default: '127.0.0.1', type: 'string' },
-      images: { default: 'keep', type: 'string' },
       judge: { type: 'string' },
+      'keep-going': { default: false, type: 'boolean' },
+      'lease-sec': { default: '60', type: 'string' },
       limit: { type: 'string' },
-      limits: { default: 'enforce', type: 'string' },
       'memory-mb': { type: 'string' },
       'model-budget-usd': { type: 'string' },
       name: { type: 'string' },
@@ -297,9 +387,13 @@ async function main(): Promise<void> {
       only: { multiple: true, type: 'string' },
       oracle: { default: false, type: 'boolean' },
       out: { type: 'string' },
+      'poll-ms': { type: 'string' },
       port: { type: 'string' },
       provider: { default: 'local', type: 'string' },
+      report: { type: 'string' },
+      rerun: { type: 'string' },
       root: { type: 'string' },
+      run: { type: 'string' },
       'sandbox-budget-usd': { default: '0', type: 'string' },
       'sandbox-token': { default: process.env['NANOEVAL_SANDBOX_TOKEN'], type: 'string' },
       'sandbox-url': { type: 'string' },
@@ -308,10 +402,11 @@ async function main(): Promise<void> {
       'setup-sec': { default: '600', type: 'string' },
       'slot-env': { type: 'string' },
       'slot-forward': { multiple: true, type: 'string' },
-      slots: { default: '4', type: 'string' },
+      slots: { type: 'string' },
       sources: { type: 'string' },
       state: { type: 'string' },
       'step-retries': { default: '3', type: 'string' },
+      store: { type: 'string' },
       task: { multiple: true, type: 'string' },
       template: { type: 'string' },
       'tick-ms': { default: '500', type: 'string' },
@@ -325,16 +420,17 @@ async function main(): Promise<void> {
     if (!value) throw new Error('--' + name + ' is required')
     return value
   }
+  const hostPolicy = {
+    ...(values['ca-bundle'] ? { NANOEVAL_CA_BUNDLE: Path.resolve(values['ca-bundle']) } : {}),
+    ...(values.cache ? { NANOEVAL_CACHE: Path.resolve(values.cache) } : {}),
+    ...(values['slot-env'] ? { NANOEVAL_SLOT_ENV: Path.resolve(values['slot-env']) } : {}),
+    ...(values['slot-forward'] ? { NANOEVAL_SLOT_FORWARD: values['slot-forward'].join(' ') } : {}),
+    ...(values.store ? { NANOEVAL_STORE: Path.resolve(values.store) } : {}),
+  }
 
   if (command === 'sandboxd') {
     const server = await Sandboxd.start({
-      env: {
-        ...(values['ca-bundle'] ? { NANOEVAL_CA_BUNDLE: Path.resolve(values['ca-bundle']) } : {}),
-        ...(values['slot-env'] ? { NANOEVAL_SLOT_ENV: Path.resolve(values['slot-env']) } : {}),
-        ...(values['slot-forward']
-          ? { NANOEVAL_SLOT_FORWARD: values['slot-forward'].join(' ') }
-          : {}),
-      },
+      env: hostPolicy,
       execTimeoutMs: Number(values['exec-timeout-ms']),
       host: values.host,
       port: Number(values.port ?? '8788'),
@@ -418,6 +514,8 @@ async function main(): Promise<void> {
     ...(values.limit ? { limit: Number(values.limit) } : {}),
     ...(values.only?.length ? { only: values.only } : {}),
   }
+  const backend = values.backend as Config.Config['sandbox']['backend']
+  const cache = Path.resolve(values.cache ?? Store.defaultCache())
 
   if (command === 'datasets') {
     for (const adapter of Catalog.adapters)
@@ -432,27 +530,6 @@ async function main(): Promise<void> {
     return
   }
 
-  if (command === 'import') {
-    const adapter = Catalog.find(required(rest[0], 'DATASET'))
-    if (!adapter)
-      throw new Error(
-        'no dataset is named ' +
-          rest[0] +
-          ': import knows ' +
-          Catalog.adapters.map((candidate) => candidate.name).join(', '),
-      )
-    if (adapter.state !== 'verified')
-      console.error(adapter.name + ' is not verified end to end: ' + adapter.proof)
-    const out = required(values.out, 'out')
-    const manifest = await Dataset.write(adapter, {
-      ...selection,
-      out,
-      store: Source.create(values.sources ? Path.resolve(values.sources) : Source.defaultRoot()),
-    })
-    console.log(manifest.dataset + ': ' + manifest.tasks.length + ' tasks in ' + out)
-    return
-  }
-
   if (command === 'prune') {
     const child = spawn(
       'bash',
@@ -461,7 +538,7 @@ async function main(): Promise<void> {
         'prune',
         ...(values['dry-run'] ? ['dry-run'] : []),
       ],
-      { stdio: 'inherit' },
+      { env: { ...process.env, NANOEVAL_CACHE: cache }, stdio: 'inherit' },
     )
     process.exitCode = await new Promise<number>((resolve) =>
       child.once('exit', (exit) => resolve(exit ?? 1)),
@@ -469,66 +546,279 @@ async function main(): Promise<void> {
     return
   }
 
-  if (!command || !['attempt', 'cancel', 'export', 'run', 'status'].includes(command)) {
+  const adapter = command === 'import' && rest[0] ? Catalog.find(rest[0]) : undefined
+  if (command === 'import' && rest[0] && !adapter)
+    throw new Error(
+      'no dataset is named ' +
+        rest[0] +
+        ': import knows ' +
+        Catalog.adapters.map((candidate) => candidate.name).join(', '),
+    )
+  const sources = Source.create(
+    values.sources ? Path.resolve(values.sources) : Source.defaultRoot(),
+  )
+  if (command === 'import' && adapter && values.out) {
+    const manifest = await Dataset.write(adapter, { ...selection, out: values.out, store: sources })
+    console.log(manifest.dataset + ': ' + manifest.tasks.length + ' tasks in ' + values.out)
+    return
+  }
+
+  if (command === 'runner' && values.config) {
+    const file = Path.resolve(values.config)
+    const home = Path.dirname(file)
+    if (values.detach) {
+      const pid = await Runner.detach({
+        arguments: [Path.resolve(import.meta.filename), 'runner', '--config', file],
+        home,
+      })
+      console.log('runner started as process ' + pid)
+      return
+    }
+    process.chdir(home)
+    await Runner.run({
+      cache,
+      config: JSON.parse(await Fs.readFile(file, 'utf8')) as Config.Runner,
+      home,
+      store: Path.resolve(values.store ?? Store.defaultRoot()),
+    })
+    process.exit(0)
+  }
+
+  if (
+    !command ||
+    !['attempt', 'cancel', 'eval', 'evals', 'export', 'import', 'run', 'runner', 'status'].includes(
+      command,
+    )
+  ) {
     console.log(usage)
     process.exitCode = command ? 2 : 0
     return
   }
-  const api = client({ token: required(values.token, 'token'), url: required(values.url, 'url') })
+  const access = { token: required(values.token, 'token'), url: required(values.url, 'url') }
+  const api = client(access)
+
+  if (command === 'evals') {
+    for (const entry of (await api.evals()).evals)
+      console.log(
+        entry.name +
+          '@' +
+          entry.digest.slice(0, 12) +
+          '  ' +
+          entry.tasks +
+          ' tasks  ' +
+          entry.dataset,
+      )
+    return
+  }
+
+  if (command === 'eval') {
+    const reference = required(rest[0], 'NAME')
+    const found = await api.eval(reference)
+    const name = reference.split('@')[0]!
+    console.log(
+      name +
+        '@' +
+        found.version.digest +
+        '\n  dataset: ' +
+        found.version.dataset +
+        ' ' +
+        JSON.stringify(found.version.source) +
+        '\n  created: ' +
+        new Date(found.version.createdAt).toISOString() +
+        '\n  tasks: ' +
+        found.version.tasks,
+    )
+    for (const version of (await api.versions(name)).versions)
+      console.log(
+        '  version ' +
+          version.digest.slice(0, 12) +
+          '  ' +
+          version.tasks +
+          ' tasks  ' +
+          new Date(version.createdAt).toISOString() +
+          (version.parent ? '  after ' + version.parent.slice(0, 12) : ''),
+      )
+    for (const entry of found.entries) console.log('  ' + entry.id + '  ' + entry.name)
+    return
+  }
+
+  const refusals: { error: string; id: string }[] = []
+  const imported = async (
+    source: AsyncIterable<Dataset.Case>,
+    target: { dataset: string; name: string; source: Record<string, string> },
+  ) => {
+    const result = await importEval(api, {
+      ...(values['keep-going']
+        ? {
+            refused: (id: string, error: Error) => {
+              refusals.push({ error: error.message, id })
+              console.error('not imported: ' + error.message)
+            },
+          }
+        : {}),
+      backend,
+      cache,
+      cases: source,
+      dataset: target.dataset,
+      log: (line) => console.error(line),
+      name: target.name,
+      source: target.source,
+      store: blobStore(values.store, access),
+    })
+    if (values.report)
+      await Fs.writeFile(
+        values.report,
+        JSON.stringify(
+          {
+            name: target.name,
+            refused: refusals,
+            timings: result.timings,
+            version: result.version,
+          },
+          null,
+          2,
+        ) + '\n',
+      )
+    return result
+  }
+
+  if (command === 'import') {
+    if (adapter && adapter.state !== 'verified')
+      console.error(adapter.name + ' is not verified end to end: ' + adapter.proof)
+    if (!adapter && !values.task?.length) throw new Error('import takes a DATASET or --task DIR')
+    const result = adapter
+      ? await imported(adapter.cases({ ...selection, store: sources }), {
+          dataset: adapter.name,
+          name: values.eval ?? adapter.name,
+          source: adapter.source,
+        })
+      : await imported(Import.directories(values.task!), {
+          ...Import.local,
+          name: values.eval ?? Import.local.name,
+        })
+    console.log(
+      (values.eval ?? adapter?.name ?? Import.local.name) +
+        '@' +
+        result.version.digest +
+        ': ' +
+        result.version.tasks +
+        ' tasks, ' +
+        result.tasks.length +
+        ' imported now' +
+        (refusals.length ? ', ' + refusals.length + ' not imported' : ''),
+    )
+    process.exitCode = refusals.length ? 1 : 0
+    return
+  }
+
+  if (command === 'runner') {
+    const run = required(values.run, 'run')
+    const home = Path.resolve(values.home ?? Path.join('output', 'runners', run.slice(0, 8)))
+    await Fs.mkdir(home, { recursive: true })
+    const file = Path.join(home, 'runner.json')
+    const earlier = await Fs.readFile(file, 'utf8').then(
+      (text) => JSON.parse(text) as Config.Runner,
+      () => undefined,
+    )
+    const answered = earlier?.run === run ? earlier : await api.attach(run)
+    await Fs.writeFile(file, JSON.stringify(answered), { mode: 0o600 })
+    process.chdir(home)
+    Object.assign(process.env, hostPolicy)
+    await Runner.run({
+      cache,
+      config: {
+        ...answered,
+        ...(values['free-disk-mb'] ? { freeDiskMb: Number(values['free-disk-mb']) } : {}),
+        ...(values['memory-mb'] ? { memoryMb: Number(values['memory-mb']) } : {}),
+        ...(values['poll-ms'] ? { pollMs: Number(values['poll-ms']) } : {}),
+        ...(values.slots ? { slots: Number(values.slots) } : {}),
+        url: access.url,
+      },
+      home,
+      store: Path.resolve(values.store ?? Store.defaultRoot()),
+    })
+    process.exit(0)
+  }
 
   if (command === 'run') {
     if (values.oracle && values.agent?.length)
       throw new Error('--oracle runs no model: leave out --agent')
-    const tasks = await Promise.all(
-      (values.task ?? []).map((directory) =>
-        loadTask(directory, { solution: values.oracle }).catch((error: Error) => {
-          error.message = directory + ': ' + error.message
-          throw error
-        }),
-      ),
-    )
-    if (values.dataset) {
-      const dataset = await loadDataset(values.dataset, { ...selection, solution: values.oracle })
-      for (const entry of dataset.skipped)
-        console.error('skipped ' + entry.id + ': ' + entry.reason)
-      tasks.push(...dataset.tasks)
+    const parent = values.rerun ? await api.config(values.rerun) : undefined
+    let reference: Eval.Reference
+    let only = values.only
+    if (parent) reference = parent.eval
+    else if (values.task?.length) {
+      const result = await imported(Import.directories(values.task), {
+        ...Import.local,
+        name: values.eval ?? Import.local.name,
+      })
+      reference = { name: values.eval ?? Import.local.name, version: result.version.digest }
+      only = result.tasks.map((task) => task.id)
+    } else {
+      const [name, digest] = required(values.eval, 'eval').split('@')
+      reference = { name: name!, ...(digest ? { version: digest } : {}) }
     }
     const provider = values.provider as Config.Config['sandbox']['provider']
-    const backend = values.backend as Config.Config['sandbox']['backend']
+    const select: Ledger.Selection = values.failed
+      ? 'failed'
+      : values.errored
+        ? 'errored'
+        : 'unpassed'
     const config: Config.Config = {
-      agents: values.oracle ? [oracle] : (values.agent ?? []).map(parseAgent),
-      attempts: Number(values.attempts),
+      agents: parent
+        ? parent.agents
+        : values.oracle
+          ? [oracle]
+          : (values.agent ?? []).map(parseAgent),
+      attempts: parent ? parent.attempts : Number(values.attempts),
       budget: {
         ...(values['model-budget-usd'] ? { modelUsd: Number(values['model-budget-usd']) } : {}),
         sandboxUsd: Number(values['sandbox-budget-usd']),
       },
-      ...(values.judge ? { judge: parseJudge(values.judge) } : {}),
+      eval: reference,
+      ...(values.judge
+        ? { judge: parseJudge(values.judge) }
+        : parent?.judge
+          ? { judge: parent.judge }
+          : {}),
+      ...(selection.limit === undefined || parent ? {} : { limit: selection.limit }),
       limits: {
         attachSec: Number(values['attach-sec']),
+        claims: Number(values.claims),
+        leaseSec: Number(values['lease-sec']),
         setupSec: Number(values['setup-sec']),
         stepRetries: Number(values['step-retries']),
       },
       name:
         values.name ?? 'nanoeval-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-'),
+      ...(only?.length ? { only } : {}),
+      ...(values.rerun ? { rerun: { run: values.rerun, select } } : {}),
       sandbox: {
         backend,
-        docker: values.docker as 'install' | 'keep',
+        disks: values.disks as 'keep' | 'remove',
         ...(values['free-disk-mb'] ? { freeDiskMb: Number(values['free-disk-mb']) } : {}),
-        images: values.images as 'keep' | 'remove',
-        limits: values.limits as 'enforce' | 'none',
         max: Number(values.sandboxes),
         ...(values['memory-mb'] ? { memoryMb: Number(values['memory-mb']) } : {}),
         network: (values.network ??
-          Config.network({ backend, provider })) as Config.Config['sandbox']['network'],
+          Config.network({ backend })) as Config.Config['sandbox']['network'],
+        pollMs: Number(values['poll-ms'] ?? '250'),
         provider,
-        slots: Number(values.slots),
+        slots: Number(values.slots ?? '4'),
         ...(values.template ? { template: values.template } : {}),
         timeoutSec: Number(values['sandbox-timeout-sec']),
       },
-      tasks,
     }
     const created = await api.create(config)
-    console.log('run ' + created.id + ': ' + created.attempts + ' attempts')
+    console.log(
+      'run ' +
+        created.id +
+        ': ' +
+        created.attempts +
+        ' attempts of ' +
+        created.eval.name +
+        '@' +
+        created.eval.version.slice(0, 12),
+    )
     if (!values.wait) return
 
     for (;;) {

@@ -4,7 +4,8 @@ import * as Os from 'node:os'
 import * as Path from 'node:path'
 import { test } from 'node:test'
 import * as Zlib from 'node:zlib'
-import { loadDataset, readTask } from '../cli/nanoeval.ts'
+import * as Import from '../cli/Import.ts'
+import { readTask } from '../cli/nanoeval.ts'
 import * as Catalog from '../datasets/Catalog.ts'
 import * as Csv from '../datasets/Csv.ts'
 import * as Dataset from '../datasets/Dataset.ts'
@@ -15,11 +16,14 @@ import * as PythonRandom from '../datasets/PythonRandom.ts'
 import * as Source from '../datasets/Source.ts'
 import * as SweBench from '../datasets/SweBench.ts'
 import * as Zip from '../datasets/Zip.ts'
+import * as Store from '../sandbox/Store.ts'
 import * as Config from '../src/Config.ts'
+import * as Eval from '../src/Eval.ts'
 import * as Bytes from '../src/internal/Bytes.ts'
 import * as Judge from '../src/Judge.ts'
 import * as Tar from '../src/Tar.ts'
 import * as Task from '../src/Task.ts'
+import * as Rows from './Rows.ts'
 
 const fixtures = Path.join(import.meta.dirname, 'fixtures/datasets')
 const fixture = (name: string) => Fs.readFileSync(Path.join(fixtures, name), 'utf8')
@@ -40,26 +44,31 @@ const adapter = (cases: Dataset.Case[]): Dataset.Adapter => ({
   state: 'verified',
 })
 
-const run = (tasks: Task.Task[], extra: Partial<Config.Config> = {}) =>
-  Config.parse({
+const run = (tasks: Task.Task[], extra: Partial<Config.Config> = {}) => {
+  const config = Config.parse({
     agents: [{ id: 'agent', model: 'model', provider: 'claude' }],
     attempts: 1,
     budget: { sandboxUsd: 0 },
-    limits: { attachSec: 1, setupSec: 1, stepRetries: 0 },
+    eval: { name: 'fixture' },
+    limits: { attachSec: 1, claims: 1, leaseSec: 1, setupSec: 1, stepRetries: 0 },
     name: 'run',
     sandbox: {
-      backend: 'docker',
-      docker: 'keep',
-      limits: 'enforce',
+      backend: 'krun',
       max: 1,
       network: 'host',
+      pollMs: 1,
       provider: 'local',
       slots: 1,
       timeoutSec: 60,
     },
-    tasks,
     ...extra,
   })
+  Config.check(
+    config,
+    tasks.map((task) => Rows.row(task)),
+  )
+  return config
+}
 
 async function registry(options: { tamper?: boolean } = {}) {
   const source = await readTask('tasks/write-greeting')
@@ -354,7 +363,7 @@ test('a HealthBench case of one message is judged, and a run of it must name a j
   )
 })
 
-test('an imported dataset runs only while its tasks match their checksums', async () => {
+test('a dataset is imported as eval rows with its files kept apart in a blob store', async () => {
   const root = temporary()
   const [first] = GpqaDiamond.tasks(
     Csv.parse(fixture('gpqa.csv')),
@@ -376,21 +385,59 @@ test('an imported dataset runs only while its tasks match their checksums', asyn
     ['compose', 'recFixture0001'],
   )
 
-  const loaded = await loadDataset(root, { solution: true })
-  assert.deepEqual(
-    loaded.tasks.map((task) => task.name),
-    ['gpqa-diamond/recFixture0001'],
+  const store = Store.directory(Path.join(root, 'store'))
+  const options: Import.Options = {
+    cache: Path.join(root, 'cache'),
+    converter: {
+      convert: () => Promise.reject(new Error('a dir environment is not converted')),
+      format: 'none',
+      name: 'none',
+      pack: () => Promise.reject(new Error('a dir environment is not packed')),
+      unpack: () => Promise.reject(new Error('a dir environment is not unpacked')),
+    },
+    format: 'dir',
+    store,
+  }
+  const imported = await Import.cases(
+    adapter([first!]).cases({ store: Source.create(root) }),
+    options,
   )
+  const [row] = imported.tasks
+  assert.equal(row!.id, 'recFixture0001')
+  assert.equal(row!.name, 'gpqa-diamond/recFixture0001')
+  assert.equal(row!.checksum, manifest.tasks[1]!.checksum)
+  assert.equal(row!.environment.kind, 'dir')
+  assert.equal(row!.verifier.finalMessage, true)
+  assert.equal(row!.solution?.finalMessage, true)
+  assert.deepEqual(Eval.parse(JSON.parse(JSON.stringify(row))), row)
   assert.deepEqual(
-    loaded.skipped.map((entry) => entry.id),
-    ['compose'],
+    imported.timings.map((timing) => [timing.id, timing.convertMs, timing.reused]),
+    [['recFixture0001', 0, false]],
   )
-  assert.equal((await loadDataset(root, { limit: 1 })).tasks.length, 0)
-  assert.equal((await loadDataset(root, { only: ['recFixture0001'] })).tasks.length, 1)
-  await assert.rejects(loadDataset(root, { only: ['absent'] }), Dataset.SelectionError)
 
-  Fs.appendFileSync(Path.join(root, 'recFixture0001/tests/grade.py'), '\n')
-  await assert.rejects(loadDataset(root, {}), Dataset.ManifestError)
+  const cache = Path.join(root, 'runner-cache')
+  Fs.mkdirSync(Path.join(cache, 'blobs'), { recursive: true })
+  const read = async (blob: Eval.Blob) =>
+    Fs.readFileSync(await Store.ensure([store], { blob, cache }))
+  assert.equal(
+    Bytes.toText(await read(row!.instruction)),
+    Bytes.toText(first!.files['instruction.md']!),
+  )
+  const tests = Tar.unpack(await read(row!.tests)).map((entry) => entry.path)
+  assert.deepEqual(
+    tests,
+    Object.keys(first!.files)
+      .filter((path) => path.startsWith('tests/'))
+      .sort(),
+  )
+  const solution = Tar.unpack(await read(row!.solution!.archive)).map((entry) => entry.path)
+  assert.ok(solution.includes('solution/solve.sh'))
+  assert.ok(solution.every((path) => path.startsWith('solution/')))
+
+  await assert.rejects(
+    Import.cases(adapter([compose]).cases({ store: Source.create(root) }), options),
+    Task.UnsupportedError,
+  )
   await assert.rejects(
     Dataset.write(
       { ...adapter([first!]), source: { kind: 'fixture', revision: '2' } },

@@ -1,12 +1,15 @@
+import * as Blobs from './Blobs.ts'
 import type { Env } from './Env.ts'
+import * as Evals from './Evals.ts'
 import { Run } from './Run.ts'
 import { AgentSession, authorized, nanocode } from './Sessions.ts'
+import * as Storage from './Storage.ts'
 
-export { AgentSession, Run }
+const { Evals: EvalsObject } = Evals
 
-function json(value: unknown, status = 200): Response {
-  return Response.json(value, { status, headers: { 'cache-control': 'no-store' } })
-}
+export { AgentSession, EvalsObject as Evals, Run }
+
+const json = Storage.json
 
 export default {
   async fetch(request, env) {
@@ -14,11 +17,15 @@ export default {
     if (url.pathname === '/health') return json({ ok: true })
     if (url.pathname.startsWith('/sessions/')) return nanocode.fetch(request, env)
 
-    const match = /^\/v1\/runs(?:\/([0-9a-f-]{36})(\/.*)?)?$/.exec(url.pathname)
-    if (!match) return json({ error: 'route not found' }, 404)
-    if (!(await authorized(request, env))) return json({ error: 'unauthorized' }, 401)
+    const [, v1, resource, ...path] = url.pathname.split('/')
+    if (v1 !== 'v1' || !resource) return json({ error: 'route not found' }, 404)
+    const runner = resource === 'runs' && path[1] === 'runner'
+    if (!runner && !(await authorized(request, env))) return json({ error: 'unauthorized' }, 401)
+    if (resource === 'evals') return Evals.route(request, env, path)
+    if (resource === 'blobs') return Blobs.route(request, env, path)
+    if (resource !== 'runs') return json({ error: 'route not found' }, 404)
 
-    const [, id, rest] = match
+    const [id, ...rest] = path
     if (!id) {
       if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405)
       const created = crypto.randomUUID()
@@ -33,8 +40,9 @@ export default {
         }),
       )
     }
+    if (!/^[0-9a-f-]{36}$/.test(id)) return json({ error: 'route not found' }, 404)
     return env.RUNS.get(env.RUNS.idFromName(id)).fetch(
-      new Request('https://run.internal' + (rest || '/status') + url.search, {
+      new Request('https://run.internal/' + (rest.join('/') || 'status') + url.search, {
         method: request.method,
         headers: request.headers,
         body: request.body,

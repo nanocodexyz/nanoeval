@@ -1,13 +1,12 @@
 import * as Sandbox from './Sandbox.ts'
 import * as Task from './Task.ts'
 
-export type Backend = 'dir' | 'docker' | 'krun'
+export type Backend = 'dir' | 'krun'
 
-export type Network = 'bridge' | 'host' | 'private'
+export type Network = 'host' | 'private'
 
 export const networks: Record<Backend, readonly Network[]> = {
   dir: ['host'],
-  docker: ['bridge', 'host', 'private'],
   krun: ['host', 'private'],
 }
 
@@ -54,7 +53,9 @@ export function create(options: create.Options) {
     home,
     script,
     destroy: () => call('destroy'),
-    down: (slot: string, images: 'keep' | 'remove') => call('down', slot, images),
+    disk: (input: { out: string; storageMb: number }) =>
+      call('disk', String(input.storageMb), input.out),
+    down: (slot: string, disks: 'keep' | 'remove') => call('down', slot, disks),
     envFile: (slot: string, name: 'env' | 'solution.env' | 'verifier.env') =>
       home + '/slots/' + slot + '/' + name,
     file: (slot: string, path: string) => call('file', slot, path),
@@ -69,31 +70,18 @@ export function create(options: create.Options) {
     probe: () => call('probe'),
     reverify: (slot: string, timeoutSec: number) =>
       call('verify', slot, String(Math.ceil(timeoutSec)), '2'),
-    setup: (input: {
-      backend: Backend
-      docker: 'install' | 'keep'
-      network: Network
-      runtime: Runtime
-    }) =>
-      call(
-        'setup',
-        input.runtime.release,
-        input.runtime.sha256,
-        input.docker,
-        input.backend,
-        input.network,
-      ),
+    setup: (input: { backend: Backend; network: Network; runtime: Runtime }) =>
+      call('setup', input.runtime.release, input.runtime.sha256, input.backend, input.network),
     solve: (slot: string, timeoutSec: number) => call('solve', slot, String(Math.ceil(timeoutSec))),
     status: () => call('status'),
-    taskFile: (slot: string) => home + '/slots/' + slot + '/task.tar',
+    taskFile: (slot: string, part = 'task') => home + '/slots/' + slot + '/' + part + '.tar',
+    tools: () => call('tools'),
     up: (
       slot: string,
       input: {
         backend: Backend
         cpus: number
-        image: string | undefined
-        images?: 'keep' | 'remove'
-        limits: 'enforce' | 'none'
+        disk?: string
         memoryMb: number
         network: Network
         storageMb: number
@@ -105,11 +93,9 @@ export function create(options: create.Options) {
         input.backend,
         String(input.cpus),
         String(input.memoryMb),
-        input.limits,
         input.network,
         String(input.storageMb),
-        input.images ?? 'keep',
-        ...(input.image ? [input.image] : []),
+        ...(input.disk ? [input.disk] : []),
       ),
     verifierInput: (slot: string, name: string) =>
       home + '/slots/' + slot + '/task/' + Task.verifierInputs + '/' + name,

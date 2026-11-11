@@ -11,7 +11,13 @@ export type Load = {
   starting?: number
 }
 
-export function clamp(requestedMemoryMb: number, capacity: Capacity): number {
+export type Offer = {
+  capacityMb: number
+  memoryMb: number
+  slots: number
+}
+
+export function clamp(requestedMemoryMb: number, capacity: Pick<Capacity, 'memoryMb'>): number {
   return Math.min(requestedMemoryMb, capacity.memoryMb)
 }
 
@@ -29,4 +35,37 @@ export function place<S extends { load: Load; capacity: Capacity }>(
   requestedMemoryMb: number,
 ): S | undefined {
   return sandboxes.find((sandbox) => admits(sandbox.load, sandbox.capacity, requestedMemoryMb))
+}
+
+export function starved(load: Load, capacity: Capacity): boolean {
+  return (
+    capacity.freeDiskMb !== undefined &&
+    !load.running &&
+    (load.freeDiskMb ?? 0) < capacity.freeDiskMb
+  )
+}
+
+export function offer(load: Load, capacity: Capacity): Offer {
+  const blocked =
+    capacity.freeDiskMb !== undefined &&
+    (Boolean(load.starting) || (load.freeDiskMb ?? 0) < capacity.freeDiskMb)
+  const free = Math.max(0, capacity.slots - load.running)
+  return {
+    capacityMb: capacity.memoryMb,
+    memoryMb: Math.max(0, capacity.memoryMb - load.memoryMb),
+    slots: blocked ? 0 : capacity.freeDiskMb === undefined ? free : Math.min(free, 1),
+  }
+}
+
+export function fill<T>(candidates: readonly { item: T; memoryMb: number }[], offered: Offer): T[] {
+  const chosen: T[] = []
+  let memoryMb = offered.memoryMb
+  for (const candidate of candidates) {
+    if (chosen.length >= offered.slots) break
+    const needed = Math.min(candidate.memoryMb, offered.capacityMb)
+    if (needed > memoryMb) continue
+    memoryMb -= needed
+    chosen.push(candidate.item)
+  }
+  return chosen
 }

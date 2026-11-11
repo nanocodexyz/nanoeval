@@ -20,6 +20,7 @@ export type Phase = { finishedAt: number; startedAt: number }
 
 export type Attempt = {
   agent: { id: string; model: string; provider: 'claude' | 'codex' | 'oracle'; thinking?: string }
+  claims?: number
   failure?: Failure
   finishedAt: number
   id: string
@@ -33,6 +34,7 @@ export type Attempt = {
   }
   oomKills?: number
   outcome: 'errored' | 'failed' | 'passed'
+  retryOf?: { attempt: string; run: string }
   reward: number | null
   sandbox: { backend: string; id: number; provider: string; slot: string } | null
   session: string

@@ -5,11 +5,16 @@
   "rules": [{ "type": "Text", "globs": ["**/*.sh"], "fallthrough": true }],
   "durable_objects": {
     "bindings": [
+      { "name": "EVALS", "class_name": "Evals" },
       { "name": "RUNS", "class_name": "Run" },
       { "name": "SESSIONS", "class_name": "AgentSession" },
     ],
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AgentSession", "Run"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["AgentSession", "Run"] },
+    { "tag": "v2", "new_sqlite_classes": ["Evals"] },
+  ],
+  "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "nanoeval-blobs" }],
   "vars": {
     "EVENT_COALESCE_MS": "100",
     "EVENT_PAGE_SIZE": "128",
