@@ -12,6 +12,7 @@ import * as Converter from '../sandbox/Converter.ts'
 import * as Prune from '../sandbox/Prune.ts'
 import * as Runner from '../sandbox/Runner.ts'
 import * as Store from '../sandbox/Store.ts'
+import * as Compare from '../src/Compare.ts'
 import * as Config from '../src/Config.ts'
 import type * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
@@ -106,6 +107,9 @@ const usage = `nanoeval <command>
   attempt   --url URL --token T RUN ATTEMPT [ARTIFACT]
   export    --url URL --token T RUN --out DIR
             Write the run as a Harbor job directory.
+  compare   --url URL --token T RUN...
+            Print one table of the agents of these runs: attempts, outcomes, time, tokens and
+            estimated cost per agent, and the outcome of every task per agent.
   cancel    --url URL --token T RUN
   prune     [--dry-run] [--cache DIR]
             On this machine, remove the cached environment disks that no slot is using and
@@ -255,6 +259,8 @@ export function client(options: { token: string; url: string }) {
       ).json()) as { attempts: number; eval: { name: string; version: string }; id: string },
     harbor: async (run: string) =>
       (await (await call('/v1/runs/' + run + '/harbor')).json()) as Job,
+    results: async (run: string) =>
+      (await (await call('/v1/runs/' + run + '/results')).json()) as Compare.Run,
     status: async (run: string) =>
       (await call('/v1/runs/' + run)).json() as Promise<Record<string, any>>,
   }
@@ -658,9 +664,18 @@ async function main(): Promise<void> {
 
   if (
     !command ||
-    !['attempt', 'cancel', 'eval', 'evals', 'export', 'import', 'run', 'runner', 'status'].includes(
-      command,
-    )
+    ![
+      'attempt',
+      'cancel',
+      'compare',
+      'eval',
+      'evals',
+      'export',
+      'import',
+      'run',
+      'runner',
+      'status',
+    ].includes(command)
   ) {
     console.log(usage)
     process.exitCode = command ? 2 : 0
@@ -928,6 +943,10 @@ async function main(): Promise<void> {
   }
 
   const run = required(rest[0], 'RUN')
+  if (command === 'compare') {
+    process.stdout.write(Compare.table(await Promise.all(rest.map((id) => api.results(id)))))
+    return
+  }
   if (command === 'status') console.log(summary(await api.status(run)))
   if (command === 'cancel') console.log(JSON.stringify(await api.cancel(run)))
   if (command === 'export') await exportJob(api, { out: required(values.out, 'out'), run })
