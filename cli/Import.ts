@@ -118,14 +118,14 @@ export async function normalize(
   item: Dataset.Case,
   options: Options,
 ): Promise<{ task: Eval.Task; timing: Omit<Timing, 'adapterMs'> }> {
-  const solved =
-    item.files['solution/solve.sh'] !== undefined &&
-    (item.files[Task.finalMessagePath] !== undefined ||
-      !Bytes.toText(item.files['task.toml'] ?? new Uint8Array()).includes('final_message'))
-  const task = await Task.load(
-    { ...(item.executable ? { executable: item.executable } : {}), files: item.files },
-    solved ? { solution: true } : {},
-  )
+  const source = { ...(item.executable ? { executable: item.executable } : {}), files: item.files }
+  const task = item.files['solution/solve.sh']
+    ? await Task.load(source, { solution: true }).catch((error: unknown) => {
+        if (error instanceof Task.InvalidError && !item.files[Task.finalMessagePath])
+          return Task.load(source)
+        throw error
+      })
+    : await Task.load(source)
   const instruction = item.files['instruction.md']!
   if (Bytes.toValidText(instruction) === undefined)
     throw new Task.InvalidError(item.id + ' has an instruction.md that is not UTF-8')
