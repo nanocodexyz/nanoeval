@@ -11,7 +11,7 @@ publish.workspace = true
 flate2.workspace = true
 nanovm.workspace = true
 net.workspace = true
-nix = { workspace = true, features = ["fs"] }
+nix = { workspace = true, features = ["fs", "resource"] }
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true

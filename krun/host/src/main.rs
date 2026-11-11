@@ -21,6 +21,7 @@ use nanovm::{
     BlockDevice, Capabilities, GuestCommand, KrunVm, Network, RootFilesystem, SharedDirectory,
     VmConfig, VsockPort,
 };
+use nix::sys::resource::{Resource, getrlimit, setrlimit};
 use wire::{Frame, Request};
 
 const GUEST: &str = "/nanoeval-krun-guest";
@@ -153,6 +154,9 @@ fn vm(arguments: impl Iterator<Item = OsString>) -> Result<u8, String> {
             "upper",
         ],
     )?;
+    getrlimit(Resource::RLIMIT_NOFILE)
+        .and_then(|(_, hard)| setrlimit(Resource::RLIMIT_NOFILE, hard, hard))
+        .map_err(|error| format!("the limit on open files: {error}"))?;
     let config = VmConfig::new(RootFilesystem::Directory {
         path: arguments.one("boot")?.into(),
         read_only: true,
