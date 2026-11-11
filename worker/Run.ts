@@ -6,12 +6,14 @@ import * as Config from '../src/Config.ts'
 import * as E2b from '../src/E2b.ts'
 import * as Eval from '../src/Eval.ts'
 import * as Harbor from '../src/Harbor.ts'
+import * as Installed from '../src/Installed.ts'
 import * as Judge from '../src/Judge.ts'
 import * as Ledger from '../src/Ledger.ts'
 import * as Bytes from '../src/internal/Bytes.ts'
 import * as Local from '../src/Local.ts'
 import * as Payment from '../src/Payment.ts'
 import * as Protocol from '../src/Protocol.ts'
+import * as Proxy from '../src/Proxy.ts'
 import * as Result from '../src/Result.ts'
 import * as Sandbox from '../src/Sandbox.ts'
 import * as Slot from '../src/Slot.ts'
@@ -21,6 +23,7 @@ import * as Blobs from './Blobs.ts'
 import type { Env } from './Env.ts'
 import * as Evals from './Evals.ts'
 import * as Harness from './Harness.ts'
+import * as Model from './Model.ts'
 import * as Storage from './Storage.ts'
 
 type SandboxRow = {
@@ -67,6 +70,7 @@ type Lineage = {
 const judgeRequest = 'verifier/' + Judge.requestFile
 const judgeResponse = 'verifier/' + Judge.responseFile
 const judgeRequestId = 'judge'
+const modelRequests = 'agent/model-requests.jsonl'
 const partCharacters = 524_288
 const requestId = 'attempt'
 const sandboxAttempts = 2
@@ -110,6 +114,16 @@ const tables = [
     PRIMARY KEY (attempt, name, part)
   )`,
   'CREATE TABLE IF NOT EXISTS binary_artifacts (attempt TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (attempt, name))',
+  `CREATE TABLE IF NOT EXISTS model_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    attempt TEXT NOT NULL,
+    claim INTEGER NOT NULL,
+    at INTEGER NOT NULL,
+    path TEXT NOT NULL,
+    ms INTEGER,
+    status INTEGER,
+    usage TEXT
+  )`,
   ...Ledger.tables,
 ]
 
@@ -159,6 +173,7 @@ export class Run extends DurableObject<Env> {
         return await this.create(request, url.searchParams)
       const meta = this.meta()
       if (!meta) return json({ error: 'run not found' }, 404)
+      if (parts[0] === 'model') return await this.model(request, parts.slice(1), url.search)
       if (parts[0] === 'runner') {
         const header = request.headers.get('authorization') ?? ''
         if (!(await same(header, 'Bearer ' + meta.runnerToken)))
@@ -168,6 +183,14 @@ export class Run extends DurableObject<Env> {
       if (request.method === 'GET' && parts[0] === 'status') return json(this.status())
       if (request.method === 'GET' && parts[0] === 'harbor') return json(this.harbor())
       if (request.method === 'GET' && parts[0] === 'config') return json(this.config())
+      if (request.method === 'GET' && parts[0] === 'results')
+        return json({
+          attempts: this.results(),
+          eval: meta.eval,
+          id: meta.id,
+          name: this.config().name,
+          state: meta.finishedAt === null ? 'running' : 'finished',
+        })
       if (request.method === 'GET' && parts[0] === 'lineage')
         return json({
           attempts: Ledger.all(this.sql).map((row) => ({
@@ -649,8 +672,124 @@ export class Run extends DurableObject<Env> {
   }
 
   private submitted(row: Ledger.Attempt): boolean {
-    const agent = this.config().agents.find((candidate) => candidate.id === row.agent)!
-    return agent.provider !== 'oracle' && ['judge', 'run', 'verify'].includes(row.phase)
+    return (
+      Config.harness(this.agentOf(row)) === 'session' &&
+      ['judge', 'run', 'verify'].includes(row.phase)
+    )
+  }
+
+  private agentOf(row: Pick<Ledger.Attempt, 'agent'>): Config.Agent {
+    return this.config().agents.find((candidate) => candidate.id === row.agent)!
+  }
+
+  private installed(row: Ledger.Attempt): Installed.Kind | undefined {
+    const provider = this.agentOf(row).provider
+    return Installed.is(provider) ? provider : undefined
+  }
+
+  private async modelToken(row: Ledger.Attempt): Promise<string> {
+    const key = await crypto.subtle.importKey(
+      'raw',
+      Bytes.fromText(this.meta()!.runnerToken) as Uint8Array<ArrayBuffer>,
+      { hash: 'SHA-256', name: 'HMAC' },
+      false,
+      ['sign'],
+    )
+    const mac = await crypto.subtle.sign(
+      'HMAC',
+      key,
+      Bytes.fromText('model ' + row.id + ' ' + row.claim) as Uint8Array<ArrayBuffer>,
+    )
+    return Array.from(new Uint8Array(mac), (byte) => byte.toString(16).padStart(2, '0')).join('')
+  }
+
+  private metered(row: Ledger.Attempt): Atif.Usage {
+    const kind = this.installed(row)!
+    const provider = Installed.releases[kind].provider
+    const total: Atif.Usage = {
+      cacheWriteTokens: 0,
+      cachedTokens: 0,
+      costUsd: undefined,
+      inputTokens: 0,
+      modelCalls: 0,
+      outputTokens: 0,
+      toolCalls: 0,
+    }
+    for (const request of this.sql.all(
+      'SELECT path, usage FROM model_requests WHERE attempt = ? AND claim = ? ORDER BY id',
+      row.id,
+      row.claims,
+    )) {
+      if (!request['usage']) continue
+      const usage = JSON.parse(request['usage'] as string) as Proxy.Usage
+      if (!Proxy.generates(provider, request['path'] as string)) continue
+      total.cacheWriteTokens += usage.cacheWriteTokens
+      total.cachedTokens += usage.cachedTokens
+      total.inputTokens += usage.inputTokens
+      total.modelCalls++
+      total.outputTokens += usage.outputTokens
+    }
+    return total
+  }
+
+  private async model(
+    request: Request,
+    parts: readonly string[],
+    search: string,
+  ): Promise<Response> {
+    const [id, ...rest] = parts
+    const row = id ? Ledger.get(this.sql, decodeURIComponent(id)) : undefined
+    const kind = row ? this.installed(row) : undefined
+    const presented = Proxy.token(request.headers)
+    if (
+      !row ||
+      !kind ||
+      !row.claim ||
+      row.phase !== 'run' ||
+      Date.now() > (row.deadline_at ?? 0) ||
+      !presented ||
+      !(await same(presented, await this.modelToken(row)))
+    )
+      return Model.refuse(request, {
+        message: 'no agent of this run is running with this token',
+        status: 401,
+      })
+    const provider = Installed.releases[kind].provider
+    const path = Proxy.route(provider, rest.join('/'))
+    if (!path)
+      return Model.refuse(request, {
+        message: 'the run forwards no ' + rest.join('/'),
+        status: 404,
+      })
+    if (request.method !== 'POST')
+      return Model.refuse(request, {
+        message: 'the run forwards POST requests only',
+        status: 405,
+      })
+    const at = Date.now()
+    this.sql.run(
+      'INSERT INTO model_requests (attempt, claim, at, path) VALUES (?, ?, ?, ?)',
+      row.id,
+      row.claims,
+      at,
+      path,
+    )
+    const entry = this.sql.all('SELECT MAX(id) AS id FROM model_requests')[0]!['id'] as number
+    return Model.forward(this.env, {
+      path,
+      provider,
+      request,
+      search,
+      settle: (outcome) => {
+        this.sql.run(
+          'UPDATE model_requests SET ms = ?, status = ?, usage = ? WHERE id = ?',
+          Date.now() - at,
+          outcome.status,
+          outcome.usage ? JSON.stringify(outcome.usage) : null,
+          entry,
+        )
+      },
+    })
   }
 
   private judgeSessions(row: Ledger.Attempt): string[] {
@@ -672,9 +811,13 @@ export class Run extends DurableObject<Env> {
           (events) => JSON.stringify(Atif.usage(events)),
           () => undefined,
         )
+      const installed = this.installed(row) !== undefined
+      if (installed && ['judge', 'run', 'verify'].includes(row.phase))
+        usage = JSON.stringify(this.metered(row))
       for (const name of this.judgeSessions(row))
         await Harness.remove(this.env, name).catch(() => {})
-      if (row.phase !== 'claimed') await Harness.remove(this.env, row.session).catch(() => {})
+      if (row.phase !== 'claimed' && !installed)
+        await Harness.remove(this.env, row.session).catch(() => {})
     }
     const requeued = Ledger.requeue(this.sql, {
       ending,
@@ -998,6 +1141,7 @@ export class Run extends DurableObject<Env> {
     if (resource === 'rows' && id && action) {
       const row = this.fenced(id, String(body['claim'] ?? ''))
       if (action === 'session') return json(await this.session(row))
+      if (action === 'endpoint') return json(await this.endpoint(row))
       if (action === 'agent') return json(await this.agent(row, body as { instruction?: string }))
       if (action === 'verify') return json(this.verify(row, body as { solve?: { code: number } }))
       if (action === 'judge') return json(await this.judge(row, body as { request?: string }))
@@ -1084,10 +1228,7 @@ export class Run extends DurableObject<Env> {
     return {
       ...response,
       rows: claimed.map((row) => ({
-        agent: {
-          id: row.agent,
-          oracle: config.agents.find((agent) => agent.id === row.agent)!.provider === 'oracle',
-        },
+        agent: this.claimedAgent(row),
         claim: row.claim!,
         id: row.id,
         leaseUntil: row.lease_until!,
@@ -1128,19 +1269,39 @@ export class Run extends DurableObject<Env> {
     return { left: true }
   }
 
+  private claimedAgent(row: Ledger.Attempt): Protocol.Claimed['agent'] {
+    const agent = this.agentOf(row)
+    return {
+      ...(Installed.is(agent.provider)
+        ? {
+            cli: {
+              kind: agent.provider,
+              model: agent.model,
+              ...(agent.thinking ? { thinking: agent.thinking } : {}),
+            },
+          }
+        : {}),
+      id: agent.id,
+      oracle: agent.provider === 'oracle',
+    }
+  }
+
+  private async endpoint(row: Ledger.Attempt): Promise<Protocol.Endpoint> {
+    if (!this.installed(row))
+      throw new Refusal(409, 'the agent of the attempt is a session, not an installed command')
+    this.attaching(row)
+    const meta = this.meta()!
+    return {
+      token: await this.modelToken(row),
+      url: meta.publicUrl + '/v1/runs/' + meta.id + '/model/' + row.id,
+    }
+  }
+
   private async session(row: Ledger.Attempt): Promise<Protocol.Session> {
+    if (this.installed(row))
+      throw new Refusal(409, 'the agent of the attempt is an installed command, not a session')
     const token = await Harness.token(this.env, row.session!)
-    const now = Date.now()
-    if (row.phase === 'claimed')
-      Ledger.update(this.sql, row.id, {
-        phase: 'attach',
-        phase_at: now,
-        timing: Ledger.mark(
-          Ledger.mark(row.timing, 'environmentSetup', { at: now, edge: 'finish' }),
-          'agentSetup',
-          { at: now, edge: 'start' },
-        ),
-      })
+    this.attaching(row)
     return {
       name: Protocol.handName,
       token,
@@ -1152,6 +1313,20 @@ export class Run extends DurableObject<Env> {
     }
   }
 
+  private attaching(row: Ledger.Attempt): void {
+    const now = Date.now()
+    if (row.phase === 'claimed')
+      Ledger.update(this.sql, row.id, {
+        phase: 'attach',
+        phase_at: now,
+        timing: Ledger.mark(
+          Ledger.mark(row.timing, 'environmentSetup', { at: now, edge: 'finish' }),
+          'agentSetup',
+          { at: now, edge: 'start' },
+        ),
+      })
+  }
+
   private async agent(
     row: Ledger.Attempt,
     body: { instruction?: string },
@@ -1159,21 +1334,29 @@ export class Run extends DurableObject<Env> {
     const config = this.config()
     const task = this.task(row.task)
     const agent = config.agents.find((candidate) => candidate.id === row.agent)!
+    const harness = Config.harness(agent)
     const session = row.session!
     const now = Date.now()
     if (row.phase === 'attach') {
-      if (!(await Harness.hands(this.env, session)).includes(Protocol.handName))
+      if (
+        harness !== 'installed' &&
+        !(await Harness.hands(this.env, session)).includes(Protocol.handName)
+      )
         return { state: 'waiting' }
-      if (agent.provider !== 'oracle') {
+      if (harness !== 'oracle') {
         if (
           typeof body.instruction !== 'string' ||
           (await Bytes.sha256(Bytes.fromText(body.instruction))) !== task.instruction.digest
         )
           throw new Refusal(400, 'the instruction does not match the digest of the task')
+      }
+      if (harness === 'installed')
+        this.putArtifact(row.id, Installed.instruction, body.instruction!)
+      if (agent.provider === 'claude' || agent.provider === 'codex') {
         await Harness.submit(this.env, session, {
           hand: Protocol.handName,
           model: agent.model,
-          prompt: body.instruction,
+          prompt: body.instruction!,
           provider: agent.provider,
           requestId,
           ...(agent.thinking ? { thinking: agent.thinking } : {}),
@@ -1189,13 +1372,13 @@ export class Run extends DurableObject<Env> {
           { at: now, edge: 'start' },
         ),
       })
-      return agent.provider === 'oracle'
-        ? { state: 'attached', timeoutSec: task.agent.timeoutSec }
-        : { detached: false, state: 'running' }
+      return harness === 'session'
+        ? { detached: false, state: 'running' }
+        : { state: 'attached', timeoutSec: task.agent.timeoutSec }
     }
     if (row.phase !== 'run' && row.phase !== 'verify')
       throw new Refusal(409, 'the attempt is in the ' + row.phase + ' phase')
-    if (agent.provider === 'oracle') return { state: 'attached', timeoutSec: task.agent.timeoutSec }
+    if (harness !== 'session') return { state: 'attached', timeoutSec: task.agent.timeoutSec }
     const earlier = row.failure ? (JSON.parse(row.failure) as Result.Failure) : undefined
     if (earlier?.kind === 'agent_timeout') return { state: 'timeout' }
 
@@ -1229,7 +1412,12 @@ export class Run extends DurableObject<Env> {
             failure: JSON.stringify({
               at: now,
               kind: 'agent_timeout',
-              message: 'the solution did not finish within ' + task.agent.timeoutSec + ' s',
+              message:
+                'the ' +
+                (this.installed(row) ? 'agent' : 'solution') +
+                ' did not finish within ' +
+                task.agent.timeoutSec +
+                ' s',
             } satisfies Result.Failure),
           }
         : {}),
@@ -1404,6 +1592,43 @@ export class Run extends DurableObject<Env> {
         this.putArtifact(row.id, 'agent/events-error.txt', message(error))
       }
     }
+    const kind = this.installed(row)
+    if (kind && end.collect !== false && ['judge', 'run', 'verify'].includes(row.phase)) {
+      const stream = this.textArtifact(row.id, Installed.events) ?? ''
+      const summary = Installed.summarize(kind, stream)
+      usage = { ...this.metered(row), costUsd: summary.costUsd, toolCalls: summary.toolCalls }
+      this.putArtifact(
+        row.id,
+        modelRequests,
+        this.sql
+          .all(
+            'SELECT claim, at, path, ms, status, usage FROM model_requests WHERE attempt = ? ORDER BY id',
+            row.id,
+          )
+          .map(
+            (request) =>
+              JSON.stringify({
+                ...request,
+                usage: request['usage'] ? JSON.parse(request['usage'] as string) : null,
+              }) + '\n',
+          )
+          .join(''),
+      )
+      const instruction = this.textArtifact(row.id, Installed.instruction)
+      this.putArtifact(
+        row.id,
+        'agent/trajectory.json',
+        JSON.stringify(
+          Installed.trajectory(
+            kind,
+            { ...(instruction === undefined ? {} : { instruction }), stream, usage },
+            { model: agent.model, name: kind, session, version: Installed.releases[kind].version },
+          ),
+          null,
+          2,
+        ) + '\n',
+      )
+    }
 
     const result: Result.Attempt = {
       agent,
@@ -1446,7 +1671,7 @@ export class Run extends DurableObject<Env> {
       now,
       result,
     })
-    if (row.session && row.phase !== 'unclaimed' && row.phase !== 'claimed')
+    if (row.session && row.phase !== 'unclaimed' && row.phase !== 'claimed' && !kind)
       await Harness.remove(this.env, session).catch(() => {})
   }
 }

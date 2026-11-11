@@ -26,10 +26,11 @@ export type Trajectory = {
 
 export type Step = {
   step_id: number
-  timestamp: string
-  source: 'agent' | 'user'
+  timestamp?: string
+  source: 'agent' | 'system' | 'user'
   model_name?: string
   message: string
+  reasoning_content?: string
   tool_calls?: ToolCall[]
   observation?: { results: Observation[] }
   metrics?: {
@@ -50,7 +51,7 @@ export type ToolCall = {
 export type Observation = {
   source_call_id: string
   content: string
-  extra: { duration_ns: number | null; status: string }
+  extra: { duration_ns: number | null; exit_code?: number; status: string }
 }
 
 export type Usage = {

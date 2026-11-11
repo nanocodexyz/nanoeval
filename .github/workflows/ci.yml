@@ -98,6 +98,27 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: dir
           NANOEVAL_E2E_SCENARIO: closed
+      - name: End to end, directory slots, installed agents with a scripted command
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_MODEL: installed
+          NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
+          NANOEVAL_E2E_SLOTS: '3'
+          NANOEVAL_E2E_ATTEMPTS: '1'
+      - name: End to end, directory slots, installed agents, failure kinds and a rerun
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_MODEL: installed
+          NANOEVAL_E2E_SCENARIO: failures
+      - name: End to end, directory slots, installed agents, a runner restarted during the run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_MODEL: installed
+          NANOEVAL_E2E_SCENARIO: resume
+          NANOEVAL_E2E_SLOTS: '8'
       - name: End to end, krun slots, skipped where krun cannot run
         run: npm run e2e
       - name: End to end, krun slots, oracle, skipped where krun cannot run
@@ -167,6 +188,21 @@ jobs:
       - name: End to end, krun slots, a runner restarted during the run, skipped where krun cannot run
         run: npm run e2e
         env:
+          NANOEVAL_E2E_SCENARIO: resume
+          NANOEVAL_E2E_SLOTS: '8'
+      - name: End to end, krun slots, installed agents with a scripted command, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_MODEL: installed
+      - name: End to end, krun slots, installed agents, failure kinds and a rerun, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_MODEL: installed
+          NANOEVAL_E2E_SCENARIO: failures
+      - name: End to end, krun slots, installed agents, a runner restarted during the run, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_MODEL: installed
           NANOEVAL_E2E_SCENARIO: resume
           NANOEVAL_E2E_SLOTS: '8'
       - name: Keep the logs of a failed run

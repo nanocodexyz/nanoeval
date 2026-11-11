@@ -4,6 +4,7 @@ import * as Path from 'node:path'
 import * as Admission from '../src/Admission.ts'
 import type * as Config from '../src/Config.ts'
 import * as Eval from '../src/Eval.ts'
+import * as Installed from '../src/Installed.ts'
 import * as Bytes from '../src/internal/Bytes.ts'
 import * as Judge from '../src/Judge.ts'
 import * as Protocol from '../src/Protocol.ts'
@@ -32,7 +33,7 @@ export type Options = {
   store?: string
 }
 
-type Stage = 'agent' | 'attach' | 'judge' | 'prepare' | 'solve' | 'up' | 'verify'
+type Stage = 'agent' | 'attach' | 'cli' | 'judge' | 'prepare' | 'solve' | 'up' | 'verify'
 
 type Work = {
   at: number
@@ -196,7 +197,7 @@ export async function run(options: Options): Promise<void> {
     item.next = Date.now() + item.delay
     item.delay = Math.min(Math.ceil(item.delay * 1.6), config.pollMs)
   }
-  const slotLog = (item: Work, name: 'hand' | 'solve' | 'up' | 'verify', bytes: number) =>
+  const slotLog = (item: Work, name: 'agent' | 'hand' | 'solve' | 'up' | 'verify', bytes: number) =>
     shell(slots.log(item.row.slot, name, bytes))
 
   const down = async (item: Work, evict: boolean) => {
@@ -309,6 +310,8 @@ export async function run(options: Options): Promise<void> {
     const offline = Eval.offline(task)
     if (offline.length)
       await Fs.writeFile(slots.offlineFile(item.row.slot), offline.join('\n') + '\n')
+    const cli = item.row.agent.cli
+    if (cli) await shell(slots.agents(cli.kind, Installed.releases[cli.kind]))
     await shell(
       slots.up(item.row.slot, {
         backend: config.backend,
@@ -320,6 +323,72 @@ export async function run(options: Options): Promise<void> {
       }),
     )
     await move(item, 'up')
+  }
+
+  const instruct = async (item: Work) =>
+    (item.instruction ??= await Fs.readFile(
+      await Store.ensure(stores, { blob: item.row.task.instruction, cache }),
+      'utf8',
+    ))
+
+  const startCli = async (item: Work, cli: Installed.Agent) => {
+    const instruction = await instruct(item)
+    const endpoint = await rowCall<Protocol.Endpoint>(item, 'endpoint')
+    const state = await rowCall<Protocol.Agent>(item, 'agent', { instruction })
+    if (state.state !== 'attached')
+      throw new Error('the run answered ' + state.state + ' for an installed agent')
+    const file = slots.agentFile(item.row.slot, 'token')
+    await Fs.mkdir(Path.dirname(file), { recursive: true })
+    await Fs.writeFile(slots.agentFile(item.row.slot, 'instruction.md'), instruction)
+    await Fs.writeFile(
+      slots.agentFile(item.row.slot, 'run.sh'),
+      Installed.script(cli, { url: endpoint.url }),
+    )
+    await Fs.writeFile(file, endpoint.token + '\n', { mode: 0o600 })
+    try {
+      await shell(
+        slots.agent(item.row.slot, { timeoutSec: state.timeoutSec, url: endpoint.url }) +
+          ' < ' +
+          Sandbox.quote(file),
+      )
+    } finally {
+      await Fs.rm(file, { force: true })
+    }
+    return move(item, 'cli')
+  }
+
+  const endCli = async (item: Work, input: { cli: Installed.Agent; code: number }) => {
+    const stream = await Fs.readFile(slots.agentOutput(item.row.slot)).catch(() => Buffer.alloc(0))
+    const whole = stream.length <= Protocol.artifactBytes
+    const kept = whole
+      ? stream
+      : stream.subarray(0, stream.lastIndexOf(10, Protocol.artifactBytes - 1) + 1)
+    await upload(item, Installed.events, kept)
+    if (!whole)
+      await upload(
+        item,
+        'agent/events-omitted.txt',
+        'the event stream of the agent is ' +
+          stream.length +
+          ' bytes, and its first ' +
+          kept.length +
+          ' are kept\n',
+      )
+    const errors = await slotLog(item, 'agent', Protocol.artifactBytes)
+    await upload(item, 'agent/stderr.txt', errors + '\nthe agent exited with ' + input.code + '\n')
+    const summary = Installed.summarize(input.cli.kind, stream.toString('utf8'))
+    if (input.code !== 0 && !Verdict.timeoutCodes.includes(input.code))
+      return fail(
+        item,
+        'agent',
+        input.cli.kind +
+          ' exited with ' +
+          input.code +
+          ': ' +
+          (summary.error ?? errors.slice(-2000)),
+      )
+    item.message = Verdict.timeoutCodes.includes(input.code) ? '' : summary.message
+    return startVerifier(item, { code: input.code })
   }
 
   const verifierInput = async (item: Work, name: string, content: string) => {
@@ -420,6 +489,7 @@ export async function run(options: Options): Promise<void> {
             'the task environment failed with exit code ' + code + ': ' + upLog.slice(-2000),
           )
         }
+        if (item.row.agent.cli) return startCli(item, item.row.agent.cli)
         const session = await rowCall<Protocol.Session>(item, 'session')
         const file = Path.join(target, 'token')
         await Fs.writeFile(file, session.token + '\n', { mode: 0o600 })
@@ -432,19 +502,11 @@ export async function run(options: Options): Promise<void> {
         } finally {
           await Fs.rm(file, { force: true })
         }
-        if (!item.row.agent.oracle)
-          item.instruction = await Fs.readFile(
-            await Store.ensure(stores, { blob: task.instruction, cache }),
-            'utf8',
-          )
+        if (!item.row.agent.oracle) await instruct(item)
         return move(item, 'attach')
       }
       case 'attach': {
-        if (!item.row.agent.oracle && item.instruction === undefined)
-          item.instruction = await Fs.readFile(
-            await Store.ensure(stores, { blob: task.instruction, cache }),
-            'utf8',
-          )
+        if (!item.row.agent.oracle) await instruct(item)
         const state = await rowCall<Protocol.Agent>(
           item,
           'agent',
@@ -488,6 +550,15 @@ export async function run(options: Options): Promise<void> {
           return fail(item, 'environment', 'the hand left during the turn: ' + handLog.slice(-2000))
         }
         return later(item)
+      }
+      case 'cli': {
+        const code = Slot.exit(await phase(Path.join(target, 'agent.status')))
+        if (code === undefined) {
+          if (elapsed > (task.agent.timeoutSec + config.limits.attachSec) * 1000)
+            return fail(item, 'environment', 'the agent did not report within its deadline')
+          return
+        }
+        return endCli(item, { cli: item.row.agent.cli!, code })
       }
       case 'solve': {
         const code = Slot.exit(await phase(Path.join(target, 'solve.status')))

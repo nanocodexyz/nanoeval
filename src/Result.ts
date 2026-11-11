@@ -1,4 +1,5 @@
 import type * as Atif from './Atif.ts'
+import type * as Installed from './Installed.ts'
 
 export type FailureKind =
   | 'agent'
@@ -19,7 +20,12 @@ export type Failure = {
 export type Phase = { finishedAt: number; startedAt: number }
 
 export type Attempt = {
-  agent: { id: string; model: string; provider: 'claude' | 'codex' | 'oracle'; thinking?: string }
+  agent: {
+    id: string
+    model: string
+    provider: 'claude' | 'codex' | 'oracle' | Installed.Kind
+    thinking?: string
+  }
   claims?: number
   failure?: Failure
   finishedAt: number

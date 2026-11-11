@@ -14,6 +14,7 @@ import * as Runner from '../sandbox/Runner.ts'
 import * as Store from '../sandbox/Store.ts'
 import * as Config from '../src/Config.ts'
 import type * as Eval from '../src/Eval.ts'
+import * as Installed from '../src/Installed.ts'
 import type * as Ledger from '../src/Ledger.ts'
 import * as Task from '../src/Task.ts'
 import * as Import from './Import.ts'
@@ -66,7 +67,7 @@ const usage = `nanoeval <command>
             List the imported evals, or the versions and tasks of one.
   run       --url URL --token T (--eval NAME[@DIGEST] [--only ID]... [--limit N] | --task DIR...
             | --rerun RUN [--failed | --errored])
-            (--agent ID=PROVIDER:MODEL[:THINKING]... | --oracle) [--judge PROVIDER:MODEL[:THINKING]]
+            (--agent ID=HARNESS:MODEL[:THINKING]... | --oracle) [--judge PROVIDER:MODEL[:THINKING]]
             [--attempts 1] [--provider local|e2b] [--backend krun|dir] [--slots 4] [--sandboxes 1]
             [--memory-mb N] [--network private|host] [--template NAME] [--sandbox-timeout-sec 3600]
             [--sandbox-budget-usd 0] [--model-budget-usd N] [--setup-sec 600] [--attach-sec 60]
@@ -87,6 +88,10 @@ const usage = `nanoeval <command>
             machine has that much free disk, and prepares one environment at a time.
             With --verifier-cache, the verifier of a krun slot finds what uv downloaded for
             the same task on this machine before, when an oracle run with the option kept it.
+            An agent's HARNESS is claude or codex, a nanocode session outside the slot, or
+            claude-code or codex-cli, that vendor's command line inside the slot: a pinned
+            release that the runner fetches once, pointed at an endpoint of the run that adds
+            the model credential, so none enters the slot.
             With --oracle no model runs: each task's solution is run in its slot, then the
             verifier. --judge names the model that answers the verifiers of judged tasks.
             With --wait, poll until the run finishes, print the summary and write the Harbor
@@ -160,8 +165,10 @@ export function parseJudge(text: string): Config.Judge {
 export const oracle: Config.Agent = { id: 'oracle', model: 'solution', provider: 'oracle' }
 
 export function parseAgent(text: string): Config.Agent {
-  const match = /^([^=]+)=(claude|codex):([^:]+)(?::([a-z]+))?$/.exec(text)
-  if (!match) throw new Error('an agent is ID=PROVIDER:MODEL[:THINKING], not ' + text)
+  const match = new RegExp(
+    '^([^=]+)=(' + ['claude', 'codex', ...Installed.kinds].join('|') + '):([^:]+)(?::([a-z]+))?$',
+  ).exec(text)
+  if (!match) throw new Error('an agent is ID=HARNESS:MODEL[:THINKING], not ' + text)
   return {
     id: match[1]!,
     model: match[3]!,

@@ -19,7 +19,7 @@ export default {
 
     const [, v1, resource, ...path] = url.pathname.split('/')
     if (v1 !== 'v1' || !resource) return json({ error: 'route not found' }, 404)
-    const runner = resource === 'runs' && path[1] === 'runner'
+    const runner = resource === 'runs' && (path[1] === 'runner' || path[1] === 'model')
     if (!runner && !(await authorized(request, env))) return json({ error: 'unauthorized' }, 401)
     if (resource === 'evals') return Evals.route(request, env, path)
     if (resource === 'blobs') return Blobs.route(request, env, path)

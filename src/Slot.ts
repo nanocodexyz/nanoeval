@@ -1,3 +1,4 @@
+import type * as Installed from './Installed.ts'
 import * as Sandbox from './Sandbox.ts'
 import * as Task from './Task.ts'
 
@@ -52,6 +53,25 @@ export function create(options: create.Options) {
   return {
     home,
     script,
+    agent: (slot: string, input: { timeoutSec: number; url: string }) =>
+      call('agent', slot, String(Math.ceil(input.timeoutSec)), input.url),
+    agentFile: (slot: string, name: 'instruction.md' | 'run.sh' | 'token') =>
+      home + '/slots/' + slot + '/agent/' + name,
+    agentOutput: (slot: string) => home + '/slots/' + slot + '/agent.out',
+    agents: (kind: Installed.Kind, release: Installed.Release) =>
+      call(
+        'agents',
+        kind,
+        release.version,
+        release.entry,
+        release.format,
+        ...release.binaries.flatMap((binary) => [
+          binary.arch,
+          binary.libc,
+          binary.sha256,
+          binary.url,
+        ]),
+      ),
     destroy: () => call('destroy'),
     disk: (input: { out: string; storageMb: number }) =>
       call('disk', String(input.storageMb), input.out),
@@ -64,7 +84,7 @@ export function create(options: create.Options) {
       call('hand', slot, input.url, input.name),
     log: (
       slot: string,
-      phase: 'hand' | 'judge' | 'setup' | 'solve' | 'up' | 'verify',
+      phase: 'agent' | 'hand' | 'judge' | 'setup' | 'solve' | 'up' | 'verify',
       bytes: number,
     ) => call('log', slot, phase, String(bytes)),
     offlineFile: (slot: string) => home + '/slots/' + slot + '/offline',

@@ -1,12 +1,11 @@
 import { App, Forward } from 'nanocode-ts/cloudflare'
+import * as Proxy from '../src/Proxy.ts'
 import { account, type Env } from './Env.ts'
 
 const providers = {
   claude: { base: 'ANTHROPIC_BASE_URL', key: 'ANTHROPIC_API_KEY' },
   codex: { base: 'OPENAI_BASE_URL', key: 'OPENAI_API_KEY' },
 } as const
-
-const relaySecretHeader = 'x-nanocode-relay-secret'
 
 export async function authorized(request: Request, env: Env): Promise<boolean> {
   const header = request.headers.get('authorization') ?? ''
@@ -58,7 +57,7 @@ export const nanocode = App.create<Env>({
           for (const [header, value] of Object.entries(credential)) headers.set(header, value)
           if (name === 'codex' && env.CHATGPT_RELAY_URL) {
             target = env.CHATGPT_RELAY_URL.replace(/\/+$/, '') + source.pathname + source.search
-            headers.set(relaySecretHeader, env.CHATGPT_RELAY_SECRET ?? '')
+            headers.set(Proxy.relaySecretHeader, env.CHATGPT_RELAY_SECRET ?? '')
           }
         } else {
           const key = env[provider.key]

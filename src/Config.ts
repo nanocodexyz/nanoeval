@@ -1,4 +1,5 @@
 import * as Eval from './Eval.ts'
+import * as Installed from './Installed.ts'
 import type * as Ledger from './Ledger.ts'
 import * as Slot from './Slot.ts'
 
@@ -13,9 +14,11 @@ export class UnsupportedError extends Error {
 export type Agent = {
   id: string
   model: string
-  provider: 'claude' | 'codex' | 'oracle'
+  provider: 'claude' | 'codex' | 'oracle' | Installed.Kind
   thinking?: string
 }
+
+export type Harness = 'installed' | 'oracle' | 'session'
 
 export type Judge = {
   model: string
@@ -80,6 +83,11 @@ export function network(sandbox: Pick<Config['sandbox'], 'backend'>): Slot.Netwo
   return sandbox.backend === 'dir' ? 'host' : 'private'
 }
 
+export function harness(agent: Pick<Agent, 'provider'>): Harness {
+  if (agent.provider === 'oracle') return 'oracle'
+  return Installed.is(agent.provider) ? 'installed' : 'session'
+}
+
 export function oracle(config: Pick<Config, 'agents'>): Agent | undefined {
   return config.agents.find((agent) => agent.provider === 'oracle')
 }
@@ -113,7 +121,12 @@ export function parse(value: unknown): Config {
     return {
       id: agent.id,
       model: agent.model,
-      provider: choice(agent.provider, 'provider', ['claude', 'codex', 'oracle']),
+      provider: choice(agent.provider, 'provider', [
+        'claude',
+        'codex',
+        'oracle',
+        ...Installed.kinds,
+      ]),
       ...(agent.thinking ? { thinking: agent.thinking } : {}),
     }
   })

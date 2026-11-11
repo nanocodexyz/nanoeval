@@ -8,6 +8,7 @@ net=$rt/nanoeval-net
 cache=${NANOEVAL_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/nanoeval}
 disks=$cache/disks
 self=$(readlink -f "$0")
+agent_home=/var/lib/nanoeval-agent
 tools=/var/cache/nanoeval-verifier
 trust='CARGO_HTTP_CAINFO CURL_CA_BUNDLE GIT_SSL_CAINFO NODE_EXTRA_CA_CERTS PIP_CERT REQUESTS_CA_BUNDLE SSL_CERT_FILE'
 
@@ -140,6 +141,20 @@ session() {
   esac
 }
 
+endpoint() {
+  local dir=$1 url=$2
+  [ "$(cat "$dir/network" 2>/dev/null)" = private ] || return 0
+  case $url in
+    https://*)
+      if grep -qx agent "$dir/offline" 2>/dev/null; then die "a slot whose agent has no network reaches its model endpoint only at http://127.x.x.x:PORT: $url"; fi
+      ;;
+    *)
+      [[ $url =~ ^http://(127(\.[0-9]{1,3}){3}:[0-9]{1,5})(/|$) ]] || die "a private slot reaches its model endpoint over https:// or at http://127.x.x.x:PORT: $url"
+      printf '%s\n' "${BASH_REMATCH[1]}"
+      ;;
+  esac
+}
+
 cmd_probe() {
   local cpus memory kvm=false microvm=false userns=false bwrap=false ca_bundle=false slot_env=false slot_forward=false
   cpus=$(getconf _NPROCESSORS_ONLN)
@@ -254,6 +269,62 @@ cmd__setup() {
   if [ "$backend" = krun ]; then setup_krun; fi
   if [ "$network" = private ]; then setup_private "$backend"; fi
   printf '%s\n' "$network" >"$home/network"
+}
+
+cmd_agents() {
+  local kind=$1 version=$2 entry=$3 format=$4
+  shift 4
+  [[ $kind =~ ^[a-z][a-z0-9-]*$ ]] || die "invalid agent: $kind"
+  local target=$rt/agents/$kind store=$cache/agents/$kind-$version machine variable override libc sum url tmp
+  mkdir -p "$cache/agents" "$rt/agents"
+  exec 9>"$cache/agents/$kind.lock"
+  flock 9
+  variable=NANOEVAL_AGENT_$(printf '%s' "$kind" | tr 'a-z-' 'A-Z_')
+  override=${!variable:-}
+  if [ "$(cat "$target/version" 2>/dev/null)" = "$version ${override:-release}" ]; then return 0; fi
+  rm -rf "$target.new"
+  mkdir -p "$target.new"
+  if [ -n "$override" ]; then
+    [ -f "$override" ] || die "$variable is not a file: $override"
+    mkdir -p "$(dirname "$target.new/any/$entry")"
+    cp "$override" "$target.new/any/$entry"
+    chmod 755 "$target.new/any/$entry"
+  else
+    machine=$(uname -m)
+    if [ "$machine" = arm64 ]; then machine=aarch64; fi
+    while [ $# -ge 4 ]; do
+      if [ "$1" = "$machine" ]; then
+        libc=$2 sum=$3 url=$4
+        if [ ! -f "$store/$libc/.complete" ]; then
+          tmp=$(mktemp -d "$cache/agents/fetch.XXXXXX")
+          curl -fsSL "$url" -o "$tmp/download"
+          [ "$(sha256sum "$tmp/download" | cut -d' ' -f1)" = "$sum" ] || die "checksum mismatch for $url"
+          mkdir -p "$tmp/out"
+          case $format in
+            file)
+              mkdir -p "$(dirname "$tmp/out/$entry")"
+              mv "$tmp/download" "$tmp/out/$entry"
+              chmod 755 "$tmp/out/$entry"
+              ;;
+            tar.gz) tar -xzf "$tmp/download" -C "$tmp/out" ;;
+            *) die "unknown release format: $format" ;;
+          esac
+          [ -x "$tmp/out/$entry" ] || die "the release of $kind has no $entry"
+          : >"$tmp/out/.complete"
+          rm -rf "${store:?}/$libc"
+          mkdir -p "$store"
+          mv "$tmp/out" "$store/$libc"
+          rm -rf "$tmp"
+        fi
+        cp -al "$store/$libc" "$target.new/$libc" 2>/dev/null || cp -a "$store/$libc" "$target.new/$libc"
+      fi
+      shift 4
+    done
+    [ -n "$(ls -A "$target.new")" ] || die "$kind has no build for $machine"
+  fi
+  printf '%s\n' "$version ${override:-release}" >"$target.new/version"
+  rm -rf "$target"
+  mv "$target.new" "$target"
 }
 
 cmd_up() {
@@ -375,10 +446,53 @@ cmd__hand() {
   esac
 }
 
+cmd_agent() {
+  local slot=$1 url=$3
+  valid "$slot"
+  local dir=$home/slots/$slot token
+  [ "$(state "$dir/up.status")" = exit:0 ] || die "slot $slot is not up"
+  [ -f "$dir/agent/run.sh" ] && [ -f "$dir/agent/instruction.md" ] || die "slot $slot has no agent to run"
+  case $(state "$dir/agent.status") in
+    running | exit:*) return 0 ;;
+  esac
+  endpoint "$dir" "$url" >/dev/null
+  IFS= read -r token
+  NANOEVAL_AGENT_TOKEN=$token spawn "$dir/agent.status" "$dir/agent.log" bash "$self" _agent "$@"
+}
+
+cmd__agent() {
+  local slot=$1 seconds=$2 url=$3
+  local dir=$home/slots/$slot workdir address run
+  workdir=$(cat "$dir/workdir")
+  address=$(endpoint "$dir" "$url")
+  if [ -n "$address" ]; then printf '%s\n' "$address" >>"$dir/allow"; fi
+  run=$(cat "$dir/agent/run.sh")
+  case $(cat "$dir/backend") in
+    dir)
+      cd "$workdir"
+      printf '%s\n' "$$" >"$dir/agent.pid"
+      NANOEVAL_AGENT_HOME=$dir/agent/home NANOEVAL_AGENT_RT=$rt exec timeout -k 10 "$seconds" sh -c "$run" sh <"$dir/agent/instruction.md" >"$dir/agent.out" 2>"$dir/agent.err"
+      ;;
+    krun)
+      mapfile -t options < <(guest_options "$dir")
+      if [ -f "$rt/ca.pem" ] && ! vm "$dir" exec "${options[@]}" -- sh -c 'test -f /etc/ssl/certs/ca-certificates.crt || test -f /etc/ssl/cert.pem || test -f /etc/pki/tls/certs/ca-bundle.crt'; then
+        options+=(--env SSL_CERT_FILE=/opt/nanoeval/ca.pem)
+      fi
+      vm "$dir" exec "${options[@]}" --user 0 -- sh -c 'mkdir -p "$1" && chmod 1777 "$1"' sh "$agent_home"
+      if [ -n "$address" ]; then options+=(--forward "$address"); fi
+      cd "$dir"
+      printf '%s\n' "$$" >"$dir/agent.pid"
+      exec timeout -k 10 "$seconds" "$krun/nanoeval-krun" exec "${options[@]}" --env NANOEVAL_AGENT_TOKEN --env NANOEVAL_AGENT_HOME="$agent_home" --env NANOEVAL_AGENT_RT=/opt/nanoeval -- \
+        sh -c "$run" sh <"$dir/agent/instruction.md" >"$dir/agent.out" 2>"$dir/agent.err"
+      ;;
+  esac
+}
+
 stop_hand() {
   local slot=$1
   local dir=$home/slots/$slot
   if [ -f "$dir/hand.pid" ]; then kill "$(cat "$dir/hand.pid")" 2>/dev/null || true; fi
+  if [ -f "$dir/agent.pid" ] && [ "$(state "$dir/agent.status")" = running ]; then kill "$(cat "$dir/agent.pid")" 2>/dev/null || true; fi
   reach "$dir" "$(cat "$dir/phase" 2>/dev/null || printf agent)"
 }
 
@@ -452,7 +566,7 @@ cmd__verify() {
       ;;
     krun)
       mapfile -t options < <(guest_options "$dir")
-      vm "$dir" exec "${options[@]}" --user 0 -- sh -c 'rm -rf /logs/verifier && mkdir -p /logs/verifier && chmod 777 /logs/verifier'
+      vm "$dir" exec "${options[@]}" --user 0 -- sh -c 'rm -rf /logs/verifier "$1" && mkdir -p /logs/verifier && chmod 777 /logs/verifier' sh "$agent_home"
       guest_copy "$dir" tests "${options[@]}"
       local kept='' fill='' key mode user
       if [ -f "$dir/verifier.cache" ]; then
@@ -612,6 +726,10 @@ cmd_log() {
       valid "$slot"
       file=$home/slots/$slot/$phase.log
       ;;
+    agent)
+      valid "$slot"
+      file=$home/slots/$slot/agent.err
+      ;;
     judge)
       valid "$slot"
       file=$home/slots/$slot/verifier/judge-request.json
@@ -643,10 +761,10 @@ cmd_file() {
 }
 
 command=${1:-}
-[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|tools|up|hand|solve|verify|down|destroy|prune|status|log|files|file> ...'
+[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|tools|agents|up|hand|agent|solve|verify|down|destroy|prune|status|log|files|file> ...'
 shift
 case $command in
-  probe | setup | _setup | tools | up | _up | hand | _hand | solve | _solve | verify | _verify | down | destroy | prune | status | log | files | file)
+  probe | setup | _setup | tools | agents | up | _up | hand | _hand | agent | _agent | solve | _solve | verify | _verify | down | destroy | prune | status | log | files | file)
     "cmd_$command" "$@"
     ;;
   *) die "unknown command: $command" ;;

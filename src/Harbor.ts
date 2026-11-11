@@ -1,4 +1,5 @@
 import type * as Atif from './Atif.ts'
+import * as Installed from './Installed.ts'
 import * as Result from './Result.ts'
 
 export type Job = {
@@ -17,6 +18,11 @@ const exceptions: Record<Result.FailureKind, string> = {
   internal: 'InternalError',
   verifier: 'VerifierError',
   verifier_timeout: 'VerifierTimeoutError',
+}
+
+function harness(attempt: Result.Attempt): string {
+  const provider = attempt.agent.provider
+  return provider === 'oracle' || Installed.is(provider) ? provider : 'nanocode'
 }
 
 export function trialName(attempt: Result.Attempt): string {
@@ -38,7 +44,7 @@ export function trialConfig(
     task: { path: attempt.task.name, source: options.source },
     trial_name: trialName(attempt),
     agent: {
-      name: attempt.agent.provider === 'oracle' ? 'oracle' : 'nanocode',
+      name: harness(attempt),
       model_name: attempt.agent.model,
       kwargs: {
         id: attempt.agent.id,
@@ -80,6 +86,9 @@ export function trial(attempt: Result.Attempt, options: trial.Options): Record<s
     value ? { started_at: iso(value.startedAt), finished_at: iso(value.finishedAt) } : null
   const usage = attempt.usage
   const oracle = attempt.agent.provider === 'oracle'
+  const installed = Installed.is(attempt.agent.provider)
+    ? Installed.releases[attempt.agent.provider]
+    : undefined
 
   return {
     id: trialId(options.job, attempt),
@@ -91,13 +100,14 @@ export function trial(attempt: Result.Attempt, options: trial.Options): Record<s
     task_checksum: attempt.task.checksum,
     config: trialConfig(attempt, options),
     agent_info: {
-      name: oracle ? 'oracle' : 'nanocode',
-      version: options.version,
+      name: harness(attempt),
+      version: installed ? installed.version : options.version,
       model_info: oracle
         ? null
         : {
             name: attempt.agent.model,
-            provider: attempt.agent.provider === 'claude' ? 'anthropic' : 'openai',
+            provider:
+              (installed?.provider ?? attempt.agent.provider) === 'claude' ? 'anthropic' : 'openai',
           },
     },
     agent_result: usage

@@ -1,5 +1,6 @@
 import type * as Admission from './Admission.ts'
 import type * as Eval from './Eval.ts'
+import type * as Installed from './Installed.ts'
 import type * as Result from './Result.ts'
 import type * as Sandbox from './Sandbox.ts'
 import type * as Verdict from './Verdict.ts'
@@ -23,7 +24,7 @@ export type Hello = { capabilities: Sandbox.Capabilities; held: readonly Held[];
 export type ClaimRequest = { offer: Admission.Offer; report: Report; runner: number }
 
 export type Claimed = {
-  agent: { id: string; oracle: boolean }
+  agent: { cli?: Installed.Agent; id: string; oracle: boolean }
   claim: string
   id: string
   leaseUntil: number
@@ -40,6 +41,8 @@ export type HeartbeatResponse = { finished: boolean; lost: string[] }
 export type Leave = { held: readonly Held[]; runner: number }
 
 export type Session = { name: string; token: string; url: string }
+
+export type Endpoint = { token: string; url: string }
 
 export type Agent =
   | { state: 'attached'; timeoutSec: number }

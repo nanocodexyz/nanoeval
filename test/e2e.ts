@@ -50,6 +50,27 @@ const label =
 const out = Path.resolve('output/e2e', label)
 const largeTestBytes = 3 * 1024 * 1024
 const attached = ['lost', 'resume', 'runners'].includes(scenario)
+const installed = model === 'installed'
+const fakeCli = Path.resolve('test/fixtures/fake-cli.sh')
+const fakeUsage = {
+  'claude-code': {
+    cacheWriteTokens: 5,
+    cachedTokens: 40,
+    costUsd: 0.0125,
+    inputTokens: 65,
+    modelCalls: 1,
+    outputTokens: 7,
+    toolCalls: 1,
+  },
+  'codex-cli': {
+    cacheWriteTokens: 0,
+    cachedTokens: 40,
+    inputTokens: 100,
+    modelCalls: 1,
+    outputTokens: 7,
+    toolCalls: 1,
+  },
+}
 
 const solutions: [marker: string, right: string, wrong: string][] = [
   [
@@ -83,6 +104,67 @@ function sse(events: [string, unknown][]): string {
 }
 
 let scriptedCalls = 0
+
+function fake(
+  request: Http.IncomingMessage,
+  body: { model?: string; prompt_base64?: string },
+): string {
+  const codex = request.url === '/v1/responses'
+  const credential = codex
+    ? request.headers['authorization'] === 'Bearer scripted-openai' &&
+      request.headers['x-api-key'] === undefined
+    : request.headers['x-api-key'] === 'scripted' && request.headers['authorization'] === undefined
+  if (!credential || (!codex && request.url !== '/v1/messages'))
+    throw new Error('the request of the installed agent did not carry the credential of the run')
+  const prompt = Buffer.from(body.prompt_base64 ?? '', 'base64').toString()
+  const solution = solutions.find(([marker]) => prompt.includes(marker))
+  if (!solution) throw new Error('the scripted model has no solution for this prompt')
+  const command = Buffer.from(body.model?.includes('sonnet') ? solution[2] : solution[1]).toString(
+    'base64',
+  )
+  return (
+    ': command ' +
+    command +
+    '\n\n' +
+    sse(
+      codex
+        ? [
+            [
+              'response.completed',
+              {
+                response: {
+                  model: body.model,
+                  usage: {
+                    input_tokens: 100,
+                    input_tokens_details: { cached_tokens: 40 },
+                    output_tokens: 7,
+                  },
+                },
+                type: 'response.completed',
+              },
+            ],
+          ]
+        : [
+            [
+              'message_start',
+              {
+                message: {
+                  model: body.model,
+                  usage: {
+                    cache_creation_input_tokens: 5,
+                    cache_read_input_tokens: 40,
+                    input_tokens: 20,
+                    output_tokens: 0,
+                  },
+                },
+                type: 'message_start',
+              },
+            ],
+            ['message_delta', { type: 'message_delta', usage: { output_tokens: 7 } }],
+          ],
+    )
+  )
+}
 
 function scripted(body: { messages?: unknown; model?: string }): string {
   const text = JSON.stringify(body.messages ?? [])
@@ -160,10 +242,11 @@ async function read(request: Http.IncomingMessage): Promise<Buffer> {
 }
 
 async function modelEndpoint(): Promise<{ close(): void; url: string | undefined }> {
-  if (model === 'scripted' || scenario === 'judge')
+  if (model === 'scripted' || installed || scenario === 'judge')
     return listen(async (request, response) => {
       try {
-        const reply = scripted(JSON.parse((await read(request)).toString()))
+        const body = JSON.parse((await read(request)).toString())
+        const reply = body.fake_cli ? fake(request, body) : scripted(body)
         response.writeHead(200, { 'content-type': 'text/event-stream' }).end(reply)
       } catch (error) {
         response.writeHead(400, { 'content-type': 'application/json' })
@@ -179,7 +262,9 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
   if (model === 'oracle' || model === 'claude-plan' || model === 'codex-plan')
     return { close() {}, url: undefined }
   if (model !== 'anthropic')
-    throw new Error('NANOEVAL_E2E_MODEL is scripted, oracle, anthropic, claude-plan or codex-plan')
+    throw new Error(
+      'NANOEVAL_E2E_MODEL is scripted, installed, oracle, anthropic, claude-plan or codex-plan',
+    )
   if (!process.env['ANTHROPIC_API_KEY'])
     throw new Error('NANOEVAL_E2E_MODEL=anthropic needs ANTHROPIC_API_KEY')
   if (!process.env['HTTPS_PROXY'] && !process.env['https_proxy'])
@@ -238,7 +323,15 @@ async function main(): Promise<void> {
       '\n',
   )
   const forward = slotForward ?? (scenario === 'closed' ? new URL(beacon.url).host : undefined)
+  if (installed)
+    Object.assign(process.env, {
+      NANOEVAL_AGENT_CLAUDE_CODE: fakeCli,
+      NANOEVAL_AGENT_CODEX_CLI: fakeCli,
+    })
   const hostPolicy = {
+    ...(installed
+      ? { NANOEVAL_AGENT_CLAUDE_CODE: fakeCli, NANOEVAL_AGENT_CODEX_CLI: fakeCli }
+      : {}),
     NANOEVAL_SLOT_ENV: Path.join(out, 'slot.env'),
     ...(caBundle ? { NANOEVAL_CA_BUNDLE: Path.resolve(caBundle) } : {}),
     ...(forward ? { NANOEVAL_SLOT_FORWARD: forward } : {}),
@@ -268,7 +361,12 @@ async function main(): Promise<void> {
     LOCAL_SANDBOX_URL: sandboxd.url,
     TICK_MS: tickMs,
     ...(upstream.url ? { ANTHROPIC_BASE_URL: upstream.url } : {}),
-    ...(model === 'scripted' || scenario === 'judge' ? { ANTHROPIC_API_KEY: 'scripted' } : {}),
+    ...(model === 'scripted' || installed || scenario === 'judge'
+      ? { ANTHROPIC_API_KEY: 'scripted' }
+      : {}),
+    ...(installed && upstream.url
+      ? { OPENAI_API_KEY: 'scripted-openai', OPENAI_BASE_URL: upstream.url }
+      : {}),
     ...(model === 'anthropic' ? { ANTHROPIC_API_KEY: process.env['ANTHROPIC_API_KEY']! } : {}),
     ...plan?.vars,
     ...relay?.vars,
@@ -375,7 +473,12 @@ async function main(): Promise<void> {
     const closed = scenario === 'closed'
     const isolated = scenario === 'network'
     const judged = scenario === 'judge'
-    if (scenario !== 'tasks' && model !== 'scripted' && !(judged && model === 'oracle'))
+    if (
+      scenario !== 'tasks' &&
+      model !== 'scripted' &&
+      !(judged && model === 'oracle') &&
+      !(installed && ['failures', 'lost', 'resume', 'runners'].includes(scenario))
+    )
       throw new Error('the ' + scenario + ' scenario runs on the scripted model')
     if (isolated) {
       if (backend !== 'krun') throw new Error('the network scenario runs on krun slots')
@@ -417,27 +520,41 @@ async function main(): Promise<void> {
     const agents: Config.Agent[] =
       model === 'oracle'
         ? [oracle]
-        : model === 'codex-plan'
+        : installed
           ? [
-              {
-                id: 'nanocode',
-                model: codexModel,
-                provider: 'codex',
-                ...(thinking ? { thinking } : {}),
-              },
+              { id: 'right', model: 'gpt-right', provider: 'codex-cli' as const },
+              ...(failures
+                ? []
+                : [
+                    {
+                      id: 'wrong',
+                      model: 'claude-sonnet-wrong',
+                      provider: 'claude-code' as const,
+                      thinking: 'high',
+                    },
+                  ]),
             ]
-          : cached || closed || failures || isolated || packing || model !== 'scripted'
+          : model === 'codex-plan'
             ? [
                 {
-                  id: cached || closed || failures || isolated || packing ? 'right' : 'nanocode',
-                  model: realModel,
-                  provider: 'claude',
+                  id: 'nanocode',
+                  model: codexModel,
+                  provider: 'codex',
+                  ...(thinking ? { thinking } : {}),
                 },
               ]
-            : [
-                { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
-                { id: 'wrong', model: 'claude-sonnet-4-6', provider: 'claude' },
-              ]
+            : cached || closed || failures || isolated || packing || model !== 'scripted'
+              ? [
+                  {
+                    id: cached || closed || failures || isolated || packing ? 'right' : 'nanocode',
+                    model: realModel,
+                    provider: 'claude',
+                  },
+                ]
+              : [
+                  { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
+                  { id: 'wrong', model: 'claude-sonnet-4-6', provider: 'claude' },
+                ]
 
     const api = client({ token, url })
     const store = blobStore(storeKind === 'r2' ? 'r2' : storeRoot, { token, url })
@@ -918,7 +1035,7 @@ async function main(): Promise<void> {
           'passed',
           await api.artifact(created.id, attempt.id, 'verifier/test-stdout.txt'),
         )
-    } else if (model === 'scripted') {
+    } else if (model === 'scripted' || installed) {
       assert.equal(status['agents'].right.passed, total / 2)
       assert.equal(status['agents'].wrong.failed, total / 2)
       assert.equal(status['agents'].right.passAtK['1'], 1)
@@ -956,11 +1073,52 @@ async function main(): Promise<void> {
         assert.equal(trajectory.schema_version, 'ATIF-v1.7')
         assert.ok(trajectory.steps.length >= 2)
         assert.ok(trajectory.final_metrics.extra.tool_calls >= 1)
+        if (installed) {
+          const kind = detail['result'].agent.provider as keyof typeof fakeUsage
+          assert.deepEqual(detail['result'].usage, fakeUsage[kind])
+          assert.equal(trajectory.agent.name, kind)
+          assert.equal(trajectory.steps[0].source, 'user')
+          for (const name of ['agent/events.jsonl', 'agent/model-requests.jsonl'])
+            assert.ok(detail['artifacts'].includes(name), name)
+          const requests = (
+            await api.artifact(created.id, attempt.id, 'agent/model-requests.jsonl')
+          )
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line))
+          assert.deepEqual(
+            requests
+              .filter((entry) => entry.claim === detail['attempt'].claims)
+              .map((entry) => [entry.path, entry.status]),
+            [[kind === 'codex-cli' ? 'responses' : 'v1/messages', 200]],
+          )
+          assert.equal(detail['result'].session.startsWith(created.id), true)
+        }
       }
       for (const [phase, span] of Object.entries(
         detail['result'].timing as Record<string, { finishedAt: number; startedAt: number }>,
       ))
         (phases[phase] ??= []).push(span.finishedAt - span.startedAt)
+    }
+
+    if (installed) {
+      const first = (status['attempts'] as { id: string }[])[0]!
+      const presented: Record<string, string>[] = [
+        {},
+        { authorization: 'Bearer wrong' },
+        { 'x-api-key': token },
+      ]
+      for (const headers of presented) {
+        const refused = await fetch(
+          url + '/v1/runs/' + created.id + '/model/' + first.id + '/responses',
+          { body: '{}', headers, method: 'POST' },
+        )
+        assert.equal(refused.status, 401, 'the model endpoint of an attempt ends with its agent')
+      }
+      assert.ok(
+        Math.abs(status['spend'].modelUsd - fakeUsage['claude-code'].costUsd * (total / 2)) < 1e-9,
+        'the cost an installed agent reports counts against the model budget',
+      )
     }
 
     const job = JSON.parse(files['result.json']!)
