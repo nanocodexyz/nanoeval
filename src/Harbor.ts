@@ -33,8 +33,7 @@ export function trialConfig(
   options: { job: Job; source: string },
 ): Record<string, unknown> {
   const sandbox = attempt.sandbox
-  const type =
-    sandbox?.provider === 'e2b' ? 'e2b' : sandbox?.backend === 'docker' ? 'docker' : undefined
+  const type = sandbox?.provider === 'e2b' ? 'e2b' : undefined
   return {
     task: { path: attempt.task.name, source: options.source },
     trial_name: trialName(attempt),
