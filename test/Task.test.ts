@@ -3,7 +3,9 @@ import { test } from 'node:test'
 import { loadTask } from '../cli/nanoeval.ts'
 import * as Bytes from '../src/internal/Bytes.ts'
 import * as Config from '../src/Config.ts'
+import * as Eval from '../src/Eval.ts'
 import * as Task from '../src/Task.ts'
+import * as Rows from './Rows.ts'
 
 const manifest = (extra = '') => `schema_version = "1.1"
 [task]
@@ -97,24 +99,27 @@ test('a solution is shipped only when asked for, and only an oracle run takes it
     agents: [{ id: 'oracle', model: 'solution', provider: 'oracle' }],
     attempts: 1,
     budget: { sandboxUsd: 0 },
-    limits: { attachSec: 60, setupSec: 600, stepRetries: 3 },
+    eval: { name: 'example' },
+    limits: { attachSec: 60, claims: 3, leaseSec: 60, setupSec: 600, stepRetries: 3 },
     name: 'example',
     sandbox: {
-      backend: 'docker',
-      docker: 'keep',
-      limits: 'enforce',
+      backend: 'krun',
       max: 1,
       network: 'host',
+      pollMs: 250,
       provider: 'local',
       slots: 4,
       timeoutSec: 3600,
     },
-    tasks: [solved],
   }
   const model = { id: 'haiku', model: 'claude-haiku-4-5', provider: 'claude' }
-  assert.equal(Config.parse(config).agents[0]!.provider, 'oracle')
-  assert.throws(() => Config.parse({ ...config, tasks: [plain] }), Config.InvalidError)
-  assert.throws(() => Config.parse({ ...config, agents: [model] }), Config.InvalidError)
+  const parsed = Config.parse(config)
+  assert.equal(parsed.agents[0]!.provider, 'oracle')
+  Config.check(parsed, [Rows.row(solved)])
+  assert.throws(() => Config.check(parsed, [Rows.row(plain)]), Config.InvalidError)
+  assert.throws(() => Config.check(parsed, [Rows.row(solved, 'dir')]), Config.InvalidError)
+  assert.throws(() => Config.check(parsed, []), Config.InvalidError)
+  Config.check(Config.parse({ ...config, agents: [model] }), [Rows.row(plain)])
   assert.throws(
     () => Config.parse({ ...config, agents: [...config.agents, model] }),
     Config.InvalidError,
@@ -176,32 +181,49 @@ test('a run configuration is validated and tasks without internet are refused', 
     agents: [{ id: 'haiku', model: 'claude-haiku-4-5', provider: 'claude' }],
     attempts: 2,
     budget: { sandboxUsd: 0 },
-    limits: { attachSec: 60, setupSec: 600, stepRetries: 3 },
+    eval: { name: 'example', version: '0123456789ab' },
+    limits: { attachSec: 60, claims: 3, leaseSec: 60, setupSec: 600, stepRetries: 3 },
     name: 'example',
     sandbox: {
-      backend: 'docker',
-      docker: 'keep',
-      limits: 'enforce',
+      backend: 'krun',
       max: 1,
       network: 'host',
+      pollMs: 250,
       provider: 'local',
       slots: 4,
       timeoutSec: 3600,
     },
-    tasks: [task],
   }
   assert.equal(Config.parse(config).attempts, 2)
-  assert.equal(Config.parse(config).sandbox.images, 'keep')
+  assert.deepEqual(Config.parse(config).eval, { name: 'example', version: '0123456789ab' })
+  assert.equal(Config.parse(config).sandbox.disks, 'keep')
   assert.equal(
-    Config.parse({ ...config, sandbox: { ...config.sandbox, images: 'remove' } }).sandbox.images,
+    Config.parse({ ...config, sandbox: { ...config.sandbox, disks: 'remove' } }).sandbox.disks,
     'remove',
   )
   assert.throws(
-    () => Config.parse({ ...config, sandbox: { ...config.sandbox, images: 'all' } }),
+    () => Config.parse({ ...config, sandbox: { ...config.sandbox, disks: 'all' } }),
     Config.InvalidError,
   )
+  assert.equal(Config.parse({ ...config, sandbox: { ...config.sandbox, max: 0 } }).sandbox.max, 0)
   assert.throws(() => Config.parse({ ...config, attempts: 0 }), Config.InvalidError)
   assert.throws(() => Config.parse({ ...config, agents: [] }), Config.InvalidError)
+  assert.throws(() => Config.parse({ ...config, eval: { name: 'Example' } }), Eval.InvalidError)
+  assert.throws(
+    () => Config.parse({ ...config, limits: { ...config.limits, claims: 0 } }),
+    Config.InvalidError,
+  )
+  assert.throws(
+    () => Config.parse({ ...config, rerun: { run: 'not-a-run', select: 'failed' } }),
+    Config.InvalidError,
+  )
+  assert.deepEqual(
+    Config.parse({
+      ...config,
+      rerun: { run: '01234567-89ab-cdef-0123-456789abcdef', select: 'errored' },
+    }).rerun,
+    { run: '01234567-89ab-cdef-0123-456789abcdef', select: 'errored' },
+  )
   assert.throws(
     () => Config.parse({ ...config, sandbox: { ...config.sandbox, provider: 'modal' } }),
     Config.InvalidError,
@@ -212,34 +234,33 @@ test('a run configuration is validated and tasks without internet are refused', 
   )
 
   const offline = await Task.load(source(manifest('allow_internet = false\n')))
-  assert.throws(() => Config.parse({ ...config, tasks: [offline] }), Task.UnsupportedError)
+  Config.check(Config.parse(config), [Rows.row(task)])
+  assert.throws(
+    () => Config.check(Config.parse(config), [Rows.row(offline)]),
+    Config.UnsupportedError,
+  )
 })
 
-test('a slot network is one its backend has, and private by default on a local machine', async () => {
-  const task = await Task.load(source(manifest()))
+test('a slot network is one its backend has, and private by default for microVMs', async () => {
   const config = (backend: string, network: string) => ({
     agents: [{ id: 'haiku', model: 'claude-haiku-4-5', provider: 'claude' }],
     attempts: 1,
     budget: { sandboxUsd: 0 },
-    limits: { attachSec: 60, setupSec: 600, stepRetries: 3 },
+    eval: { name: 'example' },
+    limits: { attachSec: 60, claims: 3, leaseSec: 60, setupSec: 600, stepRetries: 3 },
     name: 'example',
     sandbox: {
       backend,
-      docker: 'keep',
-      limits: 'enforce',
       max: 1,
       network,
+      pollMs: 250,
       provider: 'local',
       slots: 4,
       timeoutSec: 3600,
     },
-    tasks: [task],
   })
   for (const [backend, network] of [
     ['dir', 'host'],
-    ['docker', 'bridge'],
-    ['docker', 'host'],
-    ['docker', 'private'],
     ['krun', 'host'],
     ['krun', 'private'],
   ] as const)
@@ -247,15 +268,13 @@ test('a slot network is one its backend has, and private by default on a local m
   for (const [backend, network] of [
     ['dir', 'bridge'],
     ['dir', 'private'],
-    ['docker', 'none'],
+    ['docker', 'host'],
     ['krun', 'bridge'],
   ] as const)
     assert.throws(() => Config.parse(config(backend, network)), Config.InvalidError)
 
-  assert.equal(Config.network({ backend: 'docker', provider: 'local' }), 'private')
-  assert.equal(Config.network({ backend: 'krun', provider: 'local' }), 'private')
-  assert.equal(Config.network({ backend: 'dir', provider: 'local' }), 'host')
-  assert.equal(Config.network({ backend: 'docker', provider: 'e2b' }), 'bridge')
+  assert.equal(Config.network({ backend: 'krun' }), 'private')
+  assert.equal(Config.network({ backend: 'dir' }), 'host')
 })
 
 test('a task may answer with its final message and ask for a judge', async () => {

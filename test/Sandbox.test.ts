@@ -5,6 +5,8 @@ import * as Os from 'node:os'
 import * as Path from 'node:path'
 import { after, before, test } from 'node:test'
 import { loadTask } from '../cli/nanoeval.ts'
+import * as Converter from '../sandbox/Converter.ts'
+import * as Host from '../sandbox/Host.ts'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
 import * as Bytes from '../src/internal/Bytes.ts'
 import * as Local from '../src/Local.ts'
@@ -118,8 +120,6 @@ test('slots in one sandbox verify their own workspaces with the dir backend', as
       slots.up(slot, {
         backend: 'dir',
         cpus: 1,
-        image: undefined,
-        limits: 'none',
         memoryMb: 256,
         network: 'host',
         storageMb: 1024,
@@ -162,8 +162,6 @@ test('slots in one sandbox verify their own workspaces with the dir backend', as
       slots.up('Bad Slot', {
         backend: 'dir',
         cpus: 1,
-        image: undefined,
-        limits: 'none',
         memoryMb: 1,
         network: 'host',
         storageMb: 1024,
@@ -197,8 +195,6 @@ test('a slot runs the task solution in its workspace before the verifier', async
   const up = slots.up('solved', {
     backend: 'dir',
     cpus: 1,
-    image: undefined,
-    limits: 'none',
     memoryMb: 256,
     network: 'host',
     storageMb: 1024,
@@ -251,8 +247,6 @@ test('a slot lists and returns every file its verifier wrote', async () => {
     slots.up('files', {
       backend: 'dir',
       cpus: 1,
-      image: undefined,
-      limits: 'none',
       memoryMb: 1,
       network: 'host',
       storageMb: 1024,
@@ -278,9 +272,9 @@ test('a slot lists and returns every file its verifier wrote', async () => {
   await provider.kill(created.handle)
 })
 
-test('pruning removes the image disks that no microVM holds', async () => {
+test('pruning removes the environment disks that no microVM holds', async () => {
   const cache = Fs.mkdtempSync(Path.join(Os.tmpdir(), 'nanoeval-cache-'))
-  const base = Path.join(cache, 'krun', 'disk-128')
+  const base = Path.join(cache, 'disks', 'disk-128')
   const files = ['.ext4', '.env', '.user', '.workdir'].map((suffix) => base + suffix)
   Fs.mkdirSync(Path.dirname(base), { recursive: true })
   for (const file of files) Fs.writeFileSync(file, '')
@@ -331,8 +325,6 @@ test('taking a slot down ends the work it still runs', async () => {
     slots.up('busy', {
       backend: 'dir',
       cpus: 1,
-      image: undefined,
-      limits: 'none',
       memoryMb: 1,
       network: 'host',
       storageMb: 1024,
@@ -377,8 +369,6 @@ test('deleting a sandbox ends the work its slots still run', async () => {
     slots.up('left', {
       backend: 'dir',
       cpus: 1,
-      image: undefined,
-      limits: 'none',
       memoryMb: 1,
       network: 'host',
       storageMb: 1024,
@@ -418,8 +408,6 @@ test('a slot refuses a network its backend does not have', async () => {
     slots.up('alone', {
       backend: 'dir',
       cpus: 1,
-      image: undefined,
-      limits: 'none',
       memoryMb: 256,
       network: 'private',
       storageMb: 1024,
@@ -461,9 +449,7 @@ test(
       await sandbox.write(slots.script, script)
       await Sandbox.run(
         sandbox,
-        cached(
-          slots.setup({ backend: 'krun', docker: 'keep', network: 'host', runtime: Slot.runtime }),
-        ),
+        cached(slots.setup({ backend: 'krun', network: 'host', runtime: Slot.runtime })),
       )
       assert.equal(await wait(async () => (await status()).setup, 12_000), 'exit:0')
       const capabilities = JSON.parse(
@@ -482,14 +468,22 @@ test(
           })),
         ),
       )
+      const disk = cache + '/disks/fixture'
+      Fs.mkdirSync(cache + '/disks', { recursive: true })
+      await Host.describe(
+        disk,
+        await Converter.create({ home: cache + '/converter' }).convert(
+          { context: 'tasks/extract-todos/environment', storageMb: task.environment.storageMb },
+          disk + '.ext4',
+        ),
+      )
       await Sandbox.run(
         sandbox,
         cached(
           slots.up('vm', {
             backend: 'krun',
             cpus: task.environment.cpus,
-            image: undefined,
-            limits: 'enforce',
+            disk,
             memoryMb: task.environment.memoryMb,
             network: 'host',
             storageMb: task.environment.storageMb,
@@ -521,7 +515,7 @@ test(
       assert.equal((await status()).slots['vm']!.reward, 1)
       assert.equal((await guest('ls /tests')).stdout, 'test.sh\n')
 
-      const disks = () => Fs.readdirSync(cache + '/krun').filter((name) => name.endsWith('.ext4'))
+      const disks = () => Fs.readdirSync(cache + '/disks').filter((name) => name.endsWith('.ext4'))
       const prune = (mode: string) =>
         Sandbox.run(sandbox, cached('bash ' + Sandbox.quote(slots.script) + ' prune ' + mode))
       assert.equal(disks().length, 1)

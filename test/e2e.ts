@@ -1,27 +1,31 @@
 import assert from 'node:assert/strict'
-import { execFileSync, spawn, spawnSync } from 'node:child_process'
+import { type ChildProcess, spawn, spawnSync } from 'node:child_process'
 import * as Crypto from 'node:crypto'
 import * as Fs from 'node:fs'
 import * as Http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import * as Os from 'node:os'
 import * as Path from 'node:path'
-import { client, exportJob, loadTask, oracle, summary } from '../cli/nanoeval.ts'
+import * as Import from '../cli/Import.ts'
+import { blobStore, client, exportJob, oracle, summary } from '../cli/nanoeval.ts'
 import * as Plan from '../cli/Plan.ts'
+import type * as Dataset from '../datasets/Dataset.ts'
+import * as Converter from '../sandbox/Converter.ts'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
+import * as Store from '../sandbox/Store.ts'
 import * as Config from '../src/Config.ts'
+import type * as Eval from '../src/Eval.ts'
 import * as Krun from './Krun.ts'
 import * as Network from './Network.ts'
 
 const model = process.env['NANOEVAL_E2E_MODEL'] ?? 'scripted'
 const backend = (process.env['NANOEVAL_E2E_BACKEND'] ??
-  'docker') as Config.Config['sandbox']['backend']
+  'krun') as Config.Config['sandbox']['backend']
 const taskNames = (process.env['NANOEVAL_E2E_TASKS'] ?? 'extract-todos,uppercase-message').split(
   ',',
 )
 const attempts = Number(process.env['NANOEVAL_E2E_ATTEMPTS'] ?? '2')
 const slots = Number(process.env['NANOEVAL_E2E_SLOTS'] ?? '4')
-const limits = (process.env['NANOEVAL_E2E_LIMITS'] ?? 'enforce') as 'enforce' | 'none'
 const realModel = process.env['NANOEVAL_E2E_ANTHROPIC_MODEL'] ?? 'claude-haiku-4-5'
 const codexModel = process.env['NANOEVAL_E2E_CODEX_MODEL'] ?? 'gpt-6-luna'
 const thinking = process.env['NANOEVAL_E2E_THINKING']
@@ -31,15 +35,21 @@ const restartAfterMs = Number(process.env['NANOEVAL_E2E_RESTART_AFTER_MS'] ?? '0
 const caBundle = process.env['NANOEVAL_E2E_CA_BUNDLE']
 const slotForward = process.env['NANOEVAL_E2E_SLOT_FORWARD']
 const network = (process.env['NANOEVAL_E2E_NETWORK'] ??
-  Config.network({ backend, provider: 'local' })) as Config.Config['sandbox']['network']
+  Config.network({ backend })) as Config.Config['sandbox']['network']
 const tickMs = process.env['NANOEVAL_E2E_TICK_MS'] ?? '500'
+const pollMs = Number(process.env['NANOEVAL_E2E_POLL_MS'] ?? '250')
+const storeKind = process.env['NANOEVAL_E2E_STORE'] ?? 'directory'
+const leaseSec = Number(process.env['NANOEVAL_E2E_LEASE_SEC'] ?? '60')
 const label =
   process.env['NANOEVAL_E2E_LABEL'] ??
-  model + '-' + backend + (scenario === 'tasks' ? '' : '-' + scenario)
+  model +
+    '-' +
+    backend +
+    (scenario === 'tasks' ? '' : '-' + scenario) +
+    (storeKind === 'directory' ? '' : '-' + storeKind)
 const out = Path.resolve('output/e2e', label)
 const largeTestBytes = 3 * 1024 * 1024
-const stamp = Crypto.randomBytes(6).toString('hex')
-const keptImage = 'nanoeval-e2e-kept:' + stamp
+const attached = ['lost', 'resume', 'runners'].includes(scenario)
 
 const solutions: [marker: string, right: string, wrong: string][] = [
   [
@@ -193,24 +203,6 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
   })
 }
 
-function inspect(ids: readonly string[]): [name: string, limits: string, env: string][] {
-  if (!ids.length) return []
-  try {
-    return execFileSync('docker', [
-      'inspect',
-      '--format',
-      '{{.Name}}\t{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}}\t{{json .Config.Env}}',
-      ...ids,
-    ])
-      .toString()
-      .trim()
-      .split('\n')
-      .map((line) => line.split('\t') as [string, string, string])
-  } catch {
-    return []
-  }
-}
-
 async function freePort(): Promise<number> {
   const probe = await listen(() => {})
   probe.close()
@@ -228,6 +220,8 @@ async function main(): Promise<void> {
   Fs.mkdirSync(out, { recursive: true })
   const token = Crypto.randomBytes(16).toString('hex')
   const sandboxToken = Crypto.randomBytes(16).toString('hex')
+  const cache = Path.join(out, 'cache')
+  const storeRoot = Path.join(out, 'store')
 
   const port = await freePort()
   const beacon = await listen((_, response) => void response.end('the host\n'))
@@ -241,13 +235,13 @@ async function main(): Promise<void> {
       port +
       '\n',
   )
+  const hostPolicy = {
+    NANOEVAL_SLOT_ENV: Path.join(out, 'slot.env'),
+    ...(caBundle ? { NANOEVAL_CA_BUNDLE: Path.resolve(caBundle) } : {}),
+    ...(slotForward ? { NANOEVAL_SLOT_FORWARD: slotForward } : {}),
+  }
   const sandboxd = await Sandboxd.start({
-    env: {
-      NANOEVAL_SLOT_ENV: Path.join(out, 'slot.env'),
-      ...(scenario === 'images' ? { NANOEVAL_CACHE: Path.join(out, 'cache') } : {}),
-      ...(caBundle ? { NANOEVAL_CA_BUNDLE: Path.resolve(caBundle) } : {}),
-      ...(slotForward ? { NANOEVAL_SLOT_FORWARD: slotForward } : {}),
-    },
+    env: { ...hostPolicy, NANOEVAL_CACHE: cache, NANOEVAL_STORE: storeRoot },
     execTimeoutMs: 600_000,
     host: '127.0.0.1',
     port: 0,
@@ -321,6 +315,54 @@ async function main(): Promise<void> {
   }
   let worker = await start()
 
+  const runners: { child: ChildProcess; home: string; name: string }[] = []
+  const attach = (run: string, name: string) => {
+    const home = Path.join(out, 'runner-' + name)
+    Fs.mkdirSync(home, { recursive: true })
+    const output = Fs.openSync(Path.join(out, 'runner-' + name + '.log'), 'a')
+    const child = spawn(
+      process.execPath,
+      [
+        Path.resolve('cli/nanoeval.ts'),
+        'runner',
+        '--url',
+        url,
+        '--run',
+        run,
+        '--home',
+        home,
+        '--cache',
+        Path.join(out, 'cache-' + name),
+        '--store',
+        storeRoot,
+        '--slots',
+        String(slots),
+        '--slot-env',
+        Path.join(out, 'slot.env'),
+        ...(caBundle ? ['--ca-bundle', Path.resolve(caBundle)] : []),
+        ...(slotForward ? ['--slot-forward', slotForward] : []),
+      ],
+      { env: { ...process.env, NANOEVAL_TOKEN: token }, stdio: ['ignore', output, output] },
+    )
+    Fs.closeSync(output)
+    const entry = { child, home, name }
+    runners.push(entry)
+    return entry
+  }
+  const runnerId = (home: string | undefined): number | undefined => {
+    try {
+      return (
+        JSON.parse(Fs.readFileSync(Path.join(home ?? '', 'runner.json'), 'utf8')) as Config.Runner
+      ).runner
+    } catch {
+      return undefined
+    }
+  }
+  const destroy = (home: string) =>
+    spawnSync('bash', [Path.resolve('sandbox/slot.sh'), 'destroy'], {
+      env: { ...process.env, NANOEVAL_HOME: home },
+    })
+
   try {
     const unauthorized = await fetch(url + '/v1/runs', { body: '{}', method: 'POST' })
     assert.equal(unauthorized.status, 401)
@@ -331,7 +373,7 @@ async function main(): Promise<void> {
     if (scenario !== 'tasks' && model !== 'scripted' && !(judged && model === 'oracle'))
       throw new Error('the ' + scenario + ' scenario runs on the scripted model')
     if (isolated) {
-      if (backend === 'dir') throw new Error('the network scenario runs on docker or krun slots')
+      if (backend !== 'krun') throw new Error('the network scenario runs on krun slots')
       await Network.isolation({
         backend,
         hostPort: Number(new URL(beacon.url).port),
@@ -340,6 +382,7 @@ async function main(): Promise<void> {
       })
     }
     const packing = scenario === 'packing'
+    const lost = 'tasks/write-greeting'
     const directories = judged
       ? ['final-answer', 'judged-answer'].map((name) => Path.join('test/fixtures', name))
       : packing
@@ -348,14 +391,15 @@ async function main(): Promise<void> {
           )
         : failures
           ? [
-              'large-tests',
-              'no-reward',
-              'slow-agent',
-              'unreported-tests',
-              ...(backend === 'dir'
-                ? []
-                : ['background-process', 'broken-environment', 'memory-limit', 'plain-user']),
-            ].map((name) => Path.join('test/fixtures', name))
+              ...[
+                'large-tests',
+                'no-reward',
+                'slow-agent',
+                'unreported-tests',
+                ...(backend === 'dir' ? [] : ['background-process', 'memory-limit', 'plain-user']),
+              ].map((name) => Path.join('test/fixtures', name)),
+              lost,
+            ]
           : isolated
             ? [Network.fixture]
             : taskNames.map((name) => Path.join('tasks', name))
@@ -383,72 +427,123 @@ async function main(): Promise<void> {
                 { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
                 { id: 'wrong', model: 'claude-sonnet-4-6', provider: 'claude' },
               ]
-    const tasks = await Promise.all(
-      directories.map((directory) => loadTask(directory, { solution: model === 'oracle' })),
-    )
-    for (const task of tasks)
-      if (task.name === 'fixtures/large-tests')
-        task.files['tests/large.bin'] = Buffer.alloc(largeTestBytes).toString('base64')
-    if (packing) for (const task of tasks.slice(0, 2)) task.environment.memoryMb = 512
-    if (scenario === 'images') {
-      const [built, existing] = tasks
-      const dockerfile = Buffer.from(built!.files['environment/Dockerfile']!, 'base64').toString()
-      built!.files['environment/Dockerfile'] = Buffer.from(
-        dockerfile + '\nLABEL nanoeval.e2e=' + stamp + '\n',
-      ).toString('base64')
-      execFileSync('docker', [
-        'build',
-        '-q',
-        '-t',
-        keptImage,
-        Path.join('tasks', taskNames[1]!, 'environment'),
-      ])
-      existing!.environment.dockerImage = keptImage
-      for (const path of Object.keys(existing!.files))
-        if (path.startsWith('environment/')) delete existing!.files[path]
+
+    const api = client({ token, url })
+    const store = blobStore(storeKind === 'r2' ? 'r2' : storeRoot, { token, url })
+    const options: Import.Options = {
+      cache,
+      converter: Converter.create({ home: Path.join(cache, 'converter') }),
+      format: backend === 'krun' ? 'disk' : 'dir',
+      store,
     }
+    async function* cases(): AsyncIterable<Dataset.Case> {
+      for (const directory of directories) {
+        const item = await Import.readDirectory(directory)
+        if (directory.endsWith('large-tests'))
+          item.files['tests/large.bin'] = Buffer.alloc(largeTestBytes)
+        yield item
+      }
+    }
+    const importStarted = Date.now()
+    const imported = await Import.cases(cases(), options)
+    const importMs = Date.now() - importStarted
+    if (packing) for (const task of imported.tasks.slice(0, 2)) task.resources.memoryMb = 512
+    const evalName = 'e2e-' + label.replace(/[^a-z0-9.-]/g, '-')
+    const { version } = await api.putVersion(evalName, {
+      ...Import.local,
+      tasks: imported.tasks,
+    })
+    assert.equal(version.tasks, directories.length)
+    assert.equal((await api.evals()).evals[0]!.digest, version.digest)
+    assert.deepEqual(
+      (await api.eval(evalName + '@' + version.digest.slice(0, 12))).entries.map(
+        (entry) => entry.id,
+      ),
+      directories.map((directory) => Path.basename(directory)).sort(),
+    )
+    if (backend === 'krun' && scenario === 'tasks') {
+      await assert.rejects(
+        Import.cases(
+          Import.directories([Path.join('test/fixtures', 'broken-environment')]),
+          options,
+        ),
+        /converter failed at build/,
+        'an environment that does not build is refused when it is imported',
+      )
+      const again = await Import.cases(cases(), options)
+      assert.ok(
+        again.timings.every((timing) => timing.reused),
+        'importing again converts nothing',
+      )
+    }
+
+    const blobOf = (task: Eval.Task) =>
+      task.environment.kind === 'disk' ? task.environment.disk : task.environment.files
+    const blobFile = (blob: Eval.Blob) =>
+      Path.join(storeRoot, 'sha256', blob.digest.slice(0, 2), blob.digest)
+    if (failures) {
+      const task = imported.tasks.find((candidate) => candidate.id === Path.basename(lost))!
+      Fs.rmSync(blobFile(blobOf(task)))
+    }
+    let kept: string | undefined
+    if (scenario === 'disks') {
+      const task = imported.tasks[1]!
+      assert.equal(task.environment.kind, 'disk')
+      kept = Path.join(cache, 'disks', blobOf(task).digest + '.ext4')
+      Fs.mkdirSync(Path.join(cache, 'blobs'), { recursive: true })
+      Fs.mkdirSync(Path.join(cache, 'disks'), { recursive: true })
+      await options.converter.unpack(
+        await Store.ensure([store], { blob: blobOf(task), cache }),
+        kept,
+      )
+      Fs.rmSync(Path.join(cache, 'blobs', blobOf(task).digest))
+    }
+
     const config: Config.Config = {
       agents,
       attempts: failures || packing ? 1 : isolated ? slots : attempts,
       budget: { modelUsd: 1, sandboxUsd: 0 },
+      eval: { name: evalName, version: version.digest },
       ...(judged ? { judge: { model: 'claude-haiku-4-5', provider: 'claude' as const } } : {}),
-      limits: { attachSec: 60, setupSec: scenario === 'disk' ? 5 : 600, stepRetries: 3 },
+      limits: {
+        attachSec: 60,
+        claims: 3,
+        leaseSec,
+        setupSec: scenario === 'disk' ? 5 : 600,
+        stepRetries: failures ? 1 : 3,
+      },
       name: 'e2e-' + label,
       sandbox: {
         backend,
-        docker: 'keep',
+        disks: scenario === 'disks' ? 'remove' : 'keep',
         ...(scenario === 'disk' ? { freeDiskMb: 2 ** 40 } : {}),
-        images: scenario === 'images' ? 'remove' : 'keep',
-        limits,
-        max: 1,
+        max: attached ? 0 : 1,
         ...(packing ? { memoryMb: 768 } : {}),
         network,
+        pollMs,
         provider: 'local',
         slots,
         timeoutSec: 3600,
       },
-      tasks,
     }
-    const api = client({ token, url })
     const started = Date.now()
     const created = await api.create(config)
     const total = directories.length * agents.length * config.attempts
     assert.equal(created.attempts, total)
+    assert.deepEqual(created.eval, { name: evalName, version: version.digest })
+    if (attached) {
+      attach(created.id, 'a')
+      if (scenario !== 'resume') attach(created.id, 'b')
+    }
 
     const sandboxes = Path.join(out, 'sandboxes')
-    const observed = new Map<string, { env: string[]; limits: string }>()
+    const machines = () => [
+      ...Krun.machines(sandboxes),
+      ...runners.flatMap((runner) => Krun.machines(Path.dirname(runner.home))),
+    ]
     const sizes = new Set<string>()
     const sized = new Set(
-      config.tasks.map(
-        (task) => Math.ceil(task.environment.cpus) + ' ' + task.environment.memoryMb,
-      ),
-    )
-    const allowed = new Set(
-      config.tasks.map((task) =>
-        limits === 'enforce'
-          ? task.environment.cpus * 1e9 + ' ' + task.environment.memoryMb * 1024 * 1024
-          : '0 0',
-      ),
+      imported.tasks.map((task) => Math.ceil(task.resources.cpus) + ' ' + task.resources.memoryMb),
     )
     let status: Record<string, any>
     let peak = 0
@@ -459,63 +554,116 @@ async function main(): Promise<void> {
       peak = Math.max(peak, status['counts'].active)
       if (status['state'] === 'finished') break
       if (status['counts'].active > 0) activeAt ??= Date.now()
-      if (backend === 'docker' && scenario !== 'restart')
-        for (const [name, value, env] of inspect(Network.containers(sandboxes)))
-          observed.set(name, { env: JSON.parse(env) as string[], limits: value })
-      if (backend === 'krun') for (const size of Krun.sizes(sandboxes)) sizes.add(size)
+      if (backend === 'krun')
+        for (const size of [
+          ...Krun.sizes(sandboxes),
+          ...runners.flatMap((runner) => Krun.sizes(Path.dirname(runner.home))),
+        ])
+          sizes.add(size)
+      const holding =
+        scenario === 'restart' ||
+        (status['attempts'] as { phase: string; runner: number | null }[]).some(
+          (attempt) =>
+            attempt.runner !== null &&
+            attempt.runner === runnerId(runners[0]?.home) &&
+            attempt.phase !== 'done',
+        )
       if (
-        scenario === 'restart' &&
+        ['lost', 'restart', 'resume'].includes(scenario) &&
         !restarted &&
+        holding &&
         Date.now() - (activeAt ?? Infinity) >= restartAfterMs
       ) {
         restarted = true
-        await stop(worker, 'SIGKILL')
-        worker = await start()
+        if (scenario === 'restart') {
+          await stop(worker, 'SIGKILL')
+          worker = await start()
+        } else {
+          const runner = runners[0]!
+          const exited = new Promise((resolve) => runner.child.once('exit', resolve))
+          runner.child.kill('SIGKILL')
+          await exited
+          if (scenario === 'resume') {
+            runners.shift()
+            const resumed = spawn(process.execPath, runner.child.spawnargs.slice(1), {
+              env: { ...process.env, NANOEVAL_TOKEN: token },
+              stdio: 'ignore',
+            })
+            runners.push({ ...runner, child: resumed })
+          }
+        }
       }
       if (Date.now() - started > 20 * 60_000)
         throw new Error('the run did not finish:\n' + summary(status))
-      await new Promise((resolve) => setTimeout(resolve, scenario === 'restart' ? 100 : 500))
+      await new Promise((resolve) => setTimeout(resolve, 100))
     }
-    if (scenario === 'restart') assert.ok(restarted, 'the Worker restarted during the run')
+    if (['lost', 'restart', 'resume'].includes(scenario))
+      assert.ok(restarted, 'the ' + scenario + ' happened during the run')
     const wallMs = Date.now() - started
     console.log(summary(status))
     Fs.writeFileSync(Path.join(out, 'status.json'), JSON.stringify(status, null, 2) + '\n')
     const { files } = await exportJob(api, { out: Path.join(out, 'harbor'), run: created.id })
 
-    assert.equal(status['sandboxes'].length, 1, 'every attempt shares one sandbox')
-    assert.equal(status['sandboxes'][0].state, 'closed')
-    assert.equal(status['sandboxes'][0].capabilities.ca_bundle, caBundle !== undefined)
-    assert.equal(status['sandboxes'][0].capabilities.slot_env, true)
-    assert.equal(status['sandboxes'][0].capabilities.slot_forward, slotForward !== undefined)
-    assert.equal(status['sandboxes'][0].capabilities.network, network)
-    if (backend !== 'dir') {
-      assert.deepEqual(Network.networks(sandboxes), [], 'no slot network outlives the run')
-      assert.deepEqual(Network.relays(sandboxes), [], 'no relay outlives the run')
-    }
-    if (backend === 'docker') {
-      assert.deepEqual(Network.containers(sandboxes), [], 'no slot container outlives the run')
-      if (scenario !== 'restart' && scenario !== 'disk') {
-        assert.ok(observed.size > 0, 'slot containers were seen while the run was active')
-        for (const [name, seen] of observed) {
-          assert.ok(
-            allowed.has(seen.limits),
-            name + ' ran with cpu and memory limits ' + seen.limits + ', limits is ' + limits,
-          )
-          assert.ok(
-            seen.env.includes('NANOEVAL_E2E_LABEL=' + label),
-            name + ' starts with the variables of the sandbox',
-          )
-          assert.equal(
-            seen.env.includes('SSL_CERT_FILE=/opt/nanoeval/ca.pem'),
-            caBundle !== undefined,
-            name + ' trusts the sandbox bundle only when the sandbox was given one',
-          )
-        }
+    assert.deepEqual(status['eval'], { name: evalName, version: version.digest })
+    if (attached) {
+      for (const runner of runners) {
+        if (runner.child.exitCode === null && runner.child.signalCode === null)
+          await new Promise((resolve) => runner.child.once('exit', resolve))
       }
+      if (scenario === 'lost') destroy(runners[0]!.home)
+      assert.equal(status['sandboxes'].length, 0, 'attached runners need no sandbox')
+      const finishedBy = new Set(
+        (status['attempts'] as { runner: number }[]).map((attempt) => attempt.runner),
+      )
+      if (scenario === 'runners')
+        assert.equal(finishedBy.size, 2, 'both runners finished rows of the run')
+      if (scenario === 'lost') {
+        assert.ok(status['lostClaims'] >= 1, 'the lease of the killed runner expired')
+        assert.ok(
+          (status['attempts'] as { claims: number }[]).some((attempt) => attempt.claims === 2),
+          'a row of the killed runner was claimed again',
+        )
+        const survivor = { id: runnerId(runners[1]!.home) }
+        assert.equal(
+          (await api.status(created.id))['runners'].find(
+            (runner: { id: number }) => runner.id === survivor.id,
+          ).state,
+          'left',
+          'the other runner finished the run and left',
+        )
+        for (const attempt of status['attempts'] as {
+          claims: number
+          id: string
+          runner: number
+        }[])
+          if (attempt.claims === 2) {
+            assert.equal(attempt.runner, survivor.id)
+            const detail = await api.attempt(created.id, attempt.id)
+            assert.deepEqual(
+              detail['claims'].map((claim: { ending: string }) => claim.ending),
+              ['expired', 'finished'],
+            )
+          }
+      }
+      if (scenario === 'resume')
+        assert.equal(status['lostClaims'], 0, 'a runner that comes back keeps its rows')
+    } else {
+      assert.equal(status['sandboxes'].length, 1, 'every attempt shares one sandbox')
+      assert.equal(status['sandboxes'][0].state, 'closed')
+      assert.equal(status['sandboxes'][0].capabilities.ca_bundle, caBundle !== undefined)
+      assert.equal(status['sandboxes'][0].capabilities.slot_env, true)
+      assert.equal(status['sandboxes'][0].capabilities.slot_forward, slotForward !== undefined)
+      assert.equal(status['sandboxes'][0].capabilities.network, network)
     }
     if (backend === 'krun') {
-      assert.deepEqual(Krun.machines(sandboxes), [], 'no microVM outlives the run')
-      assert.deepEqual(Network.containers(sandboxes), [], 'no export container outlives the run')
+      assert.deepEqual(Network.relays(sandboxes), [], 'no relay outlives the run')
+      for (const runner of runners)
+        assert.deepEqual(
+          Network.relays(Path.dirname(runner.home)),
+          [],
+          'no relay outlives a runner',
+        )
+      assert.deepEqual(machines(), [], 'no microVM outlives the run')
       if (scenario !== 'restart' && scenario !== 'disk') {
         assert.ok(sizes.size > 0, 'microVMs were seen while the run was active')
         for (const size of sizes)
@@ -537,10 +685,11 @@ async function main(): Promise<void> {
       assert.equal(byTask['fixtures/unreported-tests'].outcome, 'errored')
       assert.equal(byTask['fixtures/unreported-tests'].failure.kind, 'verifier')
       assert.match(byTask['fixtures/unreported-tests'].failure.message, /its tests did not run/)
+      assert.equal(byTask['nanoeval/write-greeting'].outcome, 'errored')
+      assert.equal(byTask['nanoeval/write-greeting'].failure.kind, 'environment')
+      assert.match(byTask['nanoeval/write-greeting'].failure.message, /no store holds the blob/)
       if (backend !== 'dir') {
         assert.equal(byTask['fixtures/background-process'].outcome, 'passed')
-        assert.equal(byTask['fixtures/broken-environment'].outcome, 'errored')
-        assert.equal(byTask['fixtures/broken-environment'].failure.kind, 'environment')
         assert.equal(byTask['fixtures/memory-limit'].outcome, 'failed')
         assert.ok(
           byTask['fixtures/memory-limit'].oomKills >= 1,
@@ -569,12 +718,61 @@ async function main(): Promise<void> {
           [0xff, 0x00, 0xfe],
         )
       }
-      assert.equal(status['counts'].errored, backend === 'dir' ? 2 : 3)
+      assert.equal(status['counts'].errored, 3)
       assert.equal(
         JSON.parse(files['result.json']!).stats.n_errored_trials,
-        backend === 'dir' ? 3 : 4,
+        4,
         'Harbor counts every trial with an exception, the agent timeout included',
       )
+
+      const rerun = await api.create({
+        ...config,
+        name: config.name + '-rerun',
+        rerun: { run: created.id, select: 'errored' },
+      })
+      assert.equal(rerun.attempts, 3)
+      let again: Record<string, any>
+      for (;;) {
+        again = await api.status(rerun.id)
+        if (again['state'] === 'finished') break
+        if (Date.now() - started > 20 * 60_000)
+          throw new Error('the rerun did not finish:\n' + summary(again))
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      console.log(summary(again))
+      assert.deepEqual(again['rerunOf'], { run: created.id, select: 'errored' })
+      assert.deepEqual((await api.status(created.id))['reruns'], [rerun.id])
+      const erroredBefore = (status['attempts'] as Record<string, any>[]).filter(
+        (attempt) => attempt['outcome'] === 'errored',
+      )
+      assert.deepEqual(
+        (again['attempts'] as Record<string, any>[]).map((attempt) => [
+          attempt['task'],
+          attempt['outcome'],
+          attempt['retryOf'],
+        ]),
+        erroredBefore.map((attempt) => [
+          attempt['task'],
+          'errored',
+          { attempt: attempt['id'], run: created.id },
+        ]),
+      )
+      const retried = await api.attempt(rerun.id, again['attempts'][0].id)
+      assert.deepEqual(retried['result'].retryOf, {
+        attempt: erroredBefore[0]!['id'],
+        run: created.id,
+      })
+      const refused = await fetch(url + '/v1/runs', {
+        body: JSON.stringify({
+          ...config,
+          name: 'nothing',
+          rerun: { run: rerun.id, select: 'failed' },
+        }),
+        headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+        method: 'POST',
+      })
+      assert.equal(refused.status, 400)
+      assert.match(await refused.text(), /no failed attempt to rerun/)
       console.log('e2e passed: ' + label)
       return
     }
@@ -606,28 +804,24 @@ async function main(): Promise<void> {
       return
     }
 
-    if (scenario === 'images') {
-      const images = (...filter: string[]) =>
-        execFileSync('docker', ['images', '-q', ...filter])
-          .toString()
-          .trim()
-      assert.equal(
-        images('--filter', 'label=nanoeval.e2e=' + stamp),
-        '',
-        'the image that the run built is removed with its last attempt',
+    if (scenario === 'disks') {
+      assert.deepEqual(
+        Fs.readdirSync(Path.join(cache, 'disks')).filter((name) => name.endsWith('.ext4')),
+        [Path.basename(kept!)],
+        'a disk that the run unpacked is removed with its last attempt, and one the machine had is kept',
       )
-      assert.notEqual(images(keptImage), '', 'an image that the run did not add is kept')
-      if (backend === 'krun')
-        assert.deepEqual(
-          Fs.readdirSync(Path.join(out, 'cache', 'krun')).filter((name) => name.endsWith('.ext4')),
-          [],
-          'no image disk outlives the run',
-        )
+      assert.deepEqual(
+        Fs.readdirSync(Path.join(cache, 'blobs')).filter((name) =>
+          imported.tasks.some((task) => blobOf(task).digest === name),
+        ),
+        [],
+        'no packed disk stays in the cache',
+      )
     }
 
     assert.equal(status['counts'].errored, 0, 'no attempt may end in an infrastructure error')
     assert.equal(status['counts'].passed + status['counts'].failed, total)
-    assert.equal(peak, Math.min(slots, total), 'the sandbox fills every slot')
+    if (!attached) assert.equal(peak, Math.min(slots, total), 'the sandbox fills every slot')
     if (isolated) {
       for (const attempt of status['attempts'] as { id: string; outcome: string }[])
         assert.equal(
@@ -690,6 +884,7 @@ async function main(): Promise<void> {
     const measured = {
       attempts: total,
       backend,
+      import: { ms: importMs, timings: imported.timings },
       label,
       medianPhaseMs: Object.fromEntries(
         Object.entries(phases).map(([phase, values]) => [phase, median(values)]),
@@ -702,19 +897,24 @@ async function main(): Promise<void> {
             : model,
       network,
       peakConcurrentAttempts: peak,
+      pollMs,
       slots,
       spend: status['spend'],
+      store: storeKind,
       tickMs: Number(tickMs),
       tasks: taskNames,
       wallMs,
     }
     Fs.writeFileSync(Path.join(out, 'summary.json'), JSON.stringify(measured, null, 2) + '\n')
-    console.log(JSON.stringify(measured))
+    console.log(JSON.stringify({ ...measured, import: { ms: importMs } }))
     console.log('e2e passed: ' + label)
   } finally {
+    for (const runner of runners) {
+      runner.child.kill('SIGKILL')
+      destroy(runner.home)
+    }
     await stop(worker, 'SIGTERM')
     beacon.close()
-    if (scenario === 'images') spawnSync('docker', ['rmi', keptImage])
     upstream.close()
     await relay?.close()
     Fs.rmSync(secrets, { force: true, recursive: true })

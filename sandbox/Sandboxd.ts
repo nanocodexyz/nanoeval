@@ -3,7 +3,9 @@ import * as Crypto from 'node:crypto'
 import * as Fs from 'node:fs/promises'
 import * as Http from 'node:http'
 import type { AddressInfo } from 'node:net'
+import * as Os from 'node:os'
 import * as Path from 'node:path'
+import * as Host from './Host.ts'
 
 export type Options = {
   env?: Record<string, string>
@@ -51,6 +53,10 @@ function run(
   })
 }
 
+function quote(value: string): string {
+  return "'" + value.replaceAll("'", "'\\''") + "'"
+}
+
 async function body(request: Http.IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = []
   for await (const chunk of request) chunks.push(chunk as Buffer)
@@ -61,11 +67,19 @@ export async function start(options: Options): Promise<Server> {
   const root = Path.resolve(options.root)
   await Fs.mkdir(root, { recursive: true })
   const expected = Crypto.createHash('sha256').update(options.token).digest()
-  const krun = Path.resolve(import.meta.dirname, '../krun')
+  const bin = await Fs.mkdtemp(Path.join(Os.tmpdir(), 'nanoeval-sandboxd-bin-'))
+  await Fs.writeFile(
+    Path.join(bin, 'nanoeval'),
+    '#!/bin/sh\nexec ' +
+      quote(process.execPath) +
+      ' ' +
+      quote(Path.resolve(import.meta.dirname, '../cli/nanoeval.ts')) +
+      ' "$@"\n',
+    { mode: 0o755 },
+  )
   const env = {
-    ...((await Fs.stat(krun).catch(() => undefined)) ? { NANOEVAL_KRUN_SOURCE: krun } : {}),
-    ...process.env,
-    ...options.env,
+    ...Host.environment({ ...process.env, ...options.env }),
+    PATH: bin + Path.delimiter + (process.env['PATH'] ?? ''),
   }
   const home = (id: string) => Path.join(root, id)
 
@@ -148,7 +162,10 @@ export async function start(options: Options): Promise<Server> {
   await new Promise<void>((resolve) => server.listen(options.port, options.host, resolve))
   const address = server.address() as AddressInfo
   return {
-    close: () => new Promise((resolve) => server.close(() => resolve())),
+    close: async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      await Fs.rm(bin, { force: true, recursive: true })
+    },
     url: 'http://' + options.host + ':' + address.port,
   }
 }

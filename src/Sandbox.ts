@@ -5,7 +5,6 @@ export type Capabilities = {
   bwrap: boolean
   ca_bundle: boolean
   cpus: number
-  docker: boolean
   kernel: string
   krun: boolean
   kvm: boolean
