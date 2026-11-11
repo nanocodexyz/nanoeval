@@ -85,7 +85,10 @@ export async function isolation(options: isolation.Options): Promise<void> {
     const disk = home + '/disk'
     await Host.describe(
       disk,
-      await Converter.create({ home: home + '/converter' }).convert(
+      await Converter.create({
+        home: home + '/converter',
+        layers: Converter.defaultLayers(home),
+      }).convert(
         { context: fixture + '/environment', storageMb: task.environment.storageMb },
         disk + '.ext4',
       ),

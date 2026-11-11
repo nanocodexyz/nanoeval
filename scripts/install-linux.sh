@@ -57,7 +57,6 @@ repo=$(readlink -f "$(dirname "$0")/..")
 node=$(readlink -f "${NANOEVAL_NODE:-$(command -v node)}") || die 'node is not on the PATH: set NANOEVAL_NODE'
 "$node" -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 24 ? 0 : 1)' || die "$node is older than Node 24"
 [ -d "$repo/node_modules/wrangler" ] || die "run npm ci in $repo first"
-command -v docker >/dev/null || die 'docker is not on the PATH: the temporary converter of nanoeval import calls it'
 command -v systemctl >/dev/null || die 'systemctl is not on the PATH'
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 

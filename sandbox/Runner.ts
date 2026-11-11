@@ -95,7 +95,10 @@ export async function run(options: Options): Promise<void> {
   const base = options.config.url.replace(/\/+$/, '') + '/v1/runs/' + options.config.run + '/runner'
   const authorization = { authorization: 'Bearer ' + options.config.token }
   const slots = Slot.create({ home })
-  const converter = Converter.create({ home: Path.join(cache, 'converter') })
+  const converter = Converter.create({
+    home: Path.join(cache, 'converter'),
+    layers: Converter.defaultLayers(cache),
+  })
   const stores: Store.Store[] = [
     ...(options.store ? [Store.directory(options.store)] : []),
     Store.remote({ base: base + '/blobs', token: options.config.token }),

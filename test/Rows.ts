@@ -19,7 +19,7 @@ export function row(task: Task.Task, kind: 'dir' | 'disk' = 'disk'): Eval.Task {
         ? { files: blob('e'), kind: 'dir' }
         : {
             disk: blob('d'),
-            format: 'tar-sparse-zstd',
+            format: 'nkrdisk1',
             kind: 'disk',
             meta: {
               architecture: 'amd64',
