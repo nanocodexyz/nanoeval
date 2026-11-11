@@ -1688,7 +1688,7 @@ On E2B, one `desktop` sandbox for 1,200 s, the Worker under local workerd behind
 | `gpt-6-luna` on a ChatGPT plan, 2 tasks, before the fix | 2 | 1 passed, 1 failed | 0.4 s | 1.15 s | 24.5 s | 7.4 s | $0.0046 |
 | `gpt-6-luna`, 3 tasks, after the fix | 3 | 1 passed, 2 failed | 0.5 s | 1.1 s | 16.5 s | 7.3 s | $0.0047 |
 
-Times are medians per phase. The tasks are `cancel-async-tasks`, `fix-git`, `log-summary-date-ranges` and `openssl-selfsigned-cert`, each 1 CPU, 2 GiB and 10 GiB of storage. The 147 MB disk of `fix-git` was fetched through the tunnel, checked and unpacked in 8.5 s. No attempt ended as an error. The three model failures are answers the verifier refused: a wrong count in `log-summary-date-ranges` twice and a missed cancellation in `cancel-async-tasks`. The hands dialed `wss://` through the tunnel from private slots. Model cost is the harness's estimate. Each run was exported as a Harbor job.
+Times are medians per phase. The tasks are `cancel-async-tasks`, `fix-git`, `log-summary-date-ranges` and `openssl-selfsigned-cert`, each 1 CPU, 2 GiB and 10 GiB of storage. The 147 MB disk of `fix-git` was fetched through the tunnel, checked and unpacked in 8.5 s. No attempt ended as an error. The three model failures are answers the verifier refused: a wrong count in `log-summary-date-ranges` twice and a missed cancellation in `cancel-async-tasks`. The hands dialed `wss://` through the tunnel from private slots. Model cost is the harness's estimate. Each run was exported as a Harbor job. The four jobs load with the models of Harbor 0.25.0 (`scripts/harbor-check.py`).
 
 Seen inside a slot of the last run: no signal ignored, the bounded capability set, `memory.max` 2 GiB and `cpu.max` one CPU, a 9.9 GB root. envd at the gateway timed out, another slot's address timed out, and `https://example.com` answered 200.
 
@@ -1705,9 +1705,13 @@ Seen inside a slot of the last run: no signal ignored, the bounded capability se
 
 The gap between the second and third rows is the price of buying the worst case up front.
 
+### Checks
+
+From a fresh clone of `13cbba9` on the 32-core machine, at a load average between 17 and 33: `npm ci`, `npm run lint`, `npm run check:types`, `npm test` (76 passed, none skipped, the ns slot test in its guest among them), `npm run dry-run`, `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked` (39 passed), and each of the 30 end-to-end lanes of the workflow: 11 on directory slots, 14 on krun slots, 5 on ns slots in the guest. All passed. One lane did not pass at once: the first krun lane hung while it imported, with the builder microVM idle and the launcher blocked writing a layer to it, for seven minutes until it was killed. It passed in 14 s when it ran again, and the 18 lanes after it passed. That stall was seen once in more than sixty imports of this entry and is not explained.
+
 ### Not verified
 
-- The Worker as the payer. `src/Payment.ts` with a key in the Worker ran against the mock only: no key was put in a Worker. The live answer lists four challenges and the mock one, so which the mppx client picks is untested.
+- The Worker as the payer. `src/Payment.ts` with a key in the Worker ran against the mock only: no key was put in a Worker. The mock now offers the four challenges of the live answer and the mppx client takes a charge from them, but it has not signed one for the real service.
 - `refreshes`, `pause`, `connect` and the other control routes, the templates other than `base` and `desktop`, and aarch64.
 - ns slots on a machine with root outside a microVM guest and E2B, ns slots on the machine's own network, and the attached-runner and disk-removal lanes on ns slots, which the guest harness does not carry.
 - An escape from an ns slot was reasoned about and probed, not audited.
