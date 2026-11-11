@@ -1069,3 +1069,149 @@ A converter killed with `SIGKILL` in the middle of a 347 MB image left its lock 
 - Refused in a Dockerfile: wildcards, `--chown`, `--chmod`, `--mount`, heredocs, `ADD` of a URL or an archive, an ignore file, a stage as a base, `--platform`, `ONBUILD`. None of the 89 Dockerfiles of Terminal-Bench 2.1 or of the 14 here uses one.
 - Only linux/amd64 ran. The arm64 path is written and not run.
 - The trees were compared for eight images. The other 81 disks were listed, not compared.
+
+## 2026-11-11: no container engine at import or at run time
+
+Machine: the 32-core Linux machine with KVM of the entries above (kernel 6.8, libkrunfw 5.5.0, e2fsprogs 1.47.0, Node 24.22.2, wrangler 4.151.1, rustc 1.97.0), shared with other work throughout, with a load average between 2 and 12. A Docker daemon ran on it for that other work. Every command of this entry ran with a `PATH` whose first directory holds programs named `docker`, `podman`, `skopeo`, `buildah`, `ctr`, `nerdctl` and `crictl` that append their arguments to a log and exit 97. The blob store, the layer cache, the caches and the Workers' state were on another filesystem than the one that holds Docker's images. Each lane is one run unless it gives several, and each names its commit.
+
+### What was wrong
+
+The two entries above ended with a seam and a converter that had not met. `nanoeval import` still called Docker through a temporary converter: pull or build, `docker export` into a builder microVM, `tar --sparse` and `zstd` for the packed form. So a machine that imports carried a daemon, its image store and the access that comes with its socket, and the krun lanes skipped on a machine without one. `nanoeval-krun image build` made the same disk from the layers with no engine, and nothing called it.
+
+### What changed
+
+| | Before | Now |
+| --- | --- | --- |
+| `sandbox/Converter.ts` | A factory that returned the temporary Docker converter | Runs `nanoeval-krun image build`, `pack` and `unpack`. The row's metadata is the image's own configuration |
+| Packed form of a disk | `tar --sparse` through zstd, `tar-sparse-zstd` | `image pack`, `nkrdisk1`. One form: a runner refuses the other, and an eval is imported again |
+| Default `PATH` of an image without one | Added by `slot.sh` when a slot came up | Added by the import, so the row says what a guest starts with |
+| Image layers | In Docker's image store | In the layer cache, `--layers` or `NANOEVAL_LAYERS`, `oci` under the cache by default. Host policy, kept across imports |
+| `image unpack` onto a disk that exists | Wrote the disk again once it had the lock | Keeps it, so of two runners that share a cache the second writes nothing |
+| The launcher | Had a request that unpacked one archive onto a writable disk, `unpack`, `vm --disk` and a guest mode for it | Removed with `slot.sh disk`, their only caller. The protocol is `NKR3` |
+| `scripts/install-linux.sh` | Asked for Docker. State under the home directory, one installation per machine | Asks for no engine. `--layers`, `--state`, `--krun`, `--name` and `--remove` |
+| Harbor export | `environment.type` `docker` for a backend of that name | `e2b` for an E2B sandbox, none otherwise |
+
+Four smaller defects came out on the way. `slot.sh` copied the launcher over the installed one, which fails with "Text file busy" when a runner beside it is using it: it is installed by rename now. `sandboxd` left its command directory in the temporary directory when it was stopped. And with `CARGO_TARGET_DIR` set, `slot.sh` looked for the built launcher where cargo had not put it: the first fresh clone failed every krun lane with "cannot stat" for that reason, because the lane script exported the variable. And a runner rewrote the working directory, user and environment files beside a cached disk in place for every attempt, so a slot that came up at that instant read an empty file and started its commands in `/`: one of 64 attempts of a scale lane failed its verifier that way on a busy machine. They are replaced by rename now.
+
+### What was decided
+
+- **One packed form.** Keeping the unpacker of the temporary form would have kept GNU tar and zstd on every runner for evals that take five minutes to import again.
+- **A row records two digests**, as the entry above proposed: the digest of the platform manifest the disk was made from, and the SHA-256 of the packed disk, which is what a runner fetches. Two imports of Terminal-Bench 2.1 gave the same 89 image digests and no packed disk in common, while the 266 other blobs were the same.
+- **A disk stays as large as `storage_mb`.** It is sparse, the packed form does not grow with it, and the slot's upper disk carries the limit either way.
+- **No option for the `RUN` steps of a Dockerfile** on a network that re-signs TLS or keeps registries on its loopback. No lane needed one: every dataset here names images, which convert there, and the 14 Dockerfiles of this repository reach only Alpine's mirror, over a private network. A step that needs more fails at import and is named.
+- **E2B is stated, not built.** An environment is a disk for a microVM, nobody has checked whether an E2B sandbox has KVM, and without it such a sandbox runs `dir` environments only.
+- **CI stays as it is.** A hosted runner has no libkrunfw, so the krun lanes, the converter's test and the launcher's integration tests skip there. The workflow has not run on GitHub since the eval table: nothing of these three entries is pushed.
+- **A Worker state written before the eval table is not migrated.** The upgraded Worker starts on a new `--state` directory.
+- `--lease-sec 60`, `--claims 3` and `--poll-ms 250` stay.
+
+### No container tool runs
+
+- The log of the seven programs was empty after everything in this entry: the imports, the runs, the lanes, the fresh clones.
+- `strace -f -e trace=execve` over `nanoeval import` of the 14 task directories of this repository, over `nanoeval import terminal-bench-2.1 --only fix-git --only openssl-selfsigned-cert`, and over the `nanoeval runner` that then ran each eval, from a fresh clone of `35b6d68`: the import executed the launcher, `mke2fs`, `passt`, and bash with `cp`, `mv`, `mkdir`, `awk`, `uname`, `readlink`, `flock` and `env`. The runner executed those and `nanoeval-net`, the hand's loader, `curl`, `tar`, `cat`, `tail`, `setsid`, `nohup`, `timeout`, `truncate` and a few more of coreutils. No line names an engine, `runc`, `crun` or `containerd`.
+- The image list of the machine's Docker daemon was the same before and after, and no command of this entry created a container.
+- What `git grep -i docker` still finds: Harbor's `docker_image`, `environment/Dockerfile` and `docker-compose.yaml` in the task loader, the adapters and their tests. The Dockerfile support of the launcher, with Docker Hub's host names and media types. The documentation of both. Statements here and in the README that none is needed, and the alternatives DESIGN.md rejects. And the entries of this file.
+
+### Terminal-Bench 2.1, imported without Docker
+
+`nanoeval import terminal-bench-2.1 --keep-going` into an empty directory store, with `--layers` on the layer cache that the conversions of the entry above had filled, at commit `af57dc7`. All 89 converted and none was refused. The layer cache held 512 blobs before and after, so only manifests were asked of the registry.
+
+| | Wall | Adapter | Conversion | Packing | Upload |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| The temporary Docker converter, entry above | 9 min | | 451 s with packing | | 7.5 s |
+| This import | 4 min 39 s | 0.65 s | 266.5 s with packing | | 8.0 s |
+| A second one into another empty store, timing the packing apart, while 8 slots ran the solutions below | 5 min 3 s | 0.70 s | 242.8 s | 46.1 s | 8.7 s |
+
+Per task in the second import: conversion 2.10 s at the median and 15.6 s at most (`custom-memory-heap-crash`), packing 0.32 s and 3.3 s, upload 0.06 s and 0.63 s. The 89 packed disks are 19.16 GB, 133 MB at the median and 1.40 GB at most. The store is 18 GiB on disk and the layer cache 16 GiB. Tasks are converted one after another.
+
+### Terminal-Bench 2.1 with the tasks' own solutions, on those disks
+
+One run of the 89 rows of `terminal-bench-2.1@14f3a1e5`: `nanoeval run --eval terminal-bench-2.1 --oracle --sandboxes 0 --disks remove`, worked by two attached runners on the one machine, each with 4 slots, 16,400 MB and a cache of its own, both with `--ca-bundle`, `--slot-env` (`UV_EXCLUDE_NEWER` and `PIP_UPLOADED_PRIOR_TO` at the dates of the earlier runs) and `--slot-forward`, slots on a private network, the Worker at a tick of 500 ms, code at `af57dc7`.
+
+| | Passed | Failed | Errored |
+| --- | ---: | ---: | ---: |
+| The runs of 2026-11-10 on krun slots, per task | 82 | 4 | 3 |
+| The eval table with disks from `docker export`, entry above | 82 | 5 | 2 |
+| This run, disks from the layers | 82 | 4 | 3 |
+
+All 89 rows ended as in the table of 2026-11-10. `build-cython-ext`, `mcmc-sampling-stan`, `protein-assembly` and `pypi-server` failed, `qemu-alpine-ssh` and `qemu-startup` ended as `verifier` errors, each for the cause the entry of 2026-11-10 gives, in the task or the machine. Against the run of the entry above two rows differ, and both are the two it explained: `portfolio-optimization` passed again, and `torch-tensor-parallelism` ended as a `verifier_timeout` at 900 s again, the deadlock of torch 2.7.0 that it found intermittent. `nanoeval run --rerun RUN` then made a run of the seven rows that had not passed, each naming the attempt it retries, on one attached runner with 4 slots. In 1,096 s all seven ended as they had, `torch-tensor-parallelism` at 900 s again, and its job loads with Harbor's models too (17 files).
+
+**The trees of all 89.** The entry above compared 8 of the 89 trees with Docker's. The store of the eval table still held the 89 disks that the temporary converter had made from `docker export` of the same tags on the same day, so each was unpacked with tar and zstd, each new one with `image unpack`, and `image tree` listed both. The 89 new disks hold 1,318,421 entries, and every one has the same kind, mode, owner, size, content hash, link target, extended attributes and time as in the exported disk. The exported disks hold 2 to 4 entries more each. Left out of the comparison is what an engine adds or mounts over: `/.dockerenv`, `lost+found`, `/etc/hostname`, `/etc/hosts`, `/etc/resolv.conf`, `/etc/mtab`, the time of `/etc`, and `/dev`, `/proc` and `/sys` with what is under them.
+
+So no task is broken by a disk made without Docker: the trees are the same, and each of the 89 booted, ran its solution and its verifier, and scored as before. The disk of `torch-tensor-parallelism` is among them, so the disk is not what deadlocks.
+
+The run took 2,037 s from its creation to its end, and its attempts 9,876 s summed. `caffe-cifar-10` ran 1,979 s, `crack-7z-hash` 1,460 s and `compile-compcert` 982 s. The median attempt took 22.5 s. The environment phase, fetching the row's blobs and unpacking its disk into a cache that did not hold it, had a median of 0.86 s and at most 6.9 s (`custom-memory-heap-crash`, 1.05 GB packed). The runners finished 46 and 43 rows, and no claim was lost. With 16,400 MB each, both ran two rows of 8,192 MB at once, which the 16,000 MB of the entry above did not allow. The exported job loads with the models of Harbor 0.25.0 (`scripts/harbor-check.py`: 181 files, none refused).
+
+### The tasks of this repository, and the other datasets
+
+- **Fixtures.** `nanoeval import --task` over the 14 task directories of `tasks/` and `test/fixtures/`, each with a Dockerfile, from the fresh clone of `35b6d68`: 13 became the eval, 5 of them on a disk another had already made, and `broken-environment` was refused with "line 3: RUN ended with 7". A conversion took 0.8 to 1.4 s, `write-greeting` with its `apk add` over the private network among them. `nanoeval run --oracle` on the four that have a solution: 4 passed. The scripted model runs the same fixtures in the lanes below.
+- **GPQA Diamond**, 5 tasks, at `c976e18`: `python:3.12-slim` converted once in 2.1 s and reused four times. Reference answers: 5 passed.
+- **Terminal-Bench 2.0**, 2 tasks: both passed with their own solutions.
+- **SWE-bench Verified**, 1 instance (`astropy__astropy-12907`): its image converted in 13.2 s and packed in 2.5 s to 1.09 GB. The gold patch passed on a krun slot in 83 s. It is the first instance image converted to a disk: the first version ran one in a container.
+- **HealthBench Professional**, 2 cases with their physician answers and `gpt-6-luna` at low thinking as the judge, at `af57dc7`: rewards −0.006 and 0.426 for $0.0068, and the same two rewards in a rerun for $0.0053. The entry of 2026-11-10 recorded 0.028 and 0.643 for two cases it did not name. Whether these are the same two cases, and what moved the judge if they are, was not found: no artifact of those runs is left to compare. The grader's inputs are the dataset's answer and rubric, not the disk.
+
+### A model on the imported eval
+
+Three tasks with `gpt-6-luna` at its default thinking on the ChatGPT plan login, one attempt each, three slots of one attached runner, at `af57dc7`. The three rows were imported again into a Worker of their own, which converted nothing: the conversion records gave it the disks of the import above.
+
+| Task | Result | Environment | Agent | Verifier | Estimate |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `openssl-selfsigned-cert` | passed | 0.5 s | 26.9 s | 9.7 s | $0.0020 |
+| `cancel-async-tasks` | passed | 0.5 s | 53.4 s | 22.6 s | $0.0027 |
+| `build-pmars` | `verifier` error | 0.5 s | 110.1 s | 2.1 s | $0.0058 |
+| `build-pmars`, in the rerun | passed | 0.2 s | 104.2 s | 9.2 s | $0.0088 |
+
+The run took 114 s, with 364,832 input tokens of which 309,376 were cached, 3,674 output tokens, and $0.0105 by the harness's estimate. The error is the agent's doing, not the disk's. It ran `apt-get update` against a source list of its own with `APT::Get::List-Cleanup=0`, which refreshed the release file of the distribution and left the image's package lists of September 2025 under it. Every later `apt-get update`, the verifier's included, then found the release file current and kept the old lists, and `apt-get install curl` asked the mirror for two packages it no longer has. The same disk passed with the task's own solution, and its lists carry the image's own times. `nanoeval run --rerun RUN --errored` made a run of that one row, naming the attempt it retries, and there the agent did not do it and the row passed. All of it cost $0.0314 with the judge.
+
+### Scale
+
+Scripted model, one sandbox with one runner, 32 slots, 64 attempts of 2 tasks × 2 agents, 1 vCPU and 256 MiB per slot, tick 500 ms, `--poll-ms` 250, krun slots on a private network, at `1357eea`. Six runs, one after another. Other work on the machine began compiling during the fourth. The phases are medians.
+
+| Run | Load average at its start | Wall | Environment | Hand attach | Agent | Verifier |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| The entry above, disks from `docker export`, three runs | 5.6 | 4.7, 4.6, 4.5 s | 0.37 s | 0.30 s | 0.64 s | 0.30 s |
+| 1 | 4.1 | 4.8 s | 0.37 s | 0.35 s | 0.72 s | 0.29 s |
+| 2 | 4.1 | 4.7 s | 0.40 s | 0.33 s | 0.63 s | 0.24 s |
+| 3 | 4.0 | 4.9 s | 0.39 s | 0.34 s | 0.68 s | 0.25 s |
+| 4 | 4.4 | 10.0 s | 1.20 s | 0.50 s | 1.66 s | 0.55 s |
+| 5 | 12.6 | 7.0 s | 0.46 s | 0.43 s | 0.87 s | 0.33 s |
+| 6 | 12.4 | 5.3 s | 0.44 s | 0.37 s | 0.81 s | 0.32 s |
+
+Each run ended with 32 passed and 32 failed, as designed. The three quiet runs are where the entry above was: the conversion happens at import and changes nothing in a slot's start. Before the fix of the metadata files, at `35b6d68` and a load average of 14 to 16, five of six runs took 5.8, 5.8, 6.0, 5.7 and 4.8 s, and the sixth ended with 31 passed for the defect above. Directory slots took 4.0, 4.0 and 4.1 s there.
+
+### Every check, from a fresh clone
+
+From a fresh clone of `35b6d68`, with no built launcher named, so that cargo built it in the clone: `npm ci`, `npm run lint`, `npm run check:types`, `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`, `npm test` (70 tests) and `npm run dry-run` passed, and then every lane of `ci.yml`, one run each:
+
+| Lane | krun | dir |
+| --- | --- | --- |
+| Scripted model | passed, 4.9 s | passed, 1.6 s |
+| Oracle | passed, 1.6 s | passed, 1.1 s |
+| Blobs in R2 through the Worker | passed, 2.7 s | passed, 1.7 s |
+| Final messages and a judge | passed, 2.5 s | passed, 1.9 s |
+| Final messages and a judge, oracle | passed, 1.7 s | |
+| Failure kinds, then a rerun | passed | passed |
+| Orchestrator restart | passed, 3.2 s | passed, 2.5 s |
+| Slot networks | passed, 1.8 s | |
+| Disk removal | passed, 2.2 s | |
+| Free disk floor | passed | passed |
+| Memory packing | passed | passed |
+| Two attached runners | passed, 2.2 s | passed, 1.3 s |
+| A runner lost during the run | passed, 5.3 s | passed, 4.4 s |
+| A runner restarted during the run | passed, 2.0 s | passed, 1.5 s |
+
+The figure is the wall time of the run, where the lane prints one. The first fresh clone, of `c976e18`, failed its krun lanes for the `CARGO_TARGET_DIR` defect above, and `9fe521c` fixes it. After `1357eea`, the one later code change, `npm run lint`, `npm run check:types` and `npm test` passed, and the scale lane ran as the section above says.
+
+### The services of a machine
+
+`scripts/install-linux.sh --name NAME` on other ports, with the store, the cache, the layers, the state and the jobs on another filesystem and `--krun` on a built launcher, at the tree that became `c52d4e3`: both services answered, `nanoeval import` of three tasks and `nanoeval run --oracle` through them passed 3 of 3 with the runner that `sandboxd` started, and `--remove` left no unit, file, listener or temporary directory. The services that the machine already ran from an earlier commit were not touched. At `1357eea` the same was done over the directories that hold the import and the runs of this entry: the installed Worker listed `terminal-bench-2.1@14f3a1e5` with its 89 tasks and showed the run above, `nanoeval run --eval terminal-bench-2.1 --oracle --only fix-git --only openssl-selfsigned-cert --wait` passed 2 of 2 through it, and `--remove` left the data and nothing else.
+
+### Not verified
+
+- CI on GitHub. Nothing is pushed.
+- linux/arm64, registries with credentials, and the wait on a `429`, as in the entry above.
+- A Dockerfile whose `RUN` step needs the machine's certificate bundle or a registry on its loopback. It is expected to fail, and no fixture has one.
+- E2B, R2 on Cloudflare, a deployed Worker and a hand over `wss://`, as before. KVM inside an E2B sandbox was not looked at.
+- The `anthropic`, `codex-plan` and `claude-plan` end-to-end lanes. The real model ran through the CLI.
+- krun slots on `--network host` in this flow, and runners on more than one machine.
+- SWE-bench beyond one instance, GPQA and HealthBench with a model on an imported eval, and the HealthBench rewards against the earlier ones.
+- The upgrade of a Worker state directory written before the eval table.
