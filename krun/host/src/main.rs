@@ -1,3 +1,5 @@
+mod image;
+
 use std::{
     env,
     ffi::{OsStr, OsString},
@@ -9,7 +11,7 @@ use std::{
         unix::{ffi::OsStrExt, net::UnixStream},
     },
     path::Path,
-    process::{Command, ExitCode, Stdio},
+    process::{self, Command, ExitCode, Stdio},
     thread,
     time::Duration,
 };
@@ -21,18 +23,33 @@ use nanovm::{
 use wire::{Frame, Request};
 
 const GUEST: &str = "/nanoeval-krun-guest";
+const LEASH_EXIT: i32 = 125;
+const LEASH_POLL: Duration = Duration::from_millis(200);
 const READY_POLL: Duration = Duration::from_millis(20);
-const USAGE: &str = "usage: nanoeval-krun <check|copy-in|copy-out|exec|ready|stop|unpack|vm> ...";
+const USAGE: &str =
+    "usage: nanoeval-krun <check|copy-in|copy-out|exec|image|ready|stop|unpack|vm> ...";
 
-struct Arguments {
+pub(crate) struct Arguments {
     options: Vec<(String, OsString)>,
-    rest: Vec<OsString>,
+    pub(crate) rest: Vec<OsString>,
 }
 
 impl Arguments {
-    fn parse(
+    fn parse(arguments: impl Iterator<Item = OsString>, allowed: &[&str]) -> Result<Self, String> {
+        Self::read(arguments, allowed, false)
+    }
+
+    pub(crate) fn mixed(
+        arguments: impl Iterator<Item = OsString>,
+        allowed: &[&str],
+    ) -> Result<Self, String> {
+        Self::read(arguments, allowed, true)
+    }
+
+    fn read(
         mut arguments: impl Iterator<Item = OsString>,
         allowed: &[&str],
+        mixed: bool,
     ) -> Result<Self, String> {
         let mut options = Vec::new();
         let mut rest = Vec::new();
@@ -43,6 +60,9 @@ impl Arguments {
             }
             let Some(name) = argument.to_str().and_then(|text| text.strip_prefix("--")) else {
                 rest.push(argument);
+                if mixed {
+                    continue;
+                }
                 rest.extend(arguments);
                 break;
             };
@@ -65,16 +85,16 @@ impl Arguments {
             .collect()
     }
 
-    fn maybe(&self, name: &str) -> Option<&OsString> {
+    pub(crate) fn maybe(&self, name: &str) -> Option<&OsString> {
         self.all(name).pop()
     }
 
-    fn one(&self, name: &str) -> Result<&OsString, String> {
+    pub(crate) fn one(&self, name: &str) -> Result<&OsString, String> {
         self.maybe(name)
             .ok_or_else(|| format!("--{name} is required"))
     }
 
-    fn number<T: std::str::FromStr>(&self, name: &str) -> Result<T, String> {
+    pub(crate) fn number<T: std::str::FromStr>(&self, name: &str) -> Result<T, String> {
         self.one(name)?
             .to_str()
             .and_then(|text| text.parse().ok())
@@ -90,6 +110,7 @@ fn main() -> ExitCode {
         Some("copy-in") => copy(arguments, true),
         Some("copy-out") => copy(arguments, false),
         Some("exec") => exec(arguments),
+        Some("image") => image::run(arguments),
         Some("ready") => ready(arguments),
         Some("stop") => stop(arguments),
         Some("unpack") => unpack(arguments),
@@ -116,20 +137,24 @@ fn vm(arguments: impl Iterator<Item = OsString>) -> Result<u8, String> {
         arguments,
         &[
             "boot",
+            "build",
+            "context",
             "cpus",
             "disk",
             "forward",
             "io",
+            "leash",
             "lower",
             "memory-mib",
             "passt",
             "relay",
             "rt",
             "socket",
+            "source",
             "upper",
         ],
     )?;
-    let mut config = VmConfig::new(RootFilesystem::Directory {
+    let config = VmConfig::new(RootFilesystem::Directory {
         path: arguments.one("boot")?.into(),
         read_only: true,
     })
@@ -139,23 +164,15 @@ fn vm(arguments: impl Iterator<Item = OsString>) -> Result<u8, String> {
         wire::PORT,
         arguments.one("socket")?,
     ));
-    let mut command = GuestCommand::new(GUEST);
-    match (
-        arguments.maybe("disk"),
-        arguments.maybe("lower"),
-        arguments.maybe("upper"),
-    ) {
-        (Some(disk), None, None) => {
-            config = config.block_device(BlockDevice::read_write("disk", disk));
-            command = command.arg("disk");
-        }
-        (None, Some(lower), Some(upper)) => {
-            config = config
-                .block_device(BlockDevice::read_only("lower", lower))
-                .block_device(BlockDevice::read_write("upper", upper));
-            command = command.arg("overlay");
-        }
-        _ => return Err("vm takes either --disk or --lower with --upper".to_owned()),
+    let (mut config, mut command) = disks(&arguments, config)?;
+    if arguments.maybe("leash").is_some() {
+        let parent: u32 = arguments.number("leash")?;
+        thread::spawn(move || {
+            while std::os::unix::process::parent_id() == parent {
+                thread::sleep(LEASH_POLL);
+            }
+            process::exit(LEASH_EXIT);
+        });
     }
     if let Some(runtime) = arguments.maybe("rt") {
         config = config.shared_directory(SharedDirectory::read_only(wire::RUNTIME_TAG, runtime));
@@ -184,6 +201,53 @@ fn vm(arguments: impl Iterator<Item = OsString>) -> Result<u8, String> {
         .and_then(|vm| vm.run(&command))
         .map_err(|error| error.to_string())?;
     Ok(0)
+}
+
+fn disks(arguments: &Arguments, mut config: VmConfig) -> Result<(VmConfig, GuestCommand), String> {
+    let mut command = GuestCommand::new(GUEST);
+    let sources = arguments.all("source");
+    let builds = arguments.maybe("build").is_some() || !sources.is_empty();
+    match (
+        arguments.maybe("disk"),
+        arguments.maybe("lower"),
+        arguments.maybe("upper"),
+    ) {
+        (Some(disk), None, None) if !builds => {
+            config = config.block_device(BlockDevice::read_write("disk", disk));
+            command = command.arg("disk");
+        }
+        (None, Some(lower), Some(upper)) if !builds => {
+            config = config
+                .block_device(BlockDevice::read_only("lower", lower))
+                .block_device(BlockDevice::read_write("upper", upper));
+            command = command.arg("overlay");
+        }
+        (None, None, None) if builds => {
+            command = command.arg(wire::BUILD);
+            if let Some(build) = arguments.maybe("build") {
+                config = config.block_device(BlockDevice::read_write("build", build));
+                command = command.arg(wire::ROOT);
+            }
+            for (index, source) in sources.iter().enumerate() {
+                config =
+                    config.block_device(BlockDevice::read_only(format!("source{index}"), source));
+            }
+            if !sources.is_empty() {
+                command = command.arg(format!("{}{}", wire::SOURCES, sources.len()));
+            }
+            if let Some(context) = arguments.maybe("context") {
+                config =
+                    config.shared_directory(SharedDirectory::read_only(wire::CONTEXT_TAG, context));
+                command = command.arg(wire::CONTEXT_TAG);
+            }
+        }
+        _ => {
+            return Err(
+                "vm takes --disk, --lower with --upper, or --build with --source".to_owned(),
+            );
+        }
+    }
+    Ok((config, command))
 }
 
 fn passt(program: &OsStr) -> Result<UnixStream, String> {
