@@ -1,45 +1,54 @@
 # Design
 
-nanoeval runs coding-agent evaluations with the agent harness outside the task sandbox. The orchestrator and every harness live in Cloudflare Workers on [nanocode-ts](https://github.com/nanocodexyz/nanocode-ts). Task environments live in remote sandboxes. Each sandbox is split into slots, and each slot runs one attempt behind its own nanocode hand.
+nanoeval runs coding-agent evaluations with the agent harness outside the task sandbox. An eval is imported once into a durable table of normalized tasks. A run is a table of rows, one per task, agent and attempt, against one version of that table. Individual task runners on sandbox hosts claim rows and run each in a microVM of its own, behind a nanocode hand that dials the row's harness session in a Cloudflare Worker on [nanocode-ts](https://github.com/nanocodexyz/nanocode-ts).
 
 It revives two earlier bodies of work:
 
 - [gakonst/nanoeval](https://github.com/gakonst/nanoeval) (Rust, July 2026, last commit `10aed6b`): a library-first evaluator that kept the Nanocodex harness on the host and ran each attempt's tools in a disposable libkrun microVM.
-- The eval stack in nanocode's history (`harbor_adapter/`, then `crates/experimental/nanocodex-eval` and `crates/nanocodex-vm`), removed from the tree in `2d4a4c539` (2026-10-13).
+- The eval stack in nanocode's history (`harbor_adapter/`, then `crates/experimental/nanocodex-eval` and `crates/nanocodex-vm`), removed from the tree in `2d4a4c539` (2026-10-13): dataset adapters that converted benchmarks into its own task packages once, a SQLite workset with one row per task, treatment and repetition, a coordinator whose workers claimed rows, and attempt roots that were a copy-on-write disk over a prepared image disk.
 
-The microVM per attempt of both is back as the `krun` slot backend, described under [krun slots](#krun-slots). The private guest network of the first is back for container and microVM slots alike, described under [Slot networks](#slot-networks).
+The shape of the second is the shape here: import once, a durable table, runners that claim rows, a copy-on-write disk per attempt. [Reused](#reused) says what came from where.
 
 ## Shape
 
 ```
- nanoeval CLI ──HTTP──▶ Worker ──▶ Run (Durable Object, one per run)
-                          │          ledger in SQLite: attempts, sandboxes, payments, artifacts
-                          │          alarm-driven state machine, slot and memory admission
+ nanoeval import ─ adapter ─ normalize ─ convert ──▶ blob store (SHA-256)   directory | R2 through the Worker
+                                            │        instruction, tests, solution, environment disk
+                                            ▼
+ nanoeval CLI ──HTTP──▶ Worker ──▶ Evals (Durable Object, one per eval)
+                          │          table of tasks, immutable versions named by a digest
                           │
-                          ├──▶ AgentSession (Durable Object, one per attempt)
-                          │      nanocode-ts harness: model calls, Code Mode, journal
-                          │                ▲
-                          │                │ WebSocket, hand token (the hand dials out)
-                          ▼                │
-                 sandbox provider          │
-            (E2B over MPP │ local) ──▶ sandbox ── slot.sh ──┬─ slot 1: task environment + nanocode hand
-                 create, exec, write, kill                 ├─ slot 2: task environment + nanocode hand
-                                                           └─ slot N …
+                          ├──▶ Run (Durable Object, one per run)
+                          │      rows task × agent × attempt of one eval version
+                          │      claims and leases, budgets, artifacts, results, lineage
+                          │          ▲ claim, heartbeat, session, turn, judge, artifacts, finish
+                          │          │
+                          │      runner (one per sandbox host, started through the provider or attached)
+                          │          admission by its own slots, memory and disk
+                          │          blob cache by digest ─▶ slot.sh ─▶ microVM: disk + copy-on-write disk
+                          │                                               │
+                          └──▶ AgentSession (Durable Object, one per claim) ◀── hand (WebSocket, dialed from the slot)
+                                 nanocode-ts harness: model calls, Code Mode, journal
 ```
 
 | Piece | Where | Role |
 | --- | --- | --- |
-| `worker/index.ts` | Worker | Routes `/v1/runs` to a run and `/sessions` to nanocode-ts |
-| `worker/Run.ts` | Durable Object | One run: ledger, admission, attempt state machine, results |
-| `worker/Sessions.ts` | Durable Object | `App.create` from `nanocode-ts/cloudflare`: one harness session per attempt, model requests forwarded with the deployment's API key or plan login |
+| `worker/index.ts` | Worker | Routes `/v1/evals`, `/v1/blobs` and `/v1/runs`, and `/sessions` to nanocode-ts |
+| `worker/Evals.ts`, `src/Eval.ts` | Durable Object | One eval: its tasks and its versions |
+| `worker/Blobs.ts` | Worker | The R2 side of the blob store |
+| `worker/Run.ts`, `src/Ledger.ts` | Durable Object | One run: rows, claims, leases, sessions, budgets, results. The ledger is plain SQL over an interface, so it is unit tested without workerd |
+| `worker/Sessions.ts` | Durable Object | `App.create` from `nanocode-ts/cloudflare`: one harness session per claim, model requests forwarded with the deployment's API key or plan login |
+| `sandbox/Runner.ts` | Sandbox host | A task runner: claims rows, fetches blobs, drives `slot.sh`, reports to the run |
+| `sandbox/slot.sh` | Sandbox host | One attempt in one slot: environment up, hand, solution, verifier, down |
+| `sandbox/Store.ts` | Node | The blob store: a directory, or R2 through the Worker, and the verified cache of a machine |
+| `sandbox/Converter.ts` | Node | The one seam where a task environment becomes a disk, and where a disk is packed and unpacked |
+| `sandbox/Sandboxd.ts` | Any machine | The local provider's daemon: makes one machine a sandbox host |
 | `src/Sandbox.ts`, `src/Local.ts`, `src/E2b.ts` | Worker | The provider contract and its two providers |
 | `src/Payment.ts`, `src/Budget.ts` | Worker | MPP charges through mppx, refused past the run's budget, recorded in the ledger |
-| `sandbox/slot.sh` | Sandbox | The slot splitter: runtime setup, slot up, hand, verify, down, status |
-| `sandbox/Sandboxd.ts` | Any machine | The local provider's daemon: makes one machine a sandbox host |
-| `src/Task.ts`, `src/Atif.ts`, `src/Harbor.ts`, `src/Result.ts` | Worker and CLI | Harbor task loading, ATIF-v1.7 trajectories, Harbor job export, outcomes and pass@k |
+| `src/Task.ts`, `src/Atif.ts`, `src/Harbor.ts`, `src/Result.ts`, `src/Verdict.ts` | Worker and CLI | Harbor task loading, ATIF-v1.7 trajectories, Harbor job export, outcomes, and what a verifier's facts mean |
 | `src/Judge.ts` | Worker | The judge request a verifier writes and the answer it reads |
-| `datasets/` | Node | The dataset importers behind `nanoeval import` |
-| `cli/nanoeval.ts`, `cli/Plan.ts` | Node | Submit a run, read status and artifacts, export, serve `sandboxd`, start the Worker under local workerd with its credentials |
+| `datasets/` | Node | The dataset adapters behind `nanoeval import` |
+| `cli/nanoeval.ts`, `cli/Import.ts`, `cli/Plan.ts` | Node | Import, run, read status and artifacts, serve `sandboxd`, attach a runner, start the Worker under local workerd with its credentials |
 
 ## Harness outside the sandbox
 
@@ -47,50 +56,126 @@ The harness is a nanocode-ts session in a Durable Object. The sandbox holds only
 
 This is the placement that `HARNESS_PLACEMENT.md` in gakonst/nanoeval argued for: model credentials and the authoritative event journal never enter the untrusted task environment, a lost sandbox is an environment error instead of a lost harness, and no agent CLI, Node runtime or CA bundle is installed into task images. In July 2026 this needed a custom guest (`nanocodex-vm-guest`) and a typed RPC over a virtio console. Today the hand protocol is that boundary, and nanoeval uses it unchanged.
 
-## Attempt lifecycle
+A runner is on the host side of that boundary, like the orchestrator: it is nanoeval's own process on the sandbox host, outside every guest. It holds a token that is good for the runner routes of one run and nothing else, and no model credential.
 
-A run is `tasks × agents × attempts`. Each attempt is one row in the run's SQLite and moves through these phases. A phase advances on the run's alarm (`TICK_MS`), from one `status` call per sandbox.
+## Evals
 
-| Phase | Entered when | Work |
+An eval is what a run runs against: a named table of tasks in one common format, with every file it needs stored by content.
+
+```
+ nanoeval import DATASET | --task DIR...
+   datasets/<Adapter>.ts     the pinned source becomes task packages (unchanged, see Datasets)
+   cli/Import.ts             one package becomes one row:
+                               instruction.md          ─▶ blob
+                               tests/                  ─▶ blob (a tar archive)
+                               solution/               ─▶ blob (a tar archive), kept apart
+                               environment             ─▶ sandbox/Converter.ts ─▶ ext4 disk ─▶ packed ─▶ blob
+   sandbox/Store.ts          every blob is stored under its SHA-256
+   POST /v1/evals/NAME       the rows become a version of the eval
+```
+
+**The row.** `src/Eval.ts` defines it. A task row holds its id, its name, the Harbor package checksum, its resources (`cpus`, `memoryMb`, `storageMb`), its timeouts, whether it allows the internet, its environment and verifier variables, the verifier's flags, and four blobs by digest and size: the instruction, the tests archive, the solution archive when the package has one, and the environment. A `disk` environment is the packed ext4 disk a microVM boots, with the image's metadata beside it in the row: environment, working directory, user, entrypoint and command, architecture, and the digest of the image it came from. A `dir` environment is an archive of files for the directory backend. Nothing in a row names Docker or a registry at run time.
+
+**Versions.** The table lives in the SQLite of an `Evals` Durable Object, one per eval name. A version is a set of rows, named by the SHA-256 of the canonical JSON of its dataset, its pinned source and the digest of every row. A version is never changed. Importing more tasks makes a new version that holds the earlier rows with the new ones laid over them by id, and names the earlier version as its parent. Importing the same rows again finds the same digest and changes nothing. An eval holds one dataset from one source. A run names its eval as `NAME@DIGEST`, the Run object resolves a bare name to the latest version when the run is created, and the run's status, results and Harbor export carry the digest. `nanoeval evals` lists the evals and `nanoeval eval NAME[@DIGEST]` shows the versions and tasks of one.
+
+**The blob store.** One interface, `has`, `put` and `fetch` by SHA-256, with two implementations in `sandbox/Store.ts`:
+
+| Store | Where blobs live | For |
 | --- | --- | --- |
-| `pending` | The run is created | Waits for a slot. Admission needs a free slot and memory at once, and free disk when the run sets a floor (`src/Admission.ts`) |
-| `up` | A sandbox admits it | The task archive is written to the slot. `slot.sh up` builds or pulls the environment in the background |
-| `attach` | The environment is ready | The session mints a hand token. `slot.sh hand` starts the hand inside the slot |
-| `run` | The hand is listed | The instruction is submitted as one turn on that hand. The agent deadline is `agent.timeout_sec` |
-| `verify` | The turn completed, or its deadline passed and it was cancelled | The hand is stopped. `tests/` is copied in only now and `tests/test.sh` runs with `verifier.timeout_sec`. Every file it leaves under `/logs/verifier` is kept |
-| `judge` | The verifier wrote a judge request and no reward | Each prompt is one turn of its own session on the run's judge. The answers become a verifier input and the attempt returns to `verify` once |
-| `done` | The verifier reported, or a failure ended the attempt | Events, trajectory and verifier output are stored. The slot is removed and the session deleted |
+| Directory | `<root>/sha256/<aa>/<digest>` on a machine, read-only files, linked instead of copied on one filesystem | The local provider. A disk of several GB never passes through a Worker request and is not held twice |
+| R2 through the Worker | The `BLOBS` bucket. Blobs up to 64 MiB are one request that R2 checks against the digest, larger ones are multipart uploads in 64 MiB parts | A deployed Worker and sandboxes on other machines. A runner reads a blob through its run, which serves only digests that its rows name |
 
-Long work (image builds, the hand, the verifier) runs detached in the sandbox and writes a status file. The orchestrator polls. No request holds a build open, and a restarted Durable Object continues from the ledger.
+A reader never trusts a store. A runner fetches a blob into the cache of its machine, hashes it, and keeps it only when the digest matches, so a blob is verified once per machine whichever store it came from. A blob that is missing or does not match ends the attempt as an `environment` error without a retry.
 
-An oracle run has no model. Its one agent has the provider `oracle`, every task is sent with its `solution/`, and the `run` phase starts `solution/solve.sh` in the slot with `slot.sh solve` under the agent deadline, where a model run submits a turn. The hand still attaches first, so an oracle run also shows that the hand starts in each task image. The solution's output is kept as `agent/oracle.txt`.
+**Solutions.** A solution archive is a blob of its own. The Run object drops the solution from every row of a run that has a model agent before it stores them, so a runner of such a run is never told the digest, and the run's blob route refuses a digest that its rows do not name. Only an oracle run keeps it.
 
-Every attempt ends as `passed`, `failed` or `errored`, with the verifier reward kept beside it. A failure carries a kind: `agent`, `agent_timeout`, `verifier`, `verifier_timeout`, `environment`, `budget`, `cancelled` or `internal`. An agent timeout keeps its verifier reward, as Harbor does, unless the verifier itself failed. Every other failure is an error with no reward, so an infrastructure failure never becomes a score of zero. Attempts are not retried.
+**Local task directories.** `nanoeval run --task DIR` imports the directories into the eval named `local` and runs that version with only those tasks, so there is one path into a run.
 
-**Admission.** A pending attempt starts in the first sandbox with a free slot and room for its task's declared memory. It is first-fit: an attempt that fits nowhere waits, and the ones behind it are still tried, so one 8 GiB task does not hold back the 2 GiB tasks behind it. With `--free-disk-mb` a sandbox also takes an attempt only while its status reports that much free disk on the filesystems of its slots, its image cache and Docker, and only while no other attempt of it is preparing its environment, so each admission sees what the previous image took. The floor is reactive: what running attempts write later is not reserved, because the only declared figure, `storage_mb`, is the size of the machine a task asks for and not what it uses. An attempt that still waits for disk after `--setup-sec` with nothing running ends as an `environment` error.
+## Environment conversion
+
+A task's environment is converted when it is imported, once, and never at run time. `sandbox/Converter.ts` is the one interface:
+
+```ts
+type Converter = {
+  convert(environment: { context?: string; image?: string; storageMb: number }, disk: string): Promise<Eval.Meta>
+  pack(disk: string, file: string): Promise<void>
+  unpack(file: string, disk: string): Promise<void>
+}
+```
+
+`convert` writes an ext4 disk of the task's `storage_mb` from an image reference or a directory with a Dockerfile, and returns the image's metadata. `pack` makes the sparse, compressed file that is stored as the blob, and `unpack` makes a disk from it again on a runner. The import keeps a record of each conversion under its inputs, so the 198 GPQA tasks that share one image convert it once, and importing again converts nothing.
+
+**The implementation is temporary.** `sandbox/TemporaryDockerConverter.ts` with `sandbox/temporary-docker-convert.sh` is the earlier path moved to import time: `docker pull` or `docker build`, then `docker export` streamed into a builder microVM that unpacks it onto an empty ext4 as root (`slot.sh disk`), and `tar --sparse | zstd` as the packed form. These two files hold every Docker call in the repository. The converter that builds a disk from an OCI image with no Docker, `nanoeval-krun image build`, replaces them behind the same interface, and nothing else changes: the Docker slot backend, `--docker install` and `--limits` are already gone.
+
+## Runs
+
+A run is `tasks × agents × attempts` of one eval version. Each attempt is one row in the SQLite of its `Run` Durable Object, written when the run is created, and moves through these phases:
+
+| Phase | Entered when | Who acts |
+| --- | --- | --- |
+| `unclaimed` | The run is created, or a claim is lost | Waits for a runner with room |
+| `claimed` | A runner claims the row | The runner fetches the row's blobs and boots the environment. The row has a lease, a claim token and a session name of its own |
+| `attach` | The environment is ready | The run mints a hand token, and the runner starts the hand inside the slot |
+| `run` | The hand is listed | The run submits the instruction as one turn on that hand, under `agent.timeout_sec`. In an oracle run the runner starts the solution instead |
+| `verify` | The turn completed, or its deadline passed and it was cancelled | The runner stops the hand, copies `tests/` in only now, and runs `tests/test.sh` under `verifier.timeout_sec` |
+| `judge` | The verifier wrote a judge request and no reward | The run answers each prompt in a session of its own. The runner writes the answers as a verifier input and verifies once more |
+| `done` | The verifier reported, or a failure ended the attempt | The run stores events, trajectory and result, and deletes the session. The runner takes the slot down |
+
+Every attempt ends as `passed`, `failed` or `errored`, with the verifier reward kept beside it. A failure carries a kind: `agent`, `agent_timeout`, `verifier`, `verifier_timeout`, `environment`, `budget`, `cancelled` or `internal`. An agent timeout keeps its verifier reward, as Harbor does, unless the verifier itself failed. Every other failure is an error with no reward, so an infrastructure failure never becomes a score of zero.
+
+**Claims.** A runner asks for rows with what its machine has free: slots and memory. The run answers first-fit in row order, so one 8 GiB task does not hold back the 2 GiB tasks behind it, and writes for each row a claim: a random token, the runner, a lease that ends `--lease-sec` later, and a session name that no earlier claim used. Every later call of the runner for that row carries the token and extends the lease, and so does its heartbeat. A call whose token is not the row's current one is refused with `410`, and the runner drops that slot. The run decides what the facts mean: a runner reports the verifier's exit code, reward, files and killed processes, and `src/Verdict.ts` turns them into a score or a failure, the same way for every runner.
+
+**A lost runner.** When a lease ends without a call, the run cancels the row's turn, records the model usage of that session against the budget, deletes the session, ends the claim as `expired` and makes the row `unclaimed` again. The next claim starts from an empty environment and a new session, so nothing of the lost claim is replayed and it cannot score: a row is finished only by the holder of its current token, once. A row is claimed at most `--claims` times (3 by default). After the last loss it ends as an `environment` error that names the losses. A failure that a live runner reports, such as an environment that did not boot, is final: only a lost lease puts a row back. The claims of a row are kept in order with their runner, phase and ending, and `nanoeval attempt` shows them.
+
+**Rerun lineage.** `nanoeval run --rerun RUN` makes a run with one row for each attempt of `RUN` that did not pass (`--failed` and `--errored` narrow it), on the same eval version and agents. Each row keeps the run and attempt it retries, its result carries them as `retryOf`, and the earlier run lists the runs that rerun it. Results of the earlier run are never changed.
+
+**Admission** belongs to the runner, since only the machine knows what it has. A runner counts each attempt's declared memory against its limit (80% of the machine by default, `--memory-mb` otherwise) and offers its free slots. With `--free-disk-mb` it offers a slot only while the filesystems of its slots and its cache have that much free, and only while no other attempt of it is preparing its environment, so each claim sees what the previous disk took. The floor is reactive: what running attempts write later is not reserved, because the only declared figure, `storage_mb`, is the size of the machine a task asks for and not what it uses. When every runner of a run reports that it is idle for want of disk for `--setup-sec`, the rows that still wait end as `environment` errors.
+
+**The orchestrator** creates the rows, answers claims, enforces the model and sandbox budgets, holds the sessions, and starts and stops runners through the sandbox provider: it opens a sandbox while rows wait and no runner has room, up to `--sandboxes`, and closes one when no row waits and its runner holds none. Its alarm (`TICK_MS`) no longer drives attempts. It expires leases, watches runners and sandboxes, and ends the run. A restarted Durable Object continues from the ledger, and runners retry their calls until it answers.
 
 **A verifier that did not run its tests.** A Harbor verifier conventionally writes a CTRF report to `/logs/verifier/ctrf.json` and derives the reward from its test runner's exit code, so a verifier that cannot install the runner writes reward 0. nanoeval takes the report as the sign that tests ran: when `tests/test.sh` names `ctrf.json`, a reward other than 1 without that file is a `verifier` error. It reads no installer output and knows no benchmark. It does not cover a verifier that names no report, one whose runner starts and then fails to import a missing dependency, or a solution that could not install its own dependencies.
 
-**Memory.** After the verifier a slot counts the processes of the attempt that the kernel killed for memory, from `memory.events` of a container's cgroup and from the kernel log of a microVM. The attempt carries the count as `oomKills`. It does not change the score: a task's memory is part of the task.
+**Memory.** After the verifier a slot counts the processes of the attempt that the kernel killed for memory, from the kernel log of its microVM. The attempt carries the count as `oomKills`. It does not change the score: a task's memory is part of the task.
+
+## Runners
+
+A runner is one Node process on a sandbox host, `nanoeval runner`. A run starts one in each sandbox it opens, through the provider's `exec`, with a file that holds the run's address and runner token. `nanoeval runner --url URL --run RUN` attaches one more from any machine that reaches the Worker, and `--sandboxes 0` makes a run wait for attached runners only. Several runners on several machines work one run: each claims what it has room for, and the ledger is the only thing they share.
+
+```
+ start      slot.sh setup (hand, launcher, network), probe ─▶ hello with the machine's capabilities
+ loop       claim rows up to free slots and memory
+            per row:  blobs by digest from the cache, the directory store or the run
+                      disk kind: unpack once per machine into <cache>/disks/<digest>.ext4
+                      slot.sh up ─▶ session and hand token from the run ─▶ slot.sh hand
+                      wait for the turn, or run the solution ─▶ slot.sh verify ─▶ judge round if asked
+                      artifacts and the verifier's facts to the run ─▶ slot.sh down
+            heartbeat every third of the lease
+ end        the run says every row is done ─▶ leave
+```
+
+- **It drives `slot.sh` and does not replace it.** The slot functions of the microVM backend were kept instead of being folded into the runner. A phase of a slot runs detached and leaves a status file, so the microVM, the hand and a running verifier outlive the runner. A runner that is restarted in the same directory reads each slot's saved row and goes on from the phase it was in, with the same runner id and claims. It tells the run which rows it still holds, and the run puts back at once any other row that the ledger gave it, such as one it claimed and had not saved when it died. The calls of a row can be repeated in any phase after the one they belong to, so a runner that is a step behind the ledger catches up instead of failing. The runner reads those status files itself every 25 ms, where the orchestrator used to ask for them through the provider once per tick.
+- **Calls that wait on the Worker back off** from 25 ms to `--poll-ms` (250 ms by default): the hand's attach, the turn and the judge. A deployed Worker wants a larger value, since each poll is a request.
+- **The cache of a machine** is `$NANOEVAL_CACHE` (`~/.cache/nanoeval`): `blobs/<digest>` for verified blobs and `disks/<digest>.ext4` for unpacked disks with their metadata. A microVM holds a shared lock on its disk while it runs. With `--disks remove` a runner deletes the packed blob as soon as its disk is unpacked, and removes a disk that it unpacked for this run when the run says no other row needs it. A disk that was in the cache before is kept. `nanoeval prune` removes every cached disk that no microVM holds, and every cached blob.
+- **A stopped runner** (SIGTERM) releases its rows, which makes them claimable at once, and takes its slots down. A killed one is found by its leases.
+- **Host policy stays with the host**: `--ca-bundle`, `--slot-env` and `--slot-forward` are options of `sandboxd` or of an attached runner, and the capabilities a runner reports record them.
 
 ## The slot splitter
 
-`sandbox/slot.sh` packs N attempts into one sandbox. The orchestrator uploads it once per sandbox and calls it through the provider's `exec`. `probe` reports what the machine can isolate with (`docker`, `kvm`, `krun`, `userns`, `bwrap`, CPUs, memory) and which network the sandbox was set up for. `kvm` says that `/dev/kvm` can be opened for reading and writing, and `krun` that the installed launcher reached KVM and loaded libkrunfw.
+`sandbox/slot.sh` runs one attempt in one slot, and packs N of them onto a machine. A runner calls it. `probe` reports what the machine can isolate with (`kvm`, `krun`, `userns`, `bwrap`, CPUs, memory) and which network it was set up for. `kvm` says that `/dev/kvm` can be opened for reading and writing, and `krun` that the installed launcher reached KVM and loaded libkrunfw.
 
 | Backend | Isolation | State |
 | --- | --- | --- |
-| `docker` | One container per slot from the task's `docker_image` or `environment/Dockerfile`, with task CPU and memory limits. The hand runs inside the container | Implemented, tested |
-| `dir` | One directory per slot, no isolation. For development and tasks that need none | Implemented, tested |
-| `krun` | One libkrun microVM per slot, as in gakonst/nanoeval and `crates/nanocodex-vm`. The task image is the root filesystem, the task's CPUs, memory and storage size the machine, and the hand runs inside it. Needs `/dev/kvm`, libkrunfw and Docker | Implemented, tested |
-| `bwrap` | User namespaces and an overlay root, for sandboxes with neither Docker nor KVM | Planned |
+| `krun` | One libkrun microVM per slot, as in gakonst/nanoeval and `crates/nanocodex-vm`. The environment disk is the root filesystem under a copy-on-write disk of the slot, the task's CPUs, memory and storage size the machine, and the hand runs inside it. Needs `/dev/kvm` and libkrunfw | Implemented, tested |
+| `dir` | One directory per slot, no isolation, from a `dir` environment. For development, and for the end-to-end lanes of a machine without KVM | Implemented, tested |
+| `bwrap` | User namespaces and an overlay root, for sandboxes without KVM | Planned |
 
-**Images.** A slot records in `$NANOEVAL_CACHE/images` each image it pulled or built that the machine did not have. With `--images remove`, the last attempt of a task takes that image away when its slot goes down, and a krun slot drops it as soon as its disk is made. An image that was there before is never removed. A slot holds a shared lock on its image while it prepares, and a microVM holds one on its disk while it runs, so removal and `nanoeval prune`, which clears every recorded image and every image disk of a machine, skip what is in use.
+The Docker backend, one container per slot, is removed. An environment is a disk now, and a container engine cannot boot one. The directory backend stays because it costs one branch per phase and lets every lane of the eval table, the claims and the runners run where no microVM can.
 
 **Users.** A slot removes and copies `/tests` and `/solution` and creates `/logs/verifier` as root, and leaves that directory writable by anyone. The hand, the solution and the verifier run as the user of the image.
 
-The hand binary is a glibc build. `slot.sh setup` downloads the pinned release, checks its SHA-256, and copies the binary with its loader and libraries into one read-only directory. Each container or microVM mounts it and starts the hand through that loader, so the hand runs in musl images such as Alpine without a change to the task image.
+The hand binary is a glibc build. `slot.sh setup` downloads the pinned release, checks its SHA-256, and copies the binary with its loader and libraries into one read-only directory. Each microVM mounts it and starts the hand through that loader, so the hand runs in musl images such as Alpine without a change to the task image.
 
-An E2B sandbox is a Firecracker microVM, and Firecracker does not expose KVM to its guest. That is why the split is layered: `krun` slots on machines with KVM, `docker` slots inside E2B. Both are driven by the same script and the same hand.
+An E2B sandbox is a Firecracker microVM, and Firecracker does not expose KVM to its guest, so a `disk` environment cannot boot there. See [Sandbox providers](#sandbox-providers).
 
 ## krun slots
 
@@ -99,7 +184,7 @@ A krun slot is one libkrun microVM. In gakonst/nanoeval the harness stayed on th
 ```
  host                                                    microVM, one per slot
  slot.sh ─ nanoeval-krun vm ─ libkrun ─────────────────▶ libkrun init (PID 1)
-             vda  image.ext4, read-only, one per image    └ nanoeval-krun-guest
+             vda  <digest>.ext4, read-only, one per disk  └ nanoeval-krun-guest
              vdb  upper.ext4, sparse, one per slot            overlay(vda, vdb) becomes /
              virtiofs rt, read-only: the hand, CA bundle      rt mounted at /opt/nanoeval
              virtiofs io: tests in, verifier logs out         vsock port 1024
@@ -113,61 +198,58 @@ A krun slot is one libkrun microVM. In gakonst/nanoeval the harness stayed on th
 | `krun/host`, `nanoeval-krun` | Host | `vm` is the VMM process of one microVM. `exec`, `copy-in`, `copy-out`, `unpack`, `stop` and `ready` talk to a guest. `check` says whether this machine can start one |
 | `krun/guest`, `nanoeval-krun-guest` | Guest | A static musl binary. Mounts the disks, pivots into the overlay, then serves requests on a vsock port |
 | `krun/wire` | Both | The request and frame encoding of that port, and the address plan of a private guest |
-| `krun/net`, `nanoeval-net` | Host and slot | The relay of a private slot, on both sides, and the rule that drops what comes into a Docker slot. A static binary, which the guest uses as a library |
+| `krun/net`, `nanoeval-net` | Host and slot | The relay of a private slot, on both sides. A static binary, which the guest uses as a library |
 
-**Root filesystem.** `slot.sh up` builds or pulls the task image with Docker, as a Docker slot does. The image becomes a disk once: a builder microVM boots on an empty sparse ext4 of the task's `storage_mb`, `docker export` streams into it over vsock, and the guest unpacks the archive as root. Owners, modes, devices and links are therefore written by a kernel onto ext4, with no root and no fakeroot on the host. The disk is kept in `$NANOEVAL_CACHE/krun` (`~/.cache/nanoeval/krun`) under the image id and the storage size, beside the image's environment, working directory and user. Every slot attaches it read-only and adds a sparse ext4 of its own as the upper layer of an overlay that the guest mounts. Taking a slot down deletes that file.
+**Root filesystem.** The environment disk of the row is the root, unpacked once per machine into the runner's cache under the digest of its blob, beside the image's environment, working directory and user from the row. Nothing is pulled or built when a slot comes up. Every slot attaches the disk read-only and adds a sparse ext4 of its own, of the task's `storage_mb`, as the upper layer of an overlay that the guest mounts, so what an attempt writes never reaches the disk or another attempt. Taking a slot down deletes that file. The disk was written by a kernel when it was converted, so owners, modes, devices and links are real, with no root and no fakeroot on the host.
 
-**Commands.** libkrun's init stays PID 1 and reaps. The guest binary listens on a vsock port that libkrun maps to a UNIX socket in the slot directory. `nanoeval-krun exec` sends a command with its environment, user and working directory, streams output, and returns the exit code, which is what `docker exec` is to a Docker slot. The guest leaves the session of the console once it has booted, so a command has no controlling terminal, as under `docker exec` without one: a program that asks `/dev/tty` for a password fails instead of stopping. A closed connection sends SIGTERM to that command, which is how a hand is stopped and how a timeout ends a solution or a verifier. `tests/` and `solution/` reach the guest through the `io` share only in their own phase and are copied into the root, so the agent never sees them and they are ordinary files when they run.
+**Commands.** libkrun's init stays PID 1 and reaps. The guest binary listens on a vsock port that libkrun maps to a UNIX socket in the slot directory. `nanoeval-krun exec` sends a command with its environment, user and working directory, streams output, and returns the exit code, as `docker exec` does for a container. The guest leaves the session of the console once it has booted, so a command has no controlling terminal, as under `docker exec` without one: a program that asks `/dev/tty` for a password fails instead of stopping. A closed connection sends SIGTERM to that command, which is how a hand is stopped and how a timeout ends a solution or a verifier. `tests/` and `solution/` reach the guest through the `io` share only in their own phase and are copied into the root, so the agent never sees them and they are ordinary files when they run.
 
-**Resources.** vCPUs are the task's `cpus` rounded up, memory is `memory_mb`, and the root can grow to `storage_mb`. They hold whatever `--limits` says. Admission is unchanged: a slot counts its task's declared memory. An idle guest costs the host far less, since libkrun backs guest memory on demand. A Docker slot has the CPU and memory limits and no storage limit: Docker bounds a container's writable layer only on a few storage drivers, so what a task writes there is bounded by the machine's disk.
+**Resources.** vCPUs are the task's `cpus` rounded up, memory is `memory_mb`, and the root can grow to `storage_mb`. A runner counts a slot's declared memory. An idle guest costs the host far less, since libkrun backs guest memory on demand.
 
-**Network.** A krun slot has a private network by default, described under [Slot networks](#slot-networks). With `--network host` it uses libkrun's TSI instead: the VMM makes the guest's sockets on the host, and a connection to `127.0.0.1` that nothing in the guest listens on reaches the host's loopback. `bridge` is refused. The limits of TSI are why it is not the default:
+**Network.** A krun slot has a private network by default, described under [Slot networks](#slot-networks). With `--network host` it uses libkrun's TSI instead: the VMM makes the guest's sockets on the host, and a connection to `127.0.0.1` that nothing in the guest listens on reaches the host's loopback. The limits of TSI are why it is not the default:
 
 - A listener in the guest is also bound on the host, with `SO_REUSEPORT`. Two guests may listen on one port, and each reaches its own listener first, but a guest or the host with no listener of its own on that port reaches another guest's.
 - A guest cannot serve on a port the host keeps for root: a listener on port 80 did not come up, since the VMM is not root.
 - Some socket options do not hold: a gRPC client fails with "Failed to set SO_REUSEADDR". ICMP and raw sockets do not exist.
 - A connected UDP socket to a loopback address stays in the guest, so a resolver on the host's loopback is reached with `options use-vc`.
 
-**What a guest gets that its image lacks.** `/opt/nanoeval`, as in a Docker slot. `/etc/resolv.conf` and `/etc/hosts` when the image leaves them empty, which `docker export` does. Nothing else: no agent, no shell, no init system.
+**What a guest gets that its image lacks.** `/opt/nanoeval` with the hand and the certificate bundle. `/etc/resolv.conf` and `/etc/hosts` when the image leaves them empty. Nothing else: no agent, no shell, no init system.
 
 ## Slot networks
 
-A `docker` or `krun` slot of the local provider gets a network of its own (`--network private`, the default there): its own loopback and port space, connections out, and nothing in. `--network host` shares the machine's network, as every slot did before. `bridge` is Docker's default bridge, the default where the Worker is deployed and reached over `wss://`. A `dir` slot is a directory and stays on the machine's network. The network is a property of the sandbox: `slot.sh setup` prepares it, `probe` reports it, the run refuses a sandbox that reports another, and the run's status shows it as `network` in the sandbox's capabilities.
+A `krun` slot gets a network of its own (`--network private`, the default): its own loopback and port space, connections out, and nothing in. `--network host` shares the machine's network through TSI. A `dir` slot is a directory and stays on the machine's network. The network is a property of the machine a runner serves: `slot.sh setup` prepares it, `probe` reports it, the run refuses a runner that reports another, and the run's status shows it as `network` in the runner's capabilities.
 
 ```
  slot                                                       host
  hand ─ ws://127.0.0.1:P ─▶ listener on the slot's loopback
-                              │ docker: nanoeval-net slot ─ relay.sock, mounted read-only
-                              │ krun:   the guest agent ─ vsock port 1025 ─ relay.sock
+                              │ the guest agent ─ vsock port 1025 ─ relay.sock
                               ▼
                             nanoeval-net host, one per slot ─ allow list ─▶ 127.0.0.1:P, the Worker
- everything else ─▶ docker: the sandbox's bridge and NAT      krun: the guest's passt
+ everything else ─▶ the guest's passt
 ```
 
-| | Docker slot | krun slot |
-| --- | --- | --- |
-| Network stack | The container's namespace on a bridge network of its sandbox. One network per sandbox, created with the first slot and removed by `destroy` | A virtio-net device on a passt process that the VMM starts for this guest alone. No TSI. The guest agent sets the address, the route and the MTU over netlink |
-| Out | Docker's NAT | passt opens the host's sockets for the guest's connections |
-| Names | Docker's embedded resolver, which asks the machine's resolver from the host | The guest's resolver address, which passt forwards to the machine's resolver |
-| In | A rule in the container's namespace accepts loopback and replies and drops the rest. `nanoeval-net firewall` writes it over netlink from `docker exec --privileged`, so the task cannot remove it | passt forwards no port, and the gateway address is not mapped to the host (`--no-map-gw`) |
-| What the image needs | Nothing. `nanoeval-net` is static and sits beside the hand in `/opt/nanoeval` | Nothing |
-| What the host needs | cargo to build `nanoeval-net`, or the built binary | The same, and passt installed as a system package |
+| | krun slot |
+| --- | --- |
+| Network stack | A virtio-net device on a passt process that the VMM starts for this guest alone. No TSI. The guest agent sets the address, the route and the MTU over netlink |
+| Out | passt opens the host's sockets for the guest's connections |
+| Names | The guest's resolver address, which passt forwards to the machine's resolver |
+| In | passt forwards no port, and the gateway address is not mapped to the host (`--no-map-gw`) |
+| What the image needs | Nothing |
+| What the host needs | cargo to build `nanoeval-net`, or the built binary, and passt installed as a system package |
 
-**The relay.** A hand accepts a plain `ws://` URL only for a loopback address, and a local Worker listens on the machine's loopback, which a private slot cannot reach. So the slot listens on the Worker's address and port on its own loopback, and each connection it accepts is carried to the host: through `relay.sock` in a directory mounted read-only into the container, or through a vsock port that libkrun connects to the same socket. The slot side names the address it wants in a first line. The host side is one `nanoeval-net host` process per slot. It dials the address only when the slot's allow list holds it, and a slot cannot write that list. The list holds the session's address while the hand runs, so the listener and the entry exist exactly as long as the hand does: the Docker listener wraps the hand's command, the guest's belongs to the hand's exec request, and `slot.sh verify` resets the list before the verifier starts. The relays belong to the slot, not to `sandboxd`, so a restarted `sandboxd` does not cut a hand off. A Worker reached over `wss://` needs none of this: the hand dials out.
+**The relay.** A hand accepts a plain `ws://` URL only for a loopback address, and a local Worker listens on the machine's loopback, which a private slot cannot reach. So the slot listens on the Worker's address and port on its own loopback, and each connection it accepts is carried to the host through a vsock port that libkrun connects to `relay.sock`. The slot side names the address it wants in a first line. The host side is one `nanoeval-net host` process per slot. It dials the address only when the slot's allow list holds it, and a slot cannot write that list. The list holds the session's address while the hand runs, so the listener and the entry exist exactly as long as the hand does: the guest's listener belongs to the hand's exec request, and `slot.sh verify` resets the list before the verifier starts. The relays belong to the slot, not to `sandboxd` or the runner, so a restart of either does not cut a hand off. A Worker reached over `wss://` needs none of this: the hand dials out.
 
-**Forwards.** A machine's resolver may answer a name with an address on the machine's own loopback, where a proxy for package registries listens. A private slot would find nothing there. `sandboxd --slot-forward ADDRESS:PORT` names such listeners, and every slot then listens on the same address of its own loopback for its whole life and relays to the host's, through the same socket and allow list. It is host policy like `--ca-bundle`, and the sandbox's capabilities record it as `slot_forward`.
+**Forwards.** A machine's resolver may answer a name with an address on the machine's own loopback, where a proxy for package registries listens. A private slot would find nothing there. `sandboxd --slot-forward ADDRESS:PORT` names such listeners, and every slot then listens on the same address of its own loopback for its whole life and relays to the host's, through the same socket and allow list. It is host policy like `--ca-bundle`, and the runner's capabilities record it as `slot_forward`.
 
-**What is not isolated.** A private slot reaches whatever the machine serves on its other addresses, such as the bridge's gateway or its LAN address, as any container does. It has IPv4 only. While the hand runs, the Worker's port on the slot's loopback is taken. Docker hands out one subnet per sandbox from its address pools, about 30 on a default daemon, which bounds the sandboxes of a machine and not their slots.
+**What is not isolated.** A private slot reaches whatever the machine serves on its other addresses, such as its LAN address. It has IPv4 only. While the hand runs, the Worker's port on the slot's loopback is taken.
 
 ## Sandbox providers
 
-A provider creates a sandbox, runs a command in it, writes a file to it, and kills it (`src/Sandbox.ts`). Everything else goes through `slot.sh`, so a provider is small.
+A provider creates a sandbox, runs a command in it, writes a file to it, and kills it (`src/Sandbox.ts`). The contract is unchanged, and a run now asks one thing of a sandbox: it writes `runner.json` into it and runs `nanoeval runner --detach --config runner.json`. Everything else is between that runner and the run.
 
-**Local.** `nanoeval sandboxd` serves a machine over HTTP with a bearer token. A sandbox is a directory. This is the single-machine mode of the earlier versions: one large machine, many slots.
+**Local.** `nanoeval sandboxd` serves a machine over HTTP with a bearer token. A sandbox is a directory, and `nanoeval` on its path is this checkout. Deleting a sandbox ends its runner and every slot it still has. This is the single-machine mode of the earlier versions: one large machine, many slots.
 
-A machine's network is host policy, and `sandboxd` passes it to the slots. `--ca-bundle FILE` mounts a certificate bundle into each slot and names it in the variables that OpenSSL, curl, uv, pip, requests, Node, git and cargo read, for a network that re-signs TLS. `--slot-env FILE` starts each slot with the variables of a file. Both change what the agent and the verifier see, so the sandbox's capabilities in the run's status record them as `ca_bundle` and `slot_env`. Neither is set by default.
-
-A slot of the local provider is on a private network unless the run asks for the host's (`--network host`). On the host's network slots share the machine's ports: an attempt cannot bind a port that another holds, and a verifier can reach another attempt's server. `--slot-forward` is the third piece of host policy, described under [Slot networks](#slot-networks).
+A machine's network is host policy, and `sandboxd` passes it to the runners it starts. `--ca-bundle FILE` mounts a certificate bundle into each slot and names it in the variables that OpenSSL, curl, uv, pip, requests, Node, git and cargo read, for a network that re-signs TLS. `--slot-env FILE` starts each slot with the variables of a file. Both change what the agent and the verifier see, so the capabilities in the run's status record them as `ca_bundle` and `slot_env`. Neither is set by default. `--slot-forward` is the third piece of host policy, described under [Slot networks](#slot-networks). `--store` and `--cache` name the directory blob store and the cache of the machine.
 
 **E2B over MPP.** `src/E2b.ts` talks to `https://mpp.e2b.dev`, whose bodies match E2B's REST API:
 
@@ -176,34 +258,34 @@ A slot of the local provider is on a private network unless the run asks for the
 3. The paid response carries `sandboxID` and `envdAccessToken`. Commands then go to envd at `https://49983-<id>.e2b.app/process.Process/Start` as a Connect server stream in JSON, and files to `/files`. That data plane is free.
 4. `DELETE /sandboxes/<id>` is a paid request too.
 
-E2B bills the requested lifetime up front and does not refund an early kill. Over MPP it serves only its public templates, so Docker and the hand are installed at run time (`--docker install`). CPU and memory are fixed by the template, which bounds the slots per sandbox.
+E2B bills the requested lifetime up front and does not refund an early kill. Over MPP it serves only its public templates, and CPU and memory are fixed by the template. A runner there needs Node 24 and `nanoeval` on the path of the template, and since the sandbox has no KVM it can run `dir` environments only. Nothing of this has run against the real service.
 
 The E2B JavaScript SDK is not used. It cannot pay, and it needs `nodejs_compat`. The envd protocol it wraps is two requests.
 
 ## Tasks and results
 
-Tasks are Harbor task directories, schema 1.1, as Terminal-Bench 2.x ships them: `task.toml`, `instruction.md`, `environment/`, `tests/test.sh`. The verifier writes `/logs/verifier/reward.txt`. The CLI loads a directory and sends `tests/` with the run, and `environment/` when the task names no `docker_image`, since the image is then built from it. `solution/` leaves the machine only in an oracle run. The run stores a task's files in parts beside a small record of the task, so admission never reads the files. `environment.build_timeout_sec` bounds a task's environment setup when the task sets it. Tasks that ship a Compose file, declare MCP servers, or need GPUs, a separate verifier environment or `allow_internet = false` are refused at submission. Compose is recognized by `environment/docker-compose.yaml`, which is what Harbor acts on, not by a `[metadata]` flag. A task of the earlier Harbor format, which writes `version = "1.0"` where later tasks write `schema_version`, loads the same way: Terminal-Bench 2.0 is published in it.
+Tasks are Harbor task directories, schema 1.1, as Terminal-Bench 2.x ships them: `task.toml`, `instruction.md`, `environment/`, `tests/test.sh`. The verifier writes `/logs/verifier/reward.txt`. An import turns each directory into a row of an eval, see [Evals](#evals), and a run carries rows and no files. `environment.build_timeout_sec` bounds a slot's start when the task sets it, and `--setup-sec` otherwise. Tasks that ship a Compose file, declare MCP servers, or need GPUs, a separate verifier environment or `allow_internet = false` are refused: Compose, MCP servers, GPUs and a separate verifier when the task is imported, `allow_internet = false` when a run is created. Compose is recognized by `environment/docker-compose.yaml`, which is what Harbor acts on, not by a `[metadata]` flag. A task of the earlier Harbor format, which writes `version = "1.0"` where later tasks write `schema_version`, loads the same way: Terminal-Bench 2.0 is published in it.
 
-[Datasets](#datasets) describes where task directories come from, and [Final messages and judges](#final-messages-and-judges) the two additions to the task format.
+[Datasets](#datasets) describes where task packages come from, and [Final messages and judges](#final-messages-and-judges) the two additions to the task format.
 
 `nanoeval export` writes a Harbor job directory: `config.json` and `result.json` for the job, and per trial `config.json`, `result.json`, `agent/trajectory.json` (ATIF-v1.7), `agent/events.jsonl`, `verifier/test-stdout.txt` and every file the verifier wrote, such as `verifier/reward.txt` and `verifier/ctrf.json`, bytes intact. A verifier file over 4 MiB is named in `verifier-omitted.txt` instead, and a solution or verifier log keeps its last 4 MiB behind a line that says it was cut. The shapes are those of Harbor's `JobResult`, `TrialResult`, `JobConfig` and `TrialConfig`: a trial's id is the job's UUID with its last group replaced by the attempt number, its config names the task by path, and the job counts every trial with an exception as errored, as Harbor does, which includes an agent timeout that nanoeval scores. The CLI reads the result files in one request and each artifact in its own. Token counts and the harness's cost estimate come from the session's events, per attempt.
 
 ## Datasets
 
-A dataset importer turns a published benchmark into Harbor task directories once, on the machine that submits runs. Nothing about a dataset exists at run time: the Worker and the slots see ordinary tasks. The importers are the adapters of nanocode's `crates/experimental/nanocodex-eval-adapters` (removed in `2d4a4c539`), ported to TypeScript in `datasets/`.
+A dataset adapter turns a published benchmark into task packages in the Harbor layout, and `nanoeval import` turns those into the rows of an eval, once, on the machine that imports. Nothing about a dataset exists at run time: the Worker and the runners see rows. The adapters are those of nanocode's `crates/experimental/nanocodex-eval-adapters` (removed in `2d4a4c539`), ported to TypeScript in `datasets/`.
 
 ```
- nanoeval import NAME --out DIR
+ nanoeval import NAME
    datasets/Catalog.ts   the datasets, each with the digests it is pinned to
    datasets/Source.ts    downloads into ~/.cache/nanoeval/sources, kept by SHA-256
    datasets/<Adapter>.ts rows of the source become task files
    datasets/assets/      the verifier of each dataset: test.sh, grade.py, solve.sh
-   datasets/Dataset.ts   writes DIR/<task>/ and DIR/dataset.json
- nanoeval run --dataset DIR
-   every task is hashed and compared with dataset.json before the run is submitted
+   cli/Import.ts         each task becomes a row of the eval NAME, see Evals
+ nanoeval import NAME --out DIR
+   datasets/Dataset.ts   writes DIR/<task>/ and DIR/dataset.json instead, to read or to hand to Harbor
 ```
 
-**Pins.** A source is a file with a SHA-256 written in the adapter, or a set of task packages with a digest over their digests. A download that does not match is refused and not kept. `dataset.json` (`nanoeval-dataset-v1`) records the pins and, for every task, its id, its name and its package checksum, the same checksum a run reports. Importing part of a dataset (`--only`, `--limit`) adds to the manifest of that directory. A directory holds one dataset from one source.
+**Pins.** A source is a file with a SHA-256 written in the adapter, or a set of task packages with a digest over their digests. A download that does not match is refused and not kept. The eval's version records the dataset and the pins, and every row its id, its name and its package checksum, the same checksum a run reports. Importing part of a dataset (`--only`, `--limit`) adds to the eval as a new version. An eval holds one dataset from one source. `dataset.json` (`nanoeval-dataset-v1`) records the same for a directory written with `--out`.
 
 | Dataset | Where the tasks come from | What the importer writes |
 | --- | --- | --- |
@@ -214,7 +296,7 @@ A dataset importer turns a published benchmark into Harbor task directories once
 
 The Terminal-Bench source is the registry and not the Git repository, although the earlier adapter cloned `harbor-framework/terminal-bench-2-1` at a pinned commit. At that commit 88 of the 89 tasks hash the same as the registry's packages. `sanitize-git-repo` differs in five lines of `tests/test_outputs.py`, where the repository splits fake credentials into two string literals and the published package does not. Leaderboard runs use the packages, so the importer does too.
 
-A small task shared by thousands of cases needs no new format: every GPQA and HealthBench task names the same `docker_image`, so Docker pulls it once and krun slots share one image disk under their own overlays.
+A small task shared by thousands of cases needs no new format: every GPQA and HealthBench task names the same image, so the import converts it once, every row names the same disk digest, and the slots of a machine share one unpacked disk under their own overlays.
 
 ## Final messages and judges
 
@@ -226,21 +308,21 @@ final_message = true   # the verifier grades the agent's last message
 judge = true           # the verifier may ask a model
 ```
 
-**Verifier inputs.** The orchestrator writes into `tests/.nanoeval/` of the slot's copy of the task, after the agent has ended and before `tests/` is copied into the environment. The files therefore reach the environment exactly as `tests/` does, and the agent never sees them.
+**Verifier inputs.** The runner writes into `tests/.nanoeval/` of the slot's copy of the task, after the agent has ended and before `tests/` is copied into the environment. The files therefore reach the environment exactly as `tests/` does, and the agent never sees them.
 
 | File in the environment | Written when | Holds |
 | --- | --- | --- |
-| `/tests/.nanoeval/final_message.txt` | `final_message = true` | The message that completed the turn. Empty when the agent ran out of time. In an oracle run, `solution/final_message.txt` |
+| `/tests/.nanoeval/final_message.txt` | `final_message = true` | The message that completed the turn, which the run hands to the runner. Empty when the agent ran out of time. In an oracle run, `solution/final_message.txt` |
 | `/tests/.nanoeval/judge-response.json` | The verifier asked | `{"responses":[{"id","text"}]}`, one per request, in order |
 
-**Judge.** Model credentials stay in the Worker, and a slot gets neither a credential nor an address to call. On a [private network](#slot-networks) the verifier cannot reach the Worker at all, since the relay's allow list is reset before it starts, and the judge works the same: the request and the answers are files that the sandbox provider reads and writes.
+**Judge.** Model credentials stay in the Worker, and a slot gets neither a credential nor an address to call. On a [private network](#slot-networks) the verifier cannot reach the Worker at all, since the relay's allow list is reset before it starts, and the judge works the same: the request and the answers are files that the runner reads and writes on the host, and the run answers them.
 
 ```
  verify, round 1   tests/test.sh writes /logs/verifier/judge-request.json
                    {"requests":[{"id":"rubric-0","prompt":"..."}]} and no reward
- judge             the Run object submits each prompt as a turn of its own session,
+ judge             the runner hands the request to the run, which submits each prompt as a turn of its own session,
                    with no hand, on the model of the run's judge, and waits
- verify, round 2   the answers are written as a verifier input and tests/test.sh
+ verify, round 2   the runner writes the answers as a verifier input and tests/test.sh
                    runs again: it finds them and writes the reward
 ```
 
@@ -258,7 +340,7 @@ The session sends a model request without a credential, and `worker/Sessions.ts`
 
 ## Budget and payments
 
-A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP charge is checked against the sandbox budget before it is signed and is written to the run's `payments` table with its challenge. Admission stops when the model spend of finished attempts reaches the model budget, and the remaining attempts end as `budget` errors. A sandbox whose creation was interrupted by an orchestrator restart is marked `unknown` and is not retried, since its payment may have happened.
+A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP charge is checked against the sandbox budget before it is signed and is written to the run's `payments` table with its challenge. No row is claimed once the model spend reaches the model budget, and the rows that still wait end as `budget` errors. The spend counts finished attempts and the sessions of lost claims. A sandbox whose creation was interrupted by an orchestrator restart is marked `unknown` and is not retried, since its payment may have happened.
 
 ## Rejected alternatives
 
@@ -266,12 +348,11 @@ A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP c
 | --- | --- |
 | The harness inside the task container (Harbor installed agent) | Credentials in untrusted environments. Task images need a runtime, a CA bundle and a CLI. A dead container takes the diagnostics with it |
 | The Worker as a `WorkspaceHost` that calls the sandbox's exec API for each tool call | Loses the native hand's process sessions, PTYs and patch engine. One HTTP request per tool call instead of one WebSocket per attempt |
-| Cloudflare Workflows or Queues for the attempt lifecycle | A run needs one writer for admission and payments. A Durable Object with an alarm is that writer, and it runs unchanged under local workerd |
-| D1 and R2 for results | The ledger belongs to one run, so it lives in the run's SQLite. Artifacts are chunked there too. R2 is planned for large artifacts |
+| Cloudflare Workflows or Queues for the attempt lifecycle | A run needs one writer for claims and payments. A Durable Object is that writer, and it runs unchanged under local workerd |
+| D1 for the tables, and R2 for results | A table belongs to one eval or one run and has one writer, so it lives in that object's SQLite. Artifacts are chunked there too. R2 holds the blobs of evals, and is planned for large artifacts |
 | The E2B SDK in the Worker | It cannot pay and needs `nodejs_compat` |
 | MPP sessions for E2B | Charges need no channel state. Sessions are planned: one deposit, vouchers per request, the remainder refunded on close |
-| One microVM per attempt everywhere | No KVM inside E2B. The backends are layered instead |
-| crun or podman with the krun runtime, or krunvm | A second container engine and image store beside Docker, which here has only runc. krunvm manages images through buildah. Neither is installed where Docker is, and one more engine is one more thing every sandbox host must carry |
+| crun or podman with the krun runtime, or krunvm | A container engine and an image store on every sandbox host, where a runner needs neither: it boots a disk. krunvm manages images through buildah |
 | Firecracker | A VMM executable with an API socket per VM, block devices only, and tap devices that need root. libkrun links into one unprivileged process and shares directories |
 | The guest tool proxy of `nanocodex-vm` | It reimplemented `exec_command`, `write_stdin`, `apply_patch` and `view_image` in a guest. The released hand is that implementation now. Only a narrow exec port remains, for the hand, the solution and the verifier |
 | A shared directory as the guest root, with a host overlayfs per slot | A host overlay mount needs root or a user namespace, and the machine it was tried on refuses unprivileged user namespace mappings. Files in a shared directory also belong to the unprivileged VMM user |
@@ -282,22 +363,28 @@ A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP c
 | gvproxy for the guest network, as in gakonst/nanoeval | As released (v0.8.9, read from its source) it maps an address of the guest's network to the host's `127.0.0.1` and serves its port-forwarding API to the guest at the gateway, so a guest could reach the host's loopback and ask for listeners on the host. Closing both needs a configuration file or a build of our own. It is a 12.9 MB Go binary to fetch where passt is a distribution package |
 | TSI with a port map, or TSI for outbound connections only | libkrun hijacks every guest socket or none. A listener is still bound on the host, and the socket options that fail still fail |
 | libkrun's own DHCP client for the guest's address | It gives up 100 ms after its request. The address plan is fixed, so the guest agent sets it and a slow passt cannot leave a guest without an address |
-| One Docker network per slot | 64 slots need 64 subnets, where a default daemon's pools hold about 30 networks, and a bridge with its firewall rules per slot. The host still reaches every container at its address |
-| One Docker network with `enable_icc=false` and no rule in the slot | It stops container to container traffic through br_netfilter and does not stop the host: a process on the host read a listener at a container's bridge address |
-| `--network none` with a user-mode stack per container (slirp4netns, pasta, a tap to gvproxy) | Joining a container's namespace from outside needs root on the host, and a tap inside needs a device the container does not have. Docker's bridge is also what task images are built for |
-| A second container per slot for the relay and the rule | Twice the containers, and an image to build or pull on every host |
-| The session relay inside `sandboxd` | It would end every hand when `sandboxd` restarts. A slot's processes outlive it |
+| The session relay inside `sandboxd` or the runner | It would end every hand when either restarts. A slot's processes outlive both |
 | A listener for the Worker on the bridge's gateway, or TLS in front of it | Every slot could reach the first, and the second needs a certificate that every hand trusts |
 | A Rust crate beside `krun/` for the importers, reusing the earlier adapters as they are | They are written against `nanocodex-eval`'s import store, case plans and task format, about 3,300 lines that no longer exist, so little would be reused as it is. The task loader, the checksum and the CLI they must agree with are TypeScript, and a second binary would have to be built on every machine that imports. What ports unchanged is the data: the pins, the prompts and the graders |
 | Cloning the Terminal-Bench repository at a pinned commit, as the earlier adapter did | One of its 89 tasks differs from the published package, see [Datasets](#datasets) |
 | Generating SWE-bench evaluation scripts while importing | That needs Python and the `swebench` package on the importing machine. The verifier already runs in an environment with a network, and asks the same pinned package there |
 | The earlier SWE-bench grader, `pytest` over the listed tests | It is only right for repositories whose tests are pytest ids, and it passes on exit status. The official parsers decide per test |
 | A judge endpoint that the verifier calls with a token, as the earlier judge service was | The slot would need a route to the Worker, which a private slot network does not give, and a token that outlives the agent's processes in the same environment. A file needs neither |
+| The Run object driving every slot through the provider's `exec`, as the first version did | Every phase waited for the next alarm, about half a tick each, and every tick was a request per sandbox. One object did the admission of every machine from figures it had to ask for. A runner knows its machine, waits on local files, and calls the run only when something changed |
+| Docker for the environment at run time, and a Docker slot backend beside the microVM one | Two environment formats, an image store on the smallest disk of the host, and a pull or a build inside every first attempt, where it was counted as the attempt's setup and could fail as its error. Converted once, an environment is a file with a digest |
+| Task files carried in every run, as the first version did | 27.8 MB of base64 for Terminal-Bench 2.1 in each submission, stored again in each run. A run now names a version and its rows name blobs |
+| The disk as a raw file in the store, hashed whole | A task's disk is as large as its `storage_mb`, 10 GiB for every Terminal-Bench task, and mostly holes. The packed file is what is stored and hashed, and a runner unpacks it once |
+| A version per imported task | 89 versions for one import. A version is what one import made |
+| A queue or a push from the run to its runners | A runner behind NAT or in a sandbox has no inbound port. Claims are pulled, like the hand's connection |
+| A lease kept by a lock file, as the earlier workset kept its claims | That needs one filesystem. Runners are on several machines, so a lease is a time that a heartbeat moves |
+| Retrying a lost row without a bound, as the earlier workset did | A row that kills its runner, by memory or by a kernel fault, would be claimed forever. `--claims` bounds it and the row ends as an error that says so |
+| Retrying a failure that a runner reported | An environment that does not boot will not boot on the next claim either, and a retry hides it. `--rerun --errored` retries on request and keeps the lineage |
+| The runner as a shell script, like `slot.sh`, or inside `krun/` | It holds a state machine over HTTP with JSON. Shell has neither, and the Rust workspace is the launcher of one microVM. The runner is TypeScript and shares the row, protocol and admission types with the Worker |
+| Folding `slot.sh` into the runner | Its detached phases and status files are what lets a slot outlive the runner and a restarted runner go on. It is also what the unit tests and the network lane drive directly |
 | A model request sent by the Worker itself for the judge | A plan login only works through the session protocol of nanocode-ts, so a second client for each provider would be needed beside it |
 | Asking the agent to write its answer to a file | It changes the dataset's prompt. The final message is what these datasets grade |
-| The solution's output as the final message of an oracle run | The log of a solution also holds what `docker cp` and the shell print. A file in `solution/` is exact |
-| Admission that reserves each task's `storage_mb` | Every Terminal-Bench 2.1 task declares 10 GiB and most write a few hundred MB, so a 12 GiB budget would run one attempt at a time. The floor on free disk admits by what is measured |
-| A storage limit on Docker slots | `--storage-opt size` needs overlay2 on xfs with project quotas or a few other drivers. On the machine this was run on (containerd snapshotter on ext4) Docker accepted `size=64M` and a container then wrote 200 MB. A limit that holds on some hosts only, and fails silently on the others, would not be one |
+| The solution's output as the final message of an oracle run | The log of a solution also holds what the shell prints. A file in `solution/` is exact |
+| Admission that reserves each task's `storage_mb` | Every Terminal-Bench 2.1 task declares 10 GiB and most write a few hundred MB, so a 12 GiB budget would run one attempt at a time. The floor on free disk claims by what is measured |
 | Recognizing a verifier's failed installs from its output | It needs the error texts of pip, uv, apt, npm and curl, and breaks with each release of each. The missing report is one fact |
 | The exit code of `tests/test.sh` as the sign of a broken verifier | Harbor's convention writes the reward from the runner's exit code and then exits 0 either way |
 
@@ -309,7 +396,7 @@ A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP c
 | gakonst/nanoeval `crates/nanoeval/src/task.rs` | Task schema 1.1 fields and refusals | Ported to `src/Task.ts` |
 | gakonst/nanoeval `crates/nanoeval-harbor` | Harbor trial and job result shapes, pass@k, the package content hash | Ported to `src/Harbor.ts`, `src/Result.ts`, `src/Task.ts` |
 | gakonst/nanoeval `crates/nanoeval/src/atif.rs` | ATIF-v1.7 projection of agent events | Ported to `src/Atif.ts` for nanocode-ts session events |
-| gakonst/nanoeval `evaluator.rs` | Atomic slot and memory admission, 80% default memory | Ported to `src/Admission.ts` |
+| gakonst/nanoeval `evaluator.rs` | Atomic slot and memory admission, 80% default memory | Ported to `src/Admission.ts`. It now runs in the runner, on the machine it describes |
 | gakonst/nanoeval verifier flow | Tests withheld until the agent ends, same environment, reward file | Kept in `slot.sh verify` |
 | `HARNESS_PLACEMENT.md`, `NANOCODEX_VM_TOOLS.md` | Host harness, tools in the environment | Realized by the nanocode hand |
 | nanocode-ts | `App.create`, `Forward`, hand tokens, the hand protocol | Used as a dependency |
@@ -317,7 +404,12 @@ A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP c
 | gakonst/nanoeval `crates/nanovm` | The libkrun binding: `VmConfig`, `GuestCommand`, `KrunVm`, the capability probe | Ported to `krun/nanovm`. Read-only roots, vsock ports in both directions and a virtio-net device on a socket it is handed added. gvproxy, egress leases and the process config file left out |
 | gakonst/nanoeval and nanocode `Cargo.lock` | libkrun `df85b8b` with libkrunfw 5 | The same pin, and the same lock entries for its dependencies |
 | nanocode `crates/nanocodex-vm` `overlay.rs` and guest | A read-only image disk under a sparse upper disk per attempt, mounted and pivoted into by the guest | Reimplemented in `krun/guest/src/boot.rs` |
-| nanocode `crates/nanocodex-vm` `image/` | The image disk built from `docker export` | Kept as the source. The disk is written by a builder microVM instead of a packaging container |
+| nanocode `crates/nanocodex-vm` `image/` | An image disk made once and kept under a digest, with the image's environment and working directory in a record beside it | The disk is made at import and stored as a blob, with that record in the eval's row. The OCI pull and Dockerfile build without Docker are the converter that replaces the temporary one |
+| nanocode `crates/experimental/nanocodex-eval/src/workset.rs` | One row per task, treatment and repetition, written before anything runs. The states `unclaimed`, `running`, and a scored end. A claim token that fences every terminal write (`WHERE state = 'running' AND claim_id = ?`). Attempts kept append-only, with an infrastructure failure putting the row back without consuming it | Ported to `src/Ledger.ts`: `attempts` and `claims` tables with the same fencing and the same append-only claims. The lock file that proved a claim alive became a lease with a heartbeat, and the retries of a lost row are bounded |
+| nanocode `…/src/import/mod.rs`, `digest.rs` | An import store named by a digest over the dataset, its source and the digest of each task, with a re-import that changes nothing, and task packages whose instruction, tests, solution and environment are kept apart | Ported to `src/Eval.ts` and `cli/Import.ts`: a version digest over the same three things, and four blobs per row. The store on disk became the Evals object and the blob store. The package digest is Harbor's checksum, kept from the first version here |
+| nanocode `…/src/coordinator.rs` | One HTTP owner of the ledger. `POST /v1/claims`, artifacts uploaded under the claim, `POST /v1/claims/{token}/finish`, and a heartbeat route that its client already called for a Cloudflare coordinator. Worker names advisory, the token the authority | The Run object is that owner and `sandbox/Runner.ts` the worker: `claims`, `heartbeat`, `rows/<id>/artifacts`, `rows/<id>/finish`. Its release of a worker's claims when the worker exits is `leave` |
+| nanocode `…/src/vm.rs` | The attempt root: the prepared disk read-only under a fresh sparse upper disk, with tests copied in only for the verifier | Kept, see [krun slots](#krun-slots) |
+| gakonst/nanoeval `evaluator.rs` | A request for more memory than the machine has is counted as the whole machine, so it runs alone | Kept in `Admission.fill` |
 | nanocode `crates/experimental/nanocodex-eval-adapters/src/lib.rs` | The pinned revisions and SHA-256 digests of SWE-bench Verified, GPQA and HealthBench Professional | Copied into `datasets/SweBench.ts`, `GpqaDiamond.ts` and `HealthBench.ts`, and checked again against the live sources |
 | nanocode `…/src/source.rs` | Downloads kept by digest and refused on a mismatch, a ZIP member opened without a host `unzip` | Ported to `datasets/Source.ts` and `datasets/Zip.ts`. Git checkouts and LFS left out: no shipped dataset needs them |
 | nanocode `…/src/harbor.rs` | Harbor packages imported unchanged, a dataset digest over the task digests | Ported to `datasets/HarborHub.ts`, reading the registry in place of a checkout |
@@ -325,7 +417,7 @@ A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP c
 | nanocode `…/src/gpqa_diamond.rs`, `assets/gpqa-diamond/` | The prompt, CPython's seed-zero shuffle, the canary check, `grade.py` and `test.sh` | Ported. `grade.py` reads the final message from the verifier inputs and writes `reward.txt`, otherwise unchanged. `test.sh` unchanged |
 | nanocode `…/src/healthbench_professional.rs`, `assets/healthbench-professional/` | The case checks, the scoring constants, the grader prompt, the score | Ported. `grade.py` keeps the prompt, the parser and the arithmetic, and writes a judge request where it called the judge service |
 | nanocode `crates/experimental/nanocodex-eval/src/judge.rs` | A judge that is an agent turn without tools on the evaluator's own login, with no credential in the environment, and its 2 MiB request limit | Kept as the design. The loopback service and its token became a request file |
-| nanocode `…/src/import/mod.rs` | `dataset.json` with the source and a digest per task, `output = final_message` | Kept as `nanoeval-dataset-v1` and `[metadata.nanoeval] final_message` |
+| nanocode `…/src/import/mod.rs` | `dataset.json` with the source and a digest per task, `output = final_message` | Kept as `nanoeval-dataset-v1` for `import --out` and `[metadata.nanoeval] final_message` |
 | Harbor `adapters/swebench` | The pinned grader packages (`swebench==4.0.3`, `datasets==2.16.1`, `fastcore<1.11`), task resources and timeouts | The same values in `datasets/assets/swe-bench/test.sh` and `datasets/SweBench.ts` |
 
 ## What the earlier runner had
@@ -334,19 +426,19 @@ The eval stack of nanocode at `2d4a4c539^` (`crates/experimental/nanocodex-eval`
 
 | Earlier piece | What it did | Here |
 | --- | --- | --- |
-| Attempt roots (`vm.rs`, `nanocodex-vm/src/overlay.rs`) | A fresh sparse ext4 upper disk over a read-only image disk for each attempt, or a reflink copy that could be kept | Back as krun slots. Keeping the root of a finished attempt is not carried over: planned, for looking at a failure |
-| Workset (`workset.rs`) | One SQLite row per task, treatment and repetition, claimed under file locks | Replaced by the ledger of the Run object |
-| Dataset adapters and import store (`nanocodex-eval-adapters`, `import/mod.rs`) | Pinned sources normalized into task packages | Back for five datasets, see [Datasets](#datasets). The rest are listed in the README with what each needs |
+| Attempt roots (`vm.rs`, `nanocodex-vm/src/overlay.rs`) | A fresh sparse ext4 upper disk over a read-only image disk for each attempt, or a reflink copy that could be kept | Back as krun slots over the disk of the eval's row. Keeping the root of a finished attempt is not carried over: planned, for looking at a failure |
+| Workset (`workset.rs`) | One SQLite row per task, treatment and repetition, claimed under file locks | Back as the run's rows and claims, with leases in place of file locks, see [Runs](#runs) |
+| Dataset adapters and import store (`nanocodex-eval-adapters`, `import/mod.rs`) | Pinned sources normalized into task packages, stored under a digest | Back for five datasets as adapters, and as the eval table and blob store, see [Evals](#evals). The rest are listed in the README with what each needs |
 | Judge service (`judge.rs`) | An OpenAI-compatible endpoint on the host for verifiers | Replaced by the judge request file |
 | Separate verifier environment (`vm.rs`, `tests/Dockerfile`) | The verifier in a fresh machine from its own image, with only named artifacts carried over | Refused at submission. Planned: GDPval, SWE-Atlas QnA and GeneBench Pro need it |
 | Network modes (`network_mode`, `allow_internet = false`) | A candidate without a network and a verifier with one | Refused. Planned, on top of the private network a slot now has, which still allows every connection out. Closed-book datasets need it |
 | Transcripts (`transcript.json`) | A prompt of several messages | Not carried over. Planned: MRCR and 115 HealthBench cases need it |
 | Verifier-dependency cache (`vm.rs`) | The `apt` and `uv` setup of Terminal-Bench verifiers kept on a cache disk | Not carried over. Planned after a measurement: verifiers that install their tools took 14 to 46 s of each attempt here |
-| Rerun lineage (`eval/run/retained.rs`, later the workset) | A run that retries what an earlier one did not pass | Planned |
+| Rerun lineage (`eval/run/retained.rs`, later the workset) | A run that retries what an earlier one did not pass. At `2d4a4c539^` the workset kept no pointer between them: a retry was a new generation or another attempt row | Back with the pointer: `run --rerun`, see [Runs](#runs) |
 | Profiles (`profile.rs`, `nanocodex.toml`) | Named recipes of benchmarks, harnesses, models and thinking levels | Not needed yet: a run is a command line over dataset directories. A run file is the equivalent when one is wanted |
 | Capture proxy (`capture_proxy.rs`) | Recorded the model traffic of other harnesses for comparison | Not needed: nanoeval runs nanocode sessions, whose events are the record |
-| Coordinator and pull workers (`coordinator.rs`, `cluster.rs`) | One HTTP owner of the ledger, workers that claim tasks, a host load sampler | Not needed: the Worker is the coordinator and a sandbox provider is the worker |
+| Coordinator and pull workers (`coordinator.rs`, `cluster.rs`) | One HTTP owner of the ledger, workers that claim tasks, a host load sampler | Back as the Run object and its runners. The load sampler is not carried over: a runner admits by declared memory and measured free disk |
 | Named rewards and scoring policies (`reward.json`) | Several rewards per attempt and a rule for passing | Not carried over. A grader writes one `reward.txt`, and the summary reports the mean reward beside the pass rate |
-| Image builds without Docker (`nanocodex-vm/src/image`) | OCI pulls and Dockerfile builds straight to a disk | Not carried over. Docker builds, a builder microVM writes the disk |
+| Image builds without Docker (`nanocodex-vm/src/image`) | OCI pulls and Dockerfile builds straight to a disk | Coming back as `nanoeval-krun image build` behind `sandbox/Converter.ts`. Until it lands, the temporary converter calls Docker at import and nowhere else |
 
 Also not carried over yet: warm spare microVMs, prompt-cache cohorts, duration-ordered dispatch, egress leases.
