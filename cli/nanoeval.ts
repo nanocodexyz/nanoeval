@@ -445,6 +445,8 @@ async function main(): Promise<void> {
       token: required(values.token, 'token'),
     })
     console.log('nanoeval sandboxd listening on ' + server.url)
+    for (const signal of ['SIGINT', 'SIGTERM'] as const)
+      process.once(signal, () => void server.close().then(() => process.exit(0)))
     return
   }
 
