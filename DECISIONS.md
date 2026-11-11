@@ -682,3 +682,152 @@ None of the solutions was run under Harbor on this machine, so "the task" above 
 - Three images stayed on the machine after runs were cancelled while their slots were pulling them. The image cache had no record of the one that was checked, and that record is what `--images remove` and `nanoeval prune` go by. They were removed by name.
 - `--free-disk-mb` holds back new attempts and does not stop one that is writing. What kept the floor here was a watcher outside nanoeval that cancelled the run, which costs every attempt of that run. It let the free disk fall as far as 45.2 GB before a cancelled slot was gone.
 - A verifier that hangs costs its whole `verifier.timeout_sec`: 900 s for the torch deadlock, and an hour for the stopped `git clone` had it not been fixed.
+
+## 2026-11-11: a durable eval table and task runners
+
+Machine: the 32-core, 62 GiB Linux x86_64 machine with KVM of the entries above (kernel 6.8, libkrunfw 5.5.0, Docker 29.9.3, Node 24.22.2, wrangler 4.151.1), shared with other work throughout (load average 2 to 8 while these ran). The filesystem that holds Docker's images had 49 to 53 GB free, 45 GB of which had to stay free. The blob store, the caches and the Workers' state were on another filesystem. Each lane is one run unless it gives several. Code: the commits of this entry, and each table names its commit.
+
+### What was wrong
+
+The question that started this was why some things ran in Docker when the slots are microVMs. The answer was that an environment did not exist until an attempt asked for it. A krun slot pulled or built the task's image with Docker when it came up and exported it into a disk, so every sandbox host carried a container engine, the image store sat on the smallest filesystem of the machine, and the pull was counted as the attempt's setup and could end it as an error. The full Terminal-Bench run of the entry above spent most of its care on that filesystem. A second backend ran attempts in the containers themselves, and its lane could not finish for the same reason.
+
+The earlier eval stack in nanocode did not work that way. It converted each benchmark once through an adapter into its own task packages, kept a table of rows that workers claimed, and gave each attempt a copy-on-write disk over a prepared one. This entry is that shape again:
+
+| | Before | Now |
+| --- | --- | --- |
+| A task's files | Sent with every run, kept again in every run | Blobs named by SHA-256, written once by the import |
+| A task's environment | Pulled or built by Docker in the first slot that needs it, then exported to a disk | Converted at import into the packed disk a microVM boots, a blob like the others |
+| What a run holds | Tasks with their files, and attempts | Rows that name one eval version |
+| Who runs an attempt | The Run object, one `slot.sh` call through the provider at a time, on its alarm | A runner on the sandbox host that claimed the row |
+| Admission | In the Run object, from figures it asks each sandbox for | In the runner, from its own machine |
+| A lost sandbox | Its attempts end as errors | Its rows are claimed again, at most `--claims` times |
+| Docker | In every krun and Docker slot, and in `slot.sh` | In the temporary converter of `nanoeval import`, two files |
+
+### What the machine settled
+
+- **The packed disk is the blob.** A Terminal-Bench task declares 10 GiB of storage, so its disk is a 10 GiB sparse file. Hashing that whole would read 890 GiB for the 89 tasks. The stored and hashed form is `tar --sparse` through `zstd -3`: the 89 disks of Terminal-Bench 2.1 are 18.2 GB packed, 132 MB at the median, and a disk is packed in a fraction of the time it takes to export. A runner unpacks it once per machine. Both commands are part of the temporary converter and go when `nanoeval-krun image pack` lands.
+- **A directory store links.** On one filesystem a blob enters the store, and later a runner's cache, as a hard link, so a disk of 1.4 GB is not copied when it is imported or fetched. Blobs are read-only files.
+- **The runner keeps `slot.sh`.** Folding its krun functions into the runner was tried on paper and dropped: the detached phases with their status files are what lets a microVM and its hand outlive the runner, and the lane that kills a runner and starts it again passes because of them.
+- **Phases stopped waiting for a tick.** The Run object used to move every attempt one phase per alarm. A runner reads the status file of a local phase every 25 ms and asks the Worker, where it must, with a backoff from 25 ms to `--poll-ms`. The alarm now only expires leases and watches sandboxes.
+- **A reader verifies.** A runner hashes every blob it fetches before it keeps it. A store that holds a wrong or missing blob ends the attempt as an `environment` error that names the digest, which is how the failures lane now provokes that kind: it deletes one blob from the store after the import. An environment that does not build is refused by the import, not by an attempt.
+- **A lost claim cannot score.** Every call of a runner for a row carries the claim's token. The lane that kills one of two runners sees the dead runner's two rows expire after the lease, be claimed by the other with a second session, and end scored once, with the claims of each row recorded as `expired` then `finished`.
+- **R2 under local workerd.** The Worker stores blobs in its `BLOBS` bucket. Two lanes import and run through it, and a 70 MiB blob went up as two parts in 0.63 s and came back verified in 0.49 s.
+
+### Lanes
+
+From a fresh clone of commit `3233b74`: `npm ci`, `npm run lint`, `npm run check:types`, `npm test` (69 tests) and `npm run dry-run` passed, and then these, one run each. Every lane imports its tasks as an eval first, with the temporary converter on krun slots, and then runs it through a runner. Wall is from the creation of the run to its end. The last column is the same lane in the earlier flow, from the entry on private networks above, where it existed.
+
+| Lane | Backend | Attempts | Slots | Wall | Result | Before |
+| --- | --- | ---: | ---: | ---: | --- | ---: |
+| Scripted model | krun | 8 | 4 | 4.9 s, the first sandbox of the clone. 2.1 to 2.5 s in later runs | 4 passed, 4 failed as scripted | 6.0 s |
+| Scripted model | dir | 6 | 3 | 1.6 s | 3 passed, 3 failed as scripted | 5.6 s |
+| Oracle, with a certificate bundle | krun | 3 | 4 | 1.4 s | 3 passed | 3.8 s |
+| Oracle | dir | 3 | 4 | 0.9 s | 3 passed | |
+| Blobs in R2 through the Worker | krun | 8 | 4 | 2.2 s | 4 passed, 4 failed as scripted | |
+| Blobs in R2 through the Worker | dir | 6 | 3 | 1.5 s | 3 passed, 3 failed as scripted | |
+| Final messages and a judge | krun | 8 | 4 | 2.2 s | 4 passed, 4 failed as scripted | 8.2 s |
+| Final messages and a judge, oracle | krun | 2 | 4 | 1.4 s | 2 passed | 4.9 s |
+| Final messages and a judge | dir | 8 | 4 | 1.6 s | 4 passed, 4 failed as scripted | |
+| Failure kinds and fixtures, then a rerun of what errored | krun | 8, then 3 | 4 | not recorded | 3 passed, 2 failed, 3 errored, each as designed. The rerun has the 3 errored rows, each naming its attempt, and they error again | |
+| The same | dir | 5, then 3 | 4 | not recorded | 1 passed, 1 failed, 3 errored, each as designed | |
+| Worker killed and restarted once | krun | 8 | 4 | 3.2 s | 4 passed, 4 failed as scripted | 6.6 s |
+| Worker killed and restarted once | dir | 8 | 4 | 2.6 s | 4 passed, 4 failed as scripted | |
+| Slot networks | krun | 4 | 4 | 1.8 s after the two-slot checks | 4 passed | 3.3 s |
+| Disk removal | krun | 8 | 4 | 2.2 s | 4 passed, 4 failed. The disk the run unpacked is gone, the one the cache had is kept | |
+| Free disk floor | krun, dir | 8 | 4 | not recorded | 8 errored as designed, on each | |
+| Memory packing | krun, dir | 3 | 4 | not recorded | 3 passed, two at once, the small one ahead of the second large one | |
+| Two attached runners, separate caches | krun | 8 | 2 each | 2.2 s | 4 passed, 4 failed. Both runners finished rows | |
+| The same | dir | 8 | 2 each | 1.4 s | 4 passed, 4 failed | |
+| A runner killed, lease 3 s | krun | 8 | 2 each | 5.0 s | 4 passed, 4 failed, none errored. The killed runner's rows were claimed again by the other | |
+| The same | dir | 8 | 2 each | 4.4 s | 4 passed, 4 failed, none errored | |
+| A runner killed and started again | krun | 8 | 8 | 1.9 s | 4 passed, 4 failed. One row forgotten on purpose was put back and claimed again, the others went on | |
+| The same | dir | 8 | 8 | 1.3 s | 4 passed, 4 failed | |
+
+After every krun lane no microVM, no relay and no sandbox directory remained. The image list of the machine was the same before and after all of them.
+
+Two defects came out of these lanes and are fixed in `3233b74`. The lane that kills a runner and starts it again failed in the first fresh clone, at `644c9bd`: the turn of a row had completed while the runner was dead, and the restarted runner waited 60 s for a hand to attach that had long attached. A second form dropped a row whose ledger phase was ahead of the saved one, and its lease had to end. Killing the runner 0 to 500 ms after its first row left the claimed phase then passed 24 times of 24, 12 on each backend, where 2 of the first 4 had failed. The lane that expected to see every slot full sampled the run's status, and missed the instant once at a poll of 100 ms. It now computes the overlap from the attempts' own times.
+
+### Scale
+
+Scripted model, one sandbox with one runner, 32 slots, 64 attempts of 2 tasks × 2 agents, 1 vCPU and 256 MiB per slot, tick 500 ms, `--poll-ms` 250, commit `f7e3fd8`. Three runs each, one after another, while the import below had just finished (load average 5.6). The row "before" is the entry of 2026-11-10 above, krun slots on a private network.
+
+| Flow | Wall | Environment | Hand attach | Agent | Verifier |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Before: the Run object drives slots, tick 500 ms | 9.7, 8.2, 8.8 s | 1.12 s | 0.74 s | 0.63 s | 0.73 s |
+| Now: a runner claims rows, krun slots | 4.7, 4.6, 4.5 s | 0.37 s | 0.30 s | 0.64 s | 0.30 s |
+| Now: a runner claims rows, directory slots | 3.7, 3.9, 3.8 s | 0.20 s | 0.28 s | 0.67 s | 0.27 s |
+| Now: krun slots, 64 slots, 264 attempts of 3 tasks, one run | 16.4 s | 0.64 s | 0.55 s | 1.33 s | 0.75 s |
+| Now: krun slots, 32 slots, `--poll-ms` 100, one run at `644c9bd` | 4.8 s | 0.37 s | 0.33 s | 0.70 s | 0.31 s |
+
+Phase times are medians over the attempts of the first run of each row, and of the second for "before", as that entry gave them. The environment phase now holds no image work at all: it is fetching three small blobs from the cache and booting. The agent phase did not change, since it is the scripted model's two calls and the harness. Every run ended with half of its attempts passed and half failed as scripted, and none errored. The earlier entry has no krun run at 64 slots to compare that row with: its Docker slots took 37.3 s on the host network there. A poll of 100 ms gained nothing over 250 ms.
+
+### Terminal-Bench 2.1, imported
+
+`nanoeval import terminal-bench-2.1 --keep-going` into a directory store, at commit `f7e3fd8`, in two commands: the first four tasks, then all 89, which made a second version that names the first as its parent. All 89 converted, and none was refused.
+
+| | Total | Median per task | Least | Most |
+| --- | ---: | ---: | ---: | ---: |
+| Adapter: the registry package, checked against its digest | 51.7 s | 0.58 s | 0.22 s | 1.73 s |
+| Convert: pull, export into a disk, pack | 472.7 s | 3.23 s | 0.55 s | 32.4 s (`custom-memory-heap-crash`) |
+| Upload: hash the packed disk and the archives, link into the store | 7.9 s | 0.06 s | 0.01 s | 0.60 s (`reshard-c4-data`) |
+| Packed environment | 18.2 GB | 132 MB | 27 MB | 1.40 GB (`reshard-c4-data`) |
+
+The import took 9 minutes for the 89 tasks, one after another. The free space on the filesystem of Docker's images went from 52 GB to 49 GB at its lowest: an image is pulled, exported and removed before the next one is pulled, and the image list of the machine was the same before and after. The store holds 17 GB on disk. The second import of the first four tasks converted nothing.
+
+### Terminal-Bench 2.1 with the tasks' own solutions, through the eval
+
+One run of the 89 rows of `terminal-bench-2.1@69458cc6`: `nanoeval run --eval terminal-bench-2.1 --oracle --sandboxes 0 --disks remove`, worked by two attached runners on the one machine, each with 4 slots, 16,000 MB and a cache of its own, both started with `--ca-bundle`, `--slot-env` (`UV_EXCLUDE_NEWER` and `PIP_UPLOADED_PRIOR_TO` at the dates of the run of 2026-11-10) and `--slot-forward`, slots on a private network, the Worker at a tick of 500 ms, code at `f7e3fd8`.
+
+| | Passed | Failed | Errored |
+| --- | ---: | ---: | ---: |
+| The runs of 2026-11-10 on krun slots, per task | 82 | 4 | 3 |
+| This run | 82 | 5 | 2 |
+
+87 of the 89 rows ended as they had. The seven that did not pass before for a cause in the task or the machine did the same again: `build-cython-ext`, `mcmc-sampling-stan`, `protein-assembly` and `pypi-server` failed, and `qemu-alpine-ssh` and `qemu-startup` ended as `verifier` errors. Two rows differ:
+
+- **`portfolio-optimization` failed where it had passed.** 5 of its 6 tests passed. `test_performance_and_scalability[6000]` did not: it wants the solution's C version 1.2 times as fast as the Python one, and the same test measured 1.15 once on Docker slots in the earlier entry. Seven other attempts were running. In the rerun below, with one other attempt beside it, it passed. The score depends on what else the machine does, which is the task's test and not the runner.
+- **`torch-tensor-parallelism` passed where it had errored.** Its verifier pins torch 2.7.0, which the earlier entry found deadlocked in 3 of 3 runs, each ending at the verifier's 900 s. Here all 13 tests passed in 72 s. Three more attempts of it at once, in a run of their own, ended as 2 passed in 72 and 73 s and 1 `verifier_timeout` at 900 s. So the deadlock is intermittent: 3 of 4 attempts got past it here and none of 3 before. Nothing in a guest changed between the two, and why it happens less often now is not known.
+
+The run took 2,735 s from its creation to its end, and its attempts 11,662 s summed, where the earlier ones took 9,474 s. Three solutions account for the difference and for the wall time: `caffe-cifar-10` ran 2,734 s (910 s before), with its solution's download at about 110 KB/s, `dna-assembly` 772 s (21 s before), all of it in its solution, and `crack-7z-hash` 1,476 s (1,436 s before). The median attempt took 33 s. No claim was lost.
+
+- **The environment phase** had a median of 0.65 s and at most 4.1 s (`reshard-c4-data`, whose packed disk is 1.40 GB), and that is fetching the row's blobs and unpacking its disk into a cache that did not hold it. No image was pulled: a runner calls no Docker.
+- **Rows by runner**: 49, 35 and 5. The third runner was not planned. Twenty minutes in, six rows of 8,192 MB still waited although slots were free: each runner had 16,000 MB, and one such attempt left 7,808. First-fit had let the 2 and 4 GiB rows pass them, as it should, and the memory given to the runners then ran them one at a time. A third runner with 2 slots and 16,400 MB was attached to the running run, claimed two of the rows within the same second, and finished five of the six.
+
+**The rerun.** `nanoeval run --rerun RUN --failed` made a run of the 5 failed rows on the same eval version, each naming the attempt it retries, on 2 slots of one sandbox whose runner the run started. It took 309 s: `portfolio-optimization` passed, and the other four failed again. Its exported job loads with the models of Harbor 0.25.0 (`scripts/harbor-check.py`: 13 files, none refused).
+
+None of the solutions was run under Harbor on this machine, as before.
+
+### A model on the imported eval
+
+Three tasks of the imported eval with `gpt-6-luna` at its default thinking on the ChatGPT plan login (`nanoeval worker --codex-login`), one attempt each, three slots of one sandbox whose runner the run started, at commit `f7e3fd8`, while the solutions run below was using eight slots:
+
+| Task | Result | Environment | Agent | Verifier | Model calls | Estimate |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `openssl-selfsigned-cert` | passed | 0.4 s | 27.5 s | 7.5 s | 5 | $0.0023 |
+| `cancel-async-tasks` | passed | 0.4 s | 28.9 s | 20.9 s | 4 | $0.0020 |
+| `build-pmars` | passed | 0.5 s | 99.6 s | 7.2 s | 16 | $0.0071 |
+
+The run took 108 s, with 405,808 input tokens of which 349,312 were cached, 4,549 output tokens, and $0.0114 by the harness's estimate. The environment phase includes unpacking each task's disk into an empty cache. The same three tasks took 2.1 s there in the first Terminal-Bench entry, with their images already pulled. Three attempts say nothing about a pass rate.
+
+The exported job did not load with Harbor's models at first: a Codex model calls `exec` with its code as plain text, and the trajectory kept that string where Harbor wants an object. This was already so before this entry, and no earlier check had read a Codex trajectory. The text is now kept under `input`, and the events of this run, projected again, load with the models of Harbor 0.25.0 (`scripts/harbor-check.py`: 12 files, none refused).
+
+### What was removed
+
+- The Docker slot backend, with `--limits`, `--docker install`, the `bridge` network and the inbound rule of a container. Its end-to-end lanes went with it, and the unit tests that drove a Docker slot now drive nothing: the tests of the Docker slot network (its bridge, its rule, its container limits) are deleted, not ported.
+- `nanoeval run --dataset DIR` and the check of a task directory against `dataset.json` before a run. A run reads rows, and a row's checksum was computed when it was imported. `import --out` still writes the directories.
+- `--step-retries` no longer counts failed provider calls of the orchestrator. It bounds the consecutive failures of a runner's own step before the attempt ends as an `environment` error.
+- `--images remove` became `--disks remove`.
+- The `broken-environment` fixture no longer runs as an attempt. The default lane checks that importing it is refused.
+
+### Limits of this version
+
+- The converter is the temporary one. Importing needs Docker, GNU tar and zstd, and unpacking on a runner needs the last two. An image is still named by tag unless the dataset pins a digest, and the row records the image id it resolved to.
+- A runner is a Node process from this repository, so a sandbox host needs Node 24 and a checkout. No release ships it.
+- E2B has not run. Without KVM it could run directory environments only, and no template with the runner exists.
+- R2 ran under local workerd only. A multipart upload is not checked by the Worker against the digest: R2 checks single-request blobs, and readers check everything.
+- Artifacts are still chunked into the run's SQLite. The artifacts of a lost claim are deleted when its row is put back.
+- A runner polls for claims every `--poll-ms` while a run is unfinished, also when nothing can be claimed.
+- The memory a runner admits by is its own share. Two runners on one machine each count 80% of it unless `--memory-mb` says otherwise, which the Terminal-Bench run above set, too low for its 8 GiB rows.
+- A lost row starts again from an empty environment, so the work of the lost claim is paid twice. Its model usage is counted against the budget.
+- `scripts/install-linux.sh` was changed for the store and the cache and not run again. The services installed from the earlier commit were left as they were.
+- CI on a hosted runner runs the directory lanes. The krun lanes skip there, as before, and with the Docker lanes gone no hosted lane isolates an attempt any more.
