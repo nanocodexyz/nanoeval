@@ -27,8 +27,6 @@ jobs:
       - run: npm run check:types
       - run: npm test
       - run: npm run dry-run
-      - name: End to end, Docker slots
-        run: npm run e2e
       - name: End to end, directory slots
         run: npm run e2e
         env:
@@ -36,61 +34,126 @@ jobs:
           NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
           NANOEVAL_E2E_SLOTS: '3'
           NANOEVAL_E2E_ATTEMPTS: '1'
-      - name: End to end, oracle
+      - name: End to end, directory slots, oracle
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_MODEL: oracle
+          NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
+          NANOEVAL_E2E_ATTEMPTS: '1'
+      - name: End to end, directory slots, blobs in R2 through the Worker
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_STORE: r2
+          NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
+          NANOEVAL_E2E_SLOTS: '3'
+          NANOEVAL_E2E_ATTEMPTS: '1'
+      - name: End to end, directory slots, final messages and a judge
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: judge
+      - name: End to end, directory slots, failure kinds and a rerun
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: failures
+      - name: End to end, directory slots, orchestrator restart
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: restart
+      - name: End to end, directory slots, two attached runners
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: runners
+          NANOEVAL_E2E_SLOTS: '2'
+      - name: End to end, directory slots, a runner lost during the run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: lost
+          NANOEVAL_E2E_SLOTS: '2'
+          NANOEVAL_E2E_LEASE_SEC: '3'
+      - name: End to end, directory slots, a runner restarted during the run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: resume
+      - name: End to end, directory slots, free disk floor
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: disk
+      - name: End to end, directory slots, memory packing
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: packing
+      - name: End to end, krun slots, skipped where krun cannot run
+        run: npm run e2e
+      - name: End to end, krun slots, oracle, skipped where krun cannot run
         run: npm run e2e
         env:
           NANOEVAL_E2E_MODEL: oracle
           NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
           NANOEVAL_E2E_ATTEMPTS: '1'
           NANOEVAL_E2E_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
-      - name: End to end, final messages and a judge
+      - name: End to end, krun slots, blobs in R2 through the Worker, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_STORE: r2
+      - name: End to end, krun slots, final messages and a judge, skipped where krun cannot run
         run: npm run e2e
         env:
           NANOEVAL_E2E_SCENARIO: judge
-      - name: End to end, final messages and a judge, oracle
+      - name: End to end, krun slots, final messages and a judge, oracle, skipped where krun cannot run
         run: npm run e2e
         env:
           NANOEVAL_E2E_SCENARIO: judge
           NANOEVAL_E2E_MODEL: oracle
           NANOEVAL_E2E_ATTEMPTS: '1'
-      - name: End to end, failure kinds
+      - name: End to end, krun slots, failure kinds and a rerun, skipped where krun cannot run
         run: npm run e2e
         env:
           NANOEVAL_E2E_SCENARIO: failures
-      - name: End to end, orchestrator restart
+      - name: End to end, krun slots, orchestrator restart, skipped where krun cannot run
         run: npm run e2e
         env:
           NANOEVAL_E2E_SCENARIO: restart
-      - name: End to end, slot networks
+      - name: End to end, krun slots, slot networks, skipped where krun cannot run
         run: npm run e2e
         env:
           NANOEVAL_E2E_SCENARIO: network
-      - name: End to end, image removal
+      - name: End to end, krun slots, disk removal, skipped where krun cannot run
         run: npm run e2e
         env:
-          NANOEVAL_E2E_SCENARIO: images
-      - name: End to end, free disk floor
+          NANOEVAL_E2E_SCENARIO: disks
+      - name: End to end, krun slots, free disk floor, skipped where krun cannot run
         run: npm run e2e
         env:
           NANOEVAL_E2E_SCENARIO: disk
-      - name: End to end, memory packing
+      - name: End to end, krun slots, memory packing, skipped where krun cannot run
         run: npm run e2e
         env:
           NANOEVAL_E2E_SCENARIO: packing
-      - name: End to end, krun slots, skipped where krun cannot run
+      - name: End to end, krun slots, two attached runners, skipped where krun cannot run
         run: npm run e2e
         env:
-          NANOEVAL_E2E_BACKEND: krun
-      - name: End to end, krun slot networks, skipped where krun cannot run
+          NANOEVAL_E2E_SCENARIO: runners
+          NANOEVAL_E2E_SLOTS: '2'
+      - name: End to end, krun slots, a runner lost during the run, skipped where krun cannot run
         run: npm run e2e
         env:
-          NANOEVAL_E2E_BACKEND: krun
-          NANOEVAL_E2E_SCENARIO: network
-      - name: End to end, krun final messages and a judge, skipped where krun cannot run
+          NANOEVAL_E2E_SCENARIO: lost
+          NANOEVAL_E2E_SLOTS: '2'
+          NANOEVAL_E2E_LEASE_SEC: '3'
+      - name: End to end, krun slots, a runner restarted during the run, skipped where krun cannot run
         run: npm run e2e
         env:
-          NANOEVAL_E2E_BACKEND: krun
-          NANOEVAL_E2E_SCENARIO: judge
+          NANOEVAL_E2E_SCENARIO: resume
       - name: Keep the logs of a failed run
         if: failure()
         uses: actions/upload-artifact@v4
@@ -98,6 +161,7 @@ jobs:
           name: e2e-output
           path: |
             output/e2e/**/wrangler.log
+            output/e2e/**/runner*.log
             output/e2e/**/status.json
             output/e2e/**/harbor
 
