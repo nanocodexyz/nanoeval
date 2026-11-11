@@ -15,16 +15,19 @@ These principles come from nanocodexyz/nanocode's `AGENTS.md` and nanocodexyz/na
 
 ## Differences from nanocode-ts
 
-- This repository has tests and CI. An evaluator's results are claims about other software, so its own behavior is checked without a person: `npm test` and `npm run e2e` run on every push.
+- This repository has tests and CI. An evaluator's results are claims about other software, so its own behavior is checked without a person: `npm test` and the end-to-end lanes run on every push.
 - The README states what is implemented, what was run, and what is planned. Change it with the code.
 
 ## Project Principles
 
 - The harness runs outside the sandbox, as a nanocode-ts session. The sandbox holds the task environment and a nanocode hand, nothing else of ours.
 - nanoeval sends models only nanocode's native prompts and tool text, and the task's `instruction.md` unchanged.
-- A sandbox provider creates, executes, writes and kills. Everything about slots belongs in `sandbox/slot.sh`, so every provider and every machine splits the same way.
-- `src/` uses only the standard web platform types: no Node APIs, no `@cloudflare/workers-types`. `worker/` holds the Cloudflare code, `cli/` and `sandbox/Sandboxd.ts` the Node code.
-- The run's ledger is the authority. Write the intent before an effect that costs money, and never retry an effect whose outcome is unknown.
+- An eval is imported once and never changed: a version is named by a digest over its rows, and every file a row needs is a blob named by its SHA-256. A reader verifies a blob before it uses it.
+- An environment is converted when it is imported, never when an attempt starts. `sandbox/Converter.ts` is the only place that knows how, and nothing outside its temporary implementation calls Docker.
+- A run is rows, and its ledger is the authority. A runner claims, runs and reports facts. The run decides what they mean, and only the holder of a row's current claim token writes to it.
+- A sandbox provider creates, executes, writes and kills, and a run asks it only to start a runner. Everything about one slot belongs in `sandbox/slot.sh`, so every machine runs an attempt the same way. Admission belongs to the runner of the machine it describes.
+- `src/` uses only the standard web platform types: no Node APIs, no `@cloudflare/workers-types`. `worker/` holds the Cloudflare code, `cli/` and the TypeScript of `sandbox/` the Node code. Table logic that must be tested without workerd is written against `src/Sql.ts`.
+- Write the intent before an effect that costs money, and never retry an effect whose outcome is unknown. A lost claim is recorded and its row starts again from nothing: it is never resumed by another runner.
 - A measurement in DECISIONS.md names one run, commit, machine and sample count, and keeps every lane including losses.
 
 ## TypeScript Conventions
@@ -45,9 +48,9 @@ The conventions of nanocode-ts's `AGENTS.md` apply: erasable syntax only, `.ts` 
 
 - `npm run check` formats and lints with fixes. `npm run lint` checks without fixing.
 - `npm run check:types` runs `tsc` for the Node sources and for the Worker.
-- `npm test` runs the unit tests. `npm run e2e` runs the end-to-end test under local workerd.
+- `npm test` runs the unit tests. `npm run e2e` runs the end-to-end test under local workerd on microVM slots, and is skipped where krun cannot run. `NANOEVAL_E2E_BACKEND=dir` runs it on directory slots anywhere.
 - `npm run dry-run` bundles the Worker without deploying it.
-- In `krun/`, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` check the launcher. `NANOEVAL_E2E_BACKEND=krun` runs an end-to-end lane on microVM slots.
+- In `krun/`, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` check the launcher.
 
 ## Git Conventions
 
