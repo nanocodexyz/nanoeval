@@ -82,7 +82,7 @@ export function create(options: create.Options): Dataset.Adapter {
       if (byId.size !== versions.length)
         throw new DigestError(options.package + ' lists one task name more than once')
 
-      for (const id of Dataset.select([...byId.keys()].sort(), context)) {
+      for (const id of Dataset.select([...byId.keys()], context)) {
         const entry = byId.get(id)!
         const archive = await Source.kept(
           context.store,

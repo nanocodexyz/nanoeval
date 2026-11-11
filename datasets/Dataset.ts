@@ -57,9 +57,10 @@ export function select(ids: readonly string[], selection: Selection): string[] {
   const known = new Set(ids)
   for (const id of selection.only ?? [])
     if (!known.has(id)) throw new SelectionError('the dataset has no task ' + id)
+  const ordered = [...ids].sort()
   const chosen = selection.only?.length
-    ? ids.filter((id) => selection.only!.includes(id))
-    : [...ids]
+    ? ordered.filter((id) => selection.only!.includes(id))
+    : ordered
   return selection.limit === undefined ? chosen : chosen.slice(0, selection.limit)
 }
 

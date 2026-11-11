@@ -363,6 +363,25 @@ test('a HealthBench case of one message is judged, and a run of it must name a j
   )
 })
 
+test('a limit takes the first tasks in the order of their ids, at import as in a run', () => {
+  const [single, several] = HealthBench.parse(fixture('healthbench.jsonl'))
+  const ids = ['c', '1', '9', '2'].map((digit) => digit.repeat(32))
+  const rows = [{ ...several!, id: '0'.repeat(32) }, ...ids.map((id) => ({ ...single!, id }))]
+  const entries = [...ids].sort().map((id) => ({ id }))
+  for (const selection of [{}, { limit: 2 }, { limit: 1, only: [ids[0]!, ids[2]!] }])
+    assert.deepEqual(
+      HealthBench.select(rows, selection).map((row) => row.id),
+      Eval.select(entries, selection).map((entry) => entry.id),
+    )
+  assert.deepEqual(
+    HealthBench.select(rows, { limit: 2 }).map((row) => row.id),
+    [ids[1], ids[3]],
+  )
+  assert.deepEqual(Dataset.select(ids, { only: [ids[0]!, ids[1]!] }), [ids[1], ids[0]])
+  assert.throws(() => Dataset.select(ids, { only: ['absent'] }), Dataset.SelectionError)
+  assert.throws(() => HealthBench.select(rows, { only: [rows[0]!.id] }), Dataset.SelectionError)
+})
+
 test('a dataset is imported as eval rows with its files kept apart in a blob store', async () => {
   const root = temporary()
   const [first] = GpqaDiamond.tasks(

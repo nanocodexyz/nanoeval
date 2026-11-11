@@ -97,6 +97,11 @@ export function parse(text: string): Row[] {
     .map((line) => JSON.parse(line) as Row)
 }
 
+export function select(rows: readonly Row[], selection: Dataset.Selection): Row[] {
+  const byId = new Map(rows.filter(single).map((row) => [row.id, row]))
+  return Dataset.select([...byId.keys()], selection).map((id) => byId.get(id)!)
+}
+
 export const adapter: Dataset.Adapter = {
   async *cases(context) {
     const rows = parse(
@@ -112,10 +117,9 @@ export const adapter: Dataset.Adapter = {
             pin.file,
         }),
       ),
-    ).filter(single)
+    )
     const assets = await Dataset.assets('healthbench-professional')
-    const byId = new Map(rows.map((row) => [row.id, row]))
-    for (const id of Dataset.select([...byId.keys()], context)) yield task(byId.get(id)!, assets)
+    for (const row of select(rows, context)) yield task(row, assets)
   },
   description:
     "HealthBench Professional, the cases that are one user message, answered in the final message and graded by the run's judge",

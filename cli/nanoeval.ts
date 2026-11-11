@@ -53,10 +53,11 @@ const usage = `nanoeval <command>
             after the dataset unless --eval names it. --report writes the time each
             task took in the adapter, the conversion, the packing and the upload. With
             --keep-going, a task whose environment does not convert is named and left out,
-            and the rest become the version. The RUN steps of a task's Dockerfile get the
-            host policy that slots get, from --ca-bundle, --slot-env and --slot-forward or
-            from NANOEVAL_CA_BUNDLE, NANOEVAL_SLOT_ENV and NANOEVAL_SLOT_FORWARD, and the
-            disk keeps none of it.
+            and the rest become the version. --limit N takes the first N tasks in the order
+            of their ids, which is the order run --limit counts in. The RUN steps of a
+            task's Dockerfile get the host policy that slots get, from --ca-bundle,
+            --slot-env and --slot-forward or from NANOEVAL_CA_BUNDLE, NANOEVAL_SLOT_ENV and
+            NANOEVAL_SLOT_FORWARD, and the disk keeps none of it.
   import    DATASET --out DIR [--only ID]... [--limit N] [--sources DIR]
             Write the dataset's tasks as Harbor task directories instead, with dataset.json.
   evals     --url URL --token T
