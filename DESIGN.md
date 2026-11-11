@@ -195,8 +195,8 @@ A krun slot is one libkrun microVM. In gakonst/nanoeval the harness stayed on th
 | Piece | Runs | Role |
 | --- | --- | --- |
 | `krun/nanovm` | Host | The libkrun binding: one VM's disks, shares, vsock ports and command |
-| `krun/host`, `nanoeval-krun` | Host | `vm` is the VMM process of one microVM. `exec`, `copy-in`, `copy-out`, `unpack`, `stop` and `ready` talk to a guest. `check` says whether this machine can start one |
-| `krun/guest`, `nanoeval-krun-guest` | Guest | A static musl binary. Mounts the disks, pivots into the overlay, then serves requests on a vsock port |
+| `krun/host`, `nanoeval-krun` | Host | `vm` is the VMM process of one microVM. `exec`, `copy-in`, `copy-out`, `unpack`, `stop` and `ready` talk to a guest. `check` says whether this machine can start one. `image` makes the disk of a task environment, see [Image disks](#image-disks) |
+| `krun/guest`, `nanoeval-krun-guest` | Guest | A static musl binary. Mounts the disks, pivots into the overlay, then serves requests on a vsock port. In build mode it keeps the disk at `/mnt/root` and applies layers and Dockerfile steps to it |
 | `krun/wire` | Both | The request and frame encoding of that port, and the address plan of a private guest |
 | `krun/net`, `nanoeval-net` | Host and slot | The relay of a private slot, on both sides. A static binary, which the guest uses as a library |
 
@@ -213,7 +213,118 @@ A krun slot is one libkrun microVM. In gakonst/nanoeval the harness stayed on th
 - Some socket options do not hold: a gRPC client fails with "Failed to set SO_REUSEADDR". ICMP and raw sockets do not exist.
 - A connected UDP socket to a loopback address stays in the guest, so a resolver on the host's loopback is reached with `options use-vc`.
 
-**What a guest gets that its image lacks.** `/opt/nanoeval` with the hand and the certificate bundle. `/etc/resolv.conf` and `/etc/hosts` when the image leaves them empty. Nothing else: no agent, no shell, no init system.
+**What a guest gets that its image lacks.** `/opt/nanoeval`, as in a Docker slot. `/etc/resolv.conf` and `/etc/hosts`, written over what the image has, as Docker mounts its own over them. Nothing else: no agent, no shell, no init system.
+
+## Image disks
+
+`nanoeval-krun image` turns a task's environment into the disk a krun slot boots, with no container engine on the machine. It runs no Docker, containerd, podman or skopeo and needs none installed: it reads an image from its registry, or runs a Dockerfile, and the builder microVM that unpacked `docker export` writes the disk from the layers instead.
+
+```
+ nanoeval-krun image build (--ref NAME | --dockerfile DIR) --size-mb N --out DISK.ext4 --meta META.json
+   registry     the manifest for the platform, through an index, fetched by digest
+   blob store   layers, configs and manifests in <cache>/blobs/sha256, one lock and one download per blob
+   mke2fs       an empty sparse ext4 of N MiB
+   builder VM   nanoeval-krun vm --build DISK [--source DISK]... [--context DIR]
+     Apply      one layer's archive over vsock, unpacked by the guest as root
+     Run        a RUN step in the disk, with /proc, /dev, /sys and a resolver for that step only
+     Install    a COPY from the context share or from another disk
+   DISK.ext4, META.json   renamed into place under a lock on the output
+
+ nanoeval-krun image pack DISK.ext4 --out FILE      the non-zero blocks through zstd, addressed by SHA-256
+ nanoeval-krun image unpack FILE --out DISK.ext4    a sparse disk again, both digests checked
+ nanoeval-krun image tree DISK.ext4                 every entry of a disk, for comparing two
+```
+
+| Piece | Runs | Role |
+| --- | --- | --- |
+| `krun/host/src/image/reference.rs`, `registry.rs`, `store.rs`, `oci.rs` | Host | Image references, anonymous registry requests, the blob store, manifest and config shapes |
+| `krun/host/src/image/dockerfile.rs` | Host | A Dockerfile as steps with their lines, and its word splitting and variable expansion |
+| `krun/host/src/image/build.rs` | Host | Both sources, the stages of a Dockerfile, the metadata file |
+| `krun/host/src/image/machine.rs` | Host | The builder microVM as a child process, and requests to its guest |
+| `krun/host/src/image/pack.rs` | Host | The packed form |
+| `krun/guest/src/build.rs` | Guest | `Apply`, `Install`, `Mkdir`, `Run` and `Tree` on a disk mounted at `/mnt/root` |
+
+**From a reference.** `NAME:TAG` or `NAME@sha256:…`, on Docker Hub or any registry that speaks the OCI distribution protocol. A tag is resolved to a digest with a `HEAD` request, and every manifest is then fetched by digest and kept, so a second conversion asks the registry for nothing it has. An index or manifest list is searched for `--platform`, by default `linux` and the machine's architecture. Schema 2 and OCI manifests are read. Schema 1 and layers that are not gzip, zstd or plain tar are refused by name. Requests are anonymous: a bearer challenge is answered with a token asked for without credentials, and a registry that wants more is an error. Certificates are checked against `SSL_CERT_FILE` or the system bundle.
+
+A blob is downloaded to `<digest>.part` under a lock on that file, resumed with a range request, hashed, and renamed to its digest. Four blobs of an image download at once. A failed request is tried again six times, a second apart at first and doubling. A `429` waits as long as `Retry-After` says, or a minute at a time, for at most the window the registry names in `ratelimit-limit` and six hours when it names none.
+
+**Layers.** The builder guest mounts the new disk at `/mnt/root` and never makes it its own root. Each request works in a thread that leaves the shared filesystem state and changes its root to the disk, so an absolute link in the image resolves inside the image and nothing of the microVM is mounted over what the layers write. That is where this differs from the unpacking of `docker export`, which wrote `/dev`, `/proc` and `/sys` of the archive into the guest's own mounts. The host decompresses a layer and sends the archive in frames, hashing it on the way, and the conversion fails when a layer does not hash to the `diff_ids` entry of the image config.
+
+The guest applies a layer as a container engine does: `.wh.NAME` removes `NAME`. `.wh..wh..opq` removes what earlier layers left in its directory and keeps what this layer wrote, in whichever order the archive has them. An entry replaces what is there unless both are directories. Hard links, symlinks, fifos and devices are made as such. The owner is set before the mode, so a setuid bit stays. Extended attributes come from the PAX records, for files and for directories. Directory times are set after each layer.
+
+**From a Dockerfile.** One builder microVM runs each stage on a disk that starts as the stage's base image. Stages that the last one does not copy from are not built.
+
+| Instruction | Support |
+| --- | --- |
+| `FROM image [AS name]`, `FROM scratch`, `ARG` before `FROM` | Yes. `--platform` and a stage as the base are refused |
+| `RUN`, shell and exec form | In the stage's microVM, as `USER` in `WORKDIR` with `ENV` and `ARG` set. `--mount`, `--network`, `--security` and heredocs are refused |
+| `COPY` and `ADD` from the build context | Through a read-only share of the context. Wildcards, every flag but `--from`, an ignore file, and `ADD` of a URL or of an archive it would unpack are refused |
+| `COPY --from` a stage or an image | The source disk is attached read-only to the stage's microVM. An image is converted first |
+| `ENV`, `ARG`, `WORKDIR`, `USER`, `CMD`, `ENTRYPOINT`, `SHELL` | Yes, with `$NAME`, `${NAME}`, `${NAME:-word}` and `${NAME:+word}` where a Dockerfile expands them |
+| `EXPOSE`, `HEALTHCHECK`, `LABEL`, `MAINTAINER`, `STOPSIGNAL`, `VOLUME` | Read past: a slot uses none of them |
+| `ONBUILD` and anything else | Refused by name, with the line |
+
+A `RUN` step gets `/proc`, `/dev` and `/sys`, a resolver file and a hosts file, mounted in a mount namespace of its own thread, so they are gone with the step and the image's own `/etc/resolv.conf` and `/etc/hosts` are what the disk keeps. Its network is a slot's: `--network private`, the default, is passt and needs it installed, and `--network host` is TSI with the machine's resolver. A step has no terminal and no input.
+
+`COPY` follows what BuildKit was measured to do, in [DECISIONS.md](DECISIONS.md#2026-11-11-task-images-become-disks-without-docker): files from the context belong to root, files from a stage or an image keep their owner, modes and times are kept, a link named as a source is followed inside its own tree, a directory's contents are copied, a destination directory made on the way belongs to root with mode 755 and takes only the time of the source directory, a directory met on both sides takes the source's mode and owner, and a directory on one side against a file on the other is an error. `WORKDIR` makes missing directories as the current `USER`.
+
+**The disk.** ext4 without a journal, made by `mke2fs` with the options of a slot's upper disk. Its UUID and directory hash seed come from the image digest, so every conversion of an image lists its directories in the same order. `lost+found` is removed. It holds what the layers hold and nothing else. What `docker create` adds to a container is not there: `/.dockerenv`, the empty `/etc/hostname`, `/etc/hosts` and `/etc/resolv.conf` that Docker mounts over, the `/etc/mtab` link, and its own `/dev`, `/proc` and `/sys`. A slot writes its resolver and hosts files when it boots.
+
+**Metadata.** `META.json` is what a runner needs beside the disk:
+
+```json
+{
+  "schema": "nanoeval-environment-v1",
+  "source": { "reference": "alpine:3.21" },
+  "platform": "linux/amd64",
+  "size_mb": 10240,
+  "image_digest": "sha256:2d8a1104…",
+  "images": [
+    {
+      "reference": "alpine:3.21",
+      "index_digest": "sha256:bc214871…",
+      "manifest_digest": "sha256:2d8a1104…",
+      "config_digest": "sha256:e50d940e…",
+      "layers": [
+        {
+          "digest": "sha256:871d48e9…",
+          "media_type": "application/vnd.oci.image.layer.v1.tar+gzip",
+          "size": 3625402
+        }
+      ]
+    }
+  ],
+  "config": {
+    "architecture": "amd64",
+    "os": "linux",
+    "env": ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
+    "working_dir": "/",
+    "user": "",
+    "entrypoint": null,
+    "cmd": ["/bin/sh"]
+  },
+  "bytes_allocated": 13049856,
+  "seconds": { "download": 1.19, "convert": 0.14 }
+}
+```
+
+For a reference, `image_digest` is the digest of the platform's manifest. For a Dockerfile, `source` is `{"dockerfile": "sha256:…"}`, a digest over the context's files, the platform and the size, `images` lists every image the build read, and `image_digest` is a digest over that source digest and their manifests. `config.env` is the image's own: a runner adds the default `PATH` when it has none, as Docker does. A build whose metadata already names the same source, platform and size is skipped, without a request to the registry.
+
+**Identity.** Two digests name an environment, for two questions. `image_digest` says what it was made from: equal digests at equal sizes are the same files, owners, modes and times, in the same directory order. The SHA-256 of the packed disk says which bytes a run boots, and that is what an eval records and fetches by. They are two because the conversion is not reproducible byte for byte: a kernel writes the disk and stamps every inode with its clock, and places the data as its memory allows, so two conversions of one image differed in 3 to 5 % of their blocks for small images and in 36 % for one of 2.2 GiB, and in no entry of their trees. Making the packed digest follow from the image would mean writing ext4 without a kernel.
+
+**Packed form.** A disk of 10 GiB holds a few hundred MB, and a sparse file does not survive an upload. `image pack` writes, through zstd at level 3:
+
+```
+ "NKRDISK1"                        8 bytes
+ size of the disk                  u64, little endian
+ offset, length, bytes             a run of non-zero 4 KiB blocks, at most 1 MiB, in ascending order, repeated
+ size of the disk, 0               the end
+ SHA-256 of everything above       32 bytes
+```
+
+A block of zeros is left out whether the file system had allocated it or not, so the packed bytes follow from the disk's bytes alone, and packing a restored disk gives the same file. The SHA-256 of the packed file is its address. `image unpack` writes the runs into a sparse file, checks the digest inside and, with `--sha256`, the one of the file, and keeps nothing when either is wrong.
+
+**Limits.** A command that runs as a user of the image, in a `RUN` step as in a slot, has that user's primary group and no supplementary groups. Hard links between the files of one `COPY` become separate files. A `RUN` step on a network that re-signs TLS trusts what the image trusts: the certificate bundle of `sandboxd --ca-bundle` is not offered to a build. Registries are read without credentials.
 
 ## Slot networks
 
@@ -387,6 +498,16 @@ A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP c
 | Admission that reserves each task's `storage_mb` | Every Terminal-Bench 2.1 task declares 10 GiB and most write a few hundred MB, so a 12 GiB budget would run one attempt at a time. The floor on free disk claims by what is measured |
 | Recognizing a verifier's failed installs from its output | It needs the error texts of pip, uv, apt, npm and curl, and breaks with each release of each. The missing report is one fact |
 | The exit code of `tests/test.sh` as the sign of a broken verifier | Harbor's convention writes the reward from the runner's exit code and then exits 0 either way |
+| A library that writes ext4 on the host from the layers, as `arcbox-ext4` did in `nanocodex-vm` | It must write every feature a layer can carry by itself: extended attributes, devices, hard links, large files. A `RUN` step needs a kernel on the disk anyway, and the builder microVM that makes disks from archives was already here, so a kernel writes all of it |
+| `oci-client` for the registry, as `nanocodex-vm` used | It brings tokio and reqwest for three kinds of request. The converter is one blocking process: ureq with rustls and ring, and the calls written out |
+| skopeo, umoci, buildah or crane to fetch and unpack | They are container tools, and the point is that a host needs none. Unpacking still needs root or a user namespace on the host |
+| One flat archive made on the host from the layers, fed to the existing unpacker | Which entries survive is only known after every layer is read, so each layer would be read twice or indexed. Applying them in order is what an engine does and needs neither |
+| Unpacking layers after the guest has entered the disk, as the `docker export` path did | `/dev`, `/proc` and `/sys` of the microVM lie over the disk there, so those entries of a layer land in the guest's mounts and the directories keep the times of the conversion. A root directory per request has no mounts in it |
+| The files `docker create` puts into a container, written into the disk for equivalence | They are Docker's mount points, not the image. An image's own `/etc/hosts` would be lost, as it is in `docker export` |
+| A disk that is the same byte for byte for one image | A kernel writes it, stamps each inode with its clock and places the data as its memory allows: 142 of 3,186 blocks differed between two conversions of `alpine:3.21` and 204,264 of 575,152 for an image of 2.2 GiB. The trees were equal, so the image digest is the identity of the content and the packed digest the address of the bytes |
+| `tar --sparse`, `zstd --sparse` or qcow2 as the packed form | Each needs a tool on every host, and none gives the same bytes for the same disk when the holes of the file differ |
+| zstd above level 3 for the packed form | On a disk with 2.2 GiB of data, level 9 gave 13 % fewer bytes for 4.3 times the CPU, and level 19 took 139 s against 1.6 s |
+| A registry mirror or a login, to stay under Docker Hub's anonymous limit | The limit counts manifest requests, and a conversion makes one or two. 89 images converted from an empty store without meeting it. A `429` waits instead |
 
 ## Reused
 
@@ -419,6 +540,9 @@ A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP c
 | nanocode `crates/experimental/nanocodex-eval/src/judge.rs` | A judge that is an agent turn without tools on the evaluator's own login, with no credential in the environment, and its 2 MiB request limit | Kept as the design. The loopback service and its token became a request file |
 | nanocode `…/src/import/mod.rs` | `dataset.json` with the source and a digest per task, `output = final_message` | Kept as `nanoeval-dataset-v1` for `import --out` and `[metadata.nanoeval] final_message` |
 | Harbor `adapters/swebench` | The pinned grader packages (`swebench==4.0.3`, `datasets==2.16.1`, `fastcore<1.11`), task resources and timeouts | The same values in `datasets/assets/swe-bench/test.sh` and `datasets/SweBench.ts` |
+| nanocode `crates/nanocodex-vm/src/image/mod.rs` | Blobs kept by digest under a lock per blob and checked against it, the manifest of the machine's platform chosen from an index, the layer media types, a Dockerfile as stages run in a builder VM with earlier stages and other images attached as disks, variable expansion, the default `PATH`, and the refusal of what is not supported | Ported to `krun/host/src/image`. `oci-client`, tokio and `arcbox-ext4` left out: the registry calls are written over ureq, and the guest writes the disk. The reference and blob records, the context disk, the base disk cache and its reflink copies left out. `USER`, `ENTRYPOINT`, `SHELL`, `ADD`, exec-form `RUN`, quoting, resumed downloads and the check against `diff_ids` added |
+| `sandbox/slot.sh` `_krun_image`, `krun/guest/src/unpack.rs` | A builder microVM that unpacks an archive as root onto a fresh ext4, so the host needs neither root nor fakeroot | Kept, and fed the layers of an image in place of `docker export` |
+| The OCI image layer rules, and the order Docker's `UnpackLayer` applies an opaque directory in | Whiteouts, opaque directories, directory times set after each layer | Reimplemented in `krun/guest/src/build.rs` |
 
 ## What the earlier runner had
 
@@ -439,6 +563,6 @@ The eval stack of nanocode at `2d4a4c539^` (`crates/experimental/nanocodex-eval`
 | Capture proxy (`capture_proxy.rs`) | Recorded the model traffic of other harnesses for comparison | Not needed: nanoeval runs nanocode sessions, whose events are the record |
 | Coordinator and pull workers (`coordinator.rs`, `cluster.rs`) | One HTTP owner of the ledger, workers that claim tasks, a host load sampler | Back as the Run object and its runners. The load sampler is not carried over: a runner admits by declared memory and measured free disk |
 | Named rewards and scoring policies (`reward.json`) | Several rewards per attempt and a rule for passing | Not carried over. A grader writes one `reward.txt`, and the summary reports the mean reward beside the pass rate |
-| Image builds without Docker (`nanocodex-vm/src/image`) | OCI pulls and Dockerfile builds straight to a disk | Coming back as `nanoeval-krun image build` behind `sandbox/Converter.ts`. Until it lands, the temporary converter calls Docker at import and nowhere else |
+| Image builds without Docker (`nanocodex-vm/src/image`) | OCI pulls and Dockerfile builds straight to a disk | Back as `nanoeval-krun image build`, see [Image disks](#image-disks). `slot.sh` still builds through Docker and is to be given these disks |
 
 Also not carried over yet: warm spare microVMs, prompt-cache cohorts, duration-ordered dispatch, egress leases.
