@@ -466,6 +466,24 @@ fn a_packed_disk_is_restored(lab: &Lab) {
         lab.json(&["image", "pack", "restored.ext4", "--out", "again.pack"])["sha256"],
         packed["sha256"]
     );
+    let racers = [(); 2].map(|()| {
+        Command::new(KRUN)
+            .current_dir(&lab.home)
+            .args(["image", "unpack", "disk.pack", "--out", "raced.ext4"])
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap()
+    });
+    for mut racer in racers {
+        assert!(racer.wait().unwrap().success());
+    }
+    assert_eq!(
+        fs::read(lab.home.join("disk.ext4")).unwrap(),
+        fs::read(lab.home.join("raced.ext4")).unwrap()
+    );
+    for left in ["raced.ext4.tmp", "raced.ext4.lock"] {
+        assert!(!lab.home.join(left).exists(), "{left} is still there");
+    }
     let zeros = "0".repeat(64);
     let refused = lab.krun(&[
         "image",

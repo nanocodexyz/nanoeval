@@ -322,7 +322,7 @@ For a reference, `image_digest` is the digest of the platform's manifest. For a 
  SHA-256 of everything above       32 bytes
 ```
 
-A block of zeros is left out whether the file system had allocated it or not, so the packed bytes follow from the disk's bytes alone, and packing a restored disk gives the same file. The SHA-256 of the packed file is its address. `image unpack` writes the runs into a sparse file, checks the digest inside and, with `--sha256`, the one of the file, and keeps nothing when either is wrong.
+A block of zeros is left out whether the file system had allocated it or not, so the packed bytes follow from the disk's bytes alone, and packing a restored disk gives the same file. The SHA-256 of the packed file is its address. `image unpack` writes the runs into a sparse file, checks the digest inside and, with `--sha256`, the one of the file, and keeps nothing when either is wrong. Both hold a lock on their output while they write it, so two runners that restore one disk at once each leave it whole.
 
 **Limits.** A command that runs as a user of the image, in a `RUN` step as in a slot, has that user's primary group and no supplementary groups. Hard links between the files of one `COPY` become separate files. A `RUN` step on a network that re-signs TLS trusts what the image trusts: the certificate bundle of `sandboxd --ca-bundle` is not offered to a build. Registries are read without credentials.
 
