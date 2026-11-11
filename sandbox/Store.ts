@@ -41,6 +41,8 @@ export type Store = {
 const flockConflict = 1
 
 export const partBytes = 64 * 1024 * 1024
+export const resumes = 6
+export const resumeMs = 1000
 
 export function defaultRoot(env: Record<string, string | undefined> = process.env): string {
   return (
@@ -179,17 +181,35 @@ export function remote(options: remote.Options): Store {
   return {
     name: 'remote ' + base,
     async fetch(name, file) {
-      const response = await call('/' + name, {}, [404])
-      if (response.status === 404 || !response.body) {
-        await response.body?.cancel()
-        return false
-      }
       await FsPromises.mkdir(Path.dirname(file), { recursive: true })
-      await pipeline(
-        Readable.fromWeb(response.body as import('node:stream/web').ReadableStream),
-        Fs.createWriteStream(file),
-      )
-      return true
+      for (let failures = 0, offset = 0; ; ) {
+        try {
+          const response = await call(
+            '/' + name,
+            offset ? { headers: { range: 'bytes=' + offset + '-' } } : {},
+            [404],
+          )
+          if (response.status === 404 || !response.body) {
+            await response.body?.cancel()
+            return false
+          }
+          const resumed = offset > 0 && response.status === 206
+          await pipeline(
+            Readable.fromWeb(response.body as import('node:stream/web').ReadableStream),
+            Fs.createWriteStream(file, { flags: resumed ? 'a' : 'w' }),
+          )
+          return true
+        } catch (error) {
+          if (++failures > resumes) throw error
+          offset = await FsPromises.stat(file).then(
+            (stat) => stat.size,
+            () => 0,
+          )
+          await new Promise((resolve) =>
+            setTimeout(resolve, (options.resumeMs ?? resumeMs) * 2 ** (failures - 1)),
+          )
+        }
+      }
     },
     async has(name) {
       const response = await call('/' + name, { method: 'HEAD' }, [404])
@@ -239,6 +259,7 @@ export declare namespace remote {
   type Options = {
     base: string
     fetch?(input: string, init?: RequestInit): Promise<Response>
+    resumeMs?: number
     token: string
   }
 }

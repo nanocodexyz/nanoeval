@@ -3,16 +3,47 @@ import * as Storage from './Storage.ts'
 
 const digestPattern = /^[0-9a-f]{64}$/
 
-export function read(env: Env, digest: string): Promise<R2ObjectBody | null> {
-  if (!env.BLOBS) return Promise.resolve(null)
-  return env.BLOBS.get(digest)
+export class RangeError extends Error {
+  override name = 'Blobs.RangeError'
 }
 
-export function serve(object: R2ObjectBody | null): Response {
+export function offset(request: Request): number {
+  const header = request.headers.get('range')
+  if (header === null) return 0
+  const match = /^bytes=(\d+)-$/.exec(header)
+  if (!match) throw new RangeError('a blob is read from one offset to its end: ' + header)
+  return Number(match[1])
+}
+
+export async function read(env: Env, digest: string, from = 0): Promise<Response> {
+  let object: R2ObjectBody | null
+  try {
+    object = env.BLOBS ? await env.BLOBS.get(digest, from ? { range: { offset: from } } : {}) : null
+  } catch (error) {
+    return Storage.json({ error: 'the range was refused: ' + Storage.message(error) }, 416)
+  }
   if (!object) return Storage.json({ error: 'blob not found' }, 404)
   return new Response(object.body, {
-    headers: { 'content-length': String(object.size), 'content-type': 'application/octet-stream' },
+    headers: {
+      'accept-ranges': 'bytes',
+      'content-length': String(object.size - from),
+      'content-type': 'application/octet-stream',
+      ...(from
+        ? { 'content-range': 'bytes ' + from + '-' + (object.size - 1) + '/' + object.size }
+        : {}),
+    },
+    status: from ? 206 : 200,
   })
+}
+
+export async function serve(request: Request, env: Env, digest: string): Promise<Response> {
+  let from: number
+  try {
+    from = offset(request)
+  } catch (error) {
+    return Storage.json({ error: Storage.message(error) }, 416)
+  }
+  return read(env, digest, from)
 }
 
 export async function route(
@@ -34,7 +65,7 @@ export async function route(
         status: head ? 200 : 404,
       })
     }
-    if (request.method === 'GET') return serve(await bucket.get(digest))
+    if (request.method === 'GET') return serve(request, env, digest)
     if (request.method === 'PUT') {
       try {
         const stored = await bucket.put(digest, request.body, { sha256: digest })

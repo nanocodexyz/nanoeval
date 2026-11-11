@@ -12,14 +12,18 @@ import * as Converter from '../sandbox/Converter.ts'
 import * as Prune from '../sandbox/Prune.ts'
 import * as Runner from '../sandbox/Runner.ts'
 import * as Store from '../sandbox/Store.ts'
+import * as Bootstrap from '../src/Bootstrap.ts'
 import * as Compare from '../src/Compare.ts'
 import * as Config from '../src/Config.ts'
+import * as E2b from '../src/E2b.ts'
 import type * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
 import type * as Ledger from '../src/Ledger.ts'
+import * as Sandbox from '../src/Sandbox.ts'
 import * as Task from '../src/Task.ts'
 import * as Import from './Import.ts'
 import * as Plan from './Plan.ts'
+import * as Runtime from './Runtime.ts'
 
 const usage = `nanoeval <command>
 
@@ -43,13 +47,13 @@ const usage = `nanoeval <command>
   datasets  List the datasets that import knows, with the source each is pinned to and what
             was run end to end.
   import    --url URL --token T (DATASET | --task DIR...) [--eval NAME] [--only ID]... [--limit N]
-            [--backend krun|dir] [--store DIR|r2] [--cache DIR] [--layers DIR] [--sources DIR]
+            [--backend krun|ns|dir] [--store DIR|r2] [--cache DIR] [--layers DIR] [--sources DIR]
             [--report FILE] [--keep-going]
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
             Import a dataset, or local task directories, as a version of a durable eval:
             the adapter writes each task, its instruction, tests and solution become blobs
-            kept apart, and its environment is converted once into the disk a microVM boots
-            (krun) or kept as files (dir). Blobs go to a directory store (--store DIR,
+            kept apart, and its environment is converted once into the disk a slot boots
+            (krun and ns) or kept as files (dir). Blobs go to a directory store (--store DIR,
             ~/.local/share/nanoeval/store) or to R2 through the Worker (--store r2). The
             layers of the images it reads from their registries are kept in --layers
             (CACHE/oci), so a later import downloads none of them again. The eval is named
@@ -69,8 +73,9 @@ const usage = `nanoeval <command>
   run       --url URL --token T (--eval NAME[@DIGEST] [--only ID]... [--limit N] | --task DIR...
             | --rerun RUN [--failed | --errored])
             (--agent ID=HARNESS:MODEL[:THINKING]... | --oracle) [--judge PROVIDER:MODEL[:THINKING]]
-            [--attempts 1] [--provider local|e2b] [--backend krun|dir] [--slots 4] [--sandboxes 1]
-            [--memory-mb N] [--network private|host] [--template NAME] [--sandbox-timeout-sec 3600]
+            [--attempts 1] [--provider local|e2b] [--backend auto|krun|ns|dir] [--slots 4] [--sandboxes 1]
+            [--memory-mb N] [--network private|host] [--template NAME] [--sandbox-timeout-sec N]
+            [--runtime]
             [--sandbox-budget-usd 0] [--model-budget-usd N] [--setup-sec 600] [--attach-sec 60]
             [--lease-sec 60] [--claims 3] [--step-retries 3] [--poll-ms 250]
             [--disks keep|remove] [--free-disk-mb N] [--verifier-cache] [--name NAME] [--wait]
@@ -78,7 +83,9 @@ const usage = `nanoeval <command>
             Create the rows of a run, task x agent x attempt, against one version of an eval.
             Task runners claim the rows: the run starts one in each sandbox it opens
             (--sandboxes, with --slots attempts at once each), and nanoeval runner attaches
-            more from any machine. --sandboxes 0 waits for attached runners only. --task
+            more from any machine. --sandboxes 0 waits for attached runners only. With
+            --backend auto, the default, each runner boots environment disks in microVMs
+            (krun) where its machine has KVM and in namespaces (ns) where it has root. --task
             imports the directories into the eval named local first. --rerun makes a run of
             the attempts of RUN that did not pass (--failed or --errored narrow it), each
             pointing at the attempt it retries, on the same eval version and agents.
@@ -97,12 +104,26 @@ const usage = `nanoeval <command>
             verifier. --judge names the model that answers the verifiers of judged tasks.
             With --wait, poll until the run finishes, print the summary and write the Harbor
             job to --out, or under NANOEVAL_RUNS_DIR when that is set.
-  runner    --url URL --token T --run RUN [--home DIR] [--slots N] [--memory-mb N]
+            A sandbox is paid for its whole lifetime when it is opened: without
+            --sandbox-timeout-sec the run takes the longest its rows can keep its slots busy,
+            from the setup, agent and verifier timeouts of their tasks. --runtime, which
+            --provider e2b implies, publishes the runner as one archive in the Worker's
+            blob store, so a sandbox without this checkout starts its runner from it.
+  runner    --url URL --token T --run RUN [--home DIR] [--backend krun|ns] [--slots N] [--memory-mb N]
             [--free-disk-mb N] [--poll-ms N] [--store DIR] [--cache DIR]
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
             Attach a task runner on this machine to a run: it claims rows up to its own
             capacity, fetches their blobs by digest, boots each environment disk under a
             copy-on-write disk of its own, and reports to the run until the run is finished.
+  sandbox   --url URL --token T --run RUN --e2b FILE [--backend krun|ns] [--slots N]
+            [--memory-mb N] [--free-disk-mb N] [--poll-ms N]
+            Attach a runner in an E2B sandbox that someone else opened and paid for: FILE is
+            the answer of POST https://mpp.e2b.dev/sandboxes, with its sandboxID and
+            envdAccessToken. The run must have been created with --runtime, and URL must be
+            an address the sandbox reaches.
+  runtime   --out FILE [--cache DIR]
+            Build the archive a remote sandbox starts its runner from: the bundled runner,
+            slot.sh, the static launcher, guest and relay, and the pinned hand.
   status    --url URL --token T RUN
   attempt   --url URL --token T RUN ATTEMPT [ARTIFACT]
   export    --url URL --token T RUN --out DIR
@@ -351,7 +372,7 @@ export function summary(status: Record<string, any>): string {
 export async function importEval(
   api: ReturnType<typeof client>,
   input: {
-    backend: Config.Config['sandbox']['backend']
+    backend: Config.Backend
     cache: string
     cases: AsyncIterable<Dataset.Case>
     dataset: string
@@ -373,7 +394,7 @@ export async function importEval(
         layers: input.layers,
         ...(input.policy ? { policy: input.policy } : {}),
       }),
-      format: input.backend === 'krun' ? 'disk' : 'dir',
+      format: Config.kind(input.backend),
       ...(input.log ? { log: input.log } : {}),
       ...(input.refused ? { refused: input.refused } : {}),
       store: input.store,
@@ -407,7 +428,7 @@ async function main(): Promise<void> {
       'allow-empty': { default: false, type: 'boolean' },
       'attach-sec': { default: '60', type: 'string' },
       attempts: { default: '1', type: 'string' },
-      backend: { default: 'krun', type: 'string' },
+      backend: { type: 'string' },
       'ca-bundle': { type: 'string' },
       cache: { type: 'string' },
       claims: { default: '3', type: 'string' },
@@ -418,6 +439,7 @@ async function main(): Promise<void> {
       detach: { default: false, type: 'boolean' },
       disks: { default: 'keep', type: 'string' },
       'dry-run': { default: false, type: 'boolean' },
+      e2b: { type: 'string' },
       errored: { default: false, type: 'boolean' },
       eval: { type: 'string' },
       'exec-timeout-ms': { default: '600000', type: 'string' },
@@ -445,10 +467,11 @@ async function main(): Promise<void> {
       rerun: { type: 'string' },
       root: { type: 'string' },
       run: { type: 'string' },
+      runtime: { default: false, type: 'boolean' },
       'sandbox-budget-usd': { default: '0', type: 'string' },
       'sandbox-token': { default: process.env['NANOEVAL_SANDBOX_TOKEN'], type: 'string' },
       'sandbox-url': { type: 'string' },
-      'sandbox-timeout-sec': { default: '3600', type: 'string' },
+      'sandbox-timeout-sec': { type: 'string' },
       sandboxes: { default: '1', type: 'string' },
       'setup-sec': { default: '600', type: 'string' },
       'slot-env': { type: 'string' },
@@ -568,7 +591,7 @@ async function main(): Promise<void> {
     ...(values.limit ? { limit: Number(values.limit) } : {}),
     ...(values.only?.length ? { only: values.only } : {}),
   }
-  const backend = values.backend as Config.Config['sandbox']['backend']
+  const backend = (values.backend ?? 'auto') as Config.Backend
   const cache = Path.resolve(values.cache ?? Store.defaultCache())
 
   if (command === 'datasets') {
@@ -624,6 +647,12 @@ async function main(): Promise<void> {
     return
   }
 
+  if (command === 'runtime') {
+    const built = await Runtime.build({ cache, out: Path.resolve(required(values.out, 'out')) })
+    console.log(built.file + ': sha256 ' + built.digest + ', ' + built.bytes + ' bytes')
+    return
+  }
+
   const adapter = command === 'import' && rest[0] ? Catalog.find(rest[0]) : undefined
   if (command === 'import' && rest[0] && !adapter)
     throw new Error(
@@ -674,6 +703,7 @@ async function main(): Promise<void> {
       'import',
       'run',
       'runner',
+      'sandbox',
       'status',
     ].includes(command)
   ) {
@@ -806,6 +836,58 @@ async function main(): Promise<void> {
     return
   }
 
+  if (command === 'sandbox') {
+    const run = required(values.run, 'run')
+    const created = JSON.parse(
+      await Fs.readFile(required(values.e2b, 'e2b'), 'utf8'),
+    ) as E2b.Created
+    const runtime = (await api.config(run)).sandbox.runtime
+    if (!runtime)
+      throw new Error(
+        'the run was created without --runtime: a sandbox without this checkout cannot start its runner',
+      )
+    const handle = E2b.handle(created)
+    const sandbox = E2b.connect(handle)
+    const answered = await api.attach(run)
+    const runner: Config.Runner = {
+      ...answered,
+      ...(values.backend ? { backend } : {}),
+      ...(values['free-disk-mb'] ? { freeDiskMb: Number(values['free-disk-mb']) } : {}),
+      ...(values['memory-mb'] ? { memoryMb: Number(values['memory-mb']) } : {}),
+      ...(values['poll-ms'] ? { pollMs: Number(values['poll-ms']) } : {}),
+      ...(values.slots ? { slots: Number(values.slots) } : {}),
+      url: access.url,
+    }
+    const script = handle.home + '/' + Bootstrap.files.script
+    await sandbox.write(
+      handle.home + '/' + Bootstrap.files.config,
+      Buffer.from(JSON.stringify(runner)),
+    )
+    await sandbox.write(
+      script,
+      Buffer.from(
+        Bootstrap.script({
+          home: handle.home,
+          run,
+          runtime,
+          token: answered.token,
+          url: access.url,
+        }),
+      ),
+    )
+    console.log(
+      'runner ' +
+        answered.runner +
+        ' of run ' +
+        run +
+        ' in sandbox ' +
+        handle.id +
+        ': ' +
+        (await Sandbox.run(sandbox, 'bash ' + Sandbox.quote(script))).trim(),
+    )
+    return
+  }
+
   if (command === 'runner') {
     const run = required(values.run, 'run')
     const home = Path.resolve(values.home ?? Path.join('output', 'runners', run.slice(0, 8)))
@@ -823,6 +905,7 @@ async function main(): Promise<void> {
       cache,
       config: {
         ...answered,
+        ...(values.backend ? { backend } : {}),
         ...(values['free-disk-mb'] ? { freeDiskMb: Number(values['free-disk-mb']) } : {}),
         ...(values['memory-mb'] ? { memoryMb: Number(values['memory-mb']) } : {}),
         ...(values['poll-ms'] ? { pollMs: Number(values['poll-ms']) } : {}),
@@ -854,6 +937,14 @@ async function main(): Promise<void> {
       reference = { name: name!, ...(digest ? { version: digest } : {}) }
     }
     const provider = values.provider as Config.Config['sandbox']['provider']
+    const runtime =
+      values.runtime || provider === 'e2b'
+        ? await Runtime.publish(blobStore('r2', access), {
+            cache,
+            out: Path.join(cache, 'runtime.tgz'),
+          })
+        : undefined
+    if (runtime) console.error('runner runtime ' + runtime.digest + ', ' + runtime.bytes + ' bytes')
     const select: Ledger.Selection = values.failed
       ? 'failed'
       : values.errored
@@ -898,9 +989,12 @@ async function main(): Promise<void> {
           Config.network({ backend })) as Config.Config['sandbox']['network'],
         pollMs: Number(values['poll-ms'] ?? '250'),
         provider,
+        ...(runtime ? { runtime } : {}),
         slots: Number(values.slots ?? '4'),
         ...(values.template ? { template: values.template } : {}),
-        timeoutSec: Number(values['sandbox-timeout-sec']),
+        ...(values['sandbox-timeout-sec']
+          ? { timeoutSec: Number(values['sandbox-timeout-sec']) }
+          : {}),
         ...(values['verifier-cache'] || parent?.sandbox.verifierCache
           ? { verifierCache: true as const }
           : {}),

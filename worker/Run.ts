@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers'
 import { privateKeyToAccount } from 'viem/accounts'
 import * as Atif from '../src/Atif.ts'
+import * as Bootstrap from '../src/Bootstrap.ts'
 import * as Budget from '../src/Budget.ts'
 import * as Config from '../src/Config.ts'
 import * as E2b from '../src/E2b.ts'
@@ -340,6 +341,30 @@ export class Run extends DurableObject<Env> {
         for (const task of tasks)
           for (const agent of config.agents) seeds.push({ agent: agent.id, n, task: task.name })
 
+    const byName = new Map(tasks.map((task) => [task.name, task]))
+    const timeoutSec =
+      config.sandbox.timeoutSec ??
+      Config.lifetimeSec(
+        config,
+        seeds.map((seed) => byName.get(seed.task)!),
+      )
+    if (
+      config.sandbox.max > 0 &&
+      config.sandbox.provider === 'e2b' &&
+      timeoutSec > E2b.maxTimeoutSec
+    )
+      return json(
+        {
+          error:
+            'the rows of this run could keep a sandbox for ' +
+            timeoutSec +
+            ' s, and E2B sells at most ' +
+            E2b.maxTimeoutSec +
+            ' s: open more sandboxes or slots, or name the lifetime',
+        },
+        400,
+      )
+
     this.ctx.storage.transactionSync(() => {
       this.sql.run(
         'INSERT INTO meta (key, value) VALUES (?, ?)',
@@ -347,6 +372,7 @@ export class Run extends DurableObject<Env> {
         JSON.stringify({
           ...config,
           eval: { name: config.eval.name, version: snapshot.version.digest },
+          sandbox: { ...config.sandbox, timeoutSec },
         }),
       )
       for (const task of tasks)
@@ -964,6 +990,14 @@ export class Run extends DurableObject<Env> {
     }
   }
 
+  private backend(runner: number): string {
+    const record = this.runners().find((candidate) => candidate.id === runner)
+    const chosen = record?.capabilities
+      ? (JSON.parse(record.capabilities) as Sandbox.Capabilities).backend
+      : undefined
+    return chosen && chosen !== 'none' ? chosen : this.config().sandbox.backend
+  }
+
   private register(sandbox: number | null): number {
     const now = Date.now()
     this.sql.run(
@@ -990,7 +1024,7 @@ export class Run extends DurableObject<Env> {
       const created = await provider.create({
         metadata: { nanoeval_run: meta.id, nanoeval_sandbox: String(id) },
         template: config.sandbox.template,
-        timeoutSec: config.sandbox.timeoutSec,
+        timeoutSec: config.sandbox.timeoutSec!,
       })
       const handle = created.handle
       const runner = this.register(id)
@@ -1002,7 +1036,22 @@ export class Run extends DurableObject<Env> {
       const sandbox = provider.connect(handle)
       const file = handle.home + '/runner.json'
       await sandbox.write(file, Bytes.fromText(JSON.stringify(this.runnerConfig(runner))))
-      await Sandbox.run(sandbox, 'nanoeval runner --detach --config ' + Sandbox.quote(file))
+      if (config.sandbox.runtime) {
+        const script = handle.home + '/' + Bootstrap.files.script
+        await sandbox.write(
+          script,
+          Bytes.fromText(
+            Bootstrap.script({
+              home: handle.home,
+              run: meta.id,
+              runtime: config.sandbox.runtime,
+              token: meta.runnerToken,
+              url: meta.publicUrl,
+            }),
+          ),
+        )
+        await Sandbox.run(sandbox, 'bash ' + Sandbox.quote(script))
+      } else await Sandbox.run(sandbox, 'nanoeval runner --detach --config ' + Sandbox.quote(file))
       this.update('sandboxes', id, { state: 'starting' })
     } catch (error) {
       const row = this.sandboxes().find((candidate) => candidate.id === id)!
@@ -1117,11 +1166,13 @@ export class Run extends DurableObject<Env> {
   private async runner(request: Request, parts: readonly string[]): Promise<Response> {
     const [resource, id, action, name] = parts
     if (request.method === 'GET' && resource === 'blobs' && id) {
-      const known = this.tasks().some((task) =>
-        Eval.blobs(task, { solution: true }).some((blob) => blob.digest === id),
-      )
+      const known =
+        this.config().sandbox.runtime?.digest === id ||
+        this.tasks().some((task) =>
+          Eval.blobs(task, { solution: true }).some((blob) => blob.digest === id),
+        )
       if (!known) return json({ error: 'the run names no such blob' }, 404)
-      return Blobs.serve(await Blobs.read(this.env, id))
+      return Blobs.serve(request, this.env, id)
     }
     if (request.method === 'PUT' && resource === 'rows' && id && action === 'artifacts' && name) {
       const row = this.fenced(id, new URL(request.url).searchParams.get('claim') ?? '')
@@ -1176,6 +1227,14 @@ export class Run extends DurableObject<Env> {
     const capabilities = body.capabilities
     if (config.sandbox.backend === 'krun' && !capabilities.krun)
       refuse('the sandbox cannot start libkrun microVMs for the krun backend')
+    if (Config.kind(config.sandbox.backend) !== Config.kind(capabilities.backend))
+      refuse(
+        'the runner was set up for the ' +
+          capabilities.backend +
+          ' backend, and the run has ' +
+          Config.kind(config.sandbox.backend) +
+          ' environments',
+      )
     if (capabilities.network !== config.sandbox.network)
       refuse(
         'the sandbox was set up for the ' +
@@ -1654,7 +1713,7 @@ export class Run extends DurableObject<Env> {
         row.runner === null
           ? null
           : {
-              backend: config.sandbox.backend,
+              backend: this.backend(row.runner),
               id: row.runner,
               provider: config.sandbox.provider,
               slot: row.slot!,

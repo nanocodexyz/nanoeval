@@ -30,7 +30,7 @@ export const templates = [
   'opencode',
 ] as const
 
-type Created = {
+export type Created = {
   domain?: string | null
   envdAccessToken?: string
   envdVersion?: string
@@ -38,67 +38,88 @@ type Created = {
   templateID?: string
 }
 
-export function create(options: create.Options): Sandbox.Provider {
-  const control = (options.api ?? api).replace(/\/+$/, '')
-  const plain = options.fetch ?? ((input: string, init?: RequestInit) => fetch(input, init))
-  const user = options.user ?? 'user'
-  const clock = options.now ?? Date.now
+export const user = 'user'
 
-  const envd = (handle: Sandbox.Handle) =>
+export function handle(created: Created, options: { envd?: string } = {}): Sandbox.Handle {
+  if (typeof created?.sandboxID !== 'string' || !/^[A-Za-z0-9-]+$/.test(created.sandboxID))
+    throw new RequestError('E2B returned no sandboxID')
+  return {
+    home: '/home/' + user + '/.nanoeval',
+    id: created.sandboxID,
+    ...(created.domain ? { domain: created.domain } : {}),
+    ...(created.envdAccessToken ? { token: created.envdAccessToken } : {}),
+    ...(created.envdVersion ? { envdVersion: created.envdVersion } : {}),
+    ...(options.envd ? { envd: options.envd } : {}),
+  }
+}
+
+export function connect(handle: Sandbox.Handle, options: connect.Options = {}): Sandbox.Sandbox {
+  const plain = options.fetch ?? ((input: string, init?: RequestInit) => fetch(input, init))
+  const envd =
     typeof handle['envd'] === 'string'
       ? handle['envd']
       : 'https://' + envdPort + '-' + handle.id + '.' + String(handle['domain'] ?? domain)
-  const headers = (handle: Sandbox.Handle): Record<string, string> => ({
+  const headers: Record<string, string> = {
     authorization: 'Basic ' + btoa(user + ':'),
     ...(typeof handle['token'] === 'string' ? { 'x-access-token': handle['token'] } : {}),
-  })
+  }
+  return {
+    async exec(command) {
+      const response = await plain(envd + '/process.Process/Start', {
+        method: 'POST',
+        headers: {
+          ...headers,
+          'connect-protocol-version': '1',
+          'content-type': 'application/connect+json',
+          'keepalive-ping-interval': '50',
+        },
+        body: envelope({
+          process: { args: ['-l', '-c', command], cmd: '/bin/bash' },
+          stdin: false,
+        }) as Uint8Array<ArrayBuffer>,
+      })
+      if (!response.ok || !response.body)
+        throw new RequestError(
+          'envd answered ' + response.status + ': ' + (await response.text()).slice(0, 500),
+        )
+      return collect(response.body)
+    },
+    async write(path, data) {
+      const response = await plain(
+        envd + '/files?' + new URLSearchParams({ path, username: user }),
+        {
+          method: 'POST',
+          headers: { ...headers, 'content-type': 'application/octet-stream' },
+          body: data as Uint8Array<ArrayBuffer>,
+        },
+      )
+      if (!response.ok)
+        throw new RequestError(
+          'envd refused ' +
+            path +
+            ' with ' +
+            response.status +
+            ': ' +
+            (await response.text()).slice(0, 500),
+        )
+      await response.body?.cancel()
+    },
+  }
+}
+
+export declare namespace connect {
+  type Options = {
+    fetch?: Fetch
+  }
+}
+
+export function create(options: create.Options): Sandbox.Provider {
+  const control = (options.api ?? api).replace(/\/+$/, '')
+  const clock = options.now ?? Date.now
 
   return {
     name: 'e2b',
-    connect(handle) {
-      return {
-        async exec(command) {
-          const response = await plain(envd(handle) + '/process.Process/Start', {
-            method: 'POST',
-            headers: {
-              ...headers(handle),
-              'connect-protocol-version': '1',
-              'content-type': 'application/connect+json',
-              'keepalive-ping-interval': '50',
-            },
-            body: envelope({
-              process: { args: ['-l', '-c', command], cmd: '/bin/bash' },
-              stdin: false,
-            }) as Uint8Array<ArrayBuffer>,
-          })
-          if (!response.ok || !response.body)
-            throw new RequestError(
-              'envd answered ' + response.status + ': ' + (await response.text()).slice(0, 500),
-            )
-          return collect(response.body)
-        },
-        async write(path, data) {
-          const response = await plain(
-            envd(handle) + '/files?' + new URLSearchParams({ path, username: user }),
-            {
-              method: 'POST',
-              headers: { ...headers(handle), 'content-type': 'application/octet-stream' },
-              body: data as Uint8Array<ArrayBuffer>,
-            },
-          )
-          if (!response.ok)
-            throw new RequestError(
-              'envd refused ' +
-                path +
-                ' with ' +
-                response.status +
-                ': ' +
-                (await response.text()).slice(0, 500),
-            )
-          await response.body?.cancel()
-        },
-      }
-    },
+    connect: (target) => connect(target, options.fetch ? { fetch: options.fetch } : {}),
     async create(input) {
       const template = input.template ?? 'code-interpreter-v1'
       if (!(templates as readonly string[]).includes(template))
@@ -127,19 +148,12 @@ export function create(options: create.Options): Sandbox.Provider {
             ': ' +
             (await response.text()).slice(0, 500),
         )
-      const created = (await response.json()) as Created
-      if (typeof created.sandboxID !== 'string' || !created.sandboxID)
-        throw new RequestError('E2B returned no sandboxID')
       return {
         expiresAt: started + input.timeoutSec * 1000,
-        handle: {
-          home: '/home/' + user + '/.nanoeval',
-          id: created.sandboxID,
-          ...(created.domain ? { domain: created.domain } : {}),
-          ...(created.envdAccessToken ? { token: created.envdAccessToken } : {}),
-          ...(created.envdVersion ? { envdVersion: created.envdVersion } : {}),
-          ...(options.envd ? { envd: options.envd } : {}),
-        },
+        handle: handle(
+          (await response.json()) as Created,
+          options.envd ? { envd: options.envd } : {},
+        ),
       }
     },
     async kill(handle) {
@@ -165,7 +179,6 @@ export declare namespace create {
     fetch?: Fetch
     now?(): number
     pay: Fetch
-    user?: string
   }
 }
 

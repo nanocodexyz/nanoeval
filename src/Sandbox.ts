@@ -2,14 +2,17 @@ import type * as Slot from './Slot.ts'
 
 export type Capabilities = {
   arch: string
+  backend: Slot.Backend | 'none'
   bwrap: boolean
   ca_bundle: boolean
+  cgroup: boolean
   cpus: number
   kernel: string
   krun: boolean
   kvm: boolean
   memory_mb: number
   network: Slot.Network | 'none'
+  ns: boolean
   slot_env: boolean
   slot_forward: boolean
   userns: boolean

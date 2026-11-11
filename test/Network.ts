@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import * as Fs from 'node:fs'
-import * as Net from 'node:net'
 import * as Path from 'node:path'
 import { loadTask } from '../cli/nanoeval.ts'
 import * as Converter from '../sandbox/Converter.ts'
@@ -23,21 +22,6 @@ export function relays(root: string): string[] {
     .filter(
       (line) => line.startsWith(resolved + Path.sep) && line.includes('/rt/nanoeval-net host '),
     )
-}
-
-function read(host: string, timeoutMs: number): Promise<string> {
-  return new Promise((resolve) => {
-    let text = ''
-    const socket = Net.connect({ host, port })
-    const done = () => {
-      socket.destroy()
-      resolve(text.trim())
-    }
-    socket.setTimeout(timeoutMs, done)
-    socket.on('data', (chunk: Buffer) => (text += chunk.toString()))
-    socket.on('error', done)
-    socket.on('close', done)
-  })
 }
 
 export async function isolation(options: isolation.Options): Promise<void> {
@@ -70,6 +54,13 @@ export async function isolation(options: isolation.Options): Promise<void> {
     )
   const answer = async (slot: string, address: string) =>
     (await inside(slot, 'nc -w 2 ' + address + ' ' + port + ' </dev/null')).stdout.trim()
+  const read = async (address: string) =>
+    (
+      await sandbox.exec(
+        'timeout 2 bash -c ' +
+          Sandbox.quote('exec 3<>/dev/tcp/' + address + '/' + port + ' && cat <&3'),
+      )
+    ).stdout.trim()
 
   try {
     await Sandbox.run(sandbox, 'mkdir -p ' + Sandbox.quote(home + '/slots'))
@@ -83,16 +74,27 @@ export async function isolation(options: isolation.Options): Promise<void> {
 
     const task = await loadTask(fixture)
     const disk = home + '/disk'
-    await Host.describe(
-      disk,
-      await Converter.create({
-        home: home + '/converter',
-        layers: Converter.defaultLayers(home),
-      }).convert(
-        { context: fixture + '/environment', storageMb: task.environment.storageMb },
-        disk + '.ext4',
-      ),
+    const staged = options.stage ? Path.join(options.stage.directory, 'network-disk') : disk
+    const meta = await Converter.create({
+      home: Path.dirname(staged) + '/converter',
+      layers: Converter.defaultLayers(Path.dirname(staged)),
+    }).convert(
+      { context: fixture + '/environment', storageMb: task.environment.storageMb },
+      staged + '.ext4',
     )
+    if (options.stage) {
+      await Sandbox.run(
+        sandbox,
+        'cp ' +
+          Sandbox.quote(options.stage.seen(staged + '.ext4')) +
+          ' ' +
+          Sandbox.quote(disk + '.ext4'),
+      )
+      const text = (value: string) => new TextEncoder().encode(value)
+      await sandbox.write(disk + '.env', text(meta.env.map((line) => line + '\n').join('')))
+      await sandbox.write(disk + '.user', text(meta.user + '\n'))
+      await sandbox.write(disk + '.workdir', text(meta.workdir + '\n'))
+    } else await Host.describe(disk, meta)
     for (const slot of [quiet, serving]) {
       await Sandbox.run(sandbox, 'mkdir -p ' + Sandbox.quote(home + '/slots/' + slot))
       await Sandbox.run(
@@ -130,20 +132,30 @@ export async function isolation(options: isolation.Options): Promise<void> {
     )
     const gateway = (await inside(quiet, "ip route | awk '/^default/ { print $3 }'")).stdout.trim()
     if (network === 'private') assert.ok(gateway, 'a private slot has a default route')
-    for (const address of [gateway].filter(Boolean)) {
+    const own =
+      network === 'private'
+        ? (
+            await inside(
+              serving,
+              'ip -4 -o address show eth0 | awk \'{ split($4, parts, "/"); print parts[1] }\'',
+            )
+          ).stdout.trim()
+        : ''
+    if (network === 'private') assert.ok(own, 'a private slot has an address')
+    for (const address of [gateway, own].filter(Boolean)) {
       assert.notEqual(
         await answer(quiet, address),
         token,
         'a slot reached the listener of another slot at ' + address,
       )
       assert.notEqual(
-        await read(address, 2_000),
+        await read(address),
         token,
         'the host reached the listener of a slot at ' + address,
       )
     }
     assert.notEqual(
-      await read('127.0.0.1', 2_000),
+      await read('127.0.0.1'),
       token,
       'the listener of a slot is bound on the loopback of the host',
     )
@@ -161,6 +173,7 @@ export async function isolation(options: isolation.Options): Promise<void> {
   } finally {
     await provider.kill(created.handle)
   }
+  if (options.stage) return
   const root = Path.dirname(home)
   assert.deepEqual(relays(root), [], 'no relay outlives its sandbox')
   assert.deepEqual(Krun.machines(root), [], 'no microVM outlives its sandbox')
@@ -169,9 +182,10 @@ export async function isolation(options: isolation.Options): Promise<void> {
 
 export declare namespace isolation {
   type Options = {
-    backend: 'krun'
+    backend: 'krun' | 'ns'
     hostPort: number
     network: Config.Config['sandbox']['network']
     sandboxd: { token: string; url: string }
+    stage?: { directory: string; seen(file: string): string }
   }
 }

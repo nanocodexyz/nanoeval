@@ -2,13 +2,14 @@ import type * as Installed from './Installed.ts'
 import * as Sandbox from './Sandbox.ts'
 import * as Task from './Task.ts'
 
-export type Backend = 'dir' | 'krun'
+export type Backend = 'dir' | 'krun' | 'ns'
 
 export type Network = 'host' | 'private'
 
 export const networks: Record<Backend, readonly Network[]> = {
   dir: ['host'],
   krun: ['host', 'private'],
+  ns: ['host', 'private'],
 }
 
 export type Phase = 'none' | 'running' | `exit:${number}`

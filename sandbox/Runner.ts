@@ -2,7 +2,7 @@ import { execFile, spawn } from 'node:child_process'
 import * as Fs from 'node:fs/promises'
 import * as Path from 'node:path'
 import * as Admission from '../src/Admission.ts'
-import type * as Config from '../src/Config.ts'
+import * as Config from '../src/Config.ts'
 import * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
 import * as Bytes from '../src/internal/Bytes.ts'
@@ -314,7 +314,7 @@ export async function run(options: Options): Promise<void> {
     if (cli) await shell(slots.agents(cli.kind, Installed.releases[cli.kind]))
     await shell(
       slots.up(item.row.slot, {
-        backend: config.backend,
+        backend,
         cpus: task.resources.cpus,
         ...(disk ? { disk } : {}),
         memoryMb: task.resources.memoryMb,
@@ -634,9 +634,18 @@ export async function run(options: Options): Promise<void> {
   await Fs.mkdir(Path.join(home, 'slots'), { recursive: true })
   await Fs.mkdir(Path.join(cache, 'blobs'), { recursive: true })
   await Fs.copyFile(script, slots.script)
-  await shell(
-    slots.setup({ backend: config.backend, network: config.network, runtime: Slot.runtime }),
+  const chosen = Config.backend(
+    config.backend,
+    JSON.parse(await shell(slots.probe())) as Sandbox.Capabilities,
   )
+  if (!chosen) {
+    const error =
+      'this machine has neither /dev/kvm for the krun backend nor root for the ns backend'
+    await call('/hello', { error, runner: config.runner }).catch(() => {})
+    throw new RefusedError(error)
+  }
+  const backend: Slot.Backend = chosen
+  await shell(slots.setup({ backend, network: config.network, runtime: Slot.runtime }))
   for (const started = Date.now(); ; ) {
     const code = Slot.exit(await phase(Path.join(home, 'setup.status')))
     if (code === 0) break
@@ -694,7 +703,7 @@ export async function run(options: Options): Promise<void> {
       ' slots, ' +
       capacity.memoryMb +
       ' MB, ' +
-      config.backend +
+      backend +
       ' on the ' +
       config.network +
       ' network',

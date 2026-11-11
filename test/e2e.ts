@@ -9,18 +9,20 @@ import * as Path from 'node:path'
 import * as Import from '../cli/Import.ts'
 import { blobStore, client, exportJob, oracle, summary } from '../cli/nanoeval.ts'
 import * as Plan from '../cli/Plan.ts'
+import * as Runtime from '../cli/Runtime.ts'
 import type * as Dataset from '../datasets/Dataset.ts'
 import * as Converter from '../sandbox/Converter.ts'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
 import * as Store from '../sandbox/Store.ts'
 import * as Config from '../src/Config.ts'
 import type * as Eval from '../src/Eval.ts'
+import type * as Slot from '../src/Slot.ts'
+import * as Guest from './Guest.ts'
 import * as Krun from './Krun.ts'
 import * as Network from './Network.ts'
 
 const model = process.env['NANOEVAL_E2E_MODEL'] ?? 'scripted'
-const backend = (process.env['NANOEVAL_E2E_BACKEND'] ??
-  'krun') as Config.Config['sandbox']['backend']
+const backend = (process.env['NANOEVAL_E2E_BACKEND'] ?? 'krun') as Slot.Backend
 const taskNames = (process.env['NANOEVAL_E2E_TASKS'] ?? 'extract-todos,uppercase-message').split(
   ',',
 )
@@ -46,7 +48,8 @@ const label =
     '-' +
     backend +
     (scenario === 'tasks' ? '' : '-' + scenario) +
-    (storeKind === 'directory' ? '' : '-' + storeKind)
+    (storeKind === 'directory' ? '' : '-' + storeKind) +
+    (process.env['NANOEVAL_E2E_RUNTIME'] === '1' ? '-runtime' : '')
 const out = Path.resolve('output/e2e', label)
 const largeTestBytes = 3 * 1024 * 1024
 const attached = ['lost', 'resume', 'runners'].includes(scenario)
@@ -71,6 +74,12 @@ const fakeUsage = {
     toolCalls: 1,
   },
 }
+const disk = backend !== 'dir'
+const hosted = backend === 'ns' && process.getuid?.() !== 0
+const guestCpus = Number(process.env['NANOEVAL_E2E_GUEST_CPUS'] ?? '8')
+const guestMemoryMb = Number(process.env['NANOEVAL_E2E_GUEST_MEMORY_MB'] ?? '8192')
+const bundled = process.env['NANOEVAL_E2E_RUNTIME'] === '1'
+const guestNode = process.env['NANOEVAL_E2E_NODE']
 
 const solutions: [marker: string, right: string, wrong: string][] = [
   [
@@ -298,11 +307,17 @@ async function freePort(): Promise<number> {
 
 async function main(): Promise<void> {
   const missing =
-    backend === 'krun' ? Krun.missing(network === 'private' ? 'private' : 'host') : undefined
+    backend === 'krun'
+      ? Krun.missing(network === 'private' ? 'private' : 'host')
+      : hosted
+        ? Guest.missing()
+        : undefined
   if (missing) {
     console.log('e2e skipped: ' + label + ' needs ' + missing)
     return
   }
+  if (hosted && (attached || ['disk', 'disks'].includes(scenario)))
+    throw new Error('the ' + scenario + ' scenario of ns slots runs on a machine with root')
   Fs.rmSync(out, { force: true, recursive: true })
   Fs.mkdirSync(out, { recursive: true })
   const token = Crypto.randomBytes(16).toString('hex')
@@ -328,20 +343,51 @@ async function main(): Promise<void> {
       NANOEVAL_AGENT_CLAUDE_CODE: fakeCli,
       NANOEVAL_AGENT_CODEX_CLI: fakeCli,
     })
+  const guest = hosted
+    ? await Guest.start({
+        cpus: guestCpus,
+        forwards: ['127.0.0.1:' + port, '127.0.0.1:' + new URL(beacon.url).port],
+        home: Path.join(out, 'guest'),
+        memoryMb: guestMemoryMb,
+        ...(bundled
+          ? {
+              runtime: {
+                archive: (await Runtime.build({ cache, out: Path.join(out, 'runtime.tgz') })).file,
+                ...(guestNode ? { node: guestNode } : {}),
+              },
+            }
+          : {}),
+      })
+    : undefined
+  const seen = (file: string) => (guest ? Guest.inside(file) : file)
+  if (caBundle && guest) Fs.copyFileSync(caBundle, Path.join(out, 'ca.pem'))
   const hostPolicy = {
     ...(installed
-      ? { NANOEVAL_AGENT_CLAUDE_CODE: fakeCli, NANOEVAL_AGENT_CODEX_CLI: fakeCli }
+      ? { NANOEVAL_AGENT_CLAUDE_CODE: seen(fakeCli), NANOEVAL_AGENT_CODEX_CLI: seen(fakeCli) }
       : {}),
-    NANOEVAL_SLOT_ENV: Path.join(out, 'slot.env'),
-    ...(caBundle ? { NANOEVAL_CA_BUNDLE: Path.resolve(caBundle) } : {}),
+    NANOEVAL_SLOT_ENV: seen(Path.join(out, 'slot.env')),
+    ...(caBundle
+      ? { NANOEVAL_CA_BUNDLE: guest ? seen(Path.join(out, 'ca.pem')) : Path.resolve(caBundle) }
+      : {}),
     ...(forward ? { NANOEVAL_SLOT_FORWARD: forward } : {}),
   }
+  const sandboxes = guest ? Guest.root + '/sandboxes' : Path.join(out, 'sandboxes')
+  const there = async (command: string): Promise<string> =>
+    guest
+      ? (await guest.machine.exec(command, { cwd: '/', env: {}, timeoutMs: 60_000 })).stdout
+      : spawnSync('bash', ['-c', command]).stdout.toString()
   const sandboxd = await Sandboxd.start({
-    env: { ...hostPolicy, NANOEVAL_CACHE: cache, NANOEVAL_STORE: storeRoot },
+    env: {
+      ...hostPolicy,
+      ...guest?.variables,
+      NANOEVAL_CACHE: guest ? Guest.root + '/cache' : cache,
+      NANOEVAL_STORE: seen(storeRoot),
+    },
     execTimeoutMs: 600_000,
     host: '127.0.0.1',
+    ...(guest ? { machine: guest.machine } : {}),
     port: 0,
-    root: Path.join(out, 'sandboxes'),
+    root: sandboxes,
     token: sandboxToken,
   })
   const upstream = await modelEndpoint()
@@ -481,12 +527,13 @@ async function main(): Promise<void> {
     )
       throw new Error('the ' + scenario + ' scenario runs on the scripted model')
     if (isolated) {
-      if (backend !== 'krun') throw new Error('the network scenario runs on krun slots')
+      if (backend === 'dir') throw new Error('the network scenario runs on krun or ns slots')
       await Network.isolation({
         backend,
         hostPort: Number(new URL(beacon.url).port),
         network,
         sandboxd: { token: sandboxToken, url: sandboxd.url },
+        ...(guest ? { stage: { directory: out, seen } } : {}),
       })
     }
     const packing = scenario === 'packing'
@@ -564,7 +611,7 @@ async function main(): Promise<void> {
         home: Path.join(cache, 'converter'),
         layers: Converter.defaultLayers(cache),
       }),
-      format: backend === 'krun' ? 'disk' : 'dir',
+      format: disk ? 'disk' : 'dir',
       store,
     }
     async function* cases(): AsyncIterable<Dataset.Case> {
@@ -592,7 +639,7 @@ async function main(): Promise<void> {
       ),
       directories.map((directory) => Path.basename(directory)).sort(),
     )
-    if (backend === 'krun' && scenario === 'tasks') {
+    if (disk && scenario === 'tasks') {
       await assert.rejects(
         Import.cases(
           Import.directories([Path.join('test/fixtures', 'broken-environment')]),
@@ -676,7 +723,6 @@ async function main(): Promise<void> {
       if (scenario !== 'resume') attach(created.id, 'b')
     }
 
-    const sandboxes = Path.join(out, 'sandboxes')
     const machines = () => [
       ...Krun.machines(sandboxes),
       ...runners.flatMap((runner) => Krun.machines(Path.dirname(runner.home))),
@@ -850,7 +896,23 @@ async function main(): Promise<void> {
           assert.ok(sized.has(size), 'a microVM ran with ' + size + ' vCPUs and MiB')
       }
     }
-    assert.deepEqual(Fs.readdirSync(sandboxes), [], 'no sandbox directory outlives the run')
+    if (backend === 'ns')
+      assert.equal(
+        (
+          await there(
+            "ps -eo args= | grep -F '" +
+              sandboxes +
+              "/' | grep -E '^(unshare|[^ ]*nanoeval-net host) ' || true",
+          )
+        ).trim(),
+        '',
+        'no slot and no relay outlives the run',
+      )
+    assert.deepEqual(
+      (await there('ls -A ' + sandboxes)).split('\n').filter(Boolean),
+      [],
+      'no sandbox directory outlives the run',
+    )
 
     if (failures) {
       const byTask = Object.fromEntries(
@@ -1166,6 +1228,7 @@ async function main(): Promise<void> {
     await relay?.close()
     Fs.rmSync(secrets, { force: true, recursive: true })
     await sandboxd.close()
+    guest?.close()
   }
 }
 

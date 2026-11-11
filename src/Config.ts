@@ -1,6 +1,7 @@
 import * as Eval from './Eval.ts'
 import * as Installed from './Installed.ts'
 import type * as Ledger from './Ledger.ts'
+import type * as Sandbox from './Sandbox.ts'
 import * as Slot from './Slot.ts'
 
 export class InvalidError extends Error {
@@ -10,6 +11,8 @@ export class InvalidError extends Error {
 export class UnsupportedError extends Error {
   override name = 'Config.UnsupportedError'
 }
+
+export type Backend = Slot.Backend | 'auto'
 
 export type Agent = {
   id: string
@@ -44,7 +47,7 @@ export type Config = {
   only?: readonly string[]
   rerun?: { run: string; select: Ledger.Selection }
   sandbox: {
-    backend: Slot.Backend
+    backend: Backend
     disks: 'keep' | 'remove'
     freeDiskMb?: number
     max: number
@@ -52,15 +55,16 @@ export type Config = {
     network: Slot.Network
     pollMs: number
     provider: 'e2b' | 'local'
+    runtime?: Eval.Blob
     slots: number
     template?: string
-    timeoutSec: number
+    timeoutSec?: number
     verifierCache?: true
   }
 }
 
 export type Runner = {
-  backend: Slot.Backend
+  backend: Backend
   disks: 'keep' | 'remove'
   freeDiskMb?: number
   leaseSec: number
@@ -79,6 +83,18 @@ export type Runner = {
 
 const thinking = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
 
+export function backend(
+  requested: Backend,
+  machine: Pick<Sandbox.Capabilities, 'kvm' | 'ns'>,
+): Slot.Backend | undefined {
+  if (requested !== 'auto') return requested
+  return machine.kvm ? 'krun' : machine.ns ? 'ns' : undefined
+}
+
+export function kind(backend: Backend | 'none'): 'dir' | 'disk' {
+  return backend === 'dir' ? 'dir' : 'disk'
+}
+
 export function network(sandbox: Pick<Config['sandbox'], 'backend'>): Slot.Network {
   return sandbox.backend === 'dir' ? 'host' : 'private'
 }
@@ -86,6 +102,26 @@ export function network(sandbox: Pick<Config['sandbox'], 'backend'>): Slot.Netwo
 export function harness(agent: Pick<Agent, 'provider'>): Harness {
   if (agent.provider === 'oracle') return 'oracle'
   return Installed.is(agent.provider) ? 'installed' : 'session'
+}
+
+export function lifetimeSec(
+  config: Pick<Config, 'limits' | 'sandbox'>,
+  rows: readonly Pick<Eval.Task, 'agent' | 'setupTimeoutSec' | 'verifier'>[],
+): number {
+  const lanes = Array.from(
+    { length: Math.max(config.sandbox.max, 1) * config.sandbox.slots },
+    () => 0,
+  )
+  const longest = rows
+    .map(
+      (task) =>
+        Math.max(task.setupTimeoutSec ?? 0, config.limits.setupSec) +
+        task.agent.timeoutSec +
+        task.verifier.timeoutSec * (task.verifier.judge ? 3 : 1),
+    )
+    .sort((left, right) => right - left)
+  for (const seconds of longest) lanes[lanes.indexOf(Math.min(...lanes))]! += seconds
+  return Math.ceil(config.limits.setupSec + Math.max(...lanes))
 }
 
 export function oracle(config: Pick<Config, 'agents'>): Agent | undefined {
@@ -158,9 +194,10 @@ export function parse(value: unknown): Config {
     fail('only is a list of task ids')
 
   const sandbox = config.sandbox ?? fail('sandbox is required')
-  const backend = choice(sandbox.backend, 'sandbox.backend', ['dir', 'krun'])
-  if (!Slot.networks[backend].includes(sandbox.network))
-    fail('sandbox.network of the ' + backend + ' backend is ' + Slot.networks[backend].join(' or '))
+  const backend = choice<Backend>(sandbox.backend, 'sandbox.backend', ['auto', 'dir', 'krun', 'ns'])
+  const networks = Slot.networks[backend === 'auto' ? 'krun' : backend]
+  if (!networks.includes(sandbox.network))
+    fail('sandbox.network of the ' + backend + ' backend is ' + networks.join(' or '))
   if (sandbox.verifierCache !== undefined && typeof sandbox.verifierCache !== 'boolean')
     fail('sandbox.verifierCache is true or false')
   if (sandbox.verifierCache && backend !== 'krun')
@@ -212,9 +249,21 @@ export function parse(value: unknown): Config {
       network: sandbox.network,
       pollMs: integer(sandbox.pollMs, 'sandbox.pollMs', 1),
       provider: choice(sandbox.provider, 'sandbox.provider', ['e2b', 'local']),
+      ...(sandbox.runtime === undefined
+        ? {}
+        : {
+            runtime: {
+              bytes: integer(sandbox.runtime?.bytes, 'sandbox.runtime.bytes', 1),
+              digest: /^[0-9a-f]{64}$/.test(String(sandbox.runtime?.digest))
+                ? sandbox.runtime.digest
+                : fail('sandbox.runtime.digest is a SHA-256 in hex'),
+            },
+          }),
       slots: integer(sandbox.slots, 'sandbox.slots', 1),
       ...(typeof sandbox.template === 'string' ? { template: sandbox.template } : {}),
-      timeoutSec: integer(sandbox.timeoutSec, 'sandbox.timeoutSec', 1),
+      ...(sandbox.timeoutSec === undefined
+        ? {}
+        : { timeoutSec: integer(sandbox.timeoutSec, 'sandbox.timeoutSec', 1) }),
       ...(sandbox.verifierCache ? { verifierCache: true as const } : {}),
     },
   }
@@ -227,7 +276,7 @@ export function check(config: Config, tasks: readonly Eval.Task[]): void {
   if (!tasks.length) fail('the run selects no task')
   if (new Set(tasks.map((task) => task.name)).size !== tasks.length)
     fail('task names must be unique')
-  const kind = config.sandbox.backend === 'krun' ? 'disk' : 'dir'
+  const wanted = kind(config.sandbox.backend)
   const solved = oracle(config) !== undefined
   for (const task of tasks) {
     const offline = Eval.offline(task)
@@ -241,7 +290,7 @@ export function check(config: Config, tasks: readonly Eval.Task[]): void {
           offline.join(' and its ') +
           ', which only krun slots on a private network enforce',
       )
-    if (task.environment.kind !== kind)
+    if (task.environment.kind !== wanted)
       fail(
         task.name +
           ' was imported with a ' +
@@ -249,7 +298,7 @@ export function check(config: Config, tasks: readonly Eval.Task[]): void {
           ' environment, and the ' +
           config.sandbox.backend +
           ' backend runs ' +
-          kind +
+          wanted +
           ' environments',
       )
     if (solved && !task.solution) fail(task.name + ' carries no solution for the oracle')

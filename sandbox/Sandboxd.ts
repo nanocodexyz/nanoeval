@@ -7,10 +7,18 @@ import * as Os from 'node:os'
 import * as Path from 'node:path'
 import * as Host from './Host.ts'
 
+export type Machine = {
+  exec(
+    command: string,
+    options: { cwd: string; env: Record<string, string>; input?: Uint8Array; timeoutMs: number },
+  ): Promise<Output>
+}
+
 export type Options = {
   env?: Record<string, string>
   execTimeoutMs: number
   host: string
+  machine?: Machine
   port: number
   root: string
   token: string
@@ -65,7 +73,16 @@ async function body(request: Http.IncomingMessage): Promise<Buffer> {
 
 export async function start(options: Options): Promise<Server> {
   const root = Path.resolve(options.root)
-  await Fs.mkdir(root, { recursive: true })
+  const machine = options.machine
+  const there = (command: string, input?: Uint8Array) =>
+    machine!.exec(command, {
+      cwd: '/',
+      env: options.env ?? {},
+      ...(input ? { input } : {}),
+      timeoutMs: options.execTimeoutMs,
+    })
+  if (machine) await there('mkdir -p ' + quote(root))
+  else await Fs.mkdir(root, { recursive: true })
   const expected = Crypto.createHash('sha256').update(options.token).digest()
   const bin = await Fs.mkdtemp(Path.join(Os.tmpdir(), 'nanoeval-sandboxd-bin-'))
   await Fs.writeFile(
@@ -98,17 +115,20 @@ export async function start(options: Options): Promise<Server> {
 
     if (url.pathname === '/sandboxes' && request.method === 'POST') {
       const id = Crypto.randomBytes(8).toString('hex')
-      await Fs.mkdir(home(id), { recursive: true })
+      if (machine) await there('mkdir -p ' + quote(home(id)))
+      else await Fs.mkdir(home(id), { recursive: true })
       return { status: 201, value: { home: home(id), id } }
     }
 
     const match = /^\/sandboxes\/([0-9a-f]{16})(\/exec|\/files)?$/.exec(url.pathname)
     if (!match) return { status: 404, value: { error: 'route not found' } }
     const directory = home(match[1]!)
-    const exists = await Fs.stat(directory).then(
-      (stat) => stat.isDirectory(),
-      () => false,
-    )
+    const exists = machine
+      ? (await there('test -d ' + quote(directory))).exitCode === 0
+      : await Fs.stat(directory).then(
+          (stat) => stat.isDirectory(),
+          () => false,
+        )
     if (!exists) return { status: 404, value: { error: 'sandbox not found' } }
 
     if (match[2] === '/exec' && request.method === 'POST') {
@@ -117,7 +137,13 @@ export async function start(options: Options): Promise<Server> {
         return { status: 400, value: { error: 'command must be a string' } }
       return {
         status: 200,
-        value: await run(input.command, { cwd: directory, env, timeoutMs: options.execTimeoutMs }),
+        value: machine
+          ? await machine.exec(input.command, {
+              cwd: directory,
+              env: options.env ?? {},
+              timeoutMs: options.execTimeoutMs,
+            })
+          : await run(input.command, { cwd: directory, env, timeoutMs: options.execTimeoutMs }),
       }
     }
 
@@ -125,11 +151,30 @@ export async function start(options: Options): Promise<Server> {
       const target = Path.resolve(directory, url.searchParams.get('path') ?? '')
       if (target !== directory && !target.startsWith(directory + Path.sep))
         return { status: 400, value: { error: 'path is outside the sandbox' } }
+      if (machine) {
+        const written = await there(
+          'mkdir -p ' + quote(Path.dirname(target)) + ' && umask 077 && cat >' + quote(target),
+          await body(request),
+        )
+        if (written.exitCode !== 0) return { status: 500, value: { error: written.stderr } }
+        return { status: 200, value: { written: target } }
+      }
       await Fs.mkdir(Path.dirname(target), { recursive: true })
       await Fs.writeFile(target, await body(request), { mode: 0o600 })
       return { status: 200, value: { written: target } }
     }
 
+    if (!match[2] && request.method === 'DELETE' && machine) {
+      await there(
+        'cd ' +
+          quote(directory) +
+          ' && if [ -f slot.sh ]; then NANOEVAL_HOME=' +
+          quote(directory) +
+          ' bash slot.sh destroy; fi; rm -rf ' +
+          quote(directory),
+      )
+      return { status: 200, value: { deleted: true } }
+    }
     if (!match[2] && request.method === 'DELETE') {
       const script = Path.join(directory, 'slot.sh')
       const scripted = await Fs.stat(script).then(

@@ -11,6 +11,13 @@ self=$(readlink -f "$0")
 agent_home=/var/lib/nanoeval-agent
 tools=/var/cache/nanoeval-verifier
 trust='CARGO_HTTP_CAINFO CURL_CA_BUNDLE GIT_SSL_CAINFO NODE_EXTRA_CA_CERTS PIP_CERT REQUESTS_CA_BUNDLE SSL_CERT_FILE'
+cgroups=/sys/fs/cgroup
+capabilities=-all,+audit_write,+chown,+dac_override,+fowner,+fsetid,+kill,+net_bind_service,+net_raw,+setfcap,+setgid,+setpcap,+setuid,+sys_chroot
+masked='acpi kcore keys latency_stats sched_debug scsi timer_list timer_stats'
+guarded='bus fs irq sys sysrq-trigger'
+subnet=10.213
+links=16384
+PATH=$PATH:/usr/sbin:/sbin
 
 die() {
   printf 'nanoeval-slot: %s\n' "$*" >&2
@@ -156,18 +163,20 @@ endpoint() {
 }
 
 cmd_probe() {
-  local cpus memory kvm=false microvm=false userns=false bwrap=false ca_bundle=false slot_env=false slot_forward=false
+  local cpus memory kvm=false microvm=false userns=false bwrap=false ca_bundle=false slot_env=false slot_forward=false cgroup=false ns=false
   cpus=$(getconf _NPROCESSORS_ONLN)
   memory=$(awk '/MemTotal/ {print int($2 / 1024)}' /proc/meminfo)
   if [ -c /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then kvm=true; fi
   if [ "$kvm" = true ] && [ -x "$krun/nanoeval-krun" ] && "$krun/nanoeval-krun" check >/dev/null 2>&1; then microvm=true; fi
   if has unshare && unshare -U true >/dev/null 2>&1; then userns=true; fi
   if has bwrap; then bwrap=true; fi
+  if [ -s "$home/limits" ]; then cgroup=true; fi
+  if (namespaces) >/dev/null 2>&1; then ns=true; fi
   if [ -f "$rt/trust" ]; then ca_bundle=true; fi
   if [ -n "${NANOEVAL_SLOT_ENV:-}" ]; then slot_env=true; fi
   if [ -n "${NANOEVAL_SLOT_FORWARD:-}" ]; then slot_forward=true; fi
-  printf '{"arch":"%s","bwrap":%s,"ca_bundle":%s,"cpus":%s,"kernel":"%s","krun":%s,"kvm":%s,"memory_mb":%s,"network":"%s","slot_env":%s,"slot_forward":%s,"userns":%s}\n' \
-    "$(uname -m)" "$bwrap" "$ca_bundle" "$cpus" "$(uname -r)" "$microvm" "$kvm" "$memory" "$(cat "$home/network" 2>/dev/null || printf none)" "$slot_env" "$slot_forward" "$userns"
+  printf '{"arch":"%s","backend":"%s","bwrap":%s,"ca_bundle":%s,"cgroup":%s,"cpus":%s,"kernel":"%s","krun":%s,"kvm":%s,"memory_mb":%s,"network":"%s","ns":%s,"slot_env":%s,"slot_forward":%s,"userns":%s}\n' \
+    "$(uname -m)" "$(cat "$home/backend" 2>/dev/null || printf none)" "$bwrap" "$ca_bundle" "$cgroup" "$cpus" "$(uname -r)" "$microvm" "$kvm" "$memory" "$(cat "$home/network" 2>/dev/null || printf none)" "$ns" "$slot_env" "$slot_forward" "$userns"
 }
 
 cmd_setup() {
@@ -193,8 +202,27 @@ built() {
 }
 
 setup_krun() {
-  local guest host
   [ -c /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ] || die 'the krun backend needs read and write access to /dev/kvm'
+  launcher_files
+  awk '$1 == "nameserver"' /etc/resolv.conf >"$krun/resolv.conf"
+  [ -s "$krun/resolv.conf" ] || die 'the krun backend found no nameserver in /etc/resolv.conf'
+  if awk '$2 ~ /^127\./ || $2 == "::1" { loopback = 1 } END { exit !loopback }' "$krun/resolv.conf"; then
+    printf 'options use-vc\n' >>"$krun/resolv.conf"
+  fi
+  "$krun/nanoeval-krun" check >/dev/null
+}
+
+namespaces() {
+  local tool
+  [ "$(id -u)" = 0 ] || die 'the ns backend needs root'
+  grep -qw overlay /proc/filesystems || die 'the ns backend needs overlayfs in the kernel'
+  for tool in chroot losetup mke2fs mount mountpoint pgrep setpriv unshare; do
+    has "$tool" || die "the ns backend needs $tool"
+  done
+}
+
+launcher_files() {
+  local guest host
   host=$(built nanoeval-krun)
   guest=$(built nanoeval-krun-guest "$(uname -m)-unknown-linux-musl")
   mkdir -p "$krun/boot/dev" "$krun/boot/mnt" "$krun/boot/proc" "$krun/boot/sys" "$disks"
@@ -202,12 +230,53 @@ setup_krun() {
   mv "$krun/nanoeval-krun.$$" "$krun/nanoeval-krun"
   cp "$guest" "$krun/nanoeval-krun-guest.$$"
   mv "$krun/nanoeval-krun-guest.$$" "$krun/boot/nanoeval-krun-guest"
-  awk '$1 == "nameserver"' /etc/resolv.conf >"$krun/resolv.conf"
-  [ -s "$krun/resolv.conf" ] || die 'the krun backend found no nameserver in /etc/resolv.conf'
-  if awk '$2 ~ /^127\./ || $2 == "::1" { loopback = 1 } END { exit !loopback }' "$krun/resolv.conf"; then
-    printf 'options use-vc\n' >>"$krun/resolv.conf"
+}
+
+firewall() {
+  nft -f - <<EOF
+table ip nanoeval
+delete table ip nanoeval
+table ip nanoeval {
+  chain forward {
+    type filter hook forward priority filter; policy accept;
+    iifname "nev*" oifname "nev*" drop
+  }
+  chain input {
+    type filter hook input priority filter; policy accept;
+    iifname "nev*" drop
+  }
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr $subnet.0.0/16 oifname != "nev*" masquerade
+  }
+}
+EOF
+}
+
+setup_ns() {
+  local network=$1 tool
+  namespaces
+  launcher_files
+  if [ "$network" = private ]; then
+    for tool in ip nft; do
+      has "$tool" || die "the private network of ns slots needs $tool"
+    done
+    awk '$1 == "nameserver" && $2 !~ /^127\./ && $2 != "::1"' /etc/resolv.conf >"$krun/resolv.conf"
+    [ -s "$krun/resolv.conf" ] || die 'the private network of ns slots needs a nameserver that is not on the loopback of the machine'
+    printf '1\n' >/proc/sys/net/ipv4/ip_forward
+    if ! nft list table ip nanoeval >/dev/null 2>&1; then firewall; fi
+  else
+    awk '$1 == "nameserver"' /etc/resolv.conf >"$krun/resolv.conf"
+    [ -s "$krun/resolv.conf" ] || die 'the ns backend found no nameserver in /etc/resolv.conf'
   fi
-  "$krun/nanoeval-krun" check >/dev/null
+  rm -f "$home/limits"
+  if grep -qw memory "$cgroups/cgroup.controllers" 2>/dev/null; then
+    mkdir -p "$cgroups/nanoeval"
+    if printf '+cpu +memory\n' >"$cgroups/cgroup.subtree_control" && printf '+cpu +memory\n' >"$cgroups/nanoeval/cgroup.subtree_control"; then
+      printf '%s\n' "$cgroups/nanoeval" >"$home/limits"
+    fi
+  fi
+  if [ ! -s "$home/limits" ]; then printf 'nanoeval-slot: no cgroup v2 memory controller here, so ns slots run without CPU and memory limits\n' >&2; fi
 }
 
 setup_private() {
@@ -224,7 +293,7 @@ setup_private() {
 cmd__setup() {
   local release=$1 sum=$2 backend=${3:-krun} network=${4:-host} target tmp
   case $backend-$network in
-    dir-host | krun-host | krun-private) ;;
+    dir-host | krun-host | krun-private | ns-host | ns-private) ;;
     *) die "the $backend backend has no $network network" ;;
   esac
   mkdir -p "$rt/lib"
@@ -267,7 +336,9 @@ cmd__setup() {
   mapfile -t run < <(launcher "$rt")
   "${run[@]}" --version
   if [ "$backend" = krun ]; then setup_krun; fi
+  if [ "$backend" = ns ]; then setup_ns "$network"; fi
   if [ "$network" = private ]; then setup_private "$backend"; fi
+  printf '%s\n' "$backend" >"$home/backend"
   printf '%s\n' "$network" >"$home/network"
 }
 
@@ -340,12 +411,21 @@ cmd_up() {
 drop_disk() {
   local base=$1
   [ -f "$base.ext4" ] || return 0
-  flock -xn "$base.use" rm -f "$base.ext4" "$base.env" "$base.user" "$base.workdir"
+  flock -xn "$base.use" bash "$self" _drop "$base"
+}
+
+cmd__drop() {
+  local base=$1
+  if [ -d "$base.mnt" ]; then
+    if mountpoint -q "$base.mnt"; then umount "$base.mnt"; fi
+    rmdir "$base.mnt"
+  fi
+  rm -f "$base.ext4" "$base.env" "$base.user" "$base.workdir"
 }
 
 cmd_tools() {
   mkdir -p "$rt"
-  setup_krun
+  if [ -c /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then setup_krun; else launcher_files; fi
 }
 
 cmd__up() {
@@ -359,11 +439,11 @@ cmd__up() {
   done
   printf '%s\n' "$backend" >"$dir/backend"
   case $backend-$network in
-    dir-host | krun-host | krun-private) ;;
+    dir-host | krun-host | krun-private | ns-host | ns-private) ;;
     *) die "the $backend backend has no $network network" ;;
   esac
   if [ "$network" = private ] && [ "$(cat "$home/network" 2>/dev/null)" != private ]; then die 'the sandbox was not set up for the private network'; fi
-  if [ -s "$dir/offline" ] && [ "$network" != private ]; then die "a $backend slot on the $network network cannot close its network"; fi
+  if [ -s "$dir/offline" ] && [ "$backend-$network" != krun-private ]; then die "a $backend slot on the $network network cannot close its network"; fi
   printf '%s\n' "$network" >"$dir/network"
   case $backend in
     dir)
@@ -373,10 +453,10 @@ cmd__up() {
       fi
       printf '%s\n' "$dir/work" >"$dir/workdir"
       ;;
-    krun)
-      [ -x "$krun/nanoeval-krun" ] || die 'the sandbox was not set up for the krun backend'
+    krun | ns)
+      [ -x "$krun/nanoeval-krun" ] || die "the sandbox was not set up for the $backend backend"
       if [ -n "${NANOEVAL_SLOT_ENV:-}" ] && [ ! -f "$NANOEVAL_SLOT_ENV" ]; then die "NANOEVAL_SLOT_ENV is not a file: $NANOEVAL_SLOT_ENV"; fi
-      [ -n "$base" ] || die 'a krun slot boots an environment disk and was given none'
+      [ -n "$base" ] || die "a $backend slot boots an environment disk and was given none"
       exec 8>"$base.use"
       flock -s 8
       [ -f "$base.ext4" ] || die "the environment disk $base.ext4 is not in the cache"
@@ -387,24 +467,146 @@ cmd__up() {
       cp "$base.user" "$dir/user"
       workdir=$(cat "$base.workdir")
       printf '%s\n' "${workdir:-/}" >"$dir/workdir"
-      mkdir -p "$dir/io"
-      format "$dir/upper.ext4" "$storage"
       local options=() forward
-      if [ "$network" = private ]; then
-        relay "$dir" 8>&-
-        options+=(--passt "$(command -v passt)" --relay net/relay.sock)
-        if [ -s "$dir/offline" ]; then options+=(--gate net/open); fi
-        while IFS= read -r forward; do options+=(--forward "$forward"); done <"$dir/forwards"
-      fi
       : >"$dir/vm.log"
-      (cd "$dir" && exec "$krun/nanoeval-krun" vm --boot "$krun/boot" --rt "$rt" --io io --socket vm.sock --cpus "$vcpus" --memory-mib "$memory" --lower "$base.ext4" --upper upper.ext4 "${options[@]}") >"$dir/vm.log" 2>&1 </dev/null 8>&- &
-      printf '%s\n' "$!" >"$dir/vm.pid"
-      (cd "$dir" && exec tail --pid="$!" -f /dev/null -s 0.01) >/dev/null 2>&1 </dev/null &
+      if [ "$backend" = ns ]; then
+        mkdir -p "$dir/ctl/io"
+        chmod 700 "$dir/ctl"
+        ln -sfn ctl "$dir/net"
+        ln -sfn ctl/io "$dir/io"
+        ln -sfn ctl/vm.sock "$dir/vm.sock"
+        format "$dir/upper.ext4" "$storage"
+        if [ "$network" = private ]; then relay "$dir" 8>&-; fi
+        namespace "$dir" "$slot" "$base" "$network" "$vcpus" "$memory" 8>&-
+      else
+        mkdir -p "$dir/io"
+        format "$dir/upper.ext4" "$storage"
+        if [ "$network" = private ]; then
+          relay "$dir" 8>&-
+          options+=(--passt "$(command -v passt)" --relay net/relay.sock)
+          if [ -s "$dir/offline" ]; then options+=(--gate net/open); fi
+          while IFS= read -r forward; do options+=(--forward "$forward"); done <"$dir/forwards"
+        fi
+        (cd "$dir" && exec "$krun/nanoeval-krun" vm --boot "$krun/boot" --rt "$rt" --io io --socket vm.sock --cpus "$vcpus" --memory-mib "$memory" --lower "$base.ext4" --upper upper.ext4 "${options[@]}") >"$dir/vm.log" 2>&1 </dev/null 8>&- &
+        printf '%s\n' "$!" >"$dir/vm.pid"
+      fi
+      (cd "$dir" && exec tail --pid="$(cat "$dir/vm.pid")" -f /dev/null -s 0.01) >/dev/null 2>&1 </dev/null &
       printf '%s\n' "$!" >"$dir/use.pid"
-      vm "$dir" ready --log vm.log --pid "$(cat "$dir/vm.pid")" --socket vm.sock
+      if ! vm "$dir" ready --log vm.log --pid "$(cat "$dir/vm.pid")" --socket vm.sock; then
+        cat "$dir/vm.log" >&2
+        exit 1
+      fi
       ;;
     *) die "unsupported backend: $backend" ;;
   esac
+}
+
+namespace() {
+  local dir=$1 slot=$2 base=$3 network=$4 vcpus=$5 memory=$6
+  local cgroup='' child index='' options=(--mount --pid --ipc --uts --fork --kill-child) parent third fourth forwards=()
+  (
+    flock 9
+    if ! mountpoint -q "$base.mnt"; then
+      mkdir -p "$base.mnt"
+      mount -o loop,ro,noload "$base.ext4" "$base.mnt"
+    fi
+  ) 9>"$disks/mounts.lock"
+  if [ -s "$home/limits" ]; then
+    cgroup=$(cat "$home/limits")/$(key "$dir")
+    mkdir "$cgroup"
+    printf '%sM\n' "$memory" >"$cgroup/memory.max"
+    if [ -f "$cgroup/memory.swap.max" ]; then printf '0\n' >"$cgroup/memory.swap.max"; fi
+    printf '%s 100000\n' "$((vcpus * 100000))" >"$cgroup/cpu.max"
+    printf '%s\n' "$cgroup" >"$dir/cgroup"
+    options+=(--cgroup)
+  fi
+  if [ "$network" = private ]; then
+    options+=(--net)
+    mapfile -t forwards <"$dir/forwards"
+  fi
+  (
+    if [ -n "$cgroup" ]; then printf '%s\n' "$BASHPID" >"$cgroup/cgroup.procs"; fi
+    cd "$dir" && exec unshare "${options[@]}" bash "$self" _ns "$slot" "$base.mnt" "$network" "${forwards[@]}"
+  ) >"$dir/vm.log" 2>&1 </dev/null &
+  parent=$!
+  printf '%s\n' "$parent" >"$dir/vm.pid"
+  [ "$network" = private ] || return 0
+  until child=$(pgrep -P "$parent") && [ -n "$child" ]; do
+    kill -0 "$parent" 2>/dev/null || die "the slot ended before its namespaces existed: $(cat "$dir/vm.log")"
+    sleep 0.01
+  done
+  for ((index = 0; index < links; index++)); do
+    [ ! -e "/sys/class/net/nev$index" ] || continue
+    if ip link add "nev$index" type veth peer name eth0 netns "$child" 2>"$dir/link.log"; then break; fi
+    [ -e "/sys/class/net/nev$index" ] || die "the slot got no network link: $(cat "$dir/link.log")"
+  done
+  [ "$index" -lt "$links" ] || die "every one of the $links network links of ns slots is taken"
+  third=$((index * 4 / 256))
+  fourth=$((index * 4 % 256))
+  ip address add "$subnet.$third.$((fourth + 1))/30" dev "nev$index"
+  ip link set "nev$index" up
+  printf '%s %s\n' "$subnet.$third.$((fourth + 2))/30" "$subnet.$third.$((fourth + 1))" >"$dir/address.tmp"
+  mv "$dir/address.tmp" "$dir/address"
+}
+
+cmd__ns() {
+  local slot=$1 lower=$2 network=$3
+  shift 3
+  local dir=$home/slots/$slot address arguments=() forward gateway name root
+  root=$dir/root
+  mount --make-rprivate /
+  mkdir -p "$dir/upper" "$root"
+  mount -o loop "$dir/upper.ext4" "$dir/upper"
+  mkdir -p "$dir/upper/upper" "$dir/upper/work"
+  mount -t overlay overlay -o "lowerdir=$lower,upperdir=$dir/upper/upper,workdir=$dir/upper/work" "$root"
+  mkdir -p "$root/.nanoeval" "$root/dev" "$root/opt/nanoeval" "$root/proc" "$root/sys"
+  chmod 700 "$root/.nanoeval"
+  mount -t proc -o nosuid,nodev,noexec proc "$root/proc"
+  for name in $guarded; do
+    [ -e "$root/proc/$name" ] || continue
+    mount --bind "$root/proc/$name" "$root/proc/$name"
+    mount -o remount,bind,ro "$root/proc/$name"
+  done
+  for name in $masked; do
+    if [ -d "$root/proc/$name" ]; then
+      mount -t tmpfs -o ro,size=0 tmpfs "$root/proc/$name"
+    elif [ -e "$root/proc/$name" ]; then
+      mount --bind /dev/null "$root/proc/$name"
+    fi
+  done
+  mount -t sysfs -o ro,nosuid,nodev,noexec sysfs "$root/sys"
+  if [ -s "$dir/cgroup" ]; then mount -t cgroup2 -o ro,nosuid,nodev,noexec cgroup2 "$root/sys/fs/cgroup"; fi
+  mount -t tmpfs -o nosuid,mode=755 tmpfs "$root/dev"
+  mknod -m 666 "$root/dev/null" c 1 3
+  mknod -m 666 "$root/dev/zero" c 1 5
+  mknod -m 666 "$root/dev/full" c 1 7
+  mknod -m 666 "$root/dev/random" c 1 8
+  mknod -m 666 "$root/dev/urandom" c 1 9
+  mknod -m 666 "$root/dev/tty" c 5 0
+  mkdir "$root/dev/pts" "$root/dev/shm"
+  mount -t devpts -o newinstance,ptmxmode=0666,mode=620,gid=5 devpts "$root/dev/pts"
+  mount -t tmpfs -o nosuid,nodev,mode=1777 tmpfs "$root/dev/shm"
+  ln -s pts/ptmx "$root/dev/ptmx"
+  ln -s /proc/self/fd "$root/dev/fd"
+  ln -s /proc/self/fd/0 "$root/dev/stdin"
+  ln -s /proc/self/fd/1 "$root/dev/stdout"
+  ln -s /proc/self/fd/2 "$root/dev/stderr"
+  mount --bind "$rt" "$root/opt/nanoeval"
+  mount -o remount,bind,ro "$root/opt/nanoeval"
+  mount --bind "$dir/ctl" "$root/.nanoeval"
+  if [ "$network" = private ]; then
+    until [ -s "$dir/address" ]; do sleep 0.01; done
+    read -r address gateway <"$dir/address"
+    ip link set lo up
+    ip address add "$address" dev eth0
+    ip link set eth0 up
+    ip route add default via "$gateway"
+  fi
+  if has hostname; then hostname localhost; fi
+  for forward; do arguments+=("forward=$forward"); done
+  cd "$root"
+  mount --move . /
+  exec setpriv --bounding-set "$capabilities" chroot . /opt/nanoeval/krun/boot/nanoeval-krun-guest ns "${arguments[@]}"
 }
 
 cmd_hand() {
@@ -431,7 +633,7 @@ cmd__hand() {
       printf '%s\n' "$$" >"$dir/hand.pid"
       NANOCODE_HOME=$dir/nanocode exec "${run[@]}" hand "$url" --name "$name" -C "$workdir"
       ;;
-    krun)
+    krun | ns)
       mapfile -t run < <(launcher /opt/nanoeval)
       mapfile -t options < <(guest_options "$dir")
       if [ -f "$rt/ca.pem" ] && ! vm "$dir" exec "${options[@]}" -- sh -c 'test -f /etc/ssl/certs/ca-certificates.crt || test -f /etc/ssl/cert.pem || test -f /etc/pki/tls/certs/ca-bundle.crt'; then
@@ -473,7 +675,7 @@ cmd__agent() {
       printf '%s\n' "$$" >"$dir/agent.pid"
       NANOEVAL_AGENT_HOME=$dir/agent/home NANOEVAL_AGENT_RT=$rt exec timeout -k 10 "$seconds" sh -c "$run" sh <"$dir/agent/instruction.md" >"$dir/agent.out" 2>"$dir/agent.err"
       ;;
-    krun)
+    krun | ns)
       mapfile -t options < <(guest_options "$dir")
       if [ -f "$rt/ca.pem" ] && ! vm "$dir" exec "${options[@]}" -- sh -c 'test -f /etc/ssl/certs/ca-certificates.crt || test -f /etc/ssl/cert.pem || test -f /etc/pki/tls/certs/ca-bundle.crt'; then
         options+=(--env SSL_CERT_FILE=/opt/nanoeval/ca.pem)
@@ -522,7 +724,7 @@ cmd__solve() {
       cd "$workdir"
       exec env "${options[@]}" timeout -k 10 "$seconds" sh -c "$run" sh "$dir/task/solution/solve.sh"
       ;;
-    krun)
+    krun | ns)
       mapfile -t options < <(guest_options "$dir")
       guest_copy "$dir" solution "${options[@]}"
       if [ -f "$dir/solution.env" ]; then options+=(--env-file "$dir/solution.env"); fi
@@ -564,7 +766,7 @@ cmd__verify() {
       fi
       (cd "$workdir" && env "${options[@]}" NANOEVAL_VERIFIER_LOGS="$dir/verifier" timeout -k 10 "$seconds" sh -c "$run" sh "$dir/task/tests/test.sh") || code=$?
       ;;
-    krun)
+    krun | ns)
       mapfile -t options < <(guest_options "$dir")
       vm "$dir" exec "${options[@]}" --user 0 -- sh -c 'rm -rf /logs/verifier "$1" && mkdir -p /logs/verifier && chmod 777 /logs/verifier' sh "$agent_home"
       guest_copy "$dir" tests "${options[@]}"
@@ -603,7 +805,11 @@ cmd__verify() {
       fi
       rm -rf "$dir/io/verifier"
       if vm "$dir" copy-out --socket vm.sock /logs/verifier verifier; then cp -R "$dir/io/verifier/." "$dir/verifier/"; fi
-      vm "$dir" exec "${options[@]}" --user 0 -- /opt/nanoeval/krun/boot/nanoeval-krun-guest oom-kills >"$dir/oom" 2>/dev/null || true
+      if [ -s "$dir/cgroup" ]; then
+        awk '$1 == "oom_kill" { print $2 }' "$(cat "$dir/cgroup")/memory.events" >"$dir/oom"
+      elif [ "$(cat "$dir/backend")" = krun ]; then
+        vm "$dir" exec "${options[@]}" --user 0 -- /opt/nanoeval/krun/boot/nanoeval-krun-guest oom-kills >"$dir/oom" 2>/dev/null || true
+      fi
       ;;
   esac
   return "$code"
@@ -612,7 +818,7 @@ cmd__verify() {
 cmd_down() {
   local slot=$1 release=${2:-keep}
   valid "$slot"
-  local dir=$home/slots/$slot disk=''
+  local dir=$home/slots/$slot disk='' cgroup=''
   case $release in
     keep | remove) ;;
     *) die "down keeps or removes the environment disk: $release" ;;
@@ -620,11 +826,14 @@ cmd_down() {
   if [ -f "$dir/disk" ]; then disk=$(cat "$dir/disk"); fi
   stop_hand "$slot"
   reap "$dir"
-  if [ "$(cat "$dir/backend" 2>/dev/null)" = krun ]; then
-    stop_process "$dir" vm.pid
-    stop_process "$dir" use.pid
-  fi
+  stop_process "$dir" vm.pid
+  stop_process "$dir" use.pid
   stop_process "$dir" relay.pid
+  if [ -s "$dir/cgroup" ]; then cgroup=$(cat "$dir/cgroup"); fi
+  if [ -n "$cgroup" ] && [ -d "$cgroup" ]; then
+    printf '1\n' >"$cgroup/cgroup.kill"
+    until rmdir "$cgroup" 2>/dev/null; do sleep 0.01; done
+  fi
   rm -rf "$dir"
   if [ "$release" = remove ] && [ -n "$disk" ]; then drop_disk "$disk" || true; fi
 }
@@ -668,14 +877,22 @@ cmd_prune() {
 }
 
 cmd_destroy() {
-  local dir
+  local dir mount
   stop_process "$home" runner.pid
   for dir in "$home" "$home"/slots/*/; do
     reap "$dir"
     stop_process "$dir" relay.pid
+    stop_process "$dir" vm.pid
+    if [ -s "$dir/cgroup" ] && [ -d "$(cat "$dir/cgroup")" ]; then
+      printf '1\n' >"$(cat "$dir/cgroup")/cgroup.kill"
+      until rmdir "$(cat "$dir/cgroup")" 2>/dev/null; do sleep 0.01; done
+    fi
   done
   pkill -f "$home/rt/nanocode hand" >/dev/null 2>&1 || true
   pkill -KILL -f "$krun/nanoeval-krun vm " >/dev/null 2>&1 || true
+  while IFS= read -r mount; do
+    umount -l "$mount"
+  done < <(awk -v home="$home/" 'index($2, home) == 1 { print $2 }' /proc/mounts | sort -r)
   rm -rf "$home"
 }
 
@@ -764,7 +981,7 @@ command=${1:-}
 [ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|tools|agents|up|hand|agent|solve|verify|down|destroy|prune|status|log|files|file> ...'
 shift
 case $command in
-  probe | setup | _setup | tools | agents | up | _up | hand | _hand | agent | _agent | solve | _solve | verify | _verify | down | destroy | prune | status | log | files | file)
+  probe | setup | _setup | tools | agents | up | _up | _ns | _drop | hand | _hand | agent | _agent | solve | _solve | verify | _verify | down | destroy | prune | status | log | files | file)
     "cmd_$command" "$@"
     ;;
   *) die "unknown command: $command" ;;
