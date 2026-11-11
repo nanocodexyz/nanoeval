@@ -9,6 +9,7 @@ import * as Dataset from '../datasets/Dataset.ts'
 import * as Source from '../datasets/Source.ts'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
 import * as Converter from '../sandbox/Converter.ts'
+import * as Prune from '../sandbox/Prune.ts'
 import * as Runner from '../sandbox/Runner.ts'
 import * as Store from '../sandbox/Store.ts'
 import * as Config from '../src/Config.ts'
@@ -101,6 +102,18 @@ const usage = `nanoeval <command>
   prune     [--dry-run] [--cache DIR]
             On this machine, remove the cached environment disks that no slot is using and
             the cached blobs.
+  prune     layers --days N [--remove] [--layers DIR] [--cache DIR]
+            List what the layer cache of imports (--layers, CACHE/oci) holds that no import
+            used for N days: image layers, configs and manifests, and downloads abandoned
+            that long ago, each with its size. With --remove, remove them. That is refused
+            while an import converts an image from that cache.
+  prune     store --url URL --token T [--remove] [--allow-empty] [--store DIR]
+            List the blobs of a directory store that no version of any eval of the Worker
+            names, and the files an import that died left staged, each with its size. With
+            --remove, remove them. That is refused while an import writes to the store, and
+            when the Worker names no blob of the store, unless --allow-empty says that
+            emptying it is meant. Eval versions are never removed, and blobs in R2 are not
+            pruned.
 `
 
 async function walk(
@@ -375,6 +388,7 @@ async function main(): Promise<void> {
     allowPositionals: true,
     options: {
       agent: { multiple: true, type: 'string' },
+      'allow-empty': { default: false, type: 'boolean' },
       'attach-sec': { default: '60', type: 'string' },
       attempts: { default: '1', type: 'string' },
       backend: { default: 'krun', type: 'string' },
@@ -384,6 +398,7 @@ async function main(): Promise<void> {
       'claude-login': { type: 'string' },
       'codex-login': { type: 'string' },
       config: { type: 'string' },
+      days: { type: 'string' },
       detach: { default: false, type: 'boolean' },
       disks: { default: 'keep', type: 'string' },
       'dry-run': { default: false, type: 'boolean' },
@@ -409,6 +424,7 @@ async function main(): Promise<void> {
       'poll-ms': { type: 'string' },
       port: { type: 'string' },
       provider: { default: 'local', type: 'string' },
+      remove: { default: false, type: 'boolean' },
       report: { type: 'string' },
       rerun: { type: 'string' },
       root: { type: 'string' },
@@ -548,6 +564,30 @@ async function main(): Promise<void> {
           '  run: ' + adapter.proof,
         ].join('\n'),
       )
+    return
+  }
+
+  if (command === 'prune' && rest.length) {
+    if (rest.length > 1 || (rest[0] !== 'layers' && rest[0] !== 'store'))
+      throw new Error('prune takes layers, store or nothing, not ' + rest.join(' '))
+    if (rest[0] === 'layers') {
+      process.exitCode = await Prune.layers({
+        days: required(values.days, 'days'),
+        home: Path.join(cache, 'converter'),
+        layers: Path.resolve(values.layers ?? Converter.defaultLayers(cache)),
+        remove: values.remove,
+      })
+      return
+    }
+    if (values.store === 'r2')
+      throw new Error('prune store takes a directory store: blobs in R2 are not pruned')
+    await Prune.store({
+      allowEmpty: values['allow-empty'],
+      api: client({ token: required(values.token, 'token'), url: required(values.url, 'url') }),
+      log: (line) => console.log(line),
+      remove: values.remove,
+      root: Path.resolve(values.store ?? Store.defaultRoot()),
+    })
     return
   }
 
