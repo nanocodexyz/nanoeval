@@ -34,7 +34,7 @@ export type Task = {
   id: string
   instruction: Blob
   name: string
-  network: { allowInternet: boolean }
+  network: { allowInternet: boolean; verifierInternet?: boolean }
   resources: { cpus: number; memoryMb: number; storageMb: number }
   setupTimeoutSec?: number
   solution?: { archive: Blob; env: Record<string, string>; finalMessage?: true }
@@ -47,6 +47,8 @@ export type Task = {
     timeoutSec: number
   }
 }
+
+export type Phase = 'agent' | 'verifier'
 
 export type Entry = { digest: string; id: string; name: string }
 
@@ -225,6 +227,10 @@ export function parse(value: unknown): Task {
   const judge = flag(task.verifier?.judge, 'verifier.judge')
   const ctrf = flag(task.verifier?.ctrf, 'verifier.ctrf')
   const answered = flag(task.solution?.finalMessage, 'solution.finalMessage')
+  const allowInternet = task.network?.allowInternet !== false
+  const verifierInternet = task.network?.verifierInternet
+  if (verifierInternet !== undefined && typeof verifierInternet !== 'boolean')
+    throw new InvalidError(task.id + ' has a network.verifierInternet that is not true or false')
   if (task.solution && finalMessage && !answered)
     throw new InvalidError(task.id + ' answers with its final message and its solution has none')
   return {
@@ -236,7 +242,12 @@ export function parse(value: unknown): Task {
     id: task.id,
     instruction: blob(task.instruction, 'instruction'),
     name: task.name,
-    network: { allowInternet: task.network?.allowInternet !== false },
+    network: {
+      allowInternet,
+      ...(verifierInternet === undefined || verifierInternet === allowInternet
+        ? {}
+        : { verifierInternet }),
+    },
     resources: {
       cpus: positive(resources.cpus, 'resources.cpus'),
       memoryMb: positive(resources.memoryMb, 'resources.memoryMb'),
@@ -263,6 +274,14 @@ export function parse(value: unknown): Task {
       timeoutSec: positive(task.verifier?.timeoutSec, 'verifier.timeoutSec'),
     },
   }
+}
+
+export function offline(task: Pick<Task, 'network'>): Phase[] {
+  const { allowInternet, verifierInternet = allowInternet } = task.network
+  return [
+    ...(allowInternet ? [] : ['agent' as const]),
+    ...(verifierInternet ? [] : ['verifier' as const]),
+  ]
 }
 
 export function blobs(task: Task, options: { solution: boolean }): Blob[] {

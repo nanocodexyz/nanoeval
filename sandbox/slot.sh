@@ -103,11 +103,25 @@ forwards() {
   done
 }
 
+reach() {
+  local dir=$1 phase=$2
+  [ -f "$dir/forwards" ] || return 0
+  printf '%s\n' "$phase" >"$dir/phase"
+  if grep -qx "$phase" "$dir/offline" 2>/dev/null; then
+    rm -f "$dir/net/open"
+    : >"$dir/allow.tmp"
+  else
+    : >"$dir/net/open"
+    cp "$dir/forwards" "$dir/allow.tmp"
+  fi
+  mv "$dir/allow.tmp" "$dir/allow"
+}
+
 relay() {
   local dir=$1
   mkdir -p "$dir/net"
   forwards >"$dir/forwards"
-  cp "$dir/forwards" "$dir/allow"
+  reach "$dir" agent
   (cd "$dir" && exec "$net" detach relay.log host net/relay.sock allow) >"$dir/relay.pid"
 }
 
@@ -115,7 +129,9 @@ session() {
   local dir=$1 url=$2
   [ "$(cat "$dir/network" 2>/dev/null)" = private ] || return 0
   case $url in
-    wss://*) ;;
+    wss://*)
+      if grep -qx agent "$dir/offline" 2>/dev/null; then die "a slot whose agent has no network reaches its session only at ws://127.x.x.x:PORT: $url"; fi
+      ;;
     *)
       [[ $url =~ ^ws://(127(\.[0-9]{1,3}){3}:[0-9]{1,5})(/|$) ]] || die "a private slot reaches its session over wss:// or at ws://127.x.x.x:PORT: $url"
       printf '%s\n' "${BASH_REMATCH[1]}"
@@ -275,6 +291,7 @@ cmd__up() {
     *) die "the $backend backend has no $network network" ;;
   esac
   if [ "$network" = private ] && [ "$(cat "$home/network" 2>/dev/null)" != private ]; then die 'the sandbox was not set up for the private network'; fi
+  if [ -s "$dir/offline" ] && [ "$network" != private ]; then die "a $backend slot on the $network network cannot close its network"; fi
   printf '%s\n' "$network" >"$dir/network"
   case $backend in
     dir)
@@ -304,6 +321,7 @@ cmd__up() {
       if [ "$network" = private ]; then
         relay "$dir" 8>&-
         options+=(--passt "$(command -v passt)" --relay net/relay.sock)
+        if [ -s "$dir/offline" ]; then options+=(--gate net/open); fi
         while IFS= read -r forward; do options+=(--forward "$forward"); done <"$dir/forwards"
       fi
       : >"$dir/vm.log"
@@ -360,10 +378,7 @@ stop_hand() {
   local slot=$1
   local dir=$home/slots/$slot
   if [ -f "$dir/hand.pid" ]; then kill "$(cat "$dir/hand.pid")" 2>/dev/null || true; fi
-  if [ -f "$dir/forwards" ]; then
-    cp "$dir/forwards" "$dir/allow.tmp"
-    mv "$dir/allow.tmp" "$dir/allow"
-  fi
+  reach "$dir" "$(cat "$dir/phase" 2>/dev/null || printf agent)"
 }
 
 cmd_solve() {
@@ -415,6 +430,7 @@ cmd_verify() {
   [ "$(state "$dir/verify.status")" != running ] || die "slot $slot is still verifying"
   printf '%s\n' "$round" >"$dir/verify.round"
   stop_hand "$slot"
+  reach "$dir" verifier
   spawn "$dir/verify.status" "$dir/verify.log" bash "$self" _verify "$@"
 }
 

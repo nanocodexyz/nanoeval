@@ -1,0 +1,18 @@
+schema_version = "1.1"
+
+[task]
+name = "fixtures/closed-agent"
+description = "A fixture whose agent has no network and whose verifier has one."
+
+[agent]
+timeout_sec = 60.0
+network_mode = "no-network"
+[verifier]
+timeout_sec = 60.0
+
+[environment]
+cpus = 1
+memory_mb = 256
+storage_mb = 128
+gpus = 0
+allow_internet = true

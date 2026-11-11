@@ -313,3 +313,105 @@ test('a task of the earlier Harbor format, with version in place of schema_versi
       Task.UnsupportedError,
     )
 })
+
+test('a task closes the network of its agent, of its verifier or of both', async () => {
+  const phases = async (toml: string) => {
+    const row = Rows.row(await Task.load(source(toml)))
+    assert.deepEqual(Eval.parse(JSON.parse(JSON.stringify(row))).network, row.network)
+    return [row.network, Eval.offline(row)]
+  }
+  const agent = (mode: string) => (toml: string) =>
+    toml.replace('[agent]\n', '[agent]\nnetwork_mode = "' + mode + '"\n')
+  const verifier = (mode: string) => (toml: string) =>
+    toml.replace('[verifier]\n', '[verifier]\nnetwork_mode = "' + mode + '"\n')
+
+  assert.deepEqual(await phases(manifest()), [{ allowInternet: true }, []])
+  const both = [{ allowInternet: false }, ['agent', 'verifier']]
+  assert.deepEqual(await phases(manifest('allow_internet = false\n')), both)
+  assert.deepEqual(await phases(manifest('network_mode = "no-network"\n')), both)
+  assert.deepEqual(await phases(manifest('allow_internet = false\nnetwork_mode = "public"\n')), [
+    { allowInternet: true },
+    [],
+  ])
+  assert.deepEqual(await phases(agent('no-network')(manifest())), [
+    { allowInternet: false, verifierInternet: true },
+    ['agent'],
+  ])
+  assert.deepEqual(await phases(verifier('public')(manifest('allow_internet = false\n'))), [
+    { allowInternet: false, verifierInternet: true },
+    ['agent'],
+  ])
+  assert.deepEqual(await phases(verifier('no-network')(manifest())), [
+    { allowInternet: true, verifierInternet: false },
+    ['verifier'],
+  ])
+  assert.deepEqual(
+    await phases(agent('public')(verifier('public')(manifest('allow_internet = false\n')))),
+    [{ allowInternet: true }, []],
+  )
+  assert.deepEqual(
+    Eval.parse({
+      ...Rows.row(await Task.load(source(manifest()))),
+      network: { allowInternet: true, verifierInternet: true },
+    }).network,
+    { allowInternet: true },
+  )
+
+  await assert.rejects(Task.load(source(manifest('network_mode = "allowlist"\n'))), {
+    name: 'Task.UnsupportedError',
+  })
+  await assert.rejects(Task.load(source(agent('allowlist')(manifest()))), {
+    name: 'Task.UnsupportedError',
+  })
+  await assert.rejects(Task.load(source(manifest('allowed_hosts = ["example.com"]\n'))), {
+    name: 'Task.UnsupportedError',
+  })
+  await assert.rejects(Task.load(source(manifest('network_mode = "private"\n'))), {
+    name: 'Task.InvalidError',
+  })
+
+  const mode = (value: string) =>
+    manifest().replace('[verifier]\n', '[verifier]\nenvironment_mode = "' + value + '"\n')
+  await Task.load(source(mode('shared')))
+  await Task.load(source(mode('same')))
+  await assert.rejects(Task.load(source(mode('separate'))), { name: 'Task.UnsupportedError' })
+  await assert.rejects(Task.load(source(manifest() + '[verifier.environment]\ncpus = 1\n')), {
+    name: 'Task.UnsupportedError',
+  })
+})
+
+test('only krun slots on a private network run a task that closes its network', async () => {
+  const config = (backend: string, network: string) =>
+    Config.parse({
+      agents: [{ id: 'haiku', model: 'claude-haiku-4-5', provider: 'claude' }],
+      attempts: 1,
+      budget: { sandboxUsd: 0 },
+      eval: { name: 'example' },
+      limits: { attachSec: 60, claims: 3, leaseSec: 60, setupSec: 600, stepRetries: 3 },
+      name: 'example',
+      sandbox: {
+        backend,
+        max: 1,
+        network,
+        pollMs: 250,
+        provider: 'local',
+        slots: 4,
+        timeoutSec: 60,
+      },
+    })
+  const closes = (toml: string) => Task.load(source(toml))
+  const offline = await closes(manifest('allow_internet = false\n'))
+  const judged = await closes(
+    manifest().replace('[verifier]\n', '[verifier]\nnetwork_mode = "no-network"\n'),
+  )
+  for (const task of [offline, judged]) {
+    Config.check(config('krun', 'private'), [Rows.row(task)])
+    assert.throws(() => Config.check(config('krun', 'host'), [Rows.row(task)]), {
+      message: /which only krun slots on a private network enforce/,
+      name: 'Config.UnsupportedError',
+    })
+    assert.throws(() => Config.check(config('dir', 'host'), [Rows.row(task, 'dir')]), {
+      name: 'Config.UnsupportedError',
+    })
+  }
+})

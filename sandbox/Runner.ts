@@ -3,7 +3,7 @@ import * as Fs from 'node:fs/promises'
 import * as Path from 'node:path'
 import * as Admission from '../src/Admission.ts'
 import type * as Config from '../src/Config.ts'
-import type * as Eval from '../src/Eval.ts'
+import * as Eval from '../src/Eval.ts'
 import * as Judge from '../src/Judge.ts'
 import * as Protocol from '../src/Protocol.ts'
 import type * as Result from '../src/Result.ts'
@@ -294,6 +294,9 @@ export async function run(options: Options): Promise<void> {
     for (const [name, values] of variables)
       if (Object.keys(values).length)
         await Fs.writeFile(slots.envFile(item.row.slot, name), Slot.envFile(values))
+    const offline = Eval.offline(task)
+    if (offline.length)
+      await Fs.writeFile(slots.offlineFile(item.row.slot), offline.join('\n') + '\n')
     await shell(
       slots.up(item.row.slot, {
         backend: config.backend,

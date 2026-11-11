@@ -1,3 +1,4 @@
+mod gate;
 mod image;
 
 use std::{
@@ -139,6 +140,7 @@ fn vm(arguments: impl Iterator<Item = OsString>) -> Result<u8, String> {
             "context",
             "cpus",
             "forward",
+            "gate",
             "io",
             "leash",
             "lower",
@@ -178,10 +180,14 @@ fn vm(arguments: impl Iterator<Item = OsString>) -> Result<u8, String> {
     if let Some(exchange) = arguments.maybe("io") {
         config = config.shared_directory(SharedDirectory::read_write(wire::IO_TAG, exchange));
     }
+    let gate = arguments.maybe("gate").map(Path::new);
     let proxy = arguments
         .maybe("passt")
-        .map(|program| passt(program))
+        .map(|program| passt(program, gate))
         .transpose()?;
+    if gate.is_some() && proxy.is_none() {
+        return Err("--gate needs --passt".to_owned());
+    }
     if let Some(proxy) = &proxy {
         config = config.network(Network::Proxy(proxy.as_raw_fd()));
         command = command.arg(wire::PRIVATE);
@@ -237,9 +243,17 @@ fn disks(arguments: &Arguments, mut config: VmConfig) -> Result<(VmConfig, Guest
     Ok((config, command))
 }
 
-fn passt(program: &OsStr) -> Result<UnixStream, String> {
-    let (guest, proxy) =
-        UnixStream::pair().map_err(|error| format!("the network socket pair: {error}"))?;
+fn passt(program: &OsStr, gate: Option<&Path>) -> Result<UnixStream, String> {
+    let pair = || UnixStream::pair().map_err(|error| format!("the network socket pair: {error}"));
+    let (guest, proxy) = pair()?;
+    let (guest, proxy) = match gate {
+        Some(open) => {
+            let (far, behind) = pair()?;
+            gate::spawn(proxy, far, open).map_err(|error| format!("the network gate: {error}"))?;
+            (guest, behind)
+        }
+        None => (guest, proxy),
+    };
     let mask = Ipv4Addr::from(u32::MAX << (u32::BITS - u32::from(wire::GUEST_PREFIX)));
     Command::new(program)
         .args(["--foreground", "--ipv4-only", "--no-dhcp", "--no-map-gw"])

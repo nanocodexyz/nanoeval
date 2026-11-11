@@ -172,7 +172,12 @@ export async function normalize(
       id: item.id,
       instruction: await upload(instruction),
       name: task.name,
-      network: { allowInternet: task.environment.allowInternet },
+      network: {
+        allowInternet: task.environment.allowInternet,
+        ...(task.verifier.allowInternet === undefined
+          ? {}
+          : { verifierInternet: task.verifier.allowInternet }),
+      },
       resources: {
         cpus: task.environment.cpus,
         memoryMb: task.environment.memoryMb,

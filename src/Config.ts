@@ -210,9 +210,16 @@ export function check(config: Config, tasks: readonly Eval.Task[]): void {
   const kind = config.sandbox.backend === 'krun' ? 'disk' : 'dir'
   const solved = oracle(config) !== undefined
   for (const task of tasks) {
-    if (!task.network.allowInternet)
+    const offline = Eval.offline(task)
+    if (
+      offline.length &&
+      !(config.sandbox.backend === 'krun' && config.sandbox.network === 'private')
+    )
       throw new UnsupportedError(
-        task.name + ' sets allow_internet = false, which no slot backend enforces yet',
+        task.name +
+          ' closes the network of its ' +
+          offline.join(' and its ') +
+          ', which only krun slots on a private network enforce',
       )
     if (task.environment.kind !== kind)
       fail(

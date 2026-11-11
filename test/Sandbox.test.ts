@@ -422,6 +422,28 @@ test('a slot refuses a network its backend does not have', async () => {
   await provider.kill(created.handle)
 })
 
+test('a slot that cannot close its network refuses a task that asks for it', async () => {
+  const provider = Local.create({ token, url: server.url })
+  const created = await provider.create({ metadata: {}, template: undefined, timeoutSec: 60 })
+  const sandbox = provider.connect(created.handle)
+  const slots = Slot.create({ home: created.handle.home })
+  await Sandbox.run(sandbox, 'mkdir -p ' + Sandbox.quote(created.handle.home + '/slots/alone'))
+  await sandbox.write(slots.script, script)
+  await sandbox.write(slots.taskFile('alone'), Tar.pack([]))
+  await sandbox.write(slots.offlineFile('alone'), Buffer.from('agent\n'))
+  await Sandbox.run(
+    sandbox,
+    slots.up('alone', { backend: 'dir', cpus: 1, memoryMb: 256, network: 'host', storageMb: 1024 }),
+  )
+  const status = async () => Slot.parseStatus(await Sandbox.run(sandbox, slots.status()))
+  assert.equal(await wait(async () => (await status()).slots['alone']!.up), 'exit:2')
+  assert.match(
+    await Sandbox.run(sandbox, slots.log('alone', 'up', 4096)),
+    /a dir slot on the host network cannot close its network/,
+  )
+  await provider.kill(created.handle)
+})
+
 test(
   'a krun slot runs the solution and the verifier in a microVM',
   { skip: Krun.missing() ?? false },

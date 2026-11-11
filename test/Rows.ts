@@ -35,7 +35,12 @@ export function row(task: Task.Task, kind: 'dir' | 'disk' = 'disk'): Eval.Task {
     id: task.name.replaceAll('/', '-'),
     instruction: blob('a'),
     name: task.name,
-    network: { allowInternet: task.environment.allowInternet },
+    network: {
+      allowInternet: task.environment.allowInternet,
+      ...(task.verifier.allowInternet === undefined
+        ? {}
+        : { verifierInternet: task.verifier.allowInternet }),
+    },
     resources: {
       cpus: task.environment.cpus,
       memoryMb: task.environment.memoryMb,

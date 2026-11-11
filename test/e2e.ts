@@ -72,6 +72,7 @@ const solutions: [marker: string, right: string, wrong: string][] = [
   ['slow.txt', 'sleep 30; echo late > slow.txt', 'true'],
   ['greeting.txt', "printf 'hello from nanoeval\\n' > greeting.txt", 'echo hi > greeting.txt'],
   ['port.token', 'sh start.sh', 'true'],
+  ['network.checks', 'sh check.sh', 'true'],
 ]
 
 function sse(events: [string, unknown][]): string {
@@ -235,10 +236,11 @@ async function main(): Promise<void> {
       port +
       '\n',
   )
+  const forward = slotForward ?? (scenario === 'closed' ? new URL(beacon.url).host : undefined)
   const hostPolicy = {
     NANOEVAL_SLOT_ENV: Path.join(out, 'slot.env'),
     ...(caBundle ? { NANOEVAL_CA_BUNDLE: Path.resolve(caBundle) } : {}),
-    ...(slotForward ? { NANOEVAL_SLOT_FORWARD: slotForward } : {}),
+    ...(forward ? { NANOEVAL_SLOT_FORWARD: forward } : {}),
   }
   const sandboxd = await Sandboxd.start({
     env: { ...hostPolicy, NANOEVAL_CACHE: cache, NANOEVAL_STORE: storeRoot },
@@ -340,7 +342,7 @@ async function main(): Promise<void> {
         '--slot-env',
         Path.join(out, 'slot.env'),
         ...(caBundle ? ['--ca-bundle', Path.resolve(caBundle)] : []),
-        ...(slotForward ? ['--slot-forward', slotForward] : []),
+        ...(forward ? ['--slot-forward', forward] : []),
       ],
       { env: { ...process.env, NANOEVAL_TOKEN: token }, stdio: ['ignore', output, output] },
     )
@@ -368,6 +370,7 @@ async function main(): Promise<void> {
     assert.equal(unauthorized.status, 401)
 
     const failures = scenario === 'failures'
+    const closed = scenario === 'closed'
     const isolated = scenario === 'network'
     const judged = scenario === 'judge'
     if (scenario !== 'tasks' && model !== 'scripted' && !(judged && model === 'oracle'))
@@ -402,7 +405,11 @@ async function main(): Promise<void> {
             ]
           : isolated
             ? [Network.fixture]
-            : taskNames.map((name) => Path.join('tasks', name))
+            : closed
+              ? ['closed-agent', 'closed-network', 'closed-verifier'].map((name) =>
+                  Path.join('test/fixtures', name),
+                )
+              : taskNames.map((name) => Path.join('tasks', name))
     const agents: Config.Agent[] =
       model === 'oracle'
         ? [oracle]
@@ -415,10 +422,10 @@ async function main(): Promise<void> {
                 ...(thinking ? { thinking } : {}),
               },
             ]
-          : failures || isolated || packing || model !== 'scripted'
+          : closed || failures || isolated || packing || model !== 'scripted'
             ? [
                 {
-                  id: failures || isolated || packing ? 'right' : 'nanocode',
+                  id: closed || failures || isolated || packing ? 'right' : 'nanocode',
                   model: realModel,
                   provider: 'claude',
                 },
@@ -504,7 +511,7 @@ async function main(): Promise<void> {
 
     const config: Config.Config = {
       agents,
-      attempts: failures || packing ? 1 : isolated ? slots : attempts,
+      attempts: closed || failures || packing ? 1 : isolated ? slots : attempts,
       budget: { modelUsd: 1, sandboxUsd: 0 },
       eval: { name: evalName, version: version.digest },
       ...(judged ? { judge: { model: 'claude-haiku-4-5', provider: 'claude' as const } } : {}),
@@ -528,6 +535,14 @@ async function main(): Promise<void> {
         slots,
         timeoutSec: 3600,
       },
+    }
+    if (closed && !(backend === 'krun' && network === 'private')) {
+      await assert.rejects(
+        api.create(config),
+        /closes the network of its agent, which only krun slots on a private network enforce/,
+      )
+      console.log('e2e passed: ' + label)
+      return
     }
     const started = Date.now()
     const created = await api.create(config)
@@ -695,7 +710,7 @@ async function main(): Promise<void> {
       assert.equal(status['sandboxes'][0].state, 'closed')
       assert.equal(status['sandboxes'][0].capabilities.ca_bundle, caBundle !== undefined)
       assert.equal(status['sandboxes'][0].capabilities.slot_env, true)
-      assert.equal(status['sandboxes'][0].capabilities.slot_forward, slotForward !== undefined)
+      assert.equal(status['sandboxes'][0].capabilities.slot_forward, forward !== undefined)
       assert.equal(status['sandboxes'][0].capabilities.network, network)
     }
     if (backend === 'krun') {
@@ -863,7 +878,7 @@ async function main(): Promise<void> {
     assert.equal(status['counts'].errored, 0, 'no attempt may end in an infrastructure error')
     assert.equal(status['counts'].passed + status['counts'].failed, total)
     if (!attached) assert.equal(peak, Math.min(slots, total), 'the sandbox fills every slot')
-    if (isolated) {
+    if (closed || isolated) {
       for (const attempt of status['attempts'] as { id: string; outcome: string }[])
         assert.equal(
           attempt.outcome,

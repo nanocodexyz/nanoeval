@@ -67,6 +67,7 @@ export function create(options: create.Options) {
       phase: 'hand' | 'judge' | 'setup' | 'solve' | 'up' | 'verify',
       bytes: number,
     ) => call('log', slot, phase, String(bytes)),
+    offlineFile: (slot: string) => home + '/slots/' + slot + '/offline',
     probe: () => call('probe'),
     reverify: (slot: string, timeoutSec: number) =>
       call('verify', slot, String(Math.ceil(timeoutSec)), '2'),

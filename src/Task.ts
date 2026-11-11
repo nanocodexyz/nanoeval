@@ -28,6 +28,7 @@ export type Task = {
   name: string
   solution?: { env: Record<string, string> }
   verifier: {
+    allowInternet?: boolean
     ctrf?: boolean
     env: Record<string, string>
     finalMessage?: true
@@ -83,8 +84,14 @@ export async function load(source: Source, options: load.Options = {}): Promise<
   if (compose.some((path) => path in source.files))
     throw new UnsupportedError('tasks with a Compose file are not supported')
   if (number(environment, 'gpus', 0) > 0) throw new UnsupportedError('GPU tasks are not supported')
-  if ((verifier['environment_mode'] ?? 'same') !== 'same')
-    throw new UnsupportedError('verifier environment_mode must be same')
+  if (
+    !['same', 'shared'].includes((verifier['environment_mode'] ?? 'shared') as string) ||
+    verifier['environment'] !== undefined
+  )
+    throw new UnsupportedError('a verifier in an environment of its own is not supported')
+  const baseline = internet(environment, 'environment') ?? environment['allow_internet'] !== false
+  const agentInternet = internet(agent, 'agent') ?? baseline
+  const verifierInternet = internet(verifier, 'verifier') ?? baseline
   const servers = environment['mcp_servers']
   if (servers !== undefined && !(Array.isArray(servers) && servers.length === 0))
     throw new UnsupportedError('tasks with mcp_servers are not supported')
@@ -116,7 +123,7 @@ export async function load(source: Source, options: load.Options = {}): Promise<
     checksum: 'sha256:' + (await checksum(source.files)),
     description: typeof task['description'] === 'string' ? task['description'] : '',
     environment: {
-      allowInternet: environment['allow_internet'] !== false,
+      allowInternet: agentInternet,
       ...(environment['build_timeout_sec'] === undefined
         ? {}
         : { buildTimeoutSec: positive(environment, 'build_timeout_sec') }),
@@ -132,6 +139,7 @@ export async function load(source: Source, options: load.Options = {}): Promise<
     name: string(task, 'name'),
     ...(options.solution ? { solution: { env: strings(solution, 'env') } } : {}),
     verifier: {
+      ...(verifierInternet === agentInternet ? {} : { allowInternet: verifierInternet }),
       ...(Bytes.toText(source.files['tests/test.sh']).includes(report) ? { ctrf: true } : {}),
       env: strings(verifier, 'env'),
       ...(finalMessage ? { finalMessage } : {}),
@@ -205,6 +213,16 @@ function flag(table: Record<string, unknown>, key: string): true | undefined {
   if (value !== undefined && typeof value !== 'boolean')
     throw new InvalidError('metadata.nanoeval.' + key + ' must be true or false')
   return value === true ? true : undefined
+}
+
+function internet(table: Record<string, unknown>, name: string): boolean | undefined {
+  const mode = table['network_mode']
+  if (mode === 'allowlist' || table['allowed_hosts'] !== undefined)
+    throw new UnsupportedError(name + '.network_mode allowlist is not supported')
+  if (mode === undefined) return undefined
+  if (mode !== 'public' && mode !== 'no-network')
+    throw new InvalidError(name + '.network_mode must be public, no-network or allowlist')
+  return mode === 'public'
 }
 
 function number(table: Record<string, unknown>, key: string, fallback: number): number {
