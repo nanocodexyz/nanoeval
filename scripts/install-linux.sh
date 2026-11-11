@@ -4,12 +4,15 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 install-linux.sh [--worker-port 8787] [--sandbox-port 8788] [--runs DIR]
+                 [--store DIR] [--cache DIR]
                  [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT]...
                  [--claude-login FILE] [--codex-login FILE]
 
 Keep nanoeval running on this machine as two systemd user services on loopback,
 nanoeval-sandboxd and nanoeval-worker, and put a nanoeval command on the PATH that
-talks to them. Run it again to change an option. Tokens are generated once and kept.
+talks to them. Imports write their blobs to --store, and the runners of the machine
+read them there and keep unpacked environment disks in --cache. Run it again to
+change an option. Tokens are generated once and kept.
 EOF
 }
 
@@ -21,6 +24,8 @@ die() {
 worker_port=8787
 sandbox_port=8788
 runs=$HOME/nanoeval-runs
+store=${XDG_DATA_HOME:-$HOME/.local/share}/nanoeval/store
+cache=${XDG_CACHE_HOME:-$HOME/.cache}/nanoeval
 sandboxd_options=()
 worker_options=()
 while [ $# -gt 0 ]; do
@@ -28,6 +33,8 @@ while [ $# -gt 0 ]; do
     --worker-port) worker_port=$2 ;;
     --sandbox-port) sandbox_port=$2 ;;
     --runs) runs=$(readlink -f "$2") ;;
+    --store) store=$(readlink -m "$2") ;;
+    --cache) cache=$(readlink -m "$2") ;;
     --ca-bundle | --slot-env)
       [ -f "$2" ] || die "$2 is not a file"
       sandboxd_options+=("$1" "$(readlink -f "$2")")
@@ -50,7 +57,7 @@ repo=$(readlink -f "$(dirname "$0")/..")
 node=$(readlink -f "${NANOEVAL_NODE:-$(command -v node)}") || die 'node is not on the PATH: set NANOEVAL_NODE'
 "$node" -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 24 ? 0 : 1)' || die "$node is older than Node 24"
 [ -d "$repo/node_modules/wrangler" ] || die "run npm ci in $repo first"
-command -v docker >/dev/null || die 'docker is not on the PATH'
+command -v docker >/dev/null || die 'docker is not on the PATH: the temporary converter of nanoeval import calls it'
 command -v systemctl >/dev/null || die 'systemctl is not on the PATH'
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 
@@ -58,7 +65,7 @@ config=${XDG_CONFIG_HOME:-$HOME/.config}/nanoeval
 state=${XDG_STATE_HOME:-$HOME/.local/state}/nanoeval
 units=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 bin=$HOME/.local/bin
-mkdir -p "$config" "$state" "$units" "$bin" "$runs"
+mkdir -p "$config" "$state" "$units" "$bin" "$runs" "$store" "$cache"
 chmod 700 "$config"
 
 secret() {
@@ -76,6 +83,8 @@ NANOEVAL_URL=http://127.0.0.1:$worker_port
 NANOEVAL_TOKEN=$token
 NANOEVAL_SANDBOX_TOKEN=$sandbox_token
 NANOEVAL_RUNS_DIR=$runs
+NANOEVAL_STORE=$store
+NANOEVAL_CACHE=$cache
 EOF
 )
 mv "$config/env.tmp" "$config/env"
@@ -147,7 +156,7 @@ for _ in $(seq 1 120); do
   if curl -fsS "http://127.0.0.1:$worker_port/health" >/dev/null 2>&1 \
     && curl -fsS "http://127.0.0.1:$sandbox_port/health" >/dev/null 2>&1; then
     printf 'nanoeval is running: the Worker on 127.0.0.1:%s, sandboxd on 127.0.0.1:%s\n' "$worker_port" "$sandbox_port"
-    printf 'command %s, jobs under %s, tokens in %s\n' "$bin/nanoeval" "$runs" "$config/env"
+    printf 'command %s, jobs under %s, blobs under %s, tokens in %s\n' "$bin/nanoeval" "$runs" "$store" "$config/env"
     exit 0
   fi
   sleep 0.5
