@@ -110,7 +110,7 @@ export const adapter: Dataset.Adapter = {
     "GPQA Diamond, 198 multiple-choice questions from the authors' release, answered in the final message",
   name: 'gpqa-diamond',
   proof:
-    '5 tasks with their reference answers on Docker and krun slots, and 5 with gpt-6-luna on Docker slots',
+    '5 tasks imported as an eval and run with their reference answers on krun slots, all passed. 5 ran with gpt-6-luna on the first version only',
   source: {
     csv_sha256: pin.csvSha256,
     kind: 'github',
