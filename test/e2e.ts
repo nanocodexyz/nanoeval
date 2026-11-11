@@ -516,7 +516,7 @@ async function main(): Promise<void> {
       scenario !== 'tasks' &&
       model !== 'scripted' &&
       !(judged && model === 'oracle') &&
-      !(installed && ['failures', 'lost', 'resume', 'runners'].includes(scenario))
+      !(installed && ['closed', 'failures', 'lost', 'resume', 'runners'].includes(scenario))
     )
       throw new Error('the ' + scenario + ' scenario runs on the scripted model')
     if (isolated) {
@@ -563,7 +563,7 @@ async function main(): Promise<void> {
         : installed
           ? [
               { id: 'right', model: 'gpt-right', provider: 'codex-cli' as const },
-              ...(failures
+              ...(closed || failures
                 ? []
                 : [
                     {
@@ -1064,8 +1064,11 @@ async function main(): Promise<void> {
     assert.equal(status['counts'].passed + status['counts'].failed, total)
     if (!attached) assert.equal(peak, Math.min(slots, total), 'the sandbox fills every slot')
     if (cached) {
-      if (backend !== 'krun') throw new Error('the cache scenario runs on krun slots')
-      const kept = Path.join(cache, 'verifier')
+      if (!disk) throw new Error('the cache scenario runs on krun or ns slots')
+      const kept = async () =>
+        (await there('ls -A ' + (guest ? Guest.root + '/cache' : cache) + '/verifier 2>/dev/null'))
+          .split('\n')
+          .filter(Boolean).length
       const verified = async (run: string) => {
         let finished: Record<string, any>
         for (;;) {
@@ -1082,15 +1085,15 @@ async function main(): Promise<void> {
       }
       const directory = '/var/cache/nanoeval-verifier/uv'
       assert.deepEqual(await verified(created.id), ['miss', 'unset'])
-      assert.ok(!Fs.existsSync(kept), 'the attempt of a model keeps nothing for later verifiers')
+      assert.equal(await kept(), 0, 'the attempt of a model keeps nothing for later verifiers')
       const solved = { ...config, agents: [oracle], name: config.name + '-oracle' }
       assert.deepEqual(await verified((await api.create(solved)).id), ['miss', directory])
-      assert.equal(Fs.readdirSync(kept).length, 1, 'the attempt of the oracle kept its downloads')
+      assert.equal(await kept(), 1, 'the attempt of the oracle kept its downloads')
       assert.deepEqual(await verified((await api.create(config)).id), ['hit', directory])
       assert.deepEqual(await verified((await api.create(solved)).id), ['hit', directory])
       const plain = { ...config, sandbox: { ...config.sandbox, verifierCache: undefined } }
       assert.deepEqual(await verified((await api.create(plain)).id), ['miss', 'unset'])
-      assert.equal(Fs.readdirSync(kept).length, 1)
+      assert.equal(await kept(), 1)
     } else if (closed || isolated) {
       for (const attempt of status['attempts'] as { id: string; outcome: string }[])
         assert.equal(
@@ -1179,7 +1182,9 @@ async function main(): Promise<void> {
         assert.equal(refused.status, 401, 'the model endpoint of an attempt ends with its agent')
       }
       assert.ok(
-        Math.abs(status['spend'].modelUsd - fakeUsage['claude-code'].costUsd * (total / 2)) < 1e-9,
+        Math.abs(
+          status['spend'].modelUsd - fakeUsage['claude-code'].costUsd * (closed ? 0 : total / 2),
+        ) < 1e-9,
         'the cost an installed agent reports counts against the model budget',
       )
     }

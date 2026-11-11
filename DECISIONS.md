@@ -1492,7 +1492,7 @@ Twice in about a hundred conversions of this entry, both with a load average abo
 - CI on GitHub. Nothing is pushed.
 - The lost wakeup above: its cause, how often it happens on a quiet machine, and whether a verifier that starts in a slot can meet it.
 - A closed phase under a model. The lane uses the scripted model. No dataset here writes a task that closes a phase: GPQA and HealthBench are closed-book and their importers still leave the network open, since changing them changes the checksum of every task and the scores recorded so far.
-- A network allowlist, a closed phase on `--network host`, on `dir` slots or in a sandbox without KVM, and a closed agent whose Worker is deployed: all refused. No slot backend other than krun and dir exists in this tree.
+- A network allowlist, a closed phase on `--network host`, on `dir` slots or in a sandbox without KVM, and a closed agent whose Worker is deployed: all refused.
 - What the gate costs a task that moves much data through its network. Only tasks that close a phase have one.
 - The verifier cache on the other 79 Terminal-Bench tasks, with a model's attempts, on images with musl, and with a uv other than 0.9.5. Verifiers that install with pip, and every `apt-get`, are as slow as before.
 - Dockerfile builds of the other 84 Terminal-Bench tasks, heredocs and the other instructions the builder refuses, and linux/arm64.
@@ -1715,3 +1715,47 @@ From a fresh clone of `13cbba9` on the 32-core machine, at a load average betwee
 - `refreshes`, `pause`, `connect` and the other control routes, the templates other than `base` and `desktop`, and aarch64.
 - ns slots on a machine with root outside a microVM guest and E2B, ns slots on the machine's own network, and the attached-runner and disk-removal lanes on ns slots, which the guest harness does not carry.
 - An escape from an ns slot was reasoned about and probed, not audited.
+
+## 2026-11-11: the three entries above, joined
+
+The three entries before this one were written side by side from `dca3463`: the smaller gaps, the installed agents, and E2B with ns slots. This entry is what putting them on one line established. The commits of the first are unchanged. Those of the other two were replayed after it, so the hashes their entries name are others here, and every measurement of those entries was taken before the replay, on its own line.
+
+| Named in an entry | Here |
+| --- | --- |
+| `fcb298d` | `efd46f6` |
+| `3cfde90` | `c3fba6d` |
+| `ab30a16` | `2614a7b` |
+| `34341a2` | `e862306` |
+| `62433e8` | `e578c13` |
+| `8aaa9b6` | `667bb63` |
+| `13cbba9` | `c52bae8` |
+| `632deed` | `8bc7590` |
+
+### What each had to take from the others
+
+- **One guest protocol.** The request of a build step carries the host's trust since `NKR4`, and the agent of an ns slot speaks it too. The launcher's microVM code moved into `vm.rs` behind the `microvm` feature, and the gate of a closed phase and the limit on open files moved with it: a launcher built without the feature has neither, and starts no microVM. The guest's `handle` went over the lint's hundred lines with the arms of both, so what `Stop` does is a function of its own.
+- **An installed agent on an ns slot.** `slot.sh agent` knew `dir` and `krun`. On an ns slot it would have ended at once with code 0, and the verifier would have graded an environment that no agent touched. It takes the krun path there, as the hand does.
+- **The verifier cache on an ns slot.** The run configuration refused the cache for every backend but `krun`, and `auto` is the default of a run now. The code in `slot.sh verify` is one path for both, so the cache is allowed on `krun`, `ns` and `auto` and refused on `dir`.
+- **A closed phase stays with krun.** The gate is in the VMM. An ns slot's link belongs to the machine's kernel, and nothing closes it. A run that selects such a task is refused on `ns` and on `auto`, whose runners may take ns, and `slot.sh up` refuses an ns slot again. Such a run names `--backend krun`.
+- **An installed agent in a closed agent phase.** Its model endpoint is relayed like the session of a hand, so the command reaches the run and nothing else. An endpoint at `https://` is refused there, as a session at `wss://` is.
+- **A remote sandbox.** The runtime archive carries no release of an installed agent: the runner fetches one with `curl` when a row names it.
+
+### What ran
+
+On the tree of this commit before it was made, on the 32-core machine of the entries above at a load average between 25 and 70, one run each, with the scripted command of the lanes in place of a vendor's:
+
+| Lane | Result |
+| --- | --- |
+| `NANOEVAL_E2E_BACKEND=ns NANOEVAL_E2E_MODEL=installed`, in the guest | passed: 8 attempts, 4 passed and 4 failed as the two arms should |
+| `NANOEVAL_E2E_BACKEND=ns NANOEVAL_E2E_SCENARIO=cache`, in the guest | passed: a miss, the oracle's fill, two hits, and a run without the option |
+| `NANOEVAL_E2E_MODEL=installed NANOEVAL_E2E_SCENARIO=closed`, krun slots | passed: the three fixtures, each probing what its phases reach |
+| `NANOEVAL_E2E_SCENARIO=cache` and `NANOEVAL_E2E_SCENARIO=closed`, krun slots | passed |
+
+The three new lanes are in the workflow.
+
+### Not verified
+
+- A vendor's command on an ns slot, and an installed agent in a remote sandbox, where its release is fetched at run time.
+- The verifier cache on ns slots with a verifier of Terminal-Bench, and in a remote sandbox.
+- A closed phase on ns slots: refused, not built.
+- CI on GitHub. Nothing is pushed.

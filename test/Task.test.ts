@@ -413,6 +413,11 @@ test('only krun slots on a private network run a task that closes its network', 
     assert.throws(() => Config.check(config('dir', 'host'), [Rows.row(task, 'dir')]), {
       name: 'Config.UnsupportedError',
     })
+    for (const backend of ['auto', 'ns'])
+      assert.throws(() => Config.check(config(backend, 'private'), [Rows.row(task)]), {
+        message: /which only krun slots on a private network enforce/,
+        name: 'Config.UnsupportedError',
+      })
   }
 })
 
@@ -453,6 +458,12 @@ test('a verifier cache is named by the disk, the tests, the verifier variables a
     undefined,
   )
   assert.equal(Config.parse(config({ ...krun, verifierCache: true })).sandbox.verifierCache, true)
+  for (const backend of ['auto', 'ns'])
+    assert.equal(
+      Config.parse(config({ backend, network: 'private', verifierCache: true })).sandbox
+        .verifierCache,
+      true,
+    )
   assert.throws(
     () => Config.parse(config({ backend: 'dir', network: 'host', verifierCache: true })),
     Config.InvalidError,

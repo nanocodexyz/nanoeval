@@ -158,6 +158,11 @@ jobs:
         run: npm run e2e
         env:
           NANOEVAL_E2E_SCENARIO: closed
+      - name: End to end, krun slots, closed networks, installed agents, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_MODEL: installed
+          NANOEVAL_E2E_SCENARIO: closed
       - name: End to end, krun slots, verifier cache, skipped where krun cannot run
         run: npm run e2e
         env:
@@ -227,6 +232,16 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: ns
           NANOEVAL_E2E_SCENARIO: network
+      - name: End to end, ns slots, verifier cache, skipped where the test is not root and no guest can boot
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: ns
+          NANOEVAL_E2E_SCENARIO: cache
+      - name: End to end, ns slots, installed agents with a scripted command, skipped where the test is not root and no guest can boot
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: ns
+          NANOEVAL_E2E_MODEL: installed
       - name: End to end, ns slots, the runner from its runtime archive, skipped where the test is not root and no guest can boot
         run: npm run e2e
         env:

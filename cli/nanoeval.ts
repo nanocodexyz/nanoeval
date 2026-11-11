@@ -88,7 +88,8 @@ const usage = `nanoeval <command>
             (--sandboxes, with --slots attempts at once each), and nanoeval runner attaches
             more from any machine. --sandboxes 0 waits for attached runners only. With
             --backend auto, the default, each runner boots environment disks in microVMs
-            (krun) where its machine has KVM and in namespaces (ns) where it has root. --task
+            (krun) where its machine has KVM and in namespaces (ns) where it has root. A task
+            that closes the network of its agent or verifier needs --backend krun. --task
             imports the directories into the eval named local first. --rerun makes a run of
             the attempts of RUN that did not pass (--failed or --errored narrow it), each
             pointing at the attempt it retries, on the same eval version and agents.
@@ -97,7 +98,7 @@ const usage = `nanoeval <command>
             With --disks remove, a runner removes each environment disk it unpacked once no
             row of the run needs it. With --free-disk-mb, a runner claims only while its
             machine has that much free disk, and prepares one environment at a time.
-            With --verifier-cache, the verifier of a krun slot finds what uv downloaded for
+            With --verifier-cache, the verifier of a krun or ns slot finds what uv downloaded for
             the same task on this machine before, when an oracle run with the option kept it.
             An agent's HARNESS is claude or codex, a nanocode session outside the slot, or
             claude-code or codex-cli, that vendor's command line inside the slot: a pinned

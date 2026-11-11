@@ -210,7 +210,7 @@ A sandbox of a public template has no checkout, no launcher and no Node that run
                                 start runner.mjs as root with NANOEVAL_KRUN, NANOEVAL_NANOCODE and NANOEVAL_CACHE
 ```
 
-The archive is 20 MB and is named by its digest like every blob, so the run's blob route serves it beside the blobs its rows name, and a sandbox that already unpacked that digest fetches nothing. The script is generated in `src/Bootstrap.ts` from the run's address, id and runner token, and holds no other secret. Everything a slot needs after that is in the archive: no registry, package index or release page is asked at run time, except nodejs.org when the template has no Node.
+The archive is 20 MB and is named by its digest like every blob, so the run's blob route serves it beside the blobs its rows name, and a sandbox that already unpacked that digest fetches nothing. The script is generated in `src/Bootstrap.ts` from the run's address, id and runner token, and holds no other secret. Everything a slot needs after that is in the archive: no registry, package index or release page is asked at run time, with two exceptions: nodejs.org when the template has no Node, and the pinned release of an [installed agent](#installed-agents) when a row names one. The launcher of the archive starts no microVM, so its runner runs ns slots: installed agents and the verifier cache work there, and a task that closes a phase is refused, see [Closed phases](#slot-networks).
 
 **Blobs through the Worker.** A runner fetches its disks from the run's blob route, which reads R2. A `GET` may name `Range: bytes=N-`, and a download that breaks is requested again from the bytes the runner has, up to six times a second apart and doubling, then checked against its digest like any blob.
 
@@ -470,10 +470,10 @@ A slot whose task closes a phase starts its microVM with `vm --gate net/open`. T
 
 | Phase closed | Reaches | Does not reach |
 | --- | --- | --- |
-| The agent's | Its own loopback, and its session through the relay while the hand runs | Any address by name or number, the gateway, a forward of the machine |
+| The agent's | Its own loopback, and through the relay its session while the hand runs, or its model endpoint while an installed agent runs | Any address by name or number, the gateway, a forward of the machine |
 | The verifier's | Its own loopback | The same, and the session, which the relay forgot when the hand stopped |
 
-So the hand still attaches and the turn still runs, since both go through the relay and model requests leave from the Worker. A closed agent phase needs a session at `ws://127.x.x.x`: a hand cannot dial a deployed Worker over `wss://` without a network, and the slot refuses. Processes the agent left running are still there when the verifier's phase opens the network, as in Harbor, where both phases share one environment. Only krun slots on a private network can close a phase. A run on `--network host` or on `dir` slots that selects such a task is refused when it is created, and `slot.sh up` refuses it again.
+So the hand still attaches and the turn still runs, since both go through the relay and model requests leave from the Worker. A closed agent phase needs a session at `ws://127.x.x.x`: a hand cannot dial a deployed Worker over `wss://` without a network, and the slot refuses. An [installed agent](#installed-agents) is held to the same: its model endpoint is relayed at `http://127.x.x.x` and refused at `https://`. Processes the agent left running are still there when the verifier's phase opens the network, as in Harbor, where both phases share one environment. Only krun slots on a private network can close a phase: the gate is in the VMM, and an ns slot's link is the machine's kernel's, which nothing here closes. A run on `--network host`, on `dir` or `ns` slots, or with `--backend auto`, whose runners may take ns, that selects such a task is refused when it is created, and `slot.sh up` refuses it again.
 
 **What is not isolated.** A private krun slot reaches whatever the machine serves on its other addresses, such as its LAN address. It has IPv4 only. While the hand runs, the Worker's port on the slot's loopback is taken.
 
@@ -503,6 +503,7 @@ A Terminal-Bench verifier installs its tools in every attempt: `apt-get update`,
 
 - **Two variables, no mounts and no changed script.** uv keeps wheels, index answers and built environments in `UV_CACHE_DIR` and the archives of the Pythons it downloads in `UV_PYTHON_CACHE_DIR`. Both are download caches: uv decides which Python and which versions to use as it does without them, and takes the bytes from the directory when it has them. Nothing is mounted over a directory the agent may have written, and `tests/test.sh` runs unchanged. A verifier sees the two variables and the directory, and finds its tools sooner.
 - **Only an oracle fills it.** The processes of an agent are still in the environment while the verifier runs. A cache that any attempt may write would carry what one agent left there into every later verifier of that task. An oracle's attempt runs the task's own solution, so the cache holds what the task's own verifier downloaded on a solved environment. An attempt reads a copy and never writes back.
+- **krun and ns slots.** Both take the same path in `slot.sh verify`: the directory goes in and out through the exchange directory of the slot. `dir` slots have no cache, and a run that asks for one there is refused.
 - **Nothing before the verifier.** The directory reaches the slot as `tests/` does, through the share and only in `verify`, so the agent cannot see which tools its verifier uses.
 - **The key** is a digest over the environment's blob, the tests archive, the verifier's variables and the variables the host gives its slots (`--slot-env`, which may hold `UV_EXCLUDE_NEWER` or an index). It is per task, so the cache helps the second and later attempts of a task on one machine, which is every attempt of a model after an oracle run.
 - **Not cached:** `apt-get update` and `apt-get install`, whose results depend on the day and on what the agent did to the package lists, the uv installer, which is fetched over TLS from a release, and pip. `dir` slots have no cache.
@@ -537,7 +538,7 @@ An agent of a run is one of two kinds. A session agent (`claude`, `codex`) is th
 
 ```
  runner ─ slot.sh agents ─▶ <cache>/agents/<kind>-<version>    the pinned release, fetched once per machine, SHA-256 checked
-                             └ linked into rt/agents/<kind>     which every microVM mounts read-only under /opt/nanoeval
+                             └ linked into rt/agents/<kind>     which every krun and ns slot has read-only under /opt/nanoeval
  runner ─ endpoint ───────▶ run: a token of this claim, and the address /v1/runs/RUN/model/ROW
  runner ─ slot.sh agent ──▶ slot: sh -c COMMAND, the instruction on its input, the token in one variable
                              command ─ http://127.0.0.1:P ─ the slot's relay ─▶ Worker /v1/runs/RUN/model/ROW/...
@@ -565,6 +566,8 @@ An agent of a run is one of two kinds. A session agent (`claude`, `codex`) is th
 
 **The release.** Nothing is installed into a task image, at import or at run time. `slot.sh agents` downloads the release of the machine's architecture into `<cache>/agents` under a lock, refuses it when its SHA-256 is not the pinned one, and links it into the directory that slots already mount read-only for the hand. A second sandbox of the machine takes it from the cache. `NANOEVAL_AGENT_CODEX_CLI` and `NANOEVAL_AGENT_CLAUDE_CODE` name a file to run instead, which is how the end-to-end lanes run a scripted command.
 
+**ns slots and remote sandboxes.** An ns slot runs the command as a krun slot does: `slot.sh agent` takes the same path for both, through the agent of the slot and its relay. [The runtime archive](#a-runner-without-a-checkout) of a remote sandbox carries no release: `slot.sh agents` fetches it there with `curl` when the first row asks for one, and needs `sha256sum` and `tar` beside it.
+
 **The command.** It runs as the image's user in the task's working directory with the task's variables, like the hand. The instruction is its standard input, unchanged. Its state directory is `/var/lib/nanoeval-agent`, made before it starts and removed before the verifier, so nothing of it is left when the tests run except what the agent did to the task. Nothing else is written into the guest: the command line is an argument of the exec request.
 
 **The endpoint.** A run forwards model requests for its installed agents at `/v1/runs/RUN/model/ROW/`. The token is an HMAC over the row and its current claim under a secret of the run, so it names one claim and needs no table. A request is served only while that claim holds the row, the row is in its `run` phase, and the agent's deadline has not passed: a finished agent, a verifier and a lost claim have no endpoint. Only the generation routes of the agent's provider are forwarded, `responses` and `responses/compact` for Codex, `v1/messages` and `v1/messages/count_tokens` for Claude. The credential is the one sessions use, see [Model credentials](#model-credentials): the plan login when the deployment has one, the API key otherwise, and for a ChatGPT plan the same loopback relay. The token, and any account or relay header the guest sent, are dropped before the request leaves. On a private network the slot relays the Worker's loopback address for exactly as long as the agent runs, as it does for a hand, and the allow list is reset before the verifier.
@@ -581,7 +584,7 @@ An agent of a run is one of two kinds. A session agent (`claude`, `codex`) is th
 - **The plan.** Both arms of a provider use one credential, so they share its rate limits when they run at once.
 - **Versions.** The commands are pinned here, the nanocode release in `src/Slot.ts`. A comparison names them, and the export carries them.
 
-**Not verified.** Claude Code against Anthropic, with an API key or a plan login: no valid login was at hand, see [DECISIONS.md](DECISIONS.md#2026-11-11-installed-agents-and-nanocode-beside-codex-cli). Its release was run on krun slots against a scripted Messages endpoint. For a plan login the endpoint adds the `oauth-2025-04-20` beta as nanocode-egress does, and whether Anthropic accepts a plan token on the requests Claude Code makes in this mode has not been tried. A deployed Worker reached over `https://`, and aarch64, have not been run either.
+**Not verified.** Claude Code against Anthropic, with an API key or a plan login: no valid login was at hand, see [DECISIONS.md](DECISIONS.md#2026-11-11-installed-agents-and-nanocode-beside-codex-cli). Its release was run on krun slots against a scripted Messages endpoint. For a plan login the endpoint adds the `oauth-2025-04-20` beta as nanocode-egress does, and whether Anthropic accepts a plan token on the requests Claude Code makes in this mode has not been tried. A deployed Worker reached over `https://`, and aarch64, have not been run either. On ns slots only the scripted command of the lanes ran, and no installed agent ran in a remote sandbox.
 
 ## Sandbox providers
 

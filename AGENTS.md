@@ -49,7 +49,7 @@ The conventions of nanocode-ts's `AGENTS.md` apply: erasable syntax only, `.ts` 
 
 - `npm run check` formats and lints with fixes. `npm run lint` checks without fixing.
 - `npm run check:types` runs `tsc` for the Node sources and for the Worker.
-- `npm test` runs the unit tests. `npm run e2e` runs the end-to-end test under local workerd on microVM slots, and is skipped where krun cannot run. `NANOEVAL_E2E_BACKEND=dir` runs it on directory slots anywhere.
+- `npm test` runs the unit tests. `npm run e2e` runs the end-to-end test under local workerd on microVM slots, and is skipped where krun cannot run. `NANOEVAL_E2E_BACKEND=dir` runs it on directory slots anywhere, and `NANOEVAL_E2E_BACKEND=ns` on ns slots, as root or inside a microVM guest.
 - `npm run dry-run` bundles the Worker without deploying it.
 - In `krun/`, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` check the launcher.
 

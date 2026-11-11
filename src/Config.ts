@@ -200,8 +200,8 @@ export function parse(value: unknown): Config {
     fail('sandbox.network of the ' + backend + ' backend is ' + networks.join(' or '))
   if (sandbox.verifierCache !== undefined && typeof sandbox.verifierCache !== 'boolean')
     fail('sandbox.verifierCache is true or false')
-  if (sandbox.verifierCache && backend !== 'krun')
-    fail('sandbox.verifierCache needs the krun backend')
+  if (sandbox.verifierCache && backend === 'dir')
+    fail('sandbox.verifierCache needs the krun or the ns backend')
   const budget = config.budget ?? fail('budget is required')
   const limits = config.limits ?? fail('limits is required')
   return {
