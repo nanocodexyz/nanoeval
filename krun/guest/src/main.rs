@@ -3,6 +3,7 @@ mod build;
 mod copy;
 mod exec;
 mod kmsg;
+mod namespace;
 mod relay;
 mod unpack;
 
@@ -31,7 +32,7 @@ fn main() -> ExitCode {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     let Some(mode) = arguments.first() else {
         eprintln!(
-            "usage: nanoeval-krun-guest overlay [rt] [private] [forward=ADDRESS:PORT...] | build [root] [sources=COUNT] [context] [private] | oom-kills"
+            "usage: nanoeval-krun-guest overlay [rt] [private] [forward=ADDRESS:PORT...] | build [root] [sources=COUNT] [context] [private] | ns [forward=ADDRESS:PORT...] | oom-kills"
         );
         return ExitCode::from(125);
     };
@@ -41,6 +42,15 @@ fn main() -> ExitCode {
                 println!("{kills}");
                 ExitCode::SUCCESS
             }
+            Err(error) => {
+                eprintln!("nanoeval-krun-guest: {error}");
+                ExitCode::from(125)
+            }
+        };
+    }
+    if mode == wire::NAMESPACE {
+        return match namespace::init(&arguments[1..]) {
+            Ok(code) => ExitCode::from(u8::try_from(code & 0xff).unwrap_or(u8::MAX)),
             Err(error) => {
                 eprintln!("nanoeval-krun-guest: {error}");
                 ExitCode::from(125)
@@ -69,7 +79,13 @@ fn main() -> ExitCode {
         .iter()
         .filter_map(|argument| argument.strip_prefix(wire::FORWARD))
         .map(str::as_bytes);
-    let booted = boot::run(mode, &options)
+    let booted = if mode == wire::NAMESPACE_SERVE {
+        namespace::enter();
+        Ok(())
+    } else {
+        boot::run(mode, &options)
+    };
+    let booted = booted
         .and_then(|()| relay::listen(forwards))
         .and_then(|_forwards| serve());
     if let Err(error) = booted {
@@ -87,6 +103,9 @@ fn step<T, E: Into<io::Error>>(what: &str, result: Result<T, E>) -> io::Result<T
 }
 
 fn serve() -> io::Result<()> {
+    if namespace::active() {
+        return namespace::serve();
+    }
     let listener = step(
         "create the vsock listener",
         socket(
@@ -120,7 +139,28 @@ fn accept(listener: &OwnedFd) -> nix::Result<File> {
     Ok(File::from(unsafe { OwnedFd::from_raw_fd(descriptor) }))
 }
 
-fn handle(mut connection: File) {
+fn stop() -> io::Result<i32> {
+    if build::active() {
+        return build::finish().map(|()| 0);
+    }
+    sync();
+    if namespace::active() {
+        return Ok(0);
+    }
+    step(
+        "remount / read-only",
+        mount(
+            NONE,
+            "/",
+            NONE,
+            MsFlags::MS_REMOUNT | MsFlags::MS_RDONLY,
+            NONE,
+        ),
+    )
+    .map(|()| 0)
+}
+
+pub(crate) fn handle(mut connection: File) {
     let mut stopping = false;
     let outcome = Request::read(&mut connection).and_then(|request| match request {
         Request::Apply { root } => build::apply(&connection, &root).map(|()| 0),
@@ -183,24 +223,9 @@ fn handle(mut connection: File) {
                 user,
             },
         ),
-        Request::Stop if build::active() => {
-            stopping = true;
-            build::finish().map(|()| 0)
-        }
         Request::Stop => {
             stopping = true;
-            sync();
-            step(
-                "remount / read-only",
-                mount(
-                    NONE,
-                    "/",
-                    NONE,
-                    MsFlags::MS_REMOUNT | MsFlags::MS_RDONLY,
-                    NONE,
-                ),
-            )
-            .map(|()| 0)
+            stop()
         }
         Request::Tree { root } => build::tree(&connection, &root).map(|()| 0),
     });

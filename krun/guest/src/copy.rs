@@ -8,7 +8,7 @@ use std::{
 
 use nix::mount::{MntFlags, MsFlags, mount, umount2};
 
-use crate::{NONE, step};
+use crate::{NONE, namespace, step};
 
 const EXCHANGE: &str = "/.nanoeval-io";
 
@@ -34,6 +34,9 @@ pub(crate) fn out_of_guest(from: &[u8], to: &[u8]) -> io::Result<()> {
 
 fn with_share(work: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<()> {
     let _guard = SHARE.lock().unwrap_or_else(PoisonError::into_inner);
+    if namespace::active() {
+        return work(Path::new(wire::NAMESPACE_EXCHANGE));
+    }
     fs::create_dir(EXCHANGE)?;
     let result = step(
         "mount the exchange share",

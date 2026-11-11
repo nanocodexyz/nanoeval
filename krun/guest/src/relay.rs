@@ -3,9 +3,12 @@ use std::{fs::File, io, os::fd::AsRawFd};
 use net::forward::{self, Forward};
 use nix::sys::socket::{AddressFamily, SockFlag, SockType, VsockAddr, connect, socket};
 
-use crate::step;
+use crate::{namespace, step};
 
 fn host() -> io::Result<File> {
+    if namespace::active() {
+        return namespace::relay();
+    }
     let socket = step(
         "create the relay socket",
         socket(

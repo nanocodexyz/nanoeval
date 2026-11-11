@@ -96,7 +96,11 @@ pub(crate) fn run(mode: &str, options: &Options) -> io::Result<()> {
         "raise the limit on process ids",
         fs::write(PID_MAX, PID_MAX_DEFAULT),
     )?;
-    if options.private {
+    names(options.private)
+}
+
+pub(crate) fn names(private: bool) -> io::Result<()> {
+    if private {
         let resolver = format!("nameserver {}\n", wire::GUEST_RESOLVER);
         provide(Path::new("/etc/resolv.conf"), resolver.as_bytes())?;
     } else if let Ok(resolver) = fs::read(RESOLVER) {
