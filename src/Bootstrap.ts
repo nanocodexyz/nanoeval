@@ -33,20 +33,25 @@ export function script(input: script.Input): string {
   return [
     'set -eu',
     'umask 077',
+    'if [ "$(id -u)" = 0 ]; then as=; else as="sudo -n"; fi',
     'home=' + quote(input.home),
-    'cd "$home"',
-    'if [ ! -f runtime/' + files.runner + ' ]; then',
-    '  curl -fsS --retry 5 -H ' +
+    'cache=' + quote(input.cache ?? input.home + '/cache'),
+    'runtime=$cache/runtime/' + input.runtime.digest,
+    '$as mkdir -p "$home" "$cache/runtime"',
+    'cd "$cache/runtime"',
+    'if [ ! -f "$runtime/' + files.runner + '" ]; then',
+    '  $as curl -fsS --retry 5 -H ' +
       quote('authorization: Bearer ' + input.token) +
       ' -o runtime.tgz ' +
       quote(blob + input.runtime.digest),
     "  printf '%s  runtime.tgz\\n' " + quote(input.runtime.digest) + ' | sha256sum -c - >/dev/null',
-    '  rm -rf runtime.new',
-    '  mkdir runtime.new',
-    '  tar -xzf runtime.tgz -C runtime.new',
-    '  rm runtime.tgz',
-    '  mv runtime.new runtime',
+    '  $as rm -rf runtime.new',
+    '  $as mkdir runtime.new',
+    '  $as tar -xzf runtime.tgz -C runtime.new',
+    '  $as rm runtime.tgz',
+    '  $as mv runtime.new "$runtime"',
     'fi',
+    'cd "$cache"',
     'node=$(command -v node || true)',
     'if [ -z "$node" ] || [ "$("$node" -p ' +
       quote('Number(process.versions.node.split(".")[0]) >= ' + runtime.major) +
@@ -57,23 +62,22 @@ export function script(input: script.Input): string {
     '    *) echo "nanoeval has no Node for $(uname -m)" >&2; exit 1 ;;',
     '  esac',
     '  if [ ! -x node/bin/node ]; then',
-    '    curl -fsSL --retry 5 -o node.tgz ' +
+    '    $as curl -fsSL --retry 5 -o node.tgz ' +
       quote(runtime.release + '/' + runtime.version + '/node-' + runtime.version + '-linux-') +
       '"$arch".tar.gz',
     '    printf \'%s  node.tgz\\n\' "$sum" | sha256sum -c - >/dev/null',
-    '    rm -rf node',
-    '    mkdir node',
-    '    tar -xzf node.tgz -C node --strip-components 1',
-    '    rm node.tgz',
+    '    $as rm -rf node',
+    '    $as mkdir node',
+    '    $as tar -xzf node.tgz -C node --strip-components 1',
+    '    $as rm node.tgz',
     '  fi',
-    '  node=$home/node/bin/node',
+    '  node=$cache/node/bin/node',
     'fi',
-    'if [ "$(id -u)" = 0 ]; then as=env; else as="sudo -n env"; fi',
-    'exec $as NANOEVAL_CACHE="$home/cache" NANOEVAL_KRUN="$home/runtime/' +
+    'exec $as env NANOEVAL_CACHE="$cache" NANOEVAL_KRUN="$runtime/' +
       files.tools +
-      '" NANOEVAL_NANOCODE="$home/runtime/' +
+      '" NANOEVAL_NANOCODE="$runtime/' +
       files.hand +
-      '" PATH="$PATH" "$node" "$home/runtime/' +
+      '" PATH="$PATH" "$node" "$runtime/' +
       files.runner +
       '" runner --detach --config "$home/' +
       files.config +
@@ -84,6 +88,7 @@ export function script(input: script.Input): string {
 
 export declare namespace script {
   type Input = {
+    cache?: string
     home: string
     node?: Node
     run: string

@@ -96,6 +96,13 @@ guest_copy() {
   rm -rf "$dir/io/$name"
 }
 
+empty() {
+  while [ -d "$1" ]; do
+    printf '1\n' 2>/dev/null >"$1/cgroup.kill" || true
+    rmdir "$1" 2>/dev/null || sleep 0.01
+  done
+}
+
 stop_process() {
   local dir=$1 pid
   pid=$(cat "$dir/$2" 2>/dev/null) || return 0
@@ -219,6 +226,7 @@ namespaces() {
   for tool in chroot losetup mke2fs mount mountpoint pgrep setpriv unshare; do
     has "$tool" || die "the ns backend needs $tool"
   done
+  env --default-signal true 2>/dev/null || die 'the ns backend needs env --default-signal, of coreutils 8.31 or later'
 }
 
 launcher_files() {
@@ -606,7 +614,7 @@ cmd__ns() {
   for forward; do arguments+=("forward=$forward"); done
   cd "$root"
   mount --move . /
-  exec setpriv --bounding-set "$capabilities" chroot . /opt/nanoeval/krun/boot/nanoeval-krun-guest ns "${arguments[@]}"
+  exec env --default-signal setpriv --bounding-set "$capabilities" chroot . /opt/nanoeval/krun/boot/nanoeval-krun-guest ns "${arguments[@]}"
 }
 
 cmd_hand() {
@@ -830,10 +838,7 @@ cmd_down() {
   stop_process "$dir" use.pid
   stop_process "$dir" relay.pid
   if [ -s "$dir/cgroup" ]; then cgroup=$(cat "$dir/cgroup"); fi
-  if [ -n "$cgroup" ] && [ -d "$cgroup" ]; then
-    printf '1\n' >"$cgroup/cgroup.kill"
-    until rmdir "$cgroup" 2>/dev/null; do sleep 0.01; done
-  fi
+  if [ -n "$cgroup" ]; then empty "$cgroup"; fi
   rm -rf "$dir"
   if [ "$release" = remove ] && [ -n "$disk" ]; then drop_disk "$disk" || true; fi
 }
@@ -877,16 +882,14 @@ cmd_prune() {
 }
 
 cmd_destroy() {
-  local dir mount
+  local cgroup dir mount
   stop_process "$home" runner.pid
   for dir in "$home" "$home"/slots/*/; do
     reap "$dir"
     stop_process "$dir" relay.pid
     stop_process "$dir" vm.pid
-    if [ -s "$dir/cgroup" ] && [ -d "$(cat "$dir/cgroup")" ]; then
-      printf '1\n' >"$(cat "$dir/cgroup")/cgroup.kill"
-      until rmdir "$(cat "$dir/cgroup")" 2>/dev/null; do sleep 0.01; done
-    fi
+    cgroup=$(cat "$dir/cgroup" 2>/dev/null) || cgroup=''
+    if [ -n "$cgroup" ]; then empty "$cgroup"; fi
   done
   pkill -f "$home/rt/nanocode hand" >/dev/null 2>&1 || true
   pkill -KILL -f "$krun/nanoeval-krun vm " >/dev/null 2>&1 || true

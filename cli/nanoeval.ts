@@ -39,11 +39,14 @@ const usage = `nanoeval <command>
             and unpacked environment disks.
   worker    --token T [--host 127.0.0.1] [--port 8787] [--state DIR] [--tick-ms 500]
             [--sandbox-url URL --sandbox-token T] [--claude-login FILE] [--codex-login FILE]
+            [--public-url URL]
             Run the Worker under local workerd. Model API keys and base URLs are taken from
             ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, OPENAI_API_KEY and OPENAI_BASE_URL. A login
             file (~/.claude/.credentials.json, ~/.codex/auth.json) makes that provider's
             agents run on the plan signed in there: its access token is read once at start,
-            is never refreshed, and reaches workerd through a private file.
+            is never refreshed, and reaches workerd through a private file. --public-url
+            names the address that runners and hands on other machines dial, such as a
+            tunnel in front of this Worker.
   datasets  List the datasets that import knows, with the source each is pinned to and what
             was run end to end.
   import    --url URL --token T (DATASET | --task DIR...) [--eval NAME] [--only ID]... [--limit N]
@@ -119,8 +122,8 @@ const usage = `nanoeval <command>
             [--memory-mb N] [--free-disk-mb N] [--poll-ms N]
             Attach a runner in an E2B sandbox that someone else opened and paid for: FILE is
             the answer of POST https://mpp.e2b.dev/sandboxes, with its sandboxID and
-            envdAccessToken. The run must have been created with --runtime, and URL must be
-            an address the sandbox reaches.
+            envdAccessToken. The run must have been created with --runtime, through an
+            address the sandbox reaches or on a Worker started with --public-url.
   runtime   --out FILE [--cache DIR]
             Build the archive a remote sandbox starts its runner from: the bundled runner,
             slot.sh, the static launcher, guest and relay, and the pinned hand.
@@ -462,6 +465,7 @@ async function main(): Promise<void> {
       'poll-ms': { type: 'string' },
       port: { type: 'string' },
       provider: { default: 'local', type: 'string' },
+      'public-url': { type: 'string' },
       remove: { default: false, type: 'boolean' },
       report: { type: 'string' },
       rerun: { type: 'string' },
@@ -532,6 +536,7 @@ async function main(): Promise<void> {
       vars['LOCAL_SANDBOX_TOKEN'] = required(values['sandbox-token'], 'sandbox-token')
     }
     vars['TICK_MS'] = values['tick-ms']
+    if (values['public-url']) vars['PUBLIC_URL'] = values['public-url']
 
     const logins: [name: string, login: Plan.Login][] = []
     if (values['claude-login'])
@@ -856,22 +861,20 @@ async function main(): Promise<void> {
       ...(values['memory-mb'] ? { memoryMb: Number(values['memory-mb']) } : {}),
       ...(values['poll-ms'] ? { pollMs: Number(values['poll-ms']) } : {}),
       ...(values.slots ? { slots: Number(values.slots) } : {}),
-      url: access.url,
     }
-    const script = handle.home + '/' + Bootstrap.files.script
-    await sandbox.write(
-      handle.home + '/' + Bootstrap.files.config,
-      Buffer.from(JSON.stringify(runner)),
-    )
+    const home = handle.home + '/' + run
+    const script = home + '/' + Bootstrap.files.script
+    await sandbox.write(home + '/' + Bootstrap.files.config, Buffer.from(JSON.stringify(runner)))
     await sandbox.write(
       script,
       Buffer.from(
         Bootstrap.script({
-          home: handle.home,
+          cache: handle.home + '/cache',
+          home,
           run,
           runtime,
           token: answered.token,
-          url: access.url,
+          url: answered.url,
         }),
       ),
     )

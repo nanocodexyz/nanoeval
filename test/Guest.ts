@@ -7,7 +7,6 @@ import * as Converter from '../sandbox/Converter.ts'
 import * as Host from '../sandbox/Host.ts'
 import type * as Sandboxd from '../sandbox/Sandboxd.ts'
 import * as Store from '../sandbox/Store.ts'
-import * as Bootstrap from '../src/Bootstrap.ts'
 import * as Krun from './Krun.ts'
 
 export type Guest = {
@@ -202,28 +201,12 @@ export async function start(options: start.Options): Promise<Guest> {
       child.stdin.on('error', () => {})
       child.stdin.end(input.input)
     })
-  const unpacked = root + '/runtime'
-  const program = options.runtime
-    ? (options.runtime.node ? inside(options.runtime.node) : 'node') +
-      ' ' +
-      unpacked +
-      '/' +
-      Bootstrap.files.runner
-    : 'node ' + share + '/cli/nanoeval.ts'
   const prepared = await exec(
     'mkdir -p ' +
       root +
-      (options.runtime
-        ? ' && mkdir -p ' +
-          unpacked +
-          ' && tar -xzf ' +
-          inside(options.runtime.archive) +
-          ' -C ' +
-          unpacked
-        : '') +
-      " && printf '#!/bin/sh\\nexec " +
-      program +
-      ' "$@"\\n\' >/usr/local/bin/nanoeval && chmod +x /usr/local/bin/nanoeval',
+      " && printf '#!/bin/sh\\nexec /usr/local/bin/node " +
+      share +
+      '/cli/nanoeval.ts "$@"\\n\' >/usr/local/bin/nanoeval && chmod +x /usr/local/bin/nanoeval',
     { cwd: '/', env: {}, timeoutMs: 60_000 },
   )
   if (prepared.exitCode !== 0) {
@@ -234,13 +217,8 @@ export async function start(options: start.Options): Promise<Guest> {
     close,
     machine: { exec },
     variables: {
-      ...(options.runtime
-        ? {
-            NANOEVAL_KRUN: unpacked + '/' + Bootstrap.files.tools,
-            NANOEVAL_NANOCODE: unpacked + '/' + Bootstrap.files.hand,
-          }
-        : { NANOEVAL_KRUN: inside(tools) }),
-      PATH: path,
+      NANOEVAL_KRUN: inside(tools),
+      PATH: (options.node ? Path.posix.dirname(inside(options.node)) + ':' : '') + path,
       ...(bundle
         ? {
             CURL_CA_BUNDLE: inside(Path.join(kept, 'ca.pem')),
@@ -257,6 +235,6 @@ export declare namespace start {
     forwards: readonly string[]
     home: string
     memoryMb: number
-    runtime?: { archive: string; node?: string }
+    node?: string
   }
 }

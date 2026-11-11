@@ -11,6 +11,39 @@ import * as Payment from '../src/Payment.ts'
 const challenge =
   'Payment id="3cI7UxYdbAVOQr5yPepiWrQMs44FX3d_VRG5U2e0xlQ", realm="mpp.e2b.dev", method="tempo", intent="charge", request="eyJhbW91bnQiOiI4NzIxIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDZhMzdEQTVDOTk2ODc0QkUiLCJtZXRob2REZXRhaWxzIjp7ImNoYWluSWQiOjQyMTcsImZlZVBheWVyIjp0cnVlLCJtYWNoaW5lVG9rZW5FbmFibGVkIjp0cnVlLCJzdXBwb3J0ZWRNb2RlcyI6WyJwdWxsIl19LCJyZWNpcGllbnQiOiIweGIxMEFDYTY4NDA4MzczMEQ5M0Q2OEVjQjcxNDg2YjE3YkRmNzE0NjAifQ", description="Create sandbox - 2 vCPU, 512 MiB, 300s", expires="2099-01-01T00:00:00.000Z", opaque="eyJfbXBweF9ub25jZSI6IjB4MGM5YzljNzQzZTNjYjkyODY3M2Y0YzVmYWY1ZGYzNzUzMzJjMWQzZWMyYzhhMDUxNjgzMzRjZjY5MWUyZDJkYSIsIl9tcHB4X3Njb3BlIjoiZTJiOlBPU1Q6L3NhbmRib3hlcyJ9"'
 
+const offered = (() => {
+  const field = (name: string) => new RegExp(name + '="([^"]*)"').exec(challenge)![1]!
+  const request = JSON.parse(Buffer.from(field('request'), 'base64url').toString()) as {
+    currency: string
+    methodDetails: Record<string, unknown>
+    recipient: string
+  }
+  const other = '0x20c0000000000000000000000000000000000000'
+  const variant = (id: string, intent: string, body: unknown) =>
+    'Payment id="' +
+    id +
+    '", realm="mpp.e2b.dev", method="tempo", intent="' +
+    intent +
+    '", request="' +
+    Buffer.from(JSON.stringify(body)).toString('base64url') +
+    '", description="' +
+    field('description') +
+    '", expires="2099-01-01T00:00:00.000Z"'
+  const session = (currency: string) => ({
+    ...request,
+    currency,
+    methodDetails: { ...request.methodDetails, operator: request.recipient, sessionProtocol: 'v2' },
+    suggestedDeposit: '1000000',
+    unitType: 'request',
+  })
+  return [
+    challenge,
+    variant('second-charge', 'charge', { ...request, currency: other }),
+    variant('first-session', 'session', session(request.currency)),
+    variant('second-session', 'session', session(other)),
+  ].join(', ')
+})()
+
 type Seen = { body: string; headers: Http.IncomingHttpHeaders; method: string; url: string }
 
 const seen: Seen[] = []
@@ -42,7 +75,7 @@ before(async () => {
       if (!request.headers.authorization?.startsWith('Payment ')) {
         response.writeHead(402, {
           'content-type': 'application/problem+json',
-          'www-authenticate': challenge,
+          'www-authenticate': offered,
         })
         response.end(JSON.stringify({ status: 402, title: 'Payment Required' }))
         return
@@ -54,12 +87,22 @@ before(async () => {
       response.writeHead(201, { 'content-type': 'application/json' })
       response.end(
         JSON.stringify({
+          alias: 'base',
+          clientID: 'client1',
           envdAccessToken: 'envd-token',
           envdVersion: '0.10.0',
           sandboxID: 'sandbox1',
           templateID: 'base',
+          trafficAccessToken: 'traffic-token',
         }),
       )
+      return
+    }
+    if (
+      (url === '/process.Process/Start' || url.startsWith('/files?')) &&
+      request.headers['x-access-token'] !== 'envd-token'
+    ) {
+      response.writeHead(401).end()
       return
     }
     if (url === '/process.Process/Start') {
@@ -99,7 +142,7 @@ before(async () => {
     }
     if (url.startsWith('/files?')) {
       response.writeHead(200, { 'content-type': 'application/json' })
-      response.end('[]')
+      response.end(JSON.stringify([{ name: 'slot.sh', path: url, type: 'file' }]))
       return
     }
     response.writeHead(404).end()
@@ -168,6 +211,12 @@ test('a sandbox is created through the paying fetch and driven through envd', as
   assert.equal(upload.method, 'POST')
   assert.equal(upload.url, '/files?path=%2Fhome%2Fuser%2F.nanoeval%2Fslot.sh&username=user')
   assert.equal(upload.body, '#!/bin/sh\n')
+
+  await assert.rejects(
+    E2b.connect({ ...created.handle, token: 'another-token' }).exec('echo'),
+    E2b.RequestError,
+    'envd refuses a command without the access token of its sandbox',
+  )
 
   await provider.kill(created.handle)
   assert.equal(seen.at(-1)!.method, 'DELETE')

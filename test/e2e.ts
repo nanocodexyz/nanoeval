@@ -349,14 +349,7 @@ async function main(): Promise<void> {
         forwards: ['127.0.0.1:' + port, '127.0.0.1:' + new URL(beacon.url).port],
         home: Path.join(out, 'guest'),
         memoryMb: guestMemoryMb,
-        ...(bundled
-          ? {
-              runtime: {
-                archive: (await Runtime.build({ cache, out: Path.join(out, 'runtime.tgz') })).file,
-                ...(guestNode ? { node: guestNode } : {}),
-              },
-            }
-          : {}),
+        ...(bundled && guestNode ? { node: guestNode } : {}),
       })
     : undefined
   const seen = (file: string) => (guest ? Guest.inside(file) : file)
@@ -700,6 +693,14 @@ async function main(): Promise<void> {
         network,
         pollMs,
         provider: 'local',
+        ...(bundled
+          ? {
+              runtime: await Runtime.publish(blobStore('r2', { token, url }), {
+                cache,
+                out: Path.join(out, 'runtime.tgz'),
+              }),
+            }
+          : {}),
         slots,
         timeoutSec: 3600,
         ...(cached ? { verifierCache: true as const } : {}),

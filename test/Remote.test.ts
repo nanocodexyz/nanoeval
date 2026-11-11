@@ -188,14 +188,14 @@ test('the bootstrap of a remote sandbox checks the runtime and starts its runner
   assert.deepEqual(seen, ['Bearer runner-token', '/v1/runs/run-1/runner/blobs/' + sha256(bytes)])
   assert.deepEqual(JSON.parse(Fs.readFileSync(Path.join(home, 'cache.started'), 'utf8')), {
     argv: ['runner', '--detach', '--config', Path.join(home, Bootstrap.files.config)],
-    hand: Path.join(home, 'runtime', Bootstrap.files.hand),
-    krun: Path.join(home, 'runtime', Bootstrap.files.tools),
+    hand: Path.join(home, 'cache', 'runtime', sha256(bytes), Bootstrap.files.hand),
+    krun: Path.join(home, 'cache', 'runtime', sha256(bytes), Bootstrap.files.tools),
   })
 
   const refused = await start(Path.join(root, 'other'), 'f'.repeat(64))
   assert.notEqual(refused.status, 0)
   assert.ok(
-    !Fs.existsSync(Path.join(root, 'other', 'runtime')),
+    !Fs.existsSync(Path.join(root, 'other', 'cache', 'runtime', 'f'.repeat(64))),
     'a runtime that does not match is not unpacked',
   )
   server.close()
