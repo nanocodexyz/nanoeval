@@ -3,7 +3,7 @@ use std::{
     env, fs,
     fs::{OpenOptions, Permissions},
     io::Write,
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
 };
@@ -484,6 +484,14 @@ fn a_packed_disk_is_restored(lab: &Lab) {
     for left in ["raced.ext4.tmp", "raced.ext4.lock"] {
         assert!(!lab.home.join(left).exists(), "{left} is still there");
     }
+    let kept = fs::metadata(lab.home.join("raced.ext4")).unwrap();
+    assert_eq!(kept.permissions().mode() & 0o777, 0o444);
+    let again = lab.json(&["image", "unpack", "disk.pack", "--out", "raced.ext4"]);
+    assert_eq!(again["sha256"], packed["sha256"]);
+    assert_eq!(
+        fs::metadata(lab.home.join("raced.ext4")).unwrap().ino(),
+        kept.ino()
+    );
     let zeros = "0".repeat(64);
     let refused = lab.krun(&[
         "image",
