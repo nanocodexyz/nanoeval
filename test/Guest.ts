@@ -41,10 +41,10 @@ export function inside(host: string): string {
 }
 
 function run(
-  program: string,
-  rest: readonly string[],
+  command: readonly [program: string, ...rest: string[]],
   options: { cwd?: string; env?: Record<string, string> } = {},
 ): string {
+  const [program, ...rest] = command
   const result = spawnSync(program, rest, {
     ...(options.cwd ? { cwd: options.cwd } : {}),
     encoding: 'utf8',
@@ -64,7 +64,7 @@ function run(
 
 function launcher(): string {
   const home = Path.join(kept, 'launcher')
-  run('bash', [Path.join(repository, 'sandbox', 'slot.sh'), 'tools'], {
+  run(['bash', Path.join(repository, 'sandbox', 'slot.sh'), 'tools'], {
     env: { NANOEVAL_HOME: home },
   })
   return Path.join(home, 'rt', 'krun')
@@ -77,7 +77,8 @@ export async function start(options: start.Options): Promise<Guest> {
   await Runtime.tools(tools)
   const disk = Path.join(kept, 'guest.ext4')
   if (!Fs.existsSync(disk))
-    run(Path.join(krun, 'nanoeval-krun'), [
+    run([
+      Path.join(krun, 'nanoeval-krun'),
       'image',
       'build',
       '--dockerfile',
@@ -99,8 +100,9 @@ export async function start(options: start.Options): Promise<Guest> {
   Fs.mkdirSync(Path.join(home, 'io'), { recursive: true })
   Fs.mkdirSync(Path.join(home, 'net'))
   Fs.writeFileSync(Path.join(home, 'allow'), options.forwards.map((line) => line + '\n').join(''))
-  run('truncate', ['-s', upperMb + 'M', Path.join(home, 'upper.ext4')])
-  run('bash', [
+  run(['truncate', '-s', upperMb + 'M', Path.join(home, 'upper.ext4')])
+  run([
+    'bash',
     '-c',
     'PATH=$PATH:/usr/sbin:/sbin mke2fs -q -t ext4 -O ^has_journal -E root_owner=0:0 "$1"',
     'bash',
@@ -108,8 +110,7 @@ export async function start(options: start.Options): Promise<Guest> {
   ])
   const relay = Number(
     run(
-      Path.join(tools, 'nanoeval-net'),
-      ['detach', 'relay.log', 'host', 'net/relay.sock', 'allow'],
+      [Path.join(tools, 'nanoeval-net'), 'detach', 'relay.log', 'host', 'net/relay.sock', 'allow'],
       { cwd: home },
     ).trim(),
   )
@@ -135,7 +136,7 @@ export async function start(options: start.Options): Promise<Guest> {
       '--upper',
       'upper.ext4',
       '--passt',
-      run('bash', ['-c', 'command -v passt']).trim(),
+      run(['bash', '-c', 'command -v passt']).trim(),
       '--relay',
       'net/relay.sock',
       ...options.forwards.flatMap((forward) => ['--forward', forward]),
@@ -152,8 +153,16 @@ export async function start(options: start.Options): Promise<Guest> {
   }
   try {
     run(
-      Path.join(krun, 'nanoeval-krun'),
-      ['ready', '--log', 'vm.log', '--pid', String(machine.pid), '--socket', 'vm.sock'],
+      [
+        Path.join(krun, 'nanoeval-krun'),
+        'ready',
+        '--log',
+        'vm.log',
+        '--pid',
+        String(machine.pid),
+        '--socket',
+        'vm.sock',
+      ],
       { cwd: home },
     )
   } catch (error) {

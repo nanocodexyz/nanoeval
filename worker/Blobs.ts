@@ -15,9 +15,11 @@ export function offset(request: Request): number {
   return Number(match[1])
 }
 
-export async function read(env: Env, digest: string, from = 0): Promise<Response> {
+export async function serve(request: Request, env: Env, digest: string): Promise<Response> {
+  let from: number
   let object: R2ObjectBody | null
   try {
+    from = offset(request)
     object = env.BLOBS ? await env.BLOBS.get(digest, from ? { range: { offset: from } } : {}) : null
   } catch (error) {
     return Storage.json({ error: 'the range was refused: ' + Storage.message(error) }, 416)
@@ -34,16 +36,6 @@ export async function read(env: Env, digest: string, from = 0): Promise<Response
     },
     status: from ? 206 : 200,
   })
-}
-
-export async function serve(request: Request, env: Env, digest: string): Promise<Response> {
-  let from: number
-  try {
-    from = offset(request)
-  } catch (error) {
-    return Storage.json({ error: Storage.message(error) }, 416)
-  }
-  return read(env, digest, from)
 }
 
 export async function route(

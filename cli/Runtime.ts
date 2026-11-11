@@ -22,7 +22,8 @@ const banner =
   "import { fileURLToPath as nanoevalPath } from 'node:url'\n" +
   'const nanoevalDirectory = nanoevalDirname(nanoevalPath(import.meta.url))\n'
 
-function run(program: string, rest: readonly string[], cwd: string): Promise<string> {
+function run(command: readonly [program: string, ...rest: string[]], cwd: string): Promise<string> {
+  const [program, ...rest] = command
   return new Promise((resolve, reject) => {
     execFile(
       program,
@@ -64,7 +65,7 @@ export async function tools(directory: string): Promise<void> {
     ['-p', 'nanoeval-krun-guest'],
     ['-p', 'nanoeval-net'],
   ])
-    await run('cargo', ['build', '--release', '--locked', '--target', target, ...build], source)
+    await run(['cargo', 'build', '--release', '--locked', '--target', target, ...build], source)
   const built = Path.join(
     process.env['CARGO_TARGET_DIR'] ?? Path.join(source, 'target'),
     target,
@@ -128,8 +129,8 @@ export async function build(options: build.Options): Promise<Eval.Blob & { file:
   await Fs.copyFile(Path.join(repository, 'sandbox', 'slot.sh'), Path.join(staging, 'slot.sh'))
   await hand(Path.join(staging, Bootstrap.files.hand), options.cache)
   await run(
-    'bash',
     [
+      'bash',
       '-c',
       'tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cf - -C "$1" . | gzip -n >"$2"',
       'bash',
