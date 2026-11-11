@@ -3,7 +3,6 @@ use std::{
     ffi::OsString,
     fs::{self, File, OpenOptions},
     io::{self, BufRead, BufReader, Write},
-    net::TcpStream,
     os::{
         fd::OwnedFd,
         unix::{
@@ -12,7 +11,7 @@ use std::{
             process::{CommandExt, ExitStatusExt},
         },
     },
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Command, ExitCode, Stdio},
     thread,
 };
@@ -88,34 +87,13 @@ fn host(mut arguments: impl Iterator<Item = OsString>) -> io::Result<u8> {
     let listener = UnixListener::bind(&socket)?;
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o666))?;
     ready()?;
-    for connection in listener.incoming() {
-        let connection = connection?;
-        let allow = allow.clone();
-        thread::spawn(move || {
-            if let Err(error) = admit(connection, &allow) {
-                eprintln!("nanoeval-net: {error}");
-            }
-        });
-    }
+    forward::serve(&listener, move |target| {
+        let wanted = target.to_string();
+        Ok(fs::read_to_string(&allow)?
+            .lines()
+            .any(|allowed| allowed == wanted))
+    })?;
     Ok(0)
-}
-
-fn admit(connection: UnixStream, allow: &Path) -> io::Result<()> {
-    let mut connection = File::from(OwnedFd::from(connection));
-    let target = forward::requested(&mut connection)?;
-    let wanted = target.to_string();
-    if !fs::read_to_string(allow)?
-        .lines()
-        .any(|allowed| allowed == wanted)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!("{target} is not a forward of this slot"),
-        ));
-    }
-    let upstream = TcpStream::connect(target)
-        .map_err(|error| io::Error::new(error.kind(), format!("{target}: {error}")))?;
-    forward::splice(&connection, &File::from(OwnedFd::from(upstream)))
 }
 
 fn slot(mut arguments: impl Iterator<Item = OsString>) -> io::Result<u8> {

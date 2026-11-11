@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     ffi::{OsStr, OsString},
-    fs::{self, File, Metadata, Permissions},
+    fs::{self, File, FileTimes, Metadata, Permissions},
     io::{self, Read, Write},
     os::unix::{
         ffi::{OsStrExt, OsStringExt},
@@ -37,6 +37,7 @@ const HOSTS: &str = "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loop
 const OPAQUE: &[u8] = b".wh..opq";
 const SCRATCH: &str = "/mnt/run";
 const SYMLINK_HOPS: u32 = 40;
+const TRUST_MODE: u32 = 0o444;
 const UNMOUNT_POLL: Duration = Duration::from_millis(10);
 const UNMOUNT_TRIES: u32 = 500;
 const WHITEOUT: &[u8] = b".wh.";
@@ -396,17 +397,76 @@ pub(crate) fn mkdir(root: &[u8], directory: &[u8], user: &[u8]) -> io::Result<()
     }
 }
 
-pub(crate) fn run(
-    connection: &File,
-    root: &[u8],
-    resolver: &[u8],
-    spec: &exec::Spec,
-) -> io::Result<i32> {
+pub(crate) struct Step<'a> {
+    pub(crate) resolver: &'a [u8],
+    pub(crate) root: &'a [u8],
+    pub(crate) trust: &'a [u8],
+}
+
+struct Policy {
+    made: Vec<PathBuf>,
+    touched: Option<(PathBuf, FileTimes)>,
+}
+
+impl Policy {
+    fn show(trust: &[u8]) -> io::Result<Self> {
+        let target = Path::new(wire::POLICY);
+        let mut policy = Self {
+            made: Vec::new(),
+            touched: None,
+        };
+        let mut current = PathBuf::from("/");
+        for name in target.components().skip(1) {
+            let parent = current.clone();
+            current.push(name);
+            match fs::metadata(&current) {
+                Ok(metadata) if metadata.is_dir() => {}
+                Ok(_) => return Err(invalid(format!("{} is not a directory", current.display()))),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    if policy.touched.is_none() {
+                        let metadata = fs::metadata(&parent)?;
+                        let times = FileTimes::new()
+                            .set_accessed(metadata.accessed()?)
+                            .set_modified(metadata.modified()?);
+                        policy.touched = Some((parent, times));
+                    }
+                    fs::create_dir(&current)?;
+                    policy.made.push(current.clone());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        step(
+            "mount the host policy",
+            mount(Some("tmpfs"), target, Some("tmpfs"), MsFlags::empty(), NONE),
+        )?;
+        let file = target.join(wire::TRUST);
+        fs::write(&file, trust)?;
+        fs::set_permissions(&file, Permissions::from_mode(TRUST_MODE))?;
+        Ok(policy)
+    }
+
+    fn hide(self) -> io::Result<()> {
+        step(
+            "unmount the host policy",
+            umount2(wire::POLICY, MntFlags::MNT_DETACH),
+        )?;
+        for directory in self.made.iter().rev() {
+            fs::remove_dir(directory)?;
+        }
+        if let Some((parent, times)) = self.touched {
+            File::open(parent)?.set_times(times)?;
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn run(connection: &File, build: &Step<'_>, spec: &exec::Spec) -> io::Result<i32> {
     step(
         "leave the shared mounts",
         unshare(CloneFlags::CLONE_NEWNS | CloneFlags::CLONE_FS),
     )?;
-    let root = path(root);
+    let (root, resolver) = (path(build.root), build.resolver);
     for name in ["dev", "proc", "sys"] {
         let target = root.join(name);
         fs::create_dir_all(&target)?;
@@ -449,7 +509,15 @@ pub(crate) fn run(
     }
     step("enter the root", chroot(root))?;
     step("enter /", chdir("/"))?;
+    let policy = if build.trust.is_empty() {
+        None
+    } else {
+        Some(Policy::show(build.trust)?)
+    };
     let code = exec::run(connection, spec);
+    if let Some(policy) = policy {
+        policy.hide()?;
+    }
     for target in created {
         step(
             &format!("unbind {}", target.display()),

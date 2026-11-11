@@ -779,6 +779,7 @@ name = "nanoeval-krun"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "nanoeval-net",
  "nanovm",
  "nix",
  "rustls",

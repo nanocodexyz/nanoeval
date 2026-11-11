@@ -1,8 +1,11 @@
 use std::{
     fs::File,
     io::{self, Read, Write},
-    net::{SocketAddrV4, TcpListener},
-    os::fd::{AsRawFd, OwnedFd},
+    net::{SocketAddrV4, TcpListener, TcpStream},
+    os::{
+        fd::{AsRawFd, OwnedFd},
+        unix::net::{UnixListener, UnixStream},
+    },
     str::FromStr,
     thread,
 };
@@ -79,6 +82,39 @@ pub fn splice(left: &File, right: &File) -> io::Result<()> {
     copy(left, right);
     back.join()
         .map_err(|_| io::Error::other("a relay thread panicked"))
+}
+
+fn admit<A>(connection: UnixStream, allowed: &A) -> io::Result<()>
+where
+    A: Fn(SocketAddrV4) -> io::Result<bool>,
+{
+    let mut connection = File::from(OwnedFd::from(connection));
+    let target = requested(&mut connection)?;
+    if !allowed(target)? {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{target} is not a forward of this slot"),
+        ));
+    }
+    let upstream = TcpStream::connect(target)
+        .map_err(|error| io::Error::new(error.kind(), format!("{target}: {error}")))?;
+    splice(&connection, &File::from(OwnedFd::from(upstream)))
+}
+
+pub fn serve<A>(listener: &UnixListener, allowed: A) -> io::Result<()>
+where
+    A: Fn(SocketAddrV4) -> io::Result<bool> + Clone + Send + 'static,
+{
+    for connection in listener.incoming() {
+        let connection = connection?;
+        let allowed = allowed.clone();
+        thread::spawn(move || {
+            if let Err(error) = admit(connection, &allowed) {
+                eprintln!("nanoeval-net: {error}");
+            }
+        });
+    }
+    Ok(())
 }
 
 pub fn listen<C>(target: SocketAddrV4, connect: C) -> io::Result<Forward>

@@ -4,6 +4,7 @@ use std::{
     ffi::OsString,
     fs::{self, File, Permissions},
     io::{self, BufReader, Read},
+    net::SocketAddrV4,
     os::unix::{
         ffi::OsStrExt,
         fs::{MetadataExt, PermissionsExt},
@@ -19,6 +20,7 @@ use std::{
 };
 
 use flate2::read::MultiGzDecoder;
+use net::forward;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use wire::Request;
@@ -52,7 +54,16 @@ const SCRATCH: &str = "scratch";
 const SHELL: [&str; 2] = ["/bin/sh", "-c"];
 const TAR_MAGIC: &[u8] = b"ustar";
 const TAR_MAGIC_OFFSET: usize = 257;
-const USAGE: &str = "usage: nanoeval-krun image build (--ref REF | --dockerfile DIR) --size-mb N --out DISK.ext4 --meta META.json [--cache DIR] [--platform OS/ARCH] [--network private|host] [--boot DIR] [--cpus N] [--memory-mib N]";
+const TRUST_VARIABLES: [&str; 7] = [
+    "CARGO_HTTP_CAINFO",
+    "CURL_CA_BUNDLE",
+    "GIT_SSL_CAINFO",
+    "NODE_EXTRA_CA_CERTS",
+    "PIP_CERT",
+    "REQUESTS_CA_BUNDLE",
+    "SSL_CERT_FILE",
+];
+const USAGE: &str = "usage: nanoeval-krun image build (--ref REF | --dockerfile DIR) --size-mb N --out DISK.ext4 --meta META.json [--cache DIR] [--platform OS/ARCH] [--network private|host] [--ca-bundle FILE] [--env-file FILE]... [--forward ADDRESS:PORT]... [--boot DIR] [--cpus N] [--memory-mib N]";
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Network {
@@ -95,6 +106,93 @@ struct Config {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+struct Applied {
+    ca_bundle: bool,
+    environment: Vec<String>,
+    forwards: Vec<String>,
+}
+
+#[derive(Default)]
+struct Policy {
+    environment: Vec<Vec<u8>>,
+    forwards: Vec<SocketAddrV4>,
+    trust: Vec<u8>,
+}
+
+impl Policy {
+    fn parse(arguments: &Arguments) -> Result<Self, String> {
+        let read =
+            |file: &OsString| fs::read(file).map_err(|error| failed(Path::new(file), &error));
+        let trust = arguments.maybe("ca-bundle").map(read).transpose()?;
+        if trust.as_ref().is_some_and(Vec::is_empty) {
+            return Err("--ca-bundle names an empty file".to_owned());
+        }
+        let mut environment = Vec::new();
+        for file in arguments.all("env-file") {
+            environment.extend(variables(&read(file)?)?);
+        }
+        let forwards = arguments
+            .all("forward")
+            .into_iter()
+            .map(|target| forward::target(target.as_bytes()).map_err(|error| error.to_string()))
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            environment,
+            forwards,
+            trust: trust.unwrap_or_default(),
+        })
+    }
+
+    fn applied(&self, network: Network) -> Option<Applied> {
+        let applied = Applied {
+            ca_bundle: !self.trust.is_empty(),
+            environment: self
+                .environment
+                .iter()
+                .map(|entry| {
+                    let name = entry.split(|byte| *byte == b'=').next().unwrap_or_default();
+                    String::from_utf8_lossy(name).into_owned()
+                })
+                .collect(),
+            forwards: self
+                .reached(network)
+                .iter()
+                .map(SocketAddrV4::to_string)
+                .collect(),
+        };
+        (applied.ca_bundle || !applied.environment.is_empty() || !applied.forwards.is_empty())
+            .then_some(applied)
+    }
+
+    fn reached(&self, network: Network) -> &[SocketAddrV4] {
+        match network {
+            Network::Host => &[],
+            Network::Private => &self.forwards,
+        }
+    }
+}
+
+fn variables(file: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    file.split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty() && line[0] != b'#')
+        .map(|line| {
+            if line
+                .iter()
+                .position(|byte| *byte == b'=')
+                .is_some_and(|at| at > 0)
+            {
+                Ok(line.to_vec())
+            } else {
+                Err(format!(
+                    "a line of an environment file is NAME=VALUE: {}",
+                    String::from_utf8_lossy(line)
+                ))
+            }
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct Seconds {
     convert: f64,
     download: f64,
@@ -107,6 +205,8 @@ struct Meta {
     image_digest: String,
     images: Vec<Pulled>,
     platform: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    policy: Option<Applied>,
     schema: String,
     seconds: Seconds,
     size_mb: u64,
@@ -117,6 +217,7 @@ struct Job {
     layout: Layout,
     network: Network,
     platform: Platform,
+    policy: Policy,
     registry: Registry,
     resolver: Vec<u8>,
     size_mb: u64,
@@ -591,12 +692,7 @@ fn copy(
     )
 }
 
-fn run(
-    job: &Job,
-    machine: &Machine,
-    state: &State,
-    command: &dockerfile::Command,
-) -> Result<(), String> {
+fn environment(state: &State, policy: &Policy) -> Vec<Vec<u8>> {
     let mut environment = state.environment.clone();
     let known = |environment: &[(String, String)], name: &str| {
         environment.iter().any(|(known, _)| known == name)
@@ -609,17 +705,32 @@ fn run(
     if !known(&environment, "PATH") {
         environment.push(("PATH".to_owned(), DEFAULT_PATH.to_owned()));
     }
+    if !policy.trust.is_empty() {
+        let bundle = format!("{}/{}", wire::POLICY, wire::TRUST);
+        environment.extend(TRUST_VARIABLES.map(|name| (name.to_owned(), bundle.clone())));
+    }
+    environment
+        .iter()
+        .map(|(name, value)| format!("{name}={value}").into_bytes())
+        .chain(policy.environment.iter().cloned())
+        .collect()
+}
+
+fn run(
+    job: &Job,
+    machine: &Machine,
+    state: &State,
+    command: &dockerfile::Command,
+) -> Result<(), String> {
     let arguments = command.arguments(&state.shell);
     eprintln!("nanoeval-krun: RUN {}", arguments.join(" "));
     let request = Request::Run {
         arguments: arguments.into_iter().map(String::into_bytes).collect(),
         directory: state.directory().as_bytes().to_vec(),
-        environment: environment
-            .iter()
-            .map(|(name, value)| format!("{name}={value}").into_bytes())
-            .collect(),
+        environment: environment(state, &job.policy),
         resolver: job.resolver.clone(),
         root: root(),
+        trust: job.policy.trust.clone(),
         user: state.user.clone().into_bytes(),
     };
     match machine.request(&request, Some(&mut io::empty()), &mut io::stderr())? {
@@ -769,6 +880,11 @@ fn stage(
     } else {
         None
     };
+    let forwards = if steps.iter().any(runs) {
+        job.policy.reached(job.network)
+    } else {
+        &[]
+    };
     let disk = job.work.join(format!("stage-{index}.ext4"));
     format(&disk, job.size_mb, &format!("{}/{index}", recipe.digest))?;
     let machine = Machine::start(
@@ -777,6 +893,7 @@ fn stage(
         &Disks {
             build: Some(&disk),
             context: steps.iter().any(copies).then_some(recipe.directory),
+            forwards,
             passt: passt.as_deref(),
             sources: &sources,
         },
@@ -1003,8 +1120,11 @@ fn report(out: &Path, file: &Path, meta: &Meta, started: Instant) -> Result<u8, 
 pub(crate) fn command(arguments: impl Iterator<Item = OsString>) -> Result<u8, String> {
     let started = Instant::now();
     let mut allowed = vec![
+        "ca-bundle",
         "cache",
         "dockerfile",
+        "env-file",
+        "forward",
         "meta",
         "network",
         "out",
@@ -1055,6 +1175,7 @@ pub(crate) fn command(arguments: impl Iterator<Item = OsString>) -> Result<u8, S
         layout: Layout::parse(&arguments)?,
         network,
         platform,
+        policy: Policy::parse(&arguments)?,
         registry: Registry::new()?,
         resolver: resolver(network)?,
         size_mb,
@@ -1075,6 +1196,9 @@ pub(crate) fn command(arguments: impl Iterator<Item = OsString>) -> Result<u8, S
         image_digest: built.image_digest,
         images: built.images,
         platform: job.platform.to_string(),
+        policy: directory
+            .as_ref()
+            .and_then(|_| job.policy.applied(job.network)),
         schema: SCHEMA.to_owned(),
         seconds: Seconds {
             convert: started.elapsed().as_secs_f64() - built.seconds,
@@ -1125,6 +1249,59 @@ mod tests {
                 ("URL".to_owned(), "https://a/b".to_owned()),
             ])
         );
+    }
+
+    #[test]
+    fn an_environment_file_is_lines_of_variables() {
+        assert_eq!(
+            variables(b"# held back\nUV_EXCLUDE_NEWER=2026-11-01\n\nINDEX=https://a/b?c=d\n")
+                .unwrap(),
+            [
+                b"UV_EXCLUDE_NEWER=2026-11-01".to_vec(),
+                b"INDEX=https://a/b?c=d".to_vec()
+            ]
+        );
+        assert!(variables(b"export NAME\n").is_err());
+        assert!(variables(b"=value\n").is_err());
+    }
+
+    #[test]
+    fn a_step_gets_the_host_policy_after_the_image_environment() {
+        let mut state = State::new(Container {
+            env: Some(vec!["SSL_CERT_FILE=/image.pem".to_owned()]),
+            ..Container::default()
+        });
+        state.arguments.insert("VERSION".to_owned(), "1".to_owned());
+        let text = |policy: &Policy| {
+            environment(&state, policy)
+                .iter()
+                .map(|entry| String::from_utf8_lossy(entry).into_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            text(&Policy::default()),
+            [
+                "SSL_CERT_FILE=/image.pem".to_owned(),
+                "VERSION=1".to_owned(),
+                format!("PATH={DEFAULT_PATH}"),
+            ]
+        );
+        let policy = Policy {
+            environment: vec![b"VERSION=2".to_vec()],
+            forwards: Vec::new(),
+            trust: b"-----BEGIN CERTIFICATE-----\n".to_vec(),
+        };
+        let entries = text(&policy);
+        assert_eq!(entries.len(), 3 + TRUST_VARIABLES.len() + 1);
+        assert_eq!(entries[3], "CARGO_HTTP_CAINFO=/opt/nanoeval/ca.pem");
+        assert_eq!(entries[9], "SSL_CERT_FILE=/opt/nanoeval/ca.pem");
+        assert_eq!(entries[10], "VERSION=2");
+        assert_eq!(
+            state.environment,
+            [("SSL_CERT_FILE".to_owned(), "/image.pem".to_owned())]
+        );
+        assert!(policy.applied(Network::Host).unwrap().forwards.is_empty());
+        assert!(Policy::default().applied(Network::Private).is_none());
     }
 
     #[test]

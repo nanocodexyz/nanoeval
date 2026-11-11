@@ -3,14 +3,18 @@ use std::{
     ffi::OsString,
     fs::{self, File},
     io::{self, BufWriter, Read, Write},
-    net::Shutdown,
-    os::{fd::AsRawFd, unix::net::UnixStream},
+    net::{Shutdown, SocketAddrV4},
+    os::{
+        fd::AsRawFd,
+        unix::net::{UnixListener, UnixStream},
+    },
     path::{Path, PathBuf},
     process::{self, Child, Command, Stdio},
     thread,
     time::Duration,
 };
 
+use net::forward;
 use wire::{Frame, Request};
 
 use super::{Scratch, absolute, failed};
@@ -20,6 +24,7 @@ const BOOT: &str = "boot";
 const LOG: &str = "vm.log";
 const LOG_TAIL: usize = 2048;
 const READY_POLL: Duration = Duration::from_millis(20);
+const RELAY: &str = "relay.sock";
 const SOCKET: &str = "vm.sock";
 
 pub(crate) struct Layout {
@@ -56,6 +61,7 @@ impl Layout {
 pub(crate) struct Disks<'a> {
     pub(crate) build: Option<&'a Path>,
     pub(crate) context: Option<&'a Path>,
+    pub(crate) forwards: &'a [SocketAddrV4],
     pub(crate) passt: Option<&'a Path>,
     pub(crate) sources: &'a [PathBuf],
 }
@@ -94,6 +100,23 @@ impl Machine {
         if let Some(passt) = disks.passt {
             command.arg("--passt").arg(passt);
         }
+        let directory = File::open(home).map_err(|error| failed(home, &error))?;
+        if !disks.forwards.is_empty() {
+            let socket = format!("/proc/self/fd/{}/{RELAY}", directory.as_raw_fd());
+            let listener = UnixListener::bind(&socket)
+                .map_err(|error| format!("the relay of the builder VM: {error}"))?;
+            let allowed = disks.forwards.to_vec();
+            thread::spawn(move || {
+                let served = forward::serve(&listener, move |target| Ok(allowed.contains(&target)));
+                if let Err(error) = served {
+                    eprintln!("nanoeval-krun: the relay of the builder VM: {error}");
+                }
+            });
+            command.args(["--relay", RELAY]);
+            for forward in disks.forwards {
+                command.args(["--forward", &forward.to_string()]);
+            }
+        }
         let child = command
             .current_dir(home)
             .stdin(Stdio::null())
@@ -103,7 +126,7 @@ impl Machine {
             .map_err(|error| format!("the builder VM did not start: {error}"))?;
         let mut machine = Self {
             child,
-            directory: File::open(home).map_err(|error| failed(home, &error))?,
+            directory,
             home: home.to_path_buf(),
         };
         machine.ready()?;

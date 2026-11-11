@@ -17,7 +17,8 @@ pub const GUEST_MTU: u32 = 65_520;
 pub const GUEST_PREFIX: u8 = 24;
 pub const GUEST_RESOLVER: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 3);
 pub const IO_TAG: &str = "io";
-pub const MAGIC: [u8; 4] = *b"NKR3";
+pub const MAGIC: [u8; 4] = *b"NKR4";
+pub const POLICY: &str = "/opt/nanoeval";
 pub const PORT: u32 = 1024;
 pub const PRIVATE: &str = "private";
 pub const READY: &str = "nanoeval-krun-guest: listening";
@@ -25,6 +26,7 @@ pub const RELAY_PORT: u32 = 1025;
 pub const ROOT: &str = "root";
 pub const RUNTIME_TAG: &str = "rt";
 pub const SOURCES: &str = "sources=";
+pub const TRUST: &str = "ca.pem";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Request {
@@ -66,6 +68,7 @@ pub enum Request {
         environment: Vec<Vec<u8>>,
         resolver: Vec<u8>,
         root: Vec<u8>,
+        trust: Vec<u8>,
         user: Vec<u8>,
     },
     Stop,
@@ -190,6 +193,7 @@ impl Request {
                 environment,
                 resolver,
                 root,
+                trust,
                 user,
             } => {
                 buffer.push(8);
@@ -198,6 +202,7 @@ impl Request {
                 write_list(&mut buffer, environment)?;
                 write_bytes(&mut buffer, resolver)?;
                 write_bytes(&mut buffer, root)?;
+                write_bytes(&mut buffer, trust)?;
                 write_bytes(&mut buffer, user)?;
             }
             Self::Tree { root } => {
@@ -259,6 +264,7 @@ impl Request {
                 environment: read_list(reader)?,
                 resolver: read_bytes(reader)?,
                 root: read_bytes(reader)?,
+                trust: read_bytes(reader)?,
                 user: read_bytes(reader)?,
             }),
             9 => Ok(Self::Tree {
@@ -364,6 +370,7 @@ mod tests {
                 environment: vec![b"PATH=/bin".to_vec()],
                 resolver: b"nameserver 10.0.2.3\n".to_vec(),
                 root: b"/mnt/root".to_vec(),
+                trust: b"-----BEGIN CERTIFICATE-----\n".to_vec(),
                 user: Vec::new(),
             },
             Request::Stop,

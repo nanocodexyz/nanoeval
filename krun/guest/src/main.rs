@@ -166,11 +166,15 @@ fn handle(mut connection: File) {
             environment,
             resolver,
             root,
+            trust,
             user,
         } => build::run(
             &connection,
-            &root,
-            &resolver,
+            &build::Step {
+                resolver: &resolver,
+                root: &root,
+                trust: &trust,
+            },
             &exec::Spec {
                 arguments,
                 directory,

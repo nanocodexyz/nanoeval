@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 flate2.workspace = true
 nanovm.workspace = true
+net.workspace = true
 nix = { workspace = true, features = ["fs"] }
 rustls.workspace = true
 serde.workspace = true

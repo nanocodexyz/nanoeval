@@ -76,7 +76,7 @@ impl Arguments {
         Ok(Self { options, rest })
     }
 
-    fn all(&self, name: &str) -> Vec<&OsString> {
+    pub(crate) fn all(&self, name: &str) -> Vec<&OsString> {
         self.options
             .iter()
             .filter(|(option, _)| option == name)

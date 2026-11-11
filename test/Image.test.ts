@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import * as Fs from 'node:fs'
+import * as Http from 'node:http'
 import * as Os from 'node:os'
 import * as Path from 'node:path'
 import { test } from 'node:test'
@@ -154,6 +155,101 @@ test(
         'worker\n/app\nworker\nworker\n',
       )
     } finally {
+      Fs.rmSync(home, { force: true, recursive: true })
+    }
+  },
+)
+
+const passt = spawnSync('sh', ['-c', 'command -v passt']).stdout.toString().trim()
+
+test(
+  'a build step gets the host policy and the disk keeps none of it',
+  { skip: missing() ?? (passt ? false : 'passt') },
+  async () => {
+    const home = Fs.mkdtempSync(Path.join(Os.tmpdir(), 'nanoeval-policy-'))
+    const krun = Path.join(home, 'nanoeval-krun')
+    const tools = Path.join(home, 'tools')
+    const marker = 'nanoeval-test-marker-' + process.pid
+    const server = Http.createServer((_, response) => response.end('relayed'))
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const { port } = server.address() as { port: number }
+    const build = (name: string, policy: readonly string[]) =>
+      new Promise<{ status: number | null; stderr: string }>((resolve) => {
+        const child = spawn(
+          krun,
+          ['image', 'build', '--dockerfile', 'context', '--out', name + '.ext4', '--meta'].concat(
+            [name + '.json', '--size-mb', '64', '--cache', 'cache'],
+            policy,
+          ),
+          { cwd: home, env: { ...process.env, PATH: tools }, stdio: ['ignore', 'ignore', 'pipe'] },
+        )
+        let stderr = ''
+        child.stderr.on('data', (chunk: Buffer) => (stderr += chunk.toString()))
+        child.once('exit', (status) => resolve({ status, stderr }))
+      })
+    try {
+      Fs.mkdirSync(tools)
+      Fs.symlinkSync(passt, Path.join(tools, 'passt'))
+      for (const name of ['dev', 'mnt', 'proc', 'sys'])
+        Fs.mkdirSync(Path.join(home, 'boot', name), { recursive: true })
+      Fs.copyFileSync(built('nanoeval-krun'), krun)
+      Fs.copyFileSync(
+        built('nanoeval-krun-guest', triple),
+        Path.join(home, 'boot/nanoeval-krun-guest'),
+      )
+      Fs.mkdirSync(Path.join(home, 'context'))
+      Fs.writeFileSync(
+        Path.join(home, 'context/Dockerfile'),
+        [
+          'FROM scratch',
+          ...['bin', 'etc', 'lib', 'usr'].map(
+            (name) => 'COPY --from=alpine:3.21 /' + name + ' /' + name,
+          ),
+          'ENV KEPT=image',
+          'RUN grep -q ' + marker + ' "$SSL_CERT_FILE" && test "$PIP_CERT" = "$SSL_CERT_FILE"',
+          'RUN test "$NANOEVAL_TEST_POLICY" = on && test "$KEPT" = policy',
+          'RUN test "$(wget -q -O - http://127.0.0.1:' + port + '/)" = relayed',
+          '',
+        ].join('\n'),
+      )
+      Fs.writeFileSync(Path.join(home, 'ca.pem'), '# ' + marker + '\n')
+      Fs.writeFileSync(
+        Path.join(home, 'slot.env'),
+        '# a comment\nNANOEVAL_TEST_POLICY=on\nKEPT=policy\n',
+      )
+
+      const refused = await build('plain', [])
+      assert.equal(refused.status, 125)
+      assert.match(refused.stderr, /line 7: RUN ended with/)
+
+      const policy = ['--ca-bundle', 'ca.pem', '--env-file', 'slot.env'].concat([
+        '--forward',
+        '127.0.0.1:' + port,
+      ])
+      const made = await build('policy', policy)
+      assert.equal(made.status, 0, made.stderr)
+      const meta = JSON.parse(Fs.readFileSync(Path.join(home, 'policy.json'), 'utf8')) as {
+        config: { env: string[] }
+        policy: unknown
+      }
+      assert.deepEqual(meta.policy, {
+        ca_bundle: true,
+        environment: ['NANOEVAL_TEST_POLICY', 'KEPT'],
+        forwards: ['127.0.0.1:' + port],
+      })
+      assert.deepEqual(meta.config.env, ['KEPT=image'])
+      const tree = execFileSync(krun, ['image', 'tree', 'policy.ext4'], {
+        cwd: home,
+        env: { ...process.env, PATH: tools },
+        maxBuffer: 64 * 1024 * 1024,
+      }).toString()
+      assert.match(tree, /^bin\td\t/m)
+      assert.doesNotMatch(tree, /^opt(\t|\/)/m)
+      const disk = Fs.readFileSync(Path.join(home, 'policy.ext4'))
+      for (const text of [marker, '/opt/nanoeval', 'NANOEVAL_TEST_POLICY', 'KEPT=policy'])
+        assert.equal(disk.includes(text), false, text + ' is on the disk')
+    } finally {
+      server.close()
       Fs.rmSync(home, { force: true, recursive: true })
     }
   },
