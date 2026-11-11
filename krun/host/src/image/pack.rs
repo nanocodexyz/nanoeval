@@ -15,12 +15,13 @@ use nix::{
 use sha2::Digest;
 use zstd::stream::{read::Decoder, write::Encoder};
 
-use super::{Hashing, absolute, allocated, beside, failed, hex};
+use super::{Hashing, Lock, absolute, allocated, beside, failed, hex};
 use crate::Arguments;
 
 const BLOCK: usize = 4096;
 const DIGEST: usize = 32;
 const LEVEL: i32 = 3;
+const LOCK: &str = ".lock";
 const MAGIC: [u8; 8] = *b"NKRDISK1";
 const RUN: usize = 1024 * 1024;
 const TEMPORARY: &str = ".tmp";
@@ -117,6 +118,7 @@ pub(crate) fn pack(arguments: impl Iterator<Item = OsString>) -> Result<u8, Stri
     };
     let disk = absolute(disk)?;
     let out = absolute(arguments.one("out")?)?;
+    let _lock = Lock::take(beside(&out, LOCK))?;
     let source = File::open(&disk).map_err(|error| failed(&disk, &error))?;
     let size = source
         .metadata()
@@ -243,6 +245,7 @@ pub(crate) fn unpack(arguments: impl Iterator<Item = OsString>) -> Result<u8, St
     };
     let file = absolute(file)?;
     let out = absolute(arguments.one("out")?)?;
+    let _lock = Lock::take(beside(&out, LOCK))?;
     let temporary = beside(&out, TEMPORARY);
     let disk = File::create(&temporary).map_err(|error| failed(&temporary, &error))?;
     let restored = restore(&file, &disk).and_then(|(digest, size)| {

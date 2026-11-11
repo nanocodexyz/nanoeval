@@ -1058,6 +1058,8 @@ An idle read-write mount of a fresh 10 GiB disk allocated 36 kB in four minutes,
 
 A converter killed with `SIGKILL` in the middle of a 347 MB image left its lock file and its work directory. Its builder microVM was gone within a second: it watches its parent. The next conversion of the same output removed both and finished. Two converters started on one output at once built it once.
 
+`image pack` and `image unpack` took no such lock at `2d270e4`: two `image unpack` of one file to one disk shared a temporary file, and one of them ended with `No such file or directory` when the other had renamed it. The commit after this entry locks the output of both, and the test starts two at once.
+
 ### Limits of this version
 
 - Nothing uses the converter yet. `slot.sh` still asks Docker, and the test that proves the two fit together is a copy outside the repository.
