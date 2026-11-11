@@ -990,7 +990,7 @@ export class Run extends DurableObject<Env> {
     }
     if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405)
     const body = (await request.json().catch(() => ({}))) as Record<string, unknown>
-    if (resource === 'hello') return json(this.hello(body as Protocol.Hello))
+    if (resource === 'hello') return json(await this.hello(body as unknown as Protocol.Hello))
     if (resource === 'claims') return json(await this.claim(body as Protocol.ClaimRequest))
     if (resource === 'heartbeat') return json(this.heartbeat(body as Protocol.Heartbeat))
     if (resource === 'leave') return json(await this.leave(body as Protocol.Leave))
@@ -1007,7 +1007,7 @@ export class Run extends DurableObject<Env> {
 
   private fenced(id: string, claim: string): Ledger.Attempt {
     const row = Ledger.held(this.sql, { claim, id: decodeURIComponent(id) })
-    if (!row) throw new Refusal(409, 'the attempt is not claimed by this runner any more')
+    if (!row) throw new Refusal(410, 'the attempt is not claimed by this runner any more')
     Ledger.update(this.sql, row.id, {
       lease_until: Date.now() + this.config().limits.leaseSec * 1000,
     })
@@ -1020,7 +1020,7 @@ export class Run extends DurableObject<Env> {
     return runner
   }
 
-  private hello(body: Protocol.Hello & { error?: string }): Config.Runner {
+  private async hello(body: Protocol.Hello & { error?: string }): Promise<Config.Runner> {
     const config = this.config()
     const runner = this.known(body.runner)
     const refuse = (error: string): never => {
@@ -1044,6 +1044,10 @@ export class Run extends DurableObject<Env> {
       seen_at: Date.now(),
       state: 'ready',
     })
+    const held = new Set((body.held ?? []).map((entry) => entry.id + ' ' + entry.claim))
+    for (const row of this.rows())
+      if (row.runner === runner.id && Ledger.active(row) && !held.has(row.id + ' ' + row.claim))
+        await this.lose(row, 'released')
     return this.runnerConfig(runner.id)
   }
 
@@ -1124,8 +1128,6 @@ export class Run extends DurableObject<Env> {
   }
 
   private async session(row: Ledger.Attempt): Promise<Protocol.Session> {
-    if (row.phase !== 'claimed' && row.phase !== 'attach')
-      throw new Refusal(409, 'the attempt is in the ' + row.phase + ' phase')
     const token = await Harness.token(this.env, row.session!)
     const now = Date.now()
     if (row.phase === 'claimed')
@@ -1190,8 +1192,11 @@ export class Run extends DurableObject<Env> {
         ? { state: 'attached', timeoutSec: task.agent.timeoutSec }
         : { detached: false, state: 'running' }
     }
-    if (row.phase !== 'run') throw new Refusal(409, 'the attempt is in the ' + row.phase + ' phase')
+    if (row.phase !== 'run' && row.phase !== 'verify')
+      throw new Refusal(409, 'the attempt is in the ' + row.phase + ' phase')
     if (agent.provider === 'oracle') return { state: 'attached', timeoutSec: task.agent.timeoutSec }
+    const earlier = row.failure ? (JSON.parse(row.failure) as Result.Failure) : undefined
+    if (earlier?.kind === 'agent_timeout') return { state: 'timeout' }
 
     const report = await Harness.turn(this.env, session, requestId)
     if (report.status === 'completed')
