@@ -41,6 +41,7 @@ The shape of the second is the shape here: import once, a durable table, runners
 | `worker/Sessions.ts` | Durable Object | `App.create` from `nanocode-ts/cloudflare`: one harness session per claim, model requests forwarded with the deployment's API key or plan login |
 | `sandbox/Runner.ts` | Sandbox host | A task runner: claims rows, fetches blobs, drives `slot.sh`, reports to the run |
 | `sandbox/slot.sh` | Sandbox host | One attempt in one slot: environment up, hand, solution, verifier, down |
+| `sandbox/Main.ts`, `cli/Runtime.ts`, `src/Bootstrap.ts` | Sandbox host and CLI | The runner as one bundled file, the archive a remote sandbox starts it from, and the script that does |
 | `sandbox/Store.ts` | Node | The blob store: a directory, or R2 through the Worker, and the verified cache of a machine |
 | `sandbox/Converter.ts` | Node | Where a task environment becomes a disk, and where a disk is packed and unpacked: three commands of the launcher in `krun/` |
 | `sandbox/Sandboxd.ts` | Any machine | The local provider's daemon: makes one machine a sandbox host |
@@ -132,10 +133,11 @@ It runs the launcher of the microVM backend and nothing else:
 | Every one | Linux, Node 24, this checkout after `npm ci`, and bash with coreutils, tar and curl |
 | One that imports `krun` evals, or runs `krun` slots | x86_64 or aarch64 with `/dev/kvm` readable and writable by the user. [libkrunfw](https://github.com/containers/libkrunfw) 5 where the dynamic loader finds `libkrunfw.so.5`. `mke2fs` from e2fsprogs. The launcher: cargo builds it from `krun/` when it is first needed, which takes a Rust toolchain through rustup with the musl target, or `NANOEVAL_KRUN` names a directory with a built `nanoeval-krun`, `nanoeval-krun-guest` and `nanoeval-net` |
 | One whose slots are on a private network, or that imports a Dockerfile with a `RUN` step | [passt](https://passt.top) as a system package |
+| One that runs `ns` slots | Root. A kernel with overlayfs, loop devices and namespaces. `unshare`, `setpriv`, `mount`, `losetup`, `mountpoint` (util-linux), `chroot` and `env --default-signal` (coreutils 8.31 or later), `mke2fs`, `pgrep`. cgroup v2 with the memory controller for limits. `ip` and `nft` and a resolver that is not on the loopback for the private network. The launcher as for krun, without KVM or libkrunfw. Debian 12 and Ubuntu 22.04 sandboxes of E2B have all of it |
 | One that runs `dir` slots only | Nothing more. No isolation |
 | The Worker under local workerd | Nothing more: wrangler comes with `npm ci` |
 
-No machine needs a container engine, an image store, root, or a user namespace. `git grep -i docker` finds Harbor's field `docker_image`, the `Dockerfile` a task may ship and the launcher reads, and what [DECISIONS.md](DECISIONS.md) recorded when one was used.
+No machine needs a container engine, an image store or a user namespace, and only ns slots need root. `git grep -i docker` finds Harbor's field `docker_image`, the `Dockerfile` a task may ship and the launcher reads, and what [DECISIONS.md](DECISIONS.md) recorded when one was used.
 
 ## Runs
 
@@ -183,21 +185,44 @@ A runner is one Node process on a sandbox host, `nanoeval runner`. A run starts 
  end        the run says every row is done ─▶ leave
 ```
 
+- **It picks the backend its machine has.** A run asks for `auto` unless `--backend` names one: a runner then boots disks in microVMs (`krun`) where `/dev/kvm` opens for it, and in namespaces (`ns`) where it is root. Both boot the same disk, so runners of both kinds work one run. The backend a runner took is in its capabilities, and in each result it finished. `nanoeval runner --backend` names one for that runner.
 - **It drives `slot.sh` and does not replace it.** The slot functions of the microVM backend were kept instead of being folded into the runner. A phase of a slot runs detached and leaves a status file, so the microVM, the hand and a running verifier outlive the runner. A runner that is restarted in the same directory reads each slot's saved row and goes on from the phase it was in, with the same runner id and claims. It tells the run which rows it still holds, and the run puts back at once any other row that the ledger gave it, such as one it claimed and had not saved when it died. The calls of a row can be repeated in any phase after the one they belong to, so a runner that is a step behind the ledger catches up instead of failing. The runner reads those status files itself every 25 ms, where the orchestrator used to ask for them through the provider once per tick.
 - **Calls that wait on the Worker back off** from 25 ms to `--poll-ms` (250 ms by default): the hand's attach, the turn and the judge. A deployed Worker wants a larger value, since each poll is a request.
 - **The cache of a machine** is `$NANOEVAL_CACHE` (`~/.cache/nanoeval`): `blobs/<digest>` for verified blobs and `disks/<digest>.ext4` for unpacked disks with their metadata. A microVM holds a shared lock on its disk while it runs. With `--disks remove` a runner deletes the packed blob as soon as its disk is unpacked, and removes a disk that it unpacked for this run when the run says no other row needs it. A disk that was in the cache before is kept. `nanoeval prune` removes every cached disk that no microVM holds, every cached blob and every [verifier cache](#verifier-cache).
 - **A stopped runner** (SIGTERM) releases its rows, which makes them claimable at once, and takes its slots down. A killed one is found by its leases.
 - **Host policy stays with the host**: `--ca-bundle`, `--slot-env` and `--slot-forward` are options of `sandboxd` or of an attached runner, and the capabilities a runner reports record them.
 
+## A runner without a checkout
+
+A sandbox of a public template has no checkout, no launcher and no Node that runs TypeScript. A run made with `--runtime`, which `--provider e2b` implies, publishes the runner as one blob and starts it from that.
+
+```
+ nanoeval run --runtime         cli/Runtime.ts builds runtime.tgz and uploads it to the Worker's blob store
+   runner.mjs                     sandbox/Main.ts and the runner, one file, for Node 20 and later (esbuild)
+   slot.sh
+   krun/nanoeval-krun             static, built without libkrun: exec, copy, image unpack
+   krun/nanoeval-krun-guest       static: the agent of a slot
+   krun/nanoeval-net              static: the relay
+   nanocode                       the pinned hand, checked against its release checksum when the archive is built
+ the run, or nanoeval sandbox   writes runner.json and bootstrap.sh into the sandbox and runs the script
+ bootstrap.sh                   fetch GET /v1/runs/RUN/runner/blobs/DIGEST with the runner token, check its SHA-256,
+                                unpack under <cache>/runtime/DIGEST, find node >= 20 or fetch Node 24 by checksum,
+                                start runner.mjs as root with NANOEVAL_KRUN, NANOEVAL_NANOCODE and NANOEVAL_CACHE
+```
+
+The archive is 20 MB and is named by its digest like every blob, so the run's blob route serves it beside the blobs its rows name, and a sandbox that already unpacked that digest fetches nothing. The script is generated in `src/Bootstrap.ts` from the run's address, id and runner token, and holds no other secret. Everything a slot needs after that is in the archive: no registry, package index or release page is asked at run time, except nodejs.org when the template has no Node.
+
+**Blobs through the Worker.** A runner fetches its disks from the run's blob route, which reads R2. A `GET` may name `Range: bytes=N-`, and a download that breaks is requested again from the bytes the runner has, up to six times a second apart and doubling, then checked against its digest like any blob.
+
 ## The slot splitter
 
-`sandbox/slot.sh` runs one attempt in one slot, and packs N of them onto a machine. A runner calls it. `probe` reports what the machine can isolate with (`kvm`, `krun`, `userns`, `bwrap`, CPUs, memory) and which network it was set up for. `kvm` says that `/dev/kvm` can be opened for reading and writing, and `krun` that the installed launcher reached KVM and loaded libkrunfw.
+`sandbox/slot.sh` runs one attempt in one slot, and packs N of them onto a machine. A runner calls it. `probe` reports what the machine can isolate with (`kvm`, `krun`, `ns`, `cgroup`, `userns`, `bwrap`, CPUs, memory) and which backend and network it was set up for. `kvm` says that `/dev/kvm` can be opened for reading and writing, `krun` that the installed launcher reached KVM and loaded libkrunfw, `ns` that the machine has root and the tools of an ns slot, and `cgroup` that ns slots are limited.
 
 | Backend | Isolation | State |
 | --- | --- | --- |
 | `krun` | One libkrun microVM per slot, as in gakonst/nanoeval and `crates/nanocodex-vm`. The environment disk is the root filesystem under a copy-on-write disk of the slot, the task's CPUs, memory and storage size the machine, and the hand runs inside it. Needs `/dev/kvm` and libkrunfw | Implemented, tested |
 | `dir` | One directory per slot, no isolation, from a `dir` environment. For development, and for the end-to-end lanes of a machine without KVM | Implemented, tested |
-| `bwrap` | User namespaces and an overlay root, for sandboxes without KVM | Planned |
+| `ns` | One set of namespaces per slot over the same environment disk, as root, for machines without KVM such as remote sandboxes. The kernel is shared, see [ns slots](#ns-slots) | Implemented, tested in a guest without KVM and on E2B |
 
 There is no container backend: an environment is a disk, and a container engine does not boot one. The directory backend stays because it costs one branch per phase and lets every lane of the eval table, the claims and the runners run where no microVM can.
 
@@ -205,7 +230,7 @@ There is no container backend: an environment is a disk, and a container engine 
 
 The hand binary is a glibc build. `slot.sh setup` downloads the pinned release, checks its SHA-256, and copies the binary with its loader and libraries into one read-only directory. Each microVM mounts it and starts the hand through that loader, so the hand runs in musl images such as Alpine without a change to the task image.
 
-An E2B sandbox is itself a Firecracker microVM. Whether it exposes KVM to its guest has not been checked, and nothing here is built for it: without KVM a `disk` environment cannot boot there. See [Sandbox providers](#sandbox-providers).
+An E2B sandbox is itself a Firecracker microVM and exposes no KVM to its guest. It has root, so it runs ns slots. See [Sandbox providers](#sandbox-providers).
 
 ## krun slots
 
@@ -244,6 +269,45 @@ A krun slot is one libkrun microVM. In gakonst/nanoeval the harness stayed on th
 - A connected UDP socket to a loopback address stays in the guest, so a resolver on the host's loopback is reached with `options use-vc`.
 
 **What a guest gets that its image lacks.** `/opt/nanoeval` with the hand and the certificate bundle. `/etc/resolv.conf` and `/etc/hosts`, written at boot over what the image has, on the slot's own disk. Nothing else: no agent, no shell, no init system.
+
+## ns slots
+
+An ns slot is the same environment disk without a microVM, for a machine that has root and no KVM, which is what a remote sandbox such as E2B's is. `slot.sh` prepares the root with the machine's own tools, and the guest agent of a krun slot serves it, so every phase after `up` is the code of a krun slot.
+
+```
+ machine (root)                                             slot: mount, PID, IPC, UTS, cgroup and network namespaces
+ <digest>.ext4 ─ loop, read-only, mounted once ─ lowerdir ┐
+ upper.ext4 ─ loop, sparse, one per slot ─ upperdir ──────┴▶ overlay becomes /
+ rt, read-only bind: the hand, CA bundle ─────────────────▶ /opt/nanoeval
+ ctl, bind: vm.sock, relay.sock, io/ ─────────────────────▶ /.nanoeval, mode 700
+ cgroup nanoeval/<slot>: memory.max, cpu.max ─────────────▶ every process of the slot
+ nevN ─ veth, a /30, masquerade ──────────────────────────▶ eth0, when the network is private
+ slot.sh ─ nanoeval-krun exec ─ ctl/vm.sock ──────────────▶ nanoeval-krun-guest ns (PID 1) ─ ns-serve ─ hand, solution, verifier
+```
+
+| Step of `up` | Done by |
+| --- | --- |
+| Mount the cached disk read-only at `<digest>.mnt`, once per machine, under a lock | `mount -o loop,ro` |
+| Format the slot's upper disk at the task's `storage_mb` | `mke2fs`, as for a krun slot |
+| Make the slot's cgroup and write the task's memory and CPUs | cgroup v2, when the machine has the memory controller |
+| Start a shell in new namespaces, inside that cgroup | `unshare --mount --pid --ipc --uts --cgroup [--net] --fork --kill-child` |
+| Mount the upper disk, the overlay, `/proc`, a read-only `/sys`, a `/dev` of six devices with its own `devpts` and `shm`, the runtime and the control directory | `mount`, in the slot's mount namespace, so everything goes when the slot does |
+| Link the slot to the machine and give it its address and route | `ip`, when the network is private |
+| Move the root over `/`, reset every signal to its default, bound the capabilities, change root, start the agent | `mount --move`, `env --default-signal`, `setpriv --bounding-set`, `chroot` |
+
+**The agent.** `nanoeval-krun-guest ns` stays PID 1 of the slot and reaps, and starts itself again as `ns-serve`, which listens on `/.nanoeval/vm.sock`. A request, an exec with its environment, user and working directory, a copy of `tests/` from `/.nanoeval/io`, a relay through `/.nanoeval/relay.sock`: all are what a krun slot does over vsock and virtiofs. The launcher on the machine side is the same client, built without libkrun (`--no-default-features`) and linked statically, so it runs where libkrunfw is not installed. Killing the `unshare` process kills PID 1, and the kernel ends every process, mount and link of the slot.
+
+**What a slot may do.** Root in a slot is the machine's root with a bounded capability set: Docker's default without `CAP_MKNOD`. It cannot mount, make a device node, load a module, trace a process outside its PID namespace or write `/proc/sys`, which is read-only with `/proc/bus`, `/proc/fs`, `/proc/irq` and `/proc/sysrq-trigger`. `/proc/kcore`, `/proc/keys` and the timer and scheduler lists are masked. The old root stays mounted under the new one, where no path reaches it. The control directory is root-only: the agent's socket gives root in the slot nothing it does not have, the relay dials only what the slot's allow list holds, and `io/` is empty except while tests are copied in.
+
+**What it is not.** A slot shares the machine's kernel. A kernel bug that a microVM would contain reaches the machine, `nproc` shows the machine's CPUs under a CPU limit, and the kernel log, the clock and the cgroup tree are the machine's. Slots are isolated from each other as containers are, less strongly than microVMs, and the sandbox around them is the boundary to the outside. On a machine that is not disposable, use krun.
+
+**Limits** come from cgroup v2: `memory.max` is the task's `memory_mb` with no swap, `cpu.max` its CPUs rounded up, and `oomKills` is `oom_kill` of the slot's `memory.events`. A machine without the memory controller runs ns slots without limits: setup says so, and the runner's capabilities report `cgroup: false`.
+
+**The disk cache** is the krun one. The lower mount lives beside the disk as `<digest>.mnt`, a slot holds the shared lock of `<digest>.use` as a microVM does, and `--disks remove` and `nanoeval prune` unmount it before they delete the disk.
+
+### Testing without root
+
+The machine these lanes were written on refuses user namespaces and gives no root. A libkrun microVM is a root machine without KVM, the shape of a remote sandbox, so `test/Guest.ts` boots one from a Debian 12 disk with Node 24 (`test/guest/Dockerfile`, converted with `nanoeval-krun image build`), shares this checkout into it read-only, and gives `sandboxd` a machine to run its commands on. `NANOEVAL_E2E_BACKEND=ns npm run e2e` then runs the Worker, the import and the directory store on the host, and the runner, the hand and the ns slots inside the guest, which reaches the Worker through the launcher's relay. On a machine where the test is root, the same lanes run ns slots directly. `NANOEVAL_E2E_RUNTIME=1` makes the run publish the runner runtime and start its runner through the bootstrap, as a remote sandbox does.
 
 ## Image disks
 
@@ -411,7 +475,17 @@ A slot whose task closes a phase starts its microVM with `vm --gate net/open`. T
 
 So the hand still attaches and the turn still runs, since both go through the relay and model requests leave from the Worker. A closed agent phase needs a session at `ws://127.x.x.x`: a hand cannot dial a deployed Worker over `wss://` without a network, and the slot refuses. Processes the agent left running are still there when the verifier's phase opens the network, as in Harbor, where both phases share one environment. Only krun slots on a private network can close a phase. A run on `--network host` or on `dir` slots that selects such a task is refused when it is created, and `slot.sh up` refuses it again.
 
-**What is not isolated.** A private slot reaches whatever the machine serves on its other addresses, such as its LAN address. It has IPv4 only. While the hand runs, the Worker's port on the slot's loopback is taken.
+**What is not isolated.** A private krun slot reaches whatever the machine serves on its other addresses, such as its LAN address. It has IPv4 only. While the hand runs, the Worker's port on the slot's loopback is taken.
+
+**ns slots** get the same network by other means, since the kernel is the machine's. A private ns slot has a network namespace with its own loopback and one end of a veth pair, `eth0`, on a /30 of 10.213.0.0/16. The machine keeps the other end, `nevN`, forwards, and holds one nftables table, `ip nanoeval`, made at setup:
+
+| Rule | Effect |
+| --- | --- |
+| `postrouting`: masquerade what leaves from 10.213.0.0/16 by another interface | A slot reaches the internet as the machine |
+| `forward`: drop from one `nev*` link to another | A slot does not reach another slot |
+| `input`: drop what arrives on a `nev*` link | A slot does not reach the machine itself, which is where a sandbox's control daemon listens, and an answer to a connection the machine opened to a slot never arrives |
+
+The slot's resolver file holds the machine's nameservers, so setup refuses a machine whose only resolver is on its loopback. A hand that dials `ws://127.0.0.1` is relayed as in a krun slot, through a UNIX socket in the control directory instead of vsock, and a hand that dials `wss://` goes out through the masquerade. With `--network host` an ns slot keeps the machine's network namespace and shares its ports.
 
 ## Verifier cache
 
@@ -511,7 +585,7 @@ An agent of a run is one of two kinds. A session agent (`claude`, `codex`) is th
 
 ## Sandbox providers
 
-A provider creates a sandbox, runs a command in it, writes a file to it, and kills it (`src/Sandbox.ts`). The contract is unchanged, and a run now asks one thing of a sandbox: it writes `runner.json` into it and runs `nanoeval runner --detach --config runner.json`. Everything else is between that runner and the run.
+A provider creates a sandbox, runs a command in it, writes a file to it, and kills it (`src/Sandbox.ts`). The contract is unchanged, and a run now asks one thing of a sandbox: it writes `runner.json` into it and runs `nanoeval runner --detach --config runner.json`. A run with a runtime writes `bootstrap.sh` beside it and runs that instead, see [A runner without a checkout](#a-runner-without-a-checkout). Everything else is between that runner and the run.
 
 **Local.** `nanoeval sandboxd` serves a machine over HTTP with a bearer token. A sandbox is a directory, and `nanoeval` on its path is this checkout. Deleting a sandbox ends its runner and every slot it still has. This is the single-machine mode of the earlier versions: one large machine, many slots.
 
@@ -519,12 +593,24 @@ A machine's network is host policy, and `sandboxd` passes it to the runners it s
 
 **E2B over MPP.** `src/E2b.ts` talks to `https://mpp.e2b.dev`, whose bodies match E2B's REST API:
 
-1. `POST /sandboxes {templateID, timeout, metadata}` answers `402` with `WWW-Authenticate: Payment …` challenges (`method="tempo"`, intents `charge` and `session`, amounts in base units of a six-decimal token).
+1. `POST /sandboxes {templateID, timeout, metadata}` answers `402` with `WWW-Authenticate: Payment …` challenges (`method="tempo"`, intents `charge` and `session`, each in two six-decimal tokens).
 2. `src/Payment.ts` builds the payer with mppx (`tempo.charge`). Its `onChallenge` hook reads the amount, charges the run's budget, signs the credential, and records the charge. A challenge over budget is refused before anything is signed.
-3. The paid response carries `sandboxID` and `envdAccessToken`. Commands then go to envd at `https://49983-<id>.e2b.app/process.Process/Start` as a Connect server stream in JSON, and files to `/files`. That data plane is free.
-4. `DELETE /sandboxes/<id>` is a paid request too.
+3. The paid response, `201`, carries `sandboxID` and `envdAccessToken`. Commands then go to envd at `https://49983-<id>.e2b.app/process.Process/Start` as a Connect server stream in JSON, and files to `/files` as `application/octet-stream`, both with the token. That data plane is free.
+4. `DELETE /sandboxes/<id>` is a paid request too, $0.0001, and answers `204`.
 
-E2B bills the requested lifetime up front and does not refund an early kill. Over MPP it serves only its public templates, and CPU and memory are fixed by the template. A runner there needs Node 24 and `nanoeval` on the path of the template, and unless the sandbox has KVM, which nobody has checked, it can run `dir` environments only. Nothing of this has run against the real service.
+E2B bills the requested lifetime when the sandbox is created and does not refund an early kill. Over MPP it serves only its public templates, and CPU and memory are fixed by the template. A sandbox is a Firecracker guest without KVM, with root: its runner is started from [the runtime archive](#a-runner-without-a-checkout) and runs [ns slots](#ns-slots). The runner and the hands dial the Worker, so the Worker needs an address the sandbox reaches: a deployed Worker, or a tunnel in front of a local one (`nanoeval worker --public-url`).
+
+Two ways pay for a sandbox:
+
+| | The Worker pays | The operator pays |
+| --- | --- | --- |
+| How | `nanoeval run --provider e2b`, with `TEMPO_PRIVATE_KEY` in the Worker | `nanoeval run --sandboxes 0 --runtime`, any MPP client for `POST /sandboxes`, then `nanoeval sandbox --run RUN --e2b ANSWER.json` |
+| Budget | `--sandbox-budget-usd`, checked before each charge is signed, charges in the run's `payments` | The payer's own limit. The run records no payment |
+| Lifetime | The run's, see [Budget and payments](#budget-and-payments) | Whatever the operator bought |
+| Ends | The run kills the sandbox when its runner holds no row | The operator kills it, or it expires |
+| State | Run against a local mock only | Run for real, see [DECISIONS.md](DECISIONS.md#2026-11-11-e2b-for-real-slots-without-kvm-a-runner-without-a-checkout-a-paid-run) |
+
+The answer of the paid request holds the sandbox's access token: keep the file private and delete it with the sandbox.
 
 The E2B JavaScript SDK is not used. It cannot pay, and it needs `nodejs_compat`. The envd protocol it wraps is two requests.
 
@@ -612,6 +698,8 @@ The session sends a model request without a credential, and `worker/Sessions.ts`
 
 A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP charge is checked against the sandbox budget before it is signed and is written to the run's `payments` table with its challenge. No row is claimed once the model spend reaches the model budget, and the rows that still wait end as `budget` errors. The spend counts finished attempts and the sessions of lost claims. A sandbox whose creation was interrupted by an orchestrator restart is marked `unknown` and is not retried, since its payment may have happened.
 
+**Lifetime.** A paid sandbox is bought for a lifetime when it is created, and an early kill refunds nothing. Unless `--sandbox-timeout-sec` names it, the run computes it when it is created (`Config.lifetimeSec`): the worst case of a row is its setup limit, its agent timeout and its verifier timeout, three times that last one for a judged task. The rows are placed longest first, each on the slot that is free soonest, over `--sandboxes` times `--slots` slots, and the lifetime is the busiest slot plus the setup limit for the bootstrap. A run whose lifetime exceeds what E2B sells, 86,400 s, is refused with the figure. The bound ignores memory admission: a sandbox that expires with rows in flight loses them like any lost runner, and the run opens another while the budget lasts. E2B can also extend a running sandbox (`refreshes`), which would let a run buy time as it uses it. That is not used yet.
+
 ## Rejected alternatives
 
 | Alternative | Why not |
@@ -621,6 +709,17 @@ A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP c
 | Cloudflare Workflows or Queues for the attempt lifecycle | A run needs one writer for claims and payments. A Durable Object is that writer, and it runs unchanged under local workerd |
 | D1 for the tables, and R2 for results | A table belongs to one eval or one run and has one writer, so it lives in that object's SQLite. Artifacts are chunked there too. R2 holds the blobs of evals, and is planned for large artifacts |
 | The E2B SDK in the Worker | It cannot pay and needs `nodejs_compat` |
+| bwrap or an unprivileged user namespace for slots without KVM | A user namespace cannot loop-mount the environment disk, so the disk would have to be unpacked into a tree whose owners are mapped. A remote sandbox has root, and with it the kernel mounts the disk as it is |
+| `dir` slots in a remote sandbox | They cannot run an imported image at all, and do not isolate attempts |
+| A second agent for ns slots, in shell or in the runner | Exec with a user and an environment, the copy of tests, the relay and the reaping of orphans would each exist twice. The guest agent got a second transport instead |
+| `pivot_root` for an ns slot | The shell that prepares the root would need `umount` from the image afterwards, and the agent cannot unmount once its capabilities are bounded. `mount --move` and `chroot` leave the old root under the new one, unreachable by path |
+| Dropping capabilities inside the agent | It needs `prctl`, which is `unsafe` in Rust or one more crate. `setpriv` is on every machine that has `unshare` |
+| `CAP_MKNOD` for ns slots, as Docker grants | Docker pairs it with a device cgroup. Without one, a device node is the sandbox's disk |
+| passt or slirp for the network of ns slots | Not installed in a sandbox, and the kernel there has veth and nftables. One table and one link per slot need no process |
+| One loop device per slot for the environment disk | The page cache would hold the image once per slot. The disk is mounted once and every overlay reads it |
+| A checkout and `npm ci` in the sandbox | 300 MB and a registry at run time, in a sandbox whose Node does not run TypeScript. The runner is one file of 40 kB |
+| A custom E2B template with nanoeval installed | E2B over MPP serves public templates only |
+| A lifetime that is a guess, or a fixed hour | A sandbox that expires loses its rows, and one bought too long is paid in full. The bound comes from the tasks, and an operator may name a shorter one |
 | MPP sessions for E2B | Charges need no channel state. Sessions are planned: one deposit, vouchers per request, the remainder refunded on close |
 | crun or podman with the krun runtime, or krunvm | A container engine and an image store on every sandbox host, where a runner needs neither: it boots a disk. krunvm manages images through buildah |
 | Firecracker | A VMM executable with an API socket per VM, block devices only, and tap devices that need root. libkrun links into one unprivileged process and shares directories |

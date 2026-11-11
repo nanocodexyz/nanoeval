@@ -1591,3 +1591,123 @@ How long it takes cannot be read off six easy tasks. What was measured: 51 s and
 | Every attempt runs to its timeout | 1,260,000 s | 44 h |
 
 Eight slots were chosen for the CPUs of the machine, which other work shares, and because two arms of a provider draw on one plan. Its memory would admit more: 68 of the 89 tasks ask for 2 GiB.
+
+## 2026-11-11: E2B for real: slots without KVM, a runner without a checkout, a paid run
+
+Machines: the 32-core Linux machine with KVM of the entries above (kernel 6.8, libkrunfw 5.5.0, Node 24.22.2, rustc 1.97.1), shared with other work at a load average between 16 and 42 throughout, and E2B sandboxes opened over MPP at `https://mpp.e2b.dev`. Commits `ab30a16` to the head of this entry.
+
+### What was wrong
+
+The E2B provider had only met a local mock, and the flow had moved under it: a sandbox now only starts a runner, and a slot boots a converted ext4 disk in a libkrun microVM, which needs `/dev/kvm`. Nobody had looked inside an E2B sandbox. A public template also has none of nanoeval's needs: no checkout, no launcher, and no Node that runs TypeScript.
+
+### The probe
+
+One `base` sandbox for 60 s ($0.001824), one command over envd, 4.4 s. The request took 4.7 s with its payment, and envd answered `/health` 0.56 s after it returned.
+
+| | `base` (2 vCPU, 512 MiB) | `desktop` (8 vCPU, 8 GiB), seen in the runs below |
+| --- | --- | --- |
+| Guest | Firecracker, kernel 6.1.189+, Debian 12, glibc 2.36, x86_64 | The same kernel, Ubuntu 22.04.5 |
+| KVM | No `/dev/kvm`, no `vmx` or `svm` flag, a kernel without modules. `mknod` of the device opens to "No such device" | The same |
+| Root | `user` (uid 1000) with `sudo -n`, every capability, no seccomp filter | The same |
+| Kernel | overlayfs, loop devices (`/dev/loop0` to 7 and `loop-control`), ext4, squashfs, FUSE, veth, bridge, tun, nftables and iptables NAT, every namespace kind. `unshare -U` works for the unprivileged user too | The same |
+| cgroup | v2, with `cpuset cpu io memory pids` enabled for the root's children. envd runs commands in `/user` | The same |
+| Machine | 484 MB of memory, no swap, 20 GB free on a 22 GB ext4 root, 256 MiB written and synced at 106 MB/s | 7955 MB, 20 GB free of 26 GB |
+| Network | `eth0` on a /30 link, resolver 8.8.8.8, no IPv6, 25 MB downloaded at 96 MB/s, `ip_forward` 0, an empty `inet filter` table | The same |
+| Tools | Node 20.9.0, Python 3.11, curl 7.88, `mke2fs`, `losetup`, `unshare`, `nsenter`, `setpriv`, `chroot`, `ip`, `nft`, `iptables`, git, gcc. No zstd, passt, bwrap, docker or podman | coreutils 8.32, bwrap, perl, python3. No `node` on the path |
+| envd 0.10.0 | `process.Process/Start` as Connect JSON and `/files` with `application/octet-stream` or a multipart form both work. A request without `X-Access-Token` is answered 401 | The same |
+
+So an E2B sandbox boots no microVM, and it is a machine with root and a complete kernel. The raw output is kept outside the repository.
+
+**The control plane**, read from its own `/openapi.json` and from quotes, which are free: `POST /sandboxes {templateID, timeout, metadata, envVars}` answers 201 with `sandboxID`, `envdAccessToken`, `envdVersion`, `templateID`, `alias`, `clientID` and `trafficAccessToken`, and no `domain`. Each request carries four challenges: `charge` and `session`, each in two six-decimal tokens. A lifetime over 86,400 s is quoted as 86,400 s. A template that is not public is refused with 400 before any challenge. `DELETE /sandboxes/ID` answers 204. There are also `GET /sandboxes`, `pause`, `connect`, `timeout`, `refreshes` (extend the lifetime by 15 to 86,400 s), `logs` and `metrics`, which nanoeval does not call.
+
+**The price** fits every quote taken: $0.0001 per request, plus $0.0000133 per vCPU-second and $0.000004275 per GiB-second of the requested lifetime, paid when the sandbox is created.
+
+| Template | Size | 60 s | 1 h |
+| --- | --- | --- | --- |
+| `base` | 2 vCPU, 512 MiB | $0.001824 | $0.103555 |
+| `code-interpreter-v1` | 2 vCPU, 2 GiB | $0.002209 | $0.126640 |
+| `desktop` | 8 vCPU, 8 GiB | $0.008536 | $0.506260 |
+
+### What was built
+
+| | |
+| --- | --- |
+| `ns` slot backend | The same packed ext4 disk, loop-mounted read-only once per machine, under a sparse ext4 upper disk and an overlay per slot, in mount, PID, IPC, UTS, cgroup and network namespaces. The guest agent of a krun slot serves it over a UNIX socket, so `hand`, `solve`, `verify` and `down` are the code of a krun slot |
+| `--backend auto`, the default of a run | A runner takes `krun` where `/dev/kvm` opens and `ns` where it is root. `--backend` on a run or a runner names one |
+| The runner runtime (`--runtime`, `nanoeval runtime`) | One archive of 20.1 MB: the runner bundled into one file by esbuild (40 kB, for Node 20 and later), `slot.sh`, static builds of the launcher without libkrun, the guest agent and the relay (5.9 MB), and the pinned hand (39 MB unpacked). It is a blob, and the run serves it to its runners by digest |
+| The bootstrap (`src/Bootstrap.ts`) | A script the run writes into a sandbox: fetch the archive, check its SHA-256, use the sandbox's Node when it is 20 or later and fetch Node 24.22.2 by checksum otherwise, start the runner as root |
+| `nanoeval sandbox --run RUN --e2b FILE` | Attaches a runner in a sandbox that someone else opened and paid for, from the answer of the paid request |
+| Blobs | `GET` with `Range: bytes=N-` through the Worker, and a download that breaks resumes from the bytes it has, six times |
+| Sandbox lifetime | Chosen by the run unless `--sandbox-timeout-sec` names it |
+
+### What was decided
+
+- **Namespaces as root, not bwrap or a user namespace.** The sandbox has real root, so the kernel mounts the disk and owners, devices and setuid bits are what the image says, as in a microVM. An unprivileged user namespace cannot loop-mount the disk. Root inside a slot is bounded another way, below.
+- **The same guest agent.** A second implementation of exec, of the copy of tests and of the relay would have had to stay equal to the first. The agent got a transport: a UNIX socket for requests, one for the relay, a directory for the exchange. Everything it needs before it serves is done by `slot.sh` with the machine's own `unshare`, `mount`, `setpriv` and `chroot`, so the Rust workspace gained no `unsafe` and no dependency.
+- **What bounds root in a slot.** The capability bounding set is Docker's default without `CAP_MKNOD`: no `CAP_SYS_ADMIN`, so no mount, and no device node, since no device cgroup stands between a slot and the sandbox's disk. `/proc/sys`, `/proc/sysrq-trigger` and three more are read-only, `/proc/kcore` and others are masked, `/sys` is read-only, `/dev` is a tmpfs with six devices. A slot shares the sandbox's kernel: this is the isolation of a container, weaker than a microVM's, and the sandbox is the boundary to the outside.
+- **`mount --move` and `chroot`, not `pivot_root`.** After a pivot the shell would need `umount` from an image that may not have it, and the agent cannot detach the old root once its capabilities are bounded. Moving the new root over `/` leaves the old one under it, where no path leads: `..` at the top of a mount stack stays there.
+- **veth and nftables for the private network.** One /30 from 10.213.0.0/16 per slot, masquerade out, and two drops: a slot reaches neither another slot nor the sandbox itself, which is where envd listens. passt would have been one more package to install in every sandbox.
+- **The lower disk is mounted once.** One loop device per slot would hold the same pages once per slot in a sandbox of 8 GiB.
+- **cgroup v2 where the machine has it**, `memory.max` and `cpu.max` from the task, and `oomKills` from `memory.events`. Without it a slot has no limit, setup says so, and the capability `cgroup` is false.
+- **A bundle, not a checkout.** The sandbox's Node cannot run TypeScript, and a checkout with its modules is 300 MB. The launcher is linked statically against musl because the machine that builds it has a newer glibc than Debian 12.
+- **The lifetime is an upper bound.** A sandbox is paid before it runs and nothing comes back. The run places the worst case of each row, its setup, agent and verifier timeouts, longest first on the slot that is free soonest, and adds the setup limit for the bootstrap. For four Terminal-Bench tasks on three slots that is 5,400 s. It is honest and it is expensive, see the costs below, so an operator who knows the tasks names a shorter one.
+- **The operator's wallet may pay.** A Worker that pays needs a key in its variables. `nanoeval sandbox` is the other seam: any payer opens the sandbox, and its runner is an attached runner like any other.
+
+### What a real run found
+
+Six defects, none visible against the mock or in the first guest lanes:
+
+- A slot ran its commands with `SIGINT`, `SIGQUIT` and `SIGHUP` ignored, inherited from the detached shell that starts it. A Terminal-Bench verifier that interrupts a child timed out, and `cancel-async-tasks` failed with its own solution. The slot now starts through `env --default-signal`. A microVM never had this: its processes descend from the guest's init.
+- `slot.sh probe` ended the script when the machine could not run ns slots, instead of reporting it.
+- `slot.sh destroy` waited forever on a slot cgroup, because the file that names the machine's cgroup root had the name of the file that names a slot's.
+- `slot.sh tools` asked for KVM, so a runner without it could not unpack a disk.
+- `slot.sh destroy` and a runner's `down` of the same slot could each wait forever for the cgroup the other had just removed. It showed in one run of the network lane out of four.
+- A second run attached to the same sandbox would have started from the first run's runtime and setup. The runtime is now kept under its digest, and an attached runner gets a home per run.
+
+### Measurements
+
+Guest lanes: the ns lanes run inside a libkrun microVM of 8 vCPUs and 8 GiB that boots Debian 12 with Node 24 and has no KVM, against the Worker on the host, see [DESIGN.md](DESIGN.md#testing-without-root). Scripted, oracle, failures and a rerun, judge, network, restart, packing, and the oracle lane started through the bootstrap on Node 20.9.0 with blobs in R2: all passed. In the oracle lane of three tasks the median phases were 0.87 s for the environment, 0.24 s to attach the hand, 0.20 s for the solution and 0.47 s for the verifier, and a slot came up in 0.23 s.
+
+Blobs through the Worker under local workerd, one 1.40 GB packed disk, at a load average of 23: uploaded in 64 MiB parts at 131 MB/s, downloaded at 165 MB/s, and downloaded again with the stream cut three times, 14.4 s, digest equal.
+
+On E2B, one `desktop` sandbox for 1,200 s, the Worker under local workerd behind a quick tunnel, the wallet CLI of the operator as the payer, four runs attached one after another:
+
+| Step | Time |
+| --- | --- |
+| Paid request to the answer | 4.4 s |
+| Answer handed to `nanoeval sandbox` | 0.7 s |
+| Bootstrap: the 20.1 MB runtime through the tunnel, Node 24 from nodejs.org, setup | 21.7 s |
+| Sandbox created to rows claimed | 22.7 s |
+| Sandbox created to the first slot ready | 26.6 s |
+| A later run in the same sandbox, attach to rows claimed | 1.7 s |
+
+| Run | Rows | Result | Environment | Attach | Agent or solution | Verifier | Model |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Oracle, 4 Terminal-Bench 2.1 tasks, 3 slots, disks fetched | 4 | 3 passed, 1 failed on the signal defect | 4.8 s | 1.25 s | 0.95 s | 7.35 s | |
+| Oracle again after the fix, disks cached | 4 | 4 passed | 0.5 s | 1.05 s | 1.0 s | 7.85 s | |
+| `gpt-6-luna` on a ChatGPT plan, 2 tasks, before the fix | 2 | 1 passed, 1 failed | 0.4 s | 1.15 s | 24.5 s | 7.4 s | $0.0046 |
+| `gpt-6-luna`, 3 tasks, after the fix | 3 | 1 passed, 2 failed | 0.5 s | 1.1 s | 16.5 s | 7.3 s | $0.0047 |
+
+Times are medians per phase. The tasks are `cancel-async-tasks`, `fix-git`, `log-summary-date-ranges` and `openssl-selfsigned-cert`, each 1 CPU, 2 GiB and 10 GiB of storage. The 147 MB disk of `fix-git` was fetched through the tunnel, checked and unpacked in 8.5 s. No attempt ended as an error. The three model failures are answers the verifier refused: a wrong count in `log-summary-date-ranges` twice and a missed cancellation in `cancel-async-tasks`. The hands dialed `wss://` through the tunnel from private slots. Model cost is the harness's estimate. Each run was exported as a Harbor job.
+
+Seen inside a slot of the last run: no signal ignored, the bounded capability set, `memory.max` 2 GiB and `cpu.max` one CPU, a 9.9 GB root. envd at the gateway timed out, another slot's address timed out, and `https://example.com` answered 200.
+
+**Admission**, by the existing rule of 80 % of the machine's memory: the `desktop` sandbox reported 7,955 MB, so 6,364 MB, and ran three 2 GiB rows at once with the fourth claimed when one finished. A `code-interpreter-v1` sandbox of 2 GiB admits about 1.5 GiB, where a 2 GiB row counts as the whole machine and runs alone: it is the template for one row at a time, or for small tasks, and `--slots` above its two vCPUs gains nothing.
+
+**Cost.** Five paid requests, $0.196252 in all: the probe $0.001824, a rehearsal sandbox of 180 s $0.025408, the sandbox of the runs $0.16882, and two kills at $0.0001. The wallet settled each charge from its machine-token balance. Per attempt:
+
+| | Sandbox | Per attempt |
+| --- | --- | --- |
+| As paid: 1,200 s for 13 attempts, killed after 364 s | $0.16882 | $0.0130 |
+| What the first oracle run used: 60 s from creation to its last row | $0.0085 | $0.0021 |
+| What its run would have bought: 5,400 s | $0.7593 | $0.1898 |
+| Model, 5 attempts | $0.0093 | $0.0019 |
+
+The gap between the second and third rows is the price of buying the worst case up front.
+
+### Not verified
+
+- The Worker as the payer. `src/Payment.ts` with a key in the Worker ran against the mock only: no key was put in a Worker. The live answer lists four challenges and the mock one, so which the mppx client picks is untested.
+- `refreshes`, `pause`, `connect` and the other control routes, the templates other than `base` and `desktop`, and aarch64.
+- ns slots on a machine with root outside a microVM guest and E2B, ns slots on the machine's own network, and the attached-runner and disk-removal lanes on ns slots, which the guest harness does not carry.
+- An escape from an ns slot was reasoned about and probed, not audited.

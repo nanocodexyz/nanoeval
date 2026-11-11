@@ -29,7 +29,7 @@ The table says what was run. "The first version" is the flow before the eval tab
 | --- | --- |
 | Eval table (`Evals` Durable Object): rows, immutable versions, `nanoeval import`, `evals`, `eval` | Implemented, tested: unit tests for digests and versions, and every end-to-end lane imports before it runs |
 | Blob store by SHA-256: a directory on a machine | Implemented, tested. Terminal-Bench 2.1 is imported into one: 89 tasks, 19.2 GB of packed disks, in under 5 minutes |
-| Blob store by SHA-256: R2 through the Worker | Implemented, tested end to end under local workerd with small evals, single-request blobs only. Multipart uploads are unit tested against a mock. Not run against Cloudflare's R2 |
+| Blob store by SHA-256: R2 through the Worker | Implemented, tested end to end under local workerd: small evals, and one 1.40 GB disk uploaded in parts, downloaded, and downloaded again with the stream cut three times and resumed by range. Not run against Cloudflare's R2 |
 | Environment conversion at import (`sandbox/Converter.ts`), with no container engine | Implemented, tested: `nanoeval-krun image build`, `pack` and `unpack`. The 89 images of Terminal-Bench 2.1, one SWE-bench instance image, `python:3.12-slim` and the 14 Dockerfiles of this repository converted. The 89 disks have the same trees as disks made from `docker export`, apart from the files an engine adds. See [DESIGN.md](DESIGN.md#environment-conversion) for what a Dockerfile may use |
 | Host policy for the `RUN` steps of a Dockerfile (`import --ca-bundle`, `--slot-env`, `--slot-forward`) | Implemented, tested on a Linux machine whose network re-signs TLS and serves the Python and npm registries on its loopback: a fixture that installs with pip and npm is refused without the options and imports with them, five Terminal-Bench 2.1 tasks built from their Dockerfiles, and no disk holds the bundle, a variable or a forward. On the base layers of the published images the trees differ only in what the day of a build decides, see [DECISIONS.md](DECISIONS.md#2026-11-11-the-smaller-gaps) |
 | Run table (`Run` Durable Object): rows, claims, leases, CLI and API | Implemented, tested: unit tests for claims, leases, expiry and fencing, and end to end under local workerd |
@@ -42,7 +42,9 @@ The table says what was run. "The first version" is the flow before the eval tab
 | `nanoeval compare RUN...`: the agents of one or more runs in one table | Implemented, tested |
 | Local sandbox provider (`nanoeval sandboxd`) | Implemented, tested |
 | Slot backend `krun`, one libkrun microVM per slot | Implemented, tested on a Linux machine with KVM: every end-to-end lane, 32 microVMs at once, and Terminal-Bench 2.1 with the tasks' own solutions, imported once and run by two runners: 82 of the 89 pass, and all 89 rows end as they did when slots pulled images. [DECISIONS.md](DECISIONS.md#2026-11-11-no-container-engine-at-import-or-at-run-time) has the table |
-| Slot backend `dir` | Implemented, tested. For development and for lanes on a machine without KVM |
+| Slot backend `ns`, one set of namespaces per slot over the same disk, for a machine with root and no KVM | Implemented, tested inside a microVM guest without KVM (the slot test and the scripted, oracle, failures, judge, network, restart and packing lanes) and in E2B sandboxes. It shares the machine's kernel: see [ns slots](#ns-slots) |
+| A runner that picks its backend (`--backend auto`, the default of a run) | Implemented, tested: `krun` where `/dev/kvm` opens, `ns` where the runner is root |
+| Slot backend `dir` | Implemented, tested. For development and for lanes on a machine with neither KVM nor root |
 | Released `nanocode hand` in a slot, including Alpine images | Implemented, tested |
 | Real model run | Tested with `gpt-6-luna` on a ChatGPT plan login: 3 Terminal-Bench tasks of the imported eval, 2 passed and 1 ended as a `verifier` error that its rerun passed, and the end-to-end lane before the eval table. `claude-haiku-4-5` through the Anthropic API ran on the first version only |
 | Oracle run (`nanoeval run --oracle`): each task's own solution instead of a model | Implemented, tested |
@@ -65,7 +67,10 @@ The table says what was run. "The first version" is the flow before the eval tab
 | What uv downloads for a verifier, kept per task (`run --verifier-cache`, off by default) | Implemented for krun slots, tested end to end with a fixture, and on ten Terminal-Bench 2.1 tasks with their solutions: the same ten outcomes with and without it, and 60 s of verifier time against 103 to 120 s. Only an oracle's attempt fills it. apt and pip are not cached |
 | A floor on free disk for claims (`--free-disk-mb`) | Implemented, tested. It is reactive: it does not reserve what running attempts write later |
 | Orchestrator restart during a run | Tested: the Worker is killed with attempts in flight, restarts on the same state, and the run finishes |
-| E2B over MPP provider | Implemented against E2B's documented protocol and tested against a local mock. **No sandbox has been paid for or started.** A runner there has not run. Nobody has checked whether an E2B sandbox has KVM: without it, it runs `dir` environments only |
+| E2B sandboxes paid by the operator (`nanoeval sandbox`) | Run for real: a sandbox opened with an MPP wallet CLI, a runner attached in it, 13 attempts of Terminal-Bench 2.1 tasks on ns slots, with the tasks' solutions and with `gpt-6-luna`. See [Run it on E2B](#run-it-on-e2b) |
+| E2B sandboxes paid by the Worker (`--provider e2b`) | Implemented and tested against a local mock, with the bodies, the envd calls and the kill checked against the real service. **The Worker has not paid for a sandbox**: no key was put in one |
+| The runner runtime (`--runtime`, `nanoeval runtime`): the runner as one archive that a sandbox without a checkout starts from | Implemented, tested: in a guest on Node 20.9, and on E2B's `desktop` template, which has no Node |
+| A sandbox lifetime chosen by the run from the timeouts of its rows | Implemented, unit tested. Not exercised by a paid run: the sandboxes paid for had a lifetime named by hand |
 | `storage_mb` | The size of a krun slot's copy-on-write disk |
 | Images whose user is not root, and images without bash | Tested with a fixture: tests and solutions are put in place as root, and the agent and the verifier run as the image's user |
 | Codex models (`provider: codex`) | Tested on a ChatGPT plan login (`nanoeval worker --codex-login`). Not run with an OpenAI API key |
@@ -74,10 +79,9 @@ The table says what was run. "The first version" is the flow before the eval tab
 | A certificate bundle and variables for slots (`sandboxd --ca-bundle`, `--slot-env`) | Implemented, tested |
 | A private network per slot (`--network private`, the default for `krun` slots) | Implemented, tested on a Linux machine with KVM: a slot has its own loopback and ports, reaches the internet, and is reached neither by another slot nor by the host |
 | The shared host network (`--network host`) | Implemented. Attempts that listen on a fixed port are not isolated from each other there |
-| A hand of a private slot attached to a deployed Worker over `wss://` | Written, not run: no Worker is deployed |
+| A hand of a private slot attached to a Worker over `wss://` | Run from private ns slots in an E2B sandbox, through a tunnel in front of a local Worker. Not run from krun slots, and no Worker is deployed |
 | Listeners on the machine's loopback that private slots may reach (`sandboxd --slot-forward`) | Implemented, tested with a registry proxy on a machine's loopback |
 | Deployment to Cloudflare | Bundles with `wrangler deploy --dry-run`. Not deployed |
-| The `bwrap` slot backend | Planned |
 | A task that closes the network of its agent, its verifier or both (`allow_internet = false`, Harbor's `network_mode`) | Implemented for krun slots on a private network, tested end to end: a closed phase reaches neither the internet, by name or by address, nor the machine, and the attempt completes. Refused on `dir` slots and on `--network host`. A network allowlist is refused. No dataset shipped here closes a phase yet |
 | Tasks with a Compose file or MCP servers, separate verifier environments, `reward.json` | Refused, except `reward.json`, which is not read: a verifier that writes only it ends as a `verifier` error. Planned |
 | Prompt-cache cohorts, duration-ordered dispatch, R2 artifacts, MPP sessions | Planned |
@@ -111,7 +115,7 @@ node cli/nanoeval.ts run --eval samples \
 node cli/nanoeval.ts run --rerun RUN --wait
 ```
 
-`--out` writes the Harbor job directory. `nanoeval status`, `attempt`, `export` and `cancel` read a run later, and `attempt` lists the claims of a row. `nanoeval run --task DIR` does steps 3 and 4 at once, into the eval named `local`. A machine without KVM takes `--backend dir` in both steps: no isolation, for development.
+`--out` writes the Harbor job directory. `nanoeval status`, `attempt`, `export` and `cancel` read a run later, and `attempt` lists the claims of a row. `nanoeval run --task DIR` does steps 3 and 4 at once, into the eval named `local`. A machine without KVM that has root runs the same evals in [ns slots](#ns-slots): a runner picks them by itself, and `--backend ns` names them. A machine with neither takes `--backend dir` in both steps: no isolation, for development.
 
 Blobs go to a directory by default, `~/.local/share/nanoeval/store` (`--store DIR` or `NANOEVAL_STORE`), which the runners of the same machine read. `--store r2` uploads them through the Worker into its `BLOBS` bucket instead, and runners then fetch them through their run. A runner keeps what it fetched, verified, in `~/.cache/nanoeval` (`--cache` or `NANOEVAL_CACHE`). An import keeps the image layers it read from registries in `oci` under that cache (`--layers` or `NANOEVAL_LAYERS`), so importing a dataset again downloads none of them.
 
@@ -242,15 +246,50 @@ The machine that imports needs the same things and nothing more: the launcher pu
 
 Unpacked disks are kept in `~/.cache/nanoeval/disks` (`NANOEVAL_CACHE` moves the cache) until `--disks remove` or `nanoeval prune` removes them. With `--network host` a slot shares the host's sockets, with the limits listed in [DESIGN.md](DESIGN.md#krun-slots).
 
+### ns slots
+
+`--backend ns` boots the same disks without a microVM, for a machine that has root and no KVM, such as a remote sandbox. A runner picks it by itself there. The machine of a runner needs:
+
+- Root, and a kernel with overlayfs, loop devices, namespaces and, for limits, cgroup v2 with the memory controller.
+- `unshare`, `setpriv`, `mount`, `losetup` and `mountpoint` from util-linux, `chroot` and `env --default-signal` from coreutils 8.31 or later, `mke2fs` and `pgrep`.
+- `ip` and `nft` for the private network, and a resolver that is not on the machine's loopback.
+- The launcher, as for krun slots. It needs neither KVM nor libkrunfw here, and `nanoeval runtime` builds one that is linked statically.
+
+Each slot gets its own mount, PID, IPC, UTS, cgroup and network namespaces, the task's memory and CPUs as cgroup limits, a root that grows to `storage_mb`, and a capability set without mounts and device nodes. It shares the machine's kernel, so it keeps attempts apart as a container does and less strongly than a microVM. [DESIGN.md](DESIGN.md#ns-slots) says what a slot may and may not do.
+
 ## Run it on E2B
 
-Not run against the real service, and narrower than before. An environment is a disk that a microVM boots, which needs KVM in the sandbox, and nobody has checked whether an E2B sandbox has it. Until someone does, assume it has none: an E2B sandbox can then run `dir` environments only, with no isolation between its slots. What exists is the provider (create, exec, write, kill over MPP) and a run that starts `nanoeval runner` in the sandbox, which needs a template with Node 24 and this repository. Nothing was built for KVM inside E2B.
+An E2B sandbox is a machine with root and no KVM: one was probed, see [DECISIONS.md](DECISIONS.md#2026-11-11-e2b-for-real-slots-without-kvm-a-runner-without-a-checkout-a-paid-run). Its runner boots the same environment disks in [ns slots](#ns-slots), several per sandbox, and is started from one archive that the run publishes, so the template needs nothing of nanoeval's. The Worker has to be reachable from the sandbox, for the runner, its blobs and the hands: a deployed Worker, or a tunnel in front of a local one.
 
 ```sh
-node scripts/e2b-quote.ts code-interpreter-v1 3600   # the live price, nothing is paid
+node scripts/e2b-quote.ts desktop 1800      # the live price of 8 vCPUs and 8 GiB for 30 minutes, nothing is paid
+
+node cli/nanoeval.ts worker --token "$TOKEN" --public-url https://WORKER.example
+node cli/nanoeval.ts import terminal-bench-2.1 --only fix-git --only openssl-selfsigned-cert --store r2
+
+# The operator pays: any MPP client opens the sandbox, and nanoeval attaches a runner in it.
+node cli/nanoeval.ts run --eval terminal-bench-2.1 --oracle --sandboxes 0 --runtime --slots 3   # prints RUN
+tempo request -X POST --json '{"templateID":"desktop","timeout":1800}' -o sandbox.json https://mpp.e2b.dev/sandboxes
+node cli/nanoeval.ts sandbox --run RUN --e2b sandbox.json --slots 3
+node cli/nanoeval.ts status RUN
+
+# The Worker pays, with TEMPO_PRIVATE_KEY in its variables.
+node cli/nanoeval.ts run --eval terminal-bench-2.1 --oracle --provider e2b --template desktop --slots 3 \
+  --sandbox-budget-usd 1 --wait
 ```
 
-Every MPP charge is checked against `--sandbox-budget-usd` before it is signed and is listed under `payments` in the run's status. A machine with KVM that attaches a runner to a deployed Worker is the path for microVM slots off the local machine.
+| | State |
+| --- | --- |
+| The operator pays | Run for real: four runs in one `desktop` sandbox, 13 attempts, oracle and `gpt-6-luna`, three slots at once, no attempt errored |
+| The Worker pays | The provider and the payer ran against a local mock only. No key was put in a Worker |
+| envd: commands, files, the access token | Run for real |
+| `DELETE /sandboxes/ID` | Run for real |
+
+**What it costs.** E2B bills $0.0001 per request and, when a sandbox is created, its whole lifetime: $0.0000133 per vCPU-second and $0.000004275 per GiB-second, which is $0.127 an hour for `code-interpreter-v1` (2 vCPUs, 2 GiB) and $0.506 for `desktop` (8 vCPUs, 8 GiB). Nothing is refunded for a sandbox that is killed early. A run that opens sandboxes itself buys the longest its rows can keep the slots busy, from their timeouts, which for Terminal-Bench is hours: name `--sandbox-timeout-sec` when you know better. Every charge the Worker signs is checked against `--sandbox-budget-usd` first and listed under `payments` in the run's status.
+
+**Which template.** A runner admits rows by 80 % of the sandbox's memory. `desktop` ran three Terminal-Bench rows of 2 GiB at once. `code-interpreter-v1` runs one such row at a time. Over MPP only E2B's public templates exist.
+
+**What isolates what.** ns slots share the sandbox's kernel: they keep attempts apart as containers do, less strongly than microVMs, and the sandbox is the boundary to the outside. The file a paid request answers with holds the sandbox's access token. Keep it private and delete it with the sandbox.
 
 ## Checks
 
@@ -274,6 +313,9 @@ NANOEVAL_E2E_SCENARIO=network npm run e2e  # what a private slot reaches and wha
 NANOEVAL_E2E_SCENARIO=closed npm run e2e   # tasks that close the network of the agent, the verifier or both
 NANOEVAL_E2E_SCENARIO=cache npm run e2e    # a verifier that finds what an oracle run kept for it
 NANOEVAL_E2E_SCENARIO=disks npm run e2e    # cached disks removed when no row needs them; also disk, packing
+NANOEVAL_E2E_BACKEND=ns npm run e2e        # ns slots: as root on this machine, or inside a microVM guest without KVM
+NANOEVAL_E2E_BACKEND=ns NANOEVAL_E2E_SCENARIO=network npm run e2e         # what a private ns slot reaches
+NANOEVAL_E2E_BACKEND=ns NANOEVAL_E2E_MODEL=oracle NANOEVAL_E2E_RUNTIME=1 npm run e2e   # the runner from its archive
 NANOEVAL_E2E_MODEL=anthropic npm run e2e   # a real model with ANTHROPIC_API_KEY
 NANOEVAL_E2E_MODEL=codex-plan npm run e2e  # a real model on the ChatGPT plan of ~/.codex/auth.json
 (cd krun && cargo clippy --all-targets -- -D warnings && cargo test)   # the launcher and its image converter
@@ -282,7 +324,7 @@ python scripts/harbor-check.py output/job  # with Harbor's Python: load an expor
 
 The scripted model answers the harness with fixed tool calls, so the end-to-end test needs no API key. It still imports a real eval and runs the real Worker, the real nanocode-ts harness, a real runner, the released hand and the real verifiers.
 
-CI runs these on a GitHub-hosted runner, which has no libkrunfw: the `krun` lanes, the converter's test and the launcher's integration tests skip there, and only the directory lanes run, so no hosted lane isolates an attempt or converts an image. The workflow has not run on GitHub since the eval table and the converter landed. Every step of it was run on a Linux machine with KVM instead, see [DECISIONS.md](DECISIONS.md).
+CI runs these on a GitHub-hosted runner, which has no libkrunfw: the `krun` lanes, the converter's test and the launcher's integration tests skip there, and only the directory lanes run, so no hosted lane isolates an attempt or converts an image. The `ns` lanes skip there too: the test is not root, and the guest it would boot needs KVM. The workflow has not run on GitHub since the eval table and the converter landed. Every step of it was run on a Linux machine with KVM instead, see [DECISIONS.md](DECISIONS.md).
 
 ## Layout
 
@@ -290,13 +332,13 @@ CI runs these on a GitHub-hosted runner, which has no libkrunfw: the `krun` lane
 | --- | --- |
 | `worker/` | The Worker: routes, the `Evals` and `Run` objects, the R2 blob routes, the harness sessions |
 | `src/` | Host-agnostic modules: the eval row and its versions, the run ledger, the runner protocol, tasks, results, admission, budget, providers |
-| `sandbox/` | `Runner.ts`, the task runner. `slot.sh`, one attempt in one slot. `Store.ts`, the blob store and the cache. `Converter.ts`, where an environment becomes a disk through the launcher. `Prune.ts`, what can go from the layer cache and from a directory store. `Sandboxd.ts`, the local sandbox daemon |
+| `sandbox/` | `Runner.ts`, the task runner, and `Main.ts`, its entry when it is bundled into one file. `slot.sh`, one attempt in one slot. `Store.ts`, the blob store and the cache. `Converter.ts`, where an environment becomes a disk through the launcher. `Prune.ts`, what can go from the layer cache and from a directory store. `Sandboxd.ts`, the local sandbox daemon |
 | `krun/` | The Rust workspace: the libkrun binding, the launcher and the guest binary of the krun backend, the image converter (`nanoeval-krun image`), and `nanoeval-net`, the relay of a private slot |
-| `cli/` | The `nanoeval` command and the import pipeline |
+| `cli/` | The `nanoeval` command, the import pipeline, and `Runtime.ts`, which builds the archive a remote sandbox starts its runner from |
 | `datasets/` | The dataset adapters, and the graders they write into tasks |
 | `scripts/` | `install-linux.sh`, the E2B price quote, and `harbor-check.py`, which loads an exported job with Harbor's own models |
 | `tasks/` | Three small Harbor tasks from gakonst/nanoeval |
-| `test/` | Unit tests, the end-to-end test and its failure fixtures |
+| `test/` | Unit tests, the end-to-end test and its failure fixtures, and `Guest.ts`, the microVM guest that ns lanes run in on a machine without root |
 
 ## License
 

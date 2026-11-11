@@ -205,6 +205,37 @@ jobs:
           NANOEVAL_E2E_MODEL: installed
           NANOEVAL_E2E_SCENARIO: resume
           NANOEVAL_E2E_SLOTS: '8'
+      - name: End to end, ns slots, skipped where the test is not root and no guest can boot
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: ns
+      - name: End to end, ns slots, oracle, skipped where the test is not root and no guest can boot
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: ns
+          NANOEVAL_E2E_MODEL: oracle
+          NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
+          NANOEVAL_E2E_ATTEMPTS: '1'
+          NANOEVAL_E2E_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+      - name: End to end, ns slots, failure kinds and a rerun, skipped where the test is not root and no guest can boot
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: ns
+          NANOEVAL_E2E_SCENARIO: failures
+      - name: End to end, ns slots, slot networks, skipped where the test is not root and no guest can boot
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: ns
+          NANOEVAL_E2E_SCENARIO: network
+      - name: End to end, ns slots, the runner from its runtime archive, skipped where the test is not root and no guest can boot
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: ns
+          NANOEVAL_E2E_MODEL: oracle
+          NANOEVAL_E2E_RUNTIME: '1'
+          NANOEVAL_E2E_STORE: r2
+          NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
+          NANOEVAL_E2E_ATTEMPTS: '1'
       - name: Keep the logs of a failed run
         if: failure()
         uses: actions/upload-artifact@v4
