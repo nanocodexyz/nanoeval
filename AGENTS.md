@@ -23,7 +23,7 @@ These principles come from nanocodexyz/nanocode's `AGENTS.md` and nanocodexyz/na
 - The harness runs outside the sandbox, as a nanocode-ts session. The sandbox holds the task environment and a nanocode hand, nothing else of ours.
 - nanoeval sends models only nanocode's native prompts and tool text, and the task's `instruction.md` unchanged.
 - An eval is imported once and never changed: a version is named by a digest over its rows, and every file a row needs is a blob named by its SHA-256. A reader verifies a blob before it uses it.
-- An environment is converted when it is imported, never when an attempt starts. `sandbox/Converter.ts` is the only place that knows how, and nothing outside its temporary implementation calls Docker.
+- An environment is converted when it is imported, never when an attempt starts. `sandbox/Converter.ts` is the only place that knows how, and it runs the launcher in `krun/`. Nothing in this repository calls a container engine, at import or at run time.
 - A run is rows, and its ledger is the authority. A runner claims, runs and reports facts. The run decides what they mean, and only the holder of a row's current claim token writes to it.
 - A sandbox provider creates, executes, writes and kills, and a run asks it only to start a runner. Everything about one slot belongs in `sandbox/slot.sh`, so every machine runs an attempt the same way. Admission belongs to the runner of the machine it describes.
 - `src/` uses only the standard web platform types: no Node APIs, no `@cloudflare/workers-types`. `worker/` holds the Cloudflare code, `cli/` and the TypeScript of `sandbox/` the Node code. Table logic that must be tested without workerd is written against `src/Sql.ts`.
