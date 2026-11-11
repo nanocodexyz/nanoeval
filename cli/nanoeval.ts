@@ -40,14 +40,16 @@ const usage = `nanoeval <command>
   datasets  List the datasets that import knows, with the source each is pinned to and what
             was run end to end.
   import    --url URL --token T (DATASET | --task DIR...) [--eval NAME] [--only ID]... [--limit N]
-            [--backend krun|dir] [--store DIR|r2] [--cache DIR] [--sources DIR] [--report FILE]
-            [--keep-going]
+            [--backend krun|dir] [--store DIR|r2] [--cache DIR] [--layers DIR] [--sources DIR]
+            [--report FILE] [--keep-going]
             Import a dataset, or local task directories, as a version of a durable eval:
             the adapter writes each task, its instruction, tests and solution become blobs
             kept apart, and its environment is converted once into the disk a microVM boots
             (krun) or kept as files (dir). Blobs go to a directory store (--store DIR,
-            ~/.local/share/nanoeval/store) or to R2 through the Worker (--store r2). The eval
-            is named after the dataset unless --eval names it. --report writes the time each
+            ~/.local/share/nanoeval/store) or to R2 through the Worker (--store r2). The
+            layers of the images it reads from their registries are kept in --layers
+            (CACHE/oci), so a later import downloads none of them again. The eval is named
+            after the dataset unless --eval names it. --report writes the time each
             task took in the adapter, the conversion and the upload. With --keep-going, a
             task whose environment does not convert is named and left out, and the rest
             become the version.
@@ -319,6 +321,7 @@ export async function importEval(
     cache: string
     cases: AsyncIterable<Dataset.Case>
     dataset: string
+    layers: string
     log?(line: string): void
     name: string
     refused?(id: string, error: Error): void
@@ -328,7 +331,10 @@ export async function importEval(
 ): Promise<{ tasks: Eval.Task[]; timings: Import.Timing[]; version: Eval.Version }> {
   const { tasks, timings } = await Import.cases(input.cases, {
     cache: input.cache,
-    converter: Converter.create({ home: Path.join(input.cache, 'converter') }),
+    converter: Converter.create({
+      home: Path.join(input.cache, 'converter'),
+      layers: input.layers,
+    }),
     format: input.backend === 'krun' ? 'disk' : 'dir',
     ...(input.log ? { log: input.log } : {}),
     ...(input.refused ? { refused: input.refused } : {}),
@@ -378,6 +384,7 @@ async function main(): Promise<void> {
       host: { default: '127.0.0.1', type: 'string' },
       judge: { type: 'string' },
       'keep-going': { default: false, type: 'boolean' },
+      layers: { type: 'string' },
       'lease-sec': { default: '60', type: 'string' },
       limit: { type: 'string' },
       'memory-mb': { type: 'string' },
@@ -660,6 +667,7 @@ async function main(): Promise<void> {
       cache,
       cases: source,
       dataset: target.dataset,
+      layers: Path.resolve(values.layers ?? Converter.defaultLayers(cache)),
       log: (line) => console.error(line),
       name: target.name,
       source: target.source,

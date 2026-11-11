@@ -166,8 +166,10 @@ setup_krun() {
   host=$(built nanoeval-krun)
   guest=$(built nanoeval-krun-guest "$(uname -m)-unknown-linux-musl")
   mkdir -p "$krun/boot/dev" "$krun/boot/mnt" "$krun/boot/proc" "$krun/boot/sys" "$disks"
-  cp "$host" "$krun/nanoeval-krun"
-  cp "$guest" "$krun/boot/nanoeval-krun-guest"
+  cp "$host" "$krun/nanoeval-krun.$$"
+  mv "$krun/nanoeval-krun.$$" "$krun/nanoeval-krun"
+  cp "$guest" "$krun/nanoeval-krun-guest.$$"
+  mv "$krun/nanoeval-krun-guest.$$" "$krun/boot/nanoeval-krun-guest"
   awk '$1 == "nameserver"' /etc/resolv.conf >"$krun/resolv.conf"
   [ -s "$krun/resolv.conf" ] || die 'the krun backend found no nameserver in /etc/resolv.conf'
   if awk '$2 ~ /^127\./ || $2 == "::1" { loopback = 1 } END { exit !loopback }' "$krun/resolv.conf"; then
@@ -258,27 +260,6 @@ cmd_tools() {
   setup_krun
 }
 
-cmd_disk() {
-  local storage=$1 out=$2 vcpus=${3:-2} memory=${4:-2048}
-  [ -x "$krun/nanoeval-krun" ] || die 'disk needs the launcher that tools installs'
-  pid='' tmp=''
-  tmp=$(mktemp -d "$out.XXXXXX")
-  trap 'if [ -n "$pid" ]; then kill -KILL "$pid" 2>/dev/null; fi; if [ -n "$tmp" ]; then rm -rf "$tmp"; fi' EXIT
-  format "$tmp/disk.ext4" "$storage"
-  : >"$tmp/vm.log"
-  (cd "$tmp" && exec "$krun/nanoeval-krun" vm --boot "$krun/boot" --disk disk.ext4 --socket vm.sock --cpus "$vcpus" --memory-mib "$memory") >"$tmp/vm.log" 2>&1 </dev/null &
-  pid=$!
-  vm "$tmp" ready --log vm.log --pid "$pid" --socket vm.sock
-  vm "$tmp" unpack --socket vm.sock
-  vm "$tmp" stop --socket vm.sock
-  wait "$pid"
-  pid=''
-  chmod a-w "$tmp/disk.ext4"
-  mv "$tmp/disk.ext4" "$out"
-  trap - EXIT
-  rm -rf "$tmp"
-}
-
 cmd__up() {
   local slot=$1 backend=$2 cpus=$3 memory=$4 network=$5 storage=$6 base=${7:-}
   local dir=$home/slots/$slot archive
@@ -314,7 +295,6 @@ cmd__up() {
       vcpus=$(awk -v cpus="$cpus" 'BEGIN { whole = int(cpus); print (whole < cpus ? whole + 1 : whole) }')
       printf '%s\n' "$base" >"$dir/disk"
       cp "$base.env" "$dir/image.env"
-      grep -q '^PATH=' "$dir/image.env" || printf 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n' >>"$dir/image.env"
       cp "$base.user" "$dir/user"
       workdir=$(cat "$base.workdir")
       printf '%s\n' "${workdir:-/}" >"$dir/workdir"
@@ -606,10 +586,10 @@ cmd_file() {
 }
 
 command=${1:-}
-[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|tools|disk|up|hand|solve|verify|down|destroy|prune|status|log|files|file> ...'
+[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|tools|up|hand|solve|verify|down|destroy|prune|status|log|files|file> ...'
 shift
 case $command in
-  probe | setup | _setup | tools | disk | up | _up | hand | _hand | solve | _solve | verify | _verify | down | destroy | prune | status | log | files | file)
+  probe | setup | _setup | tools | up | _up | hand | _hand | solve | _solve | verify | _verify | down | destroy | prune | status | log | files | file)
     "cmd_$command" "$@"
     ;;
   *) die "unknown command: $command" ;;

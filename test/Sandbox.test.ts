@@ -472,7 +472,10 @@ test(
       Fs.mkdirSync(cache + '/disks', { recursive: true })
       await Host.describe(
         disk,
-        await Converter.create({ home: cache + '/converter' }).convert(
+        await Converter.create({
+          home: cache + '/converter',
+          layers: Converter.defaultLayers(cache),
+        }).convert(
           { context: 'tasks/extract-todos/environment', storageMb: task.environment.storageMb },
           disk + '.ext4',
         ),

@@ -23,7 +23,6 @@ export function missing(network: 'host' | 'private' = 'host'): string | undefine
   })
   if (!String(libraries.stdout).includes('libkrunfw.so.5') && !process.env['LD_LIBRARY_PATH'])
     return 'libkrunfw.so.5'
-  if (spawnSync('docker', ['info']).status !== 0) return 'a working Docker daemon'
   const cargo =
     spawnSync('cargo', ['--version']).status === 0 ||
     Fs.existsSync(Path.join(Os.homedir(), '.cargo/bin/cargo'))

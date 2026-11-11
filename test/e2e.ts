@@ -432,7 +432,10 @@ async function main(): Promise<void> {
     const store = blobStore(storeKind === 'r2' ? 'r2' : storeRoot, { token, url })
     const options: Import.Options = {
       cache,
-      converter: Converter.create({ home: Path.join(cache, 'converter') }),
+      converter: Converter.create({
+        home: Path.join(cache, 'converter'),
+        layers: Converter.defaultLayers(cache),
+      }),
       format: backend === 'krun' ? 'disk' : 'dir',
       store,
     }
