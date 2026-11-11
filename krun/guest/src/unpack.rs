@@ -10,15 +10,79 @@ use std::{
     time::{Duration, UNIX_EPOCH},
 };
 
-use nix::sys::stat::{Mode, SFlag, makedev, mknod};
-use tar::{Archive, EntryType};
+use nix::{
+    fcntl::AT_FDCWD,
+    sys::{
+        stat::{Mode, SFlag, UtimensatFlags, makedev, mknod, utimensat},
+        time::TimeSpec,
+    },
+};
+use tar::{Archive, Entry, EntryType};
 use wire::Frame;
 
-struct Input<'a> {
+use crate::step;
+
+pub(crate) struct Input<'a> {
     connection: &'a File,
     ended: bool,
     offset: usize,
     pending: Vec<u8>,
+}
+
+impl<'a> Input<'a> {
+    pub(crate) fn new(connection: &'a File) -> Self {
+        Self {
+            connection,
+            ended: false,
+            offset: 0,
+            pending: Vec::new(),
+        }
+    }
+}
+
+pub(crate) fn node<R: Read>(entry: &Entry<'_, R>, path: &Path) -> io::Result<()> {
+    let header = entry.header();
+    let kind = match header.entry_type() {
+        EntryType::Block => SFlag::S_IFBLK,
+        EntryType::Char => SFlag::S_IFCHR,
+        _ => SFlag::S_IFIFO,
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let device = if kind == SFlag::S_IFIFO {
+        0
+    } else {
+        makedev(
+            u64::from(header.device_major()?.unwrap_or(0)),
+            u64::from(header.device_minor()?.unwrap_or(0)),
+        )
+    };
+    mknod(path, kind, Mode::empty(), device)?;
+    lchown(
+        path,
+        Some(u32::try_from(header.uid()?).map_err(io::Error::other)?),
+        Some(u32::try_from(header.gid()?).map_err(io::Error::other)?),
+    )?;
+    fs::set_permissions(path, Permissions::from_mode(header.mode()?))?;
+    stamp(
+        path,
+        i64::try_from(header.mtime()?).map_err(io::Error::other)?,
+    )
+}
+
+pub(crate) fn stamp(path: &Path, seconds: i64) -> io::Result<()> {
+    let time = TimeSpec::new(seconds, 0);
+    step(
+        &format!("set the time of {}", path.display()),
+        utimensat(
+            AT_FDCWD,
+            path,
+            &time,
+            &time,
+            UtimensatFlags::NoFollowSymlink,
+        ),
+    )
 }
 
 impl Read for Input<'_> {
@@ -50,12 +114,7 @@ impl Read for Input<'_> {
 
 pub(crate) fn run(connection: &File, to: &[u8]) -> io::Result<()> {
     let to = Path::new(OsStr::from_bytes(to));
-    let mut archive = Archive::new(Input {
-        connection,
-        ended: false,
-        offset: 0,
-        pending: Vec::new(),
-    });
+    let mut archive = Archive::new(Input::new(connection));
     archive.set_overwrite(true);
     archive.set_preserve_mtime(true);
     archive.set_preserve_ownerships(true);
@@ -64,39 +123,15 @@ pub(crate) fn run(connection: &File, to: &[u8]) -> io::Result<()> {
     let mut directories = Vec::new();
     for entry in archive.entries()? {
         let mut entry = entry?;
-        let kind = match entry.header().entry_type() {
-            EntryType::Block => SFlag::S_IFBLK,
-            EntryType::Char => SFlag::S_IFCHR,
-            EntryType::Directory => {
-                directories.push(entry);
-                continue;
+        match entry.header().entry_type() {
+            EntryType::Block | EntryType::Char | EntryType::Fifo => {
+                node(&entry, &to.join(entry.path()?))?;
             }
-            EntryType::Fifo => SFlag::S_IFIFO,
+            EntryType::Directory => directories.push(entry),
             _ => {
                 entry.unpack_in(to)?;
-                continue;
             }
-        };
-        let header = entry.header();
-        let path = to.join(entry.path()?);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
         }
-        let device = makedev(
-            u64::from(header.device_major()?.unwrap_or(0)),
-            u64::from(header.device_minor()?.unwrap_or(0)),
-        );
-        mknod(
-            &path,
-            kind,
-            Mode::from_bits_truncate(header.mode()?),
-            device,
-        )?;
-        lchown(
-            &path,
-            Some(u32::try_from(header.uid()?).map_err(io::Error::other)?),
-            Some(u32::try_from(header.gid()?).map_err(io::Error::other)?),
-        )?;
     }
     directories.sort_by(|left, right| right.path_bytes().cmp(&left.path_bytes()));
     for directory in directories {

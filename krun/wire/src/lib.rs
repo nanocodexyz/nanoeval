@@ -3,7 +3,12 @@ use std::{
     net::Ipv4Addr,
 };
 
+pub const BUILD: &str = "build";
+pub const BUILD_CONTEXT: &str = "/mnt/context";
+pub const BUILD_ROOT: &str = "/mnt/root";
+pub const BUILD_SOURCE: &str = "/mnt/source";
 pub const CHUNK: usize = 64 * 1024;
+pub const CONTEXT_TAG: &str = "context";
 pub const FORWARD: &str = "forward=";
 pub const GUEST_ADDRESS: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 15);
 pub const GUEST_GATEWAY: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 2);
@@ -17,10 +22,15 @@ pub const PORT: u32 = 1024;
 pub const PRIVATE: &str = "private";
 pub const READY: &str = "nanoeval-krun-guest: listening";
 pub const RELAY_PORT: u32 = 1025;
+pub const ROOT: &str = "root";
 pub const RUNTIME_TAG: &str = "rt";
+pub const SOURCES: &str = "sources=";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Request {
+    Apply {
+        root: Vec<u8>,
+    },
     CopyIn {
         from: Vec<u8>,
         to: Vec<u8>,
@@ -36,8 +46,32 @@ pub enum Request {
         forwards: Vec<Vec<u8>>,
         user: Vec<u8>,
     },
+    Install {
+        from: Vec<u8>,
+        into: bool,
+        keep_owner: bool,
+        root: Vec<u8>,
+        sources: Vec<Vec<u8>>,
+        to: Vec<u8>,
+    },
+    Mkdir {
+        path: Vec<u8>,
+        root: Vec<u8>,
+        user: Vec<u8>,
+    },
     Ping,
+    Run {
+        arguments: Vec<Vec<u8>>,
+        directory: Vec<u8>,
+        environment: Vec<Vec<u8>>,
+        resolver: Vec<u8>,
+        root: Vec<u8>,
+        user: Vec<u8>,
+    },
     Stop,
+    Tree {
+        root: Vec<u8>,
+    },
     Unpack {
         to: Vec<u8>,
     },
@@ -82,6 +116,16 @@ fn read_bytes(reader: &mut impl Read) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
+fn read_flag(reader: &mut impl Read) -> io::Result<bool> {
+    let mut flag = [0; 1];
+    reader.read_exact(&mut flag)?;
+    match flag[0] {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(invalid("a flag is neither 0 nor 1")),
+    }
+}
+
 fn read_list(reader: &mut impl Read) -> io::Result<Vec<Vec<u8>>> {
     let count = read_u32(reader)?;
     (0..count).map(|_| read_bytes(reader)).collect()
@@ -121,6 +165,52 @@ impl Request {
                 buffer.push(5);
                 write_bytes(&mut buffer, to)?;
             }
+            Self::Apply { root } => {
+                buffer.push(6);
+                write_bytes(&mut buffer, root)?;
+            }
+            Self::Install {
+                from,
+                into,
+                keep_owner,
+                root,
+                sources,
+                to,
+            } => {
+                buffer.push(7);
+                write_bytes(&mut buffer, from)?;
+                buffer.push(u8::from(*into));
+                buffer.push(u8::from(*keep_owner));
+                write_bytes(&mut buffer, root)?;
+                write_list(&mut buffer, sources)?;
+                write_bytes(&mut buffer, to)?;
+            }
+            Self::Mkdir { path, root, user } => {
+                buffer.push(8);
+                write_bytes(&mut buffer, path)?;
+                write_bytes(&mut buffer, root)?;
+                write_bytes(&mut buffer, user)?;
+            }
+            Self::Run {
+                arguments,
+                directory,
+                environment,
+                resolver,
+                root,
+                user,
+            } => {
+                buffer.push(9);
+                write_list(&mut buffer, arguments)?;
+                write_bytes(&mut buffer, directory)?;
+                write_list(&mut buffer, environment)?;
+                write_bytes(&mut buffer, resolver)?;
+                write_bytes(&mut buffer, root)?;
+                write_bytes(&mut buffer, user)?;
+            }
+            Self::Tree { root } => {
+                buffer.push(10);
+                write_bytes(&mut buffer, root)?;
+            }
         }
         writer.write_all(&buffer)?;
         writer.flush()
@@ -156,6 +246,33 @@ impl Request {
             4 => Ok(Self::Stop),
             5 => Ok(Self::Unpack {
                 to: read_bytes(reader)?,
+            }),
+            6 => Ok(Self::Apply {
+                root: read_bytes(reader)?,
+            }),
+            7 => Ok(Self::Install {
+                from: read_bytes(reader)?,
+                into: read_flag(reader)?,
+                keep_owner: read_flag(reader)?,
+                root: read_bytes(reader)?,
+                sources: read_list(reader)?,
+                to: read_bytes(reader)?,
+            }),
+            8 => Ok(Self::Mkdir {
+                path: read_bytes(reader)?,
+                root: read_bytes(reader)?,
+                user: read_bytes(reader)?,
+            }),
+            9 => Ok(Self::Run {
+                arguments: read_list(reader)?,
+                directory: read_bytes(reader)?,
+                environment: read_list(reader)?,
+                resolver: read_bytes(reader)?,
+                root: read_bytes(reader)?,
+                user: read_bytes(reader)?,
+            }),
+            10 => Ok(Self::Tree {
+                root: read_bytes(reader)?,
             }),
             _ => Err(invalid("unknown request kind")),
         }
@@ -219,6 +336,9 @@ mod tests {
     #[test]
     fn requests_round_trip() {
         let requests = [
+            Request::Apply {
+                root: b"/mnt/root".to_vec(),
+            },
             Request::CopyIn {
                 from: b"tests".to_vec(),
                 to: b"/tests".to_vec(),
@@ -234,8 +354,32 @@ mod tests {
                 forwards: vec![b"127.0.0.1:8787".to_vec()],
                 user: Vec::new(),
             },
+            Request::Install {
+                from: b"/mnt/context".to_vec(),
+                into: true,
+                keep_owner: false,
+                root: b"/mnt/root".to_vec(),
+                sources: vec![b"notes.md".to_vec()],
+                to: b"/app".to_vec(),
+            },
+            Request::Mkdir {
+                path: b"/app".to_vec(),
+                root: b"/mnt/root".to_vec(),
+                user: b"worker".to_vec(),
+            },
             Request::Ping,
+            Request::Run {
+                arguments: vec![b"/bin/sh".to_vec(), b"-c".to_vec(), b"true".to_vec()],
+                directory: b"/".to_vec(),
+                environment: vec![b"PATH=/bin".to_vec()],
+                resolver: b"nameserver 10.0.2.3\n".to_vec(),
+                root: b"/mnt/root".to_vec(),
+                user: Vec::new(),
+            },
             Request::Stop,
+            Request::Tree {
+                root: b"/mnt/source/0".to_vec(),
+            },
             Request::Unpack { to: b"/".to_vec() },
         ];
         for request in requests {

@@ -35,10 +35,10 @@ pub(crate) struct Spec {
     pub(crate) user: Vec<u8>,
 }
 
-struct Account {
-    gid: u32,
+pub(crate) struct Account {
+    pub(crate) gid: u32,
     home: Vec<u8>,
-    uid: u32,
+    pub(crate) uid: u32,
 }
 
 fn invalid(message: String) -> io::Error {
@@ -50,7 +50,7 @@ fn number(text: &str, what: &str) -> io::Result<u32> {
         .map_err(|_| invalid(format!("unknown {what}: {text}")))
 }
 
-fn account(spec: &[u8]) -> io::Result<Account> {
+pub(crate) fn account(spec: &[u8]) -> io::Result<Account> {
     let spec = str::from_utf8(spec).map_err(|_| invalid("the user is not UTF-8".to_owned()))?;
     let (user, group) = spec
         .split_once(':')

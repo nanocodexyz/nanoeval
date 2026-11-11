@@ -4,19 +4,29 @@ use net::netlink::{self, Interface};
 
 use nix::{
     mount::{MntFlags, MsFlags, mount, umount2},
+    sys::stat::{Mode, umask},
     unistd::{chdir, pivot_root, setsid},
 };
 
-use crate::{NONE, step};
+use crate::{NONE, build, step};
 
 const HOSTS: &str = "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n";
+const LOST_AND_FOUND: &str = "lost+found";
 const PID_MAX: &str = "/proc/sys/kernel/pid_max";
 const PID_MAX_DEFAULT: &str = "32768";
 const OVERLAY: &str = "lowerdir=/mnt/lower,upperdir=/mnt/upper/upper,workdir=/mnt/upper/work";
 const RESOLVER: &str = "/opt/nanoeval/krun/resolv.conf";
 const RUNTIME: &str = "/mnt/root/opt/nanoeval";
+const SOURCE_OPTIONS: &str = "noload";
+
+pub(crate) struct Build {
+    pub(crate) context: bool,
+    pub(crate) root: bool,
+    pub(crate) sources: u8,
+}
 
 pub(crate) struct Options {
+    pub(crate) build: Build,
     pub(crate) private: bool,
     pub(crate) runtime: bool,
 }
@@ -39,6 +49,9 @@ pub(crate) fn run(mode: &str, options: &Options) -> io::Result<()> {
         "mount /mnt",
         mount(Some("tmpfs"), "/mnt", Some("tmpfs"), MsFlags::empty(), NONE),
     )?;
+    if mode == wire::BUILD {
+        return build(&options.build);
+    }
     fs::create_dir("/mnt/root")?;
     match mode {
         "disk" => disk("the disk", "/dev/vda", "/mnt/root", MsFlags::empty())?,
@@ -95,6 +108,67 @@ pub(crate) fn run(mode: &str, options: &Options) -> io::Result<()> {
         }
         seed(Path::new("/etc/hosts"), HOSTS.as_bytes())?;
     }
+    Ok(())
+}
+
+fn build(options: &Build) -> io::Result<()> {
+    umask(Mode::from_bits_truncate(0o022));
+    let mut devices = (b'a'..=b'z').map(|letter| format!("/dev/vd{}", char::from(letter)));
+    let mut device = || {
+        devices
+            .next()
+            .ok_or_else(|| io::Error::other("a build has more disks than device letters"))
+    };
+    if options.root {
+        fs::create_dir(wire::BUILD_ROOT)?;
+        step(
+            "mount the build disk",
+            mount(
+                Some(device()?.as_str()),
+                wire::BUILD_ROOT,
+                Some("ext4"),
+                MsFlags::empty(),
+                NONE,
+            ),
+        )?;
+        match fs::remove_dir(Path::new(wire::BUILD_ROOT).join(LOST_AND_FOUND)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    if options.sources > 0 {
+        fs::create_dir(wire::BUILD_SOURCE)?;
+    }
+    for index in 0..options.sources {
+        let target = format!("{}/{index}", wire::BUILD_SOURCE);
+        fs::create_dir(&target)?;
+        step(
+            &format!("mount source disk {index}"),
+            mount(
+                Some(device()?.as_str()),
+                target.as_str(),
+                Some("ext4"),
+                MsFlags::MS_RDONLY,
+                Some(SOURCE_OPTIONS),
+            ),
+        )?;
+    }
+    if options.context {
+        fs::create_dir(wire::BUILD_CONTEXT)?;
+        step(
+            "mount the build context",
+            mount(
+                Some(wire::CONTEXT_TAG),
+                wire::BUILD_CONTEXT,
+                Some("virtiofs"),
+                MsFlags::MS_RDONLY,
+                NONE,
+            ),
+        )?;
+    }
+    step("leave the session of the console", setsid())?;
+    build::activate();
     Ok(())
 }
 
