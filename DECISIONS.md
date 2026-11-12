@@ -1818,6 +1818,19 @@ Without a key, which costs nothing, the gateway was asked what it serves: an unp
 
 A first run of the directory lane failed on its own assertion: the run was over before a renewal was due. The lane now leases for exactly a claim lease, so the tick that opens the sandbox renews it.
 
+### The checks of a fresh clone, and the last deployment
+
+Every `run:` step of `.github/workflows/ci.yml`, 56 of them, in order and each with exactly its variables and command, from a fresh clone on the Linux machine with a `docker` first on the path that only logs: at `6dbff58` in 6.5 minutes and at `12d077b` in 6.6 minutes, at a load average between 1 and 6. All 56 exited 0 both times. Nothing was skipped: the 48 end-to-end lanes passed, the six gateway lanes among them, with 111 unit tests and the 25 and 2 tests of the launcher. `docker` was never called. `57e37b6` after them changes one condition and its test.
+
+`12d077b` was deployed with the same two secrets, and one run of each kind repeated against it:
+
+| Run | Result |
+| --- | --- |
+| Solutions, 4 rows, the krun runner with the machine's policy | 4 passed in 25.4 s. First row claimed after 1.7 s. Environment 0.8 to 1.4 s, attach 0.7 to 0.9 s, solution 0.2 to 6.3 s, verifier 5.7 to 21.9 s |
+| `codex:gpt-6-luna` and `claude:claude-haiku-5-5` on `fix-git` | Each errored as `agent` on the gateway's `401`, after 6.3 and 3.7 s |
+| `codex-cli:gpt-6-luna` and `claude-code:claude-haiku-5-5` on `fix-git`, one run | Both errored as `agent` on the gateway's `401`. 185.7 s, which is Claude Code retrying |
+| `run --oracle --provider gateway --template desktop --runtime-blob …` from the laptop | 4 errored as `environment`: the price was read, the paid request refused with `401`, the price written back |
+
 ### Not verified
 
 - Any model through the gateway: an answer, streaming under load, the reported cost against the key's spend, and the four model names beyond the gateway naming a price for them.
