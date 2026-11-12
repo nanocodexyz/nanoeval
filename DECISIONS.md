@@ -2190,3 +2190,109 @@ With its rerun the third arm stands at 49 passed, 33 failed and 7 errored. 84 of
 - What each arm cost in full: the charges outside the channel are not attributed to a run.
 - A refund of the six refused requests. None was asked for.
 - CI on GitHub. The commit that records this changes this file and README.md only; every step of `ci.yml` ran from a fresh clone of it first.
+
+## 2026-11-12: what the three arms found, fixed
+
+The entry above ended with a list of what one night of three model arms found. This one changes the code for each item. Nothing here was run against a paid sandbox or a paid key: the wallets were empty. What ran is unit tests, end-to-end lanes on directory slots against a scripted gateway, the lanes on krun and ns slots, one read of the real key's usage, and a simulation with the durations of the night. Each section says which.
+
+Machines: the code was written and the directory lanes first run on a Linux machine without KVM (5 cores, Node 24.22.1). The fresh clone, with every lane, ran on the 32-core Linux machine with KVM of the earlier entries, shared with other work.
+
+### A runner did not know when its sandbox ends
+
+**The defect.** A sandbox opened over MPP lives 3,600 s. Only a sandbox the run opens itself had its end in the run's table, and nothing read it when rows were granted. So a runner claimed any row at any time: three rows of the night never got a verdict, two more were claimed a second time, and each cut claim was paid in tokens.
+
+**What changed.**
+
+- Every runner whose machine ends has that end with the run: a sandbox the run opens or takes from the pool by its lifetime, an attached runner by what its operator says. `nanoeval sandbox --e2b FILE` now requires `--sandbox-timeout-sec`, the timeout the sandbox was opened with, counted from the time FILE was written or from `--opened-at`, and `nanoeval runner --run` takes `--ends-in-sec`. Both send the seconds that are left, and the run adds them to its own clock, so the clocks of two machines are never compared.
+- The run grants a row to a runner only while the worst case of the row ends before the runner does: the setup limit (`--setup-sec`, or the task's own if longer) plus its agent timeout plus its verifier timeout, three times that last for a judged task. It is the figure a run already used for the lifetime it buys.
+- A runner that can take none of the rows that are left is drained: the run records why, puts `runner.drain` in its timeline, `status` prints it, the runner is told with its next claim, logs it, finishes the rows it holds and leaves. A run that opens sandboxes stops counting it against `--sandboxes`, closes its sandbox once it is idle and opens another: that is the successor of a sandbox that cannot finish the run.
+- A sandbox that reaches the end of its lifetime with rows in flight is closed like one whose lease is over. It used to be found a lease later as a runner that stopped answering, and counted as a sandbox that failed, of which a run tolerates two in a row.
+
+**Rows that no sandbox covers.** With `--setup-sec 600`, 33 of the 89 tasks of Terminal-Bench 2.1 have a worst case over 3,600 s, up to 24,600 s, and their agents rarely use it. Refusing them would take a third of the benchmark away from sandboxes of an hour. Decided: a row that no part of a runner's life covers is granted only in the first `--setup-sec` of that life, which is the most time there is for it. If the sandbox then ends first, the claim is final: the row ends as an `environment` error that says it had the whole sandbox, and is not claimed again by another sandbox of the same length. `regex-chess`, whose agent ran to the end of two sandboxes in the night, would have cost one claim instead of two or three.
+
+**Rows that no runner can take.** Two rows of the night stayed unclaimed with no runner until the run was cancelled by hand. Decided: in a run that opens no sandbox itself, a row that no runner could take for `--setup-sec` ends as an `environment` error (`run.stranded` in the timeline when the wait begins), whether the run has no runner at all or the sandbox of every runner ends before the row could. The run then finishes, and `run --rerun RUN --errored` takes those rows to new sandboxes. `--setup-sec` is the time a run already gives a runner to appear. This also ends a run that nobody ever attached a runner to, `--setup-sec` after it was created.
+
+**What it costs.** The timeouts are worst cases, so the rule is conservative: a row of 900 s and 900 s is taken only in the first 20 minutes of an hour. Simulated with the durations of the night (next section): with the end known, the ten sandboxes of the first arm leave 4 rows unclaimed and the nine of the second arm 22, and each loses one claim, where the same model with the end unknown loses 5 and 1 claims and leaves 2 rows and 1 row without a verdict. Opening a sandbox whenever no runner can take a row that is left ends both arms with 12 sandboxes and one lost claim, `regex-chess`, later than the night did. A shorter `--setup-sec` lets a sandbox take rows for longer. An estimate from the verifier times a run has measured, instead of their timeouts, is not written.
+
+**Checked.** Unit tests of the rule (`Admission.fits`), of the queue and of `Config.rowSec`. The lane `ending` on directory slots: a runner that is registered with 60 s left and starts after the setup time takes no row and says so in its log, the run's status and its timeline; the rows end as `environment` errors after `--setup-sec` with no claim; a second run with a runner started with `--ends-in-sec 120` takes all six rows at once, though none fits 120 s, and they get their verdicts. The fleet and lapse lanes pass as before.
+
+### The first minutes were thin
+
+**The defect.** An empty runner took a row that needs its whole memory first, so that such rows are not starved by a runner that keeps refilling. Six sandboxes that start together then each run one of the eight such rows, with 81 rows waiting.
+
+**What changed.** Rows are granted by attempt number, then longest worst case first, then by id. An empty runner takes a whole-machine row first only while fewer runners hold one than their share of the fleet, rounded up: the worst cases of the whole-machine rows that are left, against those of the other rows weighted by the part of a runner's memory each takes. For Terminal-Bench 2.1 on `desktop` runners that share is 22 %, two runners of six. Past it, an empty runner takes the rows others can take too, and a whole-machine row only when nothing else is left for it, so no runner idles beside a row it could run.
+
+**Simulated.** A model of the claim rule, written apart from the code, one-second steps, with the task list of `terminal-bench-2.1@312b07080ace` and the setup, agent and verifier durations each row had in the first two arms of the night (89 rows each; a row that never ended gets the duration of the other arm). Runners admit 6,364 MB, four slots, one row prepared at a time.
+
+| Durations of | Fleet | Rule | Rows running after 1 to 6 min | Rows ended after 22 min | Last verdict | Claims lost to a sandbox's end |
+| --- | --- | --- | --- | ---: | ---: | ---: |
+| nanocode, haiku | 6 runners with no end | before | 6, 6, 6, 6, 6, 7 | 41 | 5,370 s | |
+| | | longest first, share | 12 throughout | 21 | 3,806 s | |
+| | 6 and 4 more after 22 min, an hour each, end unknown | before | 6, 6, 6, 6, 6, 7 | 41 | 4,919 s, 2 rows without | 5 |
+| | | longest first, share | 12 throughout | 21 | 4,919 s, 1 row without | 3 |
+| | the same, end known | longest first, share | 12 throughout | 26 | 3,600 s, 4 rows unclaimed, 1 without | 1 |
+| Claude Code, haiku | 5 runners with no end | before | 5 throughout | 27 | 6,176 s | |
+| | | longest first, share | 10, 11, 11, 11, 11, 11 | 17 | 4,418 s | |
+| | 5 and 4 more after 28 min, an hour each, end known | longest first, share | 10, 11, 11, 11, 11, 11 | 40 | 3,600 s, 22 rows unclaimed, 1 without | 1 |
+
+The model's "before" reproduces the night: six rows for six minutes. Twelve is what memory admits, two or three rows a runner. The run ends 28 to 29 % sooner on runners with no end, and fewer rows have ended early, because the long ones go first. Not shown by the simulation: anything about real sandboxes, the Worker under that load, or a second attempt per task.
+
+**Checked.** Unit tests of `Admission.wholeFirst`, of `fill` with a runner past the share, and of the queue order. The packing lanes pass as before. Not run at the size of a benchmark.
+
+### A refused payment was never retried
+
+**The defect.** The gateway answered five requests of the night `402` with `https://paymentauth.org/problems/session/delta-too-small`, a voucher that raced another session's on the same key, and others with `.../session/insufficient-balance` just before a top-up. nanocode ends a turn on a `402`, and so does an installed agent, so each row ended as an `agent` error. When the wallet could not fund a top-up, every request was answered `402` with the code `payment_failed`, and 19 rows of one arm were claimed and failed one after another.
+
+**What changed.** Both paths a model request takes now go through one relay (`worker/Meter.ts`): the egress of a session, and the endpoint of the run that an installed agent calls. It reads a `402` before the agent sees it.
+
+- A refusal that passes, by those two problem types, is sent again after a pause: `--step-retries` times at most, `--poll-ms` apart and twice as long each time, the policy a runner has for a step that stumbles. Each try is a line in the attempt's `agent/model-requests.jsonl`, which sessions now have too.
+- A refusal with the code `payment_failed` or the type `.../payment-failed` is not sent again. The run records it (`refused` in the status, `model.refused` in the timeline), grants no more rows, and ends every row that has not started as a `budget` error without claiming it. The row that met the refusal ends as a `budget` error too, where it was an `agent` error.
+- Any other `402` reaches the agent as before.
+
+**Checked.** A unit test on the three bodies the gateway sent in the night. The lane `refused`, for sessions and for installed agents: a scripted gateway refuses the first three model requests in passing, every row still gets its verdict, and the three refusals are in the requests of their attempts. The lane `spent`: the gateway answers `payment_failed` after two responses; one row has its verdict, the row that was running ends as a `budget` error, the four that had not started end as `budget` errors with no claim, and the refusal was not sent again. Not met for real since: whether three tries are enough for a top-up to land is not known.
+
+### The spend was under-reported
+
+**Costs lost with an error.** The cost of a session's attempt came from the last event of its turn, and a turn that fails or is cancelled reports none, so the comparison had a cost for 79, 88 and 88 of 89 attempts and the runs recorded $0.53 less than the key's channel paid. The relay now records every response when it ends, with the `usage.cost` the gateway reports: an attempt that errors, is cancelled or loses its claim keeps what its responses cost, the cost of an attempt is the sum of them, and `--model-budget-usd` counts responses as they arrive instead of attempts as they end. An attempt whose responses carry no cost, on a provider's own key or a plan login, keeps the estimate it had.
+
+**The field.** nanoeval reads one thing: `usage.cost`, a number in USD, in the last usage object of a response. That is `message_delta.usage` of a streamed Messages response or `usage` of its body, and `response.usage` of `response.completed` or of the body for Responses. If the gateway puts the price of a search into that number, the run's spend has it with no change here. No header is read: a stream's cost is not known when its headers are sent.
+
+**The $2.14 outside the channel.** The attempts' events keep no response body: a session's events have the tokens of each call and nothing else of its usage. What they show: Claude Code's own result reports `modelUsage.*.webSearchRequests: 1` for the one attempt that searched, so the Messages response behind it reported `usage.server_tool_use.web_search_requests`. The relay now counts that field and `web_fetch_requests`, and the `web_search_call` items of a Responses output, per response, and `status` prints the total. They are not priced: the night had some 90 searches and fetches for 217 charges of $0.001 to $0.012, so one price per search does not explain the charges, and a price added here would be counted twice once the gateway reports it in `usage.cost`. The 217 are about the number of sessions that made a request, which may be a coincidence.
+
+**What the key was charged.** A run whose models or sandboxes are paid with the gateway key reads `GET /api/keys/me` when it is created and again when it finishes: `usage.channel.spent`, `usage.channel.deposit`, `usage.limit.remaining` and `usage.wallet.balance`, decimal strings in USD. `status` prints `key charged`: what the channel spent in between, and what left the key's limit without entering the channel, beside what the run recorded. Read by hand from the key of the night after it: channel spent 6.85 of a deposit of 6.85, limit 0.000803 of 9.009 remaining, which is the $6.83 and the $2.14 with fees of the entry above. Another run on the same key in the same minutes is in the figure, and the real gateway takes a sandbox lease from the key's limit outside the channel, so a run's own sandbox spend is in the outside part there.
+
+**Checked.** Unit tests of the meter, of the usage and of the difference. Every gateway lane now asserts that what the scripted gateway's channel paid is what the run recorded, and that a charge it makes outside the channel for each model request shows as charged outside it and in no spend. The real `/api/keys/me` was read once by hand, not by a run.
+
+### E2B refused a lifetime only after charging it
+
+`E2b.maxTimeoutSec` was 86,400, taken from the API's description. It is 3,600: the provider refuses more before the paying request, `scripts/e2b-quote.ts` before the unpaid one, `nanoeval sandbox` for the timeout it is told, and a run for a lifetime named with `--sandbox-timeout-sec`. A lifetime the run computes is cut to it instead of refused, since a sandbox now takes only the rows it can finish and the run opens another for the rest. E2B's API also sells more time for a running sandbox (`POST /sandboxes/ID/refreshes` and `/timeout`, read from its `openapi.json`, where the unpaid request is answered with a price). Whether that extends a sandbox past its hour or is charged and refused like the create is not known, and finding out costs money, so the provider does not use it.
+
+Checked: a unit test that a create for 3,601 s reaches no fetch. Not paid for real.
+
+### An 8 GiB task was killed at 6,364 MB
+
+A runner admits 80 % of its machine's memory, so that rows which share it leave room for the runner and the system. A row that asks for more than that runs alone, and got the same 80 % as its limit. It now gets what the machine has free when its environment starts, `MemAvailable` of `/proc/meminfo` read by the runner, never less than before and never more than it asks. That figure already has the runner's own memory and the system's taken out, as measured on that machine at that moment, and counts the page cache of the disk just unpacked as free. A capacity named with `--memory-mb` is kept as it is. A row that still asks for more than it got and has a process killed is the `environment` error it was.
+
+**Measured.** The lane `alone` on ns slots, in a guest of 8,192 MiB that reports 7,965 MB, as an E2B `desktop` sandbox reports 7,955: a task that asks for more than the machine has ran alone with 7,667 MB and passed. The 80 % would have been 6,372 MB, so the system, the sandbox service and the runner held 298 MB at that moment. Also unit tested. Not run in a sandbox, and not with a task that uses that much.
+
+### Smaller
+
+- `nanoeval run --help` ended in `ERR_PARSE_ARGS_UNKNOWN_OPTION`. `--help` and `-h` print the usage.
+- A step of a runner that stumbles and is tried again left no trace in the run. Each is an `attempt.retry` mark in the timeline, and `status` prints `retries=N` beside the row's claims.
+- **A session whose hand is gone held the tick.** Found by the fleet lane, which failed in most runs on the machine without KVM and passed on the earlier code there once. When a sandbox dies during a tool call, the turn of its session waits for the hand. The earlier entry bounded the cancel of that turn to one tick. The removal of the session that follows was not bounded and took 26 s, during which the run renewed no lease, so the next sandbox lapsed. Removals are now bounded like cancels and finish behind the tick. Four runs of the lane passed after the change, in none of which the turn was caught in a tool call, so the bound is shown by the 26 s it measured before and not by a run after.
+
+### Every check, from a fresh clone
+
+From a fresh clone of `38dfdf5`, the commit with the code, on the Linux machine with KVM, with programs that log and exit 97 in place of the seven container tools first on `PATH`: every `run` step of `ci.yml` in its order, 66 steps, and each exited 0. `npm ci`, `npm run lint`, `npm run check:types`, `npm test` (137 tests, none skipped), `npm run dry-run`, the 25 directory lanes with the four new ones, the 22 krun lanes, the 11 ns lanes in a guest with the new one, `cargo fmt --check`, `cargo clippy` and `cargo test`.
+
+That machine reached no package registry on the day. `npm ci` installed from the cache on its disk and took 214 s, most of it waiting for a registry that did not answer. The first krun lane builds the launcher from the clone, and its `cargo build` waited for the crate index: that try was stopped after three minutes, and the steps from that lane on ran with `CARGO_NET_OFFLINE=true`, which builds from the crates the machine already had. No step was changed. The commit that records this changes Markdown only, and every step ran again from a fresh clone of it before it was pushed.
+
+### Not verified
+
+- Anything against a paid sandbox or a paid key: a runner that drains in an E2B sandbox, a successor sandbox that a run opens over MPP, a refusal of the real gateway that is retried, a key that is spent, and `key charged` read by a run.
+- The claim order at the size of a benchmark. The simulation is a model of the rule.
+- Whether E2B extends a sandbox past an hour.
+- A search priced: none is.
+- A response whose stream is cut by a cancel: its cost is recorded if the gateway had sent it, and whether the cancel hook of the stream runs under workerd was not read.
+- An 8 GiB task with a model in a sandbox with the new limit.
+- CI on GitHub.
