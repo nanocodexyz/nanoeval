@@ -272,7 +272,11 @@ test('a refusal at any status leaves the spend, and an answer or a silence that 
   await assert.rejects(create(refused.provider), /refused create with 503: /)
   await assert.rejects(
     refused.provider.renew!({ home: Gateway.home, id: 'sbx-5' }, 300),
-    /refused renew with 500: /,
+    (error: unknown) =>
+      error instanceof Gateway.RefusedError &&
+      error.status === 500 &&
+      /refused renew with 500: /.test(error.message),
+    'a refusal carries its status, so a run tells one that may pass from one that will not',
   )
   assert.deepEqual(recorded(refused.charges), [
     ['compute.create', '42280', 0.04228],

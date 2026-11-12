@@ -37,7 +37,7 @@ type SandboxRow = {
   id: number
   paid_until: number | null
   runner: number | null
-  state: 'closed' | 'creating' | 'failed' | 'ready' | 'starting' | 'unknown'
+  state: 'closed' | 'creating' | 'ending' | 'failed' | 'ready' | 'starting' | 'unknown'
 }
 
 type RunnerRow = {
@@ -698,19 +698,18 @@ export class Run extends DurableObject<Env> {
       if (this.meta()!.cancelled) await this.cancelAll()
       this.watch()
       if (provider) await this.advanceSandboxes(provider)
-      if (!this.meta()!.cancelled) {
-        await this.enforce()
-        if (provider) await this.grow(provider)
-      }
+      if (!this.meta()!.cancelled) await this.enforce()
       if (provider) await this.closeIdle(provider)
       if (provider) await this.renew(provider)
+      if (provider) await this.lapse(provider)
+      if (provider && !this.meta()!.cancelled) await this.grow(provider)
     } catch (error) {
       console.error('nanoeval tick failed', message(error))
     }
 
     const current = this.meta()!
     const open = this.sandboxes().some((row) =>
-      ['creating', 'ready', 'starting'].includes(row.state),
+      ['creating', 'ending', 'ready', 'starting'].includes(row.state),
     )
     if (this.rows().every((row) => row.phase === 'done') && !open) {
       this.setMeta({ ...current, finishedAt: Date.now() })
@@ -953,7 +952,7 @@ export class Run extends DurableObject<Env> {
         })
         continue
       }
-      if (row.state !== 'starting' && row.state !== 'ready') continue
+      if (!['ending', 'ready', 'starting'].includes(row.state)) continue
       const runner = this.runners().find((candidate) => candidate.id === row.runner)
       try {
         if (!runner) throw new Error('the sandbox has no runner')
@@ -1157,7 +1156,12 @@ export class Run extends DurableObject<Env> {
       ['creating', 'ready', 'starting'].includes(sandbox.state),
     )
     if (live.some((sandbox) => sandbox.state !== 'ready')) return
-    const ready = this.runners().filter((runner) => runner.state === 'ready')
+    const ending = new Set(
+      sandboxes.filter((sandbox) => sandbox.state === 'ending').map((sandbox) => sandbox.runner),
+    )
+    const ready = this.runners().filter(
+      (runner) => runner.state === 'ready' && !ending.has(runner.id),
+    )
     const room = ready.some((runner) => {
       const report = runner.report ? (JSON.parse(runner.report) as Protocol.Report) : undefined
       return !report?.offer || (report.offer.slots > 0 && !report.unfit)
@@ -1185,7 +1189,7 @@ export class Run extends DurableObject<Env> {
     const rows = this.rows()
     if (rows.some((row) => row.phase === 'unclaimed')) return
     for (const record of this.sandboxes()) {
-      if (record.state !== 'ready') continue
+      if (record.state !== 'ready' && record.state !== 'ending') continue
       if (rows.some((row) => Ledger.active(row) && row.runner === record.runner)) continue
       const handle = JSON.parse(record.handle!) as Sandbox.Handle
       try {
@@ -1202,20 +1206,69 @@ export class Run extends DurableObject<Env> {
     if (!provider.renew) return
     const config = this.config()
     for (const record of this.sandboxes()) {
-      if (record.state !== 'ready' && record.state !== 'starting') continue
+      if (!['ending', 'ready', 'starting'].includes(record.state)) continue
       if (record.paid_until === null || record.expires_at === null) continue
-      if (record.paid_until - Date.now() > config.limits.leaseSec * 1000) continue
+      const left = record.paid_until - Date.now()
+      if (left <= 0 || left > config.limits.leaseSec * 1000) continue
       const seconds = Math.min(
         config.sandbox.leaseSec ?? Gateway.leaseSec,
         Math.floor((record.expires_at - record.paid_until) / 1000),
       )
-      if (seconds < 1) continue
+      if (seconds < 1) {
+        if (record.state !== 'ending')
+          this.update('sandboxes', record.id, {
+            error: 'its lease runs to the end of the lifetime it was created with',
+            state: 'ending',
+          })
+        continue
+      }
       try {
         const renewed = await provider.renew(JSON.parse(record.handle!) as Sandbox.Handle, seconds)
-        this.update('sandboxes', record.id, { paid_until: renewed.paidUntil })
+        const runner = this.runners().find((candidate) => candidate.id === record.runner)
+        this.update('sandboxes', record.id, {
+          error: null,
+          paid_until: renewed.paidUntil,
+          state:
+            record.state !== 'ending'
+              ? record.state
+              : runner?.state === 'ready'
+                ? 'ready'
+                : 'starting',
+        })
       } catch (error) {
-        await this.failSandbox(provider, record, message(error))
+        const unsold =
+          error instanceof Budget.ExceededError ||
+          (error instanceof Gateway.RefusedError && error.status !== 404) ||
+          error instanceof Gateway.UnpricedError
+        const passing =
+          error instanceof Gateway.RefusedError && (error.status === 429 || error.status >= 500)
+        if (unsold && record.paid_until > Date.now())
+          this.update('sandboxes', record.id, {
+            error: message(error),
+            ...(passing ? {} : { state: 'ending' }),
+          })
+        else await this.failSandbox(provider, record, message(error))
       }
+    }
+  }
+
+  private async lapse(provider: Sandbox.Provider): Promise<void> {
+    for (const record of this.sandboxes()) {
+      if (!['ending', 'ready', 'starting'].includes(record.state)) continue
+      if (record.paid_until === null || record.paid_until > Date.now()) continue
+      for (const row of this.rows())
+        if (Ledger.active(row) && row.runner === record.runner) await this.lose(row, 'expired')
+      this.update('sandboxes', record.id, {
+        error: record.error ?? 'its lease ended',
+        state: 'closed',
+      })
+      if (record.runner !== null)
+        this.update('runners', record.runner, {
+          error: 'the lease of its sandbox ended',
+          state: 'left',
+        })
+      if (record.handle)
+        await provider.kill(JSON.parse(record.handle) as Sandbox.Handle).catch(() => {})
     }
   }
 
@@ -1329,6 +1382,8 @@ export class Run extends DurableObject<Env> {
       return { finished: this.finished(), rows: [] }
     }
     if (meta.cancelled || (await this.overBudget())) return idle(false)
+    if (this.sandboxes().some((row) => row.id === runner.sandbox && row.state === 'ending'))
+      return idle(true)
     const claimed = Ledger.claim(this.sql, {
       leaseMs: config.limits.leaseSec * 1000,
       memoryOf: (task) => this.task(task).resources.memoryMb,

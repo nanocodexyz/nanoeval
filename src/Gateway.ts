@@ -6,6 +6,19 @@ export class RequestError extends Error {
   override name = 'Gateway.RequestError'
 }
 
+export class UnpricedError extends RequestError {
+  override name = 'Gateway.UnpricedError'
+}
+
+export class RefusedError extends RequestError {
+  override name = 'Gateway.RefusedError'
+  readonly status: number
+  constructor(status: number, text: string) {
+    super(text)
+    this.status = status
+  }
+}
+
 export type Fetch = (input: string, init?: RequestInit) => Promise<Response>
 
 export type Sent = {
@@ -65,7 +78,7 @@ export function create(options: create.Options): Sandbox.Provider {
     })
     const asked = await send(base + operation, init({}))
     if (asked.status !== 402)
-      throw new RequestError(
+      throw new UnpricedError(
         'the gateway answered ' +
           asked.status +
           ' to an unpaid ' +
@@ -119,7 +132,8 @@ export function create(options: create.Options): Sandbox.Provider {
       description: charge.description + ' refused with ' + response.status,
       usd: -charge.usd,
     })
-    throw new RequestError(
+    throw new RefusedError(
+      response.status,
       'the gateway refused ' + operation + ' with ' + response.status + ': ' + answer.slice(0, 500),
     )
   }
@@ -191,7 +205,7 @@ export function create(options: create.Options): Sandbox.Provider {
       try {
         await call('terminate', { sandboxId: handle.id })
       } catch (error) {
-        if (!(error instanceof RequestError && / with 404: /.test(error.message))) throw error
+        if (!(error instanceof RefusedError && error.status === 404)) throw error
       }
     },
     async renew(handle, seconds) {
