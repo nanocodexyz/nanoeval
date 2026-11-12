@@ -844,6 +844,15 @@ export class Run extends DurableObject<Env> {
     })
   }
 
+  private async halt(session: string): Promise<void> {
+    const cancelled = Harness.cancel(this.env, session, requestId).catch(() => {})
+    this.ctx.waitUntil(cancelled)
+    await Promise.race([
+      cancelled,
+      new Promise((resolve) => setTimeout(resolve, Number(this.env.TICK_MS))),
+    ])
+  }
+
   private judgeSessions(row: Ledger.Attempt): string[] {
     const request = this.textArtifact(row.id, judgeRequest)
     return request && row.session
@@ -856,8 +865,7 @@ export class Run extends DurableObject<Env> {
     const submitted = this.submitted(row)
     let usage: string | undefined
     if (row.session) {
-      if (submitted && row.phase === 'run')
-        await Harness.cancel(this.env, row.session, requestId).catch(() => {})
+      if (submitted && row.phase === 'run') await this.halt(row.session)
       if (submitted)
         usage = await Harness.events(this.env, row.session).then(
           (events) => JSON.stringify(Atif.usage(events)),
@@ -907,8 +915,7 @@ export class Run extends DurableObject<Env> {
   private async cancelAll(): Promise<void> {
     for (const row of this.rows()) {
       if (row.phase === 'done') continue
-      if (row.session && row.phase === 'run' && this.submitted(row))
-        await Harness.cancel(this.env, row.session, requestId).catch(() => {})
+      if (row.session && row.phase === 'run' && this.submitted(row)) await this.halt(row.session)
       await this.complete(row, {
         ending: 'cancelled',
         failure: { at: Date.now(), kind: 'cancelled', message: 'the run was cancelled' },
@@ -1635,8 +1642,7 @@ export class Run extends DurableObject<Env> {
     } else if (body.failure) {
       end = { failure: { at: now, ...body.failure }, reward: null }
     } else throw new Refusal(400, 'finishing an attempt reports a verifier or a failure')
-    if (row.session && row.phase === 'run' && this.submitted(row))
-      await Harness.cancel(this.env, row.session, requestId).catch(() => {})
+    if (row.session && row.phase === 'run' && this.submitted(row)) await this.halt(row.session)
     await this.complete(Ledger.get(this.sql, row.id)!, end)
 
     const disk = (name: string) => {
