@@ -67,7 +67,8 @@ test(
       await sandbox.write(slots.script, Fs.readFileSync('sandbox/slot.sh'))
       await Sandbox.run(
         sandbox,
-        cached(slots.setup({ backend: 'ns', network: 'private', runtime: Slot.runtime })),
+        'umask 077 && ' +
+          cached(slots.setup({ backend: 'ns', network: 'private', runtime: Slot.runtime })),
       )
       assert.equal(
         await wait(async () => (await status()).setup),
@@ -115,16 +116,17 @@ test(
       await sandbox.write(disk + '.workdir', text(meta.workdir + '\n'))
       await Sandbox.run(
         sandbox,
-        cached(
-          slots.up('ns', {
-            backend: 'ns',
-            cpus: task.environment.cpus,
-            disk,
-            memoryMb: task.environment.memoryMb,
-            network: 'private',
-            storageMb: task.environment.storageMb,
-          }),
-        ),
+        'umask 077 && ulimit -c 0 && ' +
+          cached(
+            slots.up('ns', {
+              backend: 'ns',
+              cpus: task.environment.cpus,
+              disk,
+              memoryMb: task.environment.memoryMb,
+              network: 'private',
+              storageMb: task.environment.storageMb,
+            }),
+          ),
       )
       assert.equal(
         await wait(async () => (await status()).slots['ns']!.up),
@@ -157,6 +159,25 @@ test(
         'a command in a slot starts with no signal ignored',
       )
       assert.equal((await inside('echo $$; id -u')).stdout.split('\n')[1], '0')
+      assert.deepEqual(
+        await sandbox.exec(
+          'cd ' +
+            Sandbox.quote(home + '/slots/ns') +
+            ' && ' +
+            Sandbox.quote(home + '/rt/krun/nanoeval-krun') +
+            ' exec --socket vm.sock --cwd /app --user 65534 -- sh -c ' +
+            Sandbox.quote(
+              'id -u; stat -c %a /; cat notes.md >/dev/null; test -x /opt/nanoeval/nanocode',
+            ),
+        ),
+        { exitCode: 0, stderr: '', stdout: '65534\n755\n' },
+        'a user of the image reaches the root, its files and the hand, whatever umask started the runner',
+      )
+      assert.equal(
+        (await inside('ulimit -c; ulimit -c unlimited && ulimit -c')).stdout,
+        '0\nunlimited\n',
+        'a slot may raise its core limit, whatever limit the runner was started with',
+      )
       assert.notEqual((await inside('mknod /tmp/disk b 8 0')).exitCode, 0)
       assert.notEqual((await inside('echo 1 >/proc/sys/kernel/panic')).exitCode, 0)
       assert.notEqual((await inside('mount -t tmpfs none /mnt')).exitCode, 0)
@@ -185,6 +206,22 @@ test(
       assert.match(await prune('dry-run'), /^used disk .*\.ext4$/m)
       assert.match(await prune('remove'), /^kept disk .*\.ext4$/m)
       assert.deepEqual(await disks(), ['fixture.ext4', 'fixture.mnt'])
+      await Sandbox.run(
+        sandbox,
+        'cp ' + Sandbox.quote(disk + '.ext4') + ' ' + Sandbox.quote(cache + '/disks/idle.ext4'),
+      )
+      await Sandbox.run(sandbox, cached(slots.drop(disk)))
+      await Sandbox.run(sandbox, cached(slots.drop(cache + '/disks/idle')))
+      assert.deepEqual(
+        await disks(),
+        ['fixture.ext4', 'fixture.mnt'],
+        'drop removes a disk that no slot holds and keeps one that a slot holds',
+      )
+      assert.notEqual(
+        (await sandbox.exec(cached(slots.drop(home + '/slots/ns/upper')))).exitCode,
+        0,
+        'drop removes disks of the cache only',
+      )
 
       await Sandbox.run(sandbox, cached(slots.down('ns', 'remove')))
       assert.deepEqual(await disks(), [], 'the disk is unmounted and removed with its last slot')

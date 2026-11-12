@@ -18,6 +18,7 @@ guarded='bus fs irq sys sysrq-trigger'
 subnet=10.213
 links=16384
 PATH=$PATH:/usr/sbin:/sbin
+umask 022
 
 die() {
   printf 'nanoeval-slot: %s\n' "$*" >&2
@@ -617,6 +618,7 @@ cmd__ns() {
     ip route add default via "$gateway"
   fi
   if has hostname; then hostname localhost; fi
+  ulimit -H -c unlimited
   for forward; do arguments+=("forward=$forward"); done
   cd "$root"
   mount --move . /
