@@ -55,11 +55,13 @@ const label =
     (gateway ? '-gateway' : '')
 const out = Path.resolve('output/e2e', label)
 const largeTestBytes = 3 * 1024 * 1024
-const attached = ['lost', 'resume', 'runners'].includes(scenario)
+const attached = ['lost', 'resume', 'runners', 'standing'].includes(scenario)
 const fleet = scenario === 'fleet'
 const lapse = scenario === 'lapse'
 const sandboxLeaseSec = Number(process.env['NANOEVAL_E2E_SANDBOX_LEASE_SEC'] ?? leaseSec)
 const seededDisk = 'e'.repeat(64)
+const standing = scenario === 'standing'
+const warm = scenario === 'warm'
 const installed = model === 'installed'
 const fakeCli = Path.resolve('test/fixtures/fake-cli.sh')
 const fakeUsage = {
@@ -571,6 +573,60 @@ async function main(): Promise<void> {
     runners.push(entry)
     return entry
   }
+  const stand = (name: string) => {
+    const home = Path.join(out, 'runner-' + name)
+    Fs.mkdirSync(home, { recursive: true })
+    const output = Fs.openSync(Path.join(out, 'runner-' + name + '.log'), 'a')
+    const child = spawn(
+      process.execPath,
+      [
+        Path.resolve('cli/nanoeval.ts'),
+        'runner',
+        '--standing',
+        '--backend',
+        backend,
+        '--network',
+        network,
+        '--url',
+        url,
+        '--home',
+        home,
+        '--cache',
+        Path.join(out, 'cache-' + name),
+        '--store',
+        storeRoot,
+        '--slots',
+        String(slots),
+        '--lease-sec',
+        String(leaseSec),
+        '--slot-env',
+        Path.join(out, 'slot.env'),
+      ],
+      { env: { ...process.env, NANOEVAL_TOKEN: token }, stdio: ['ignore', output, output] },
+    )
+    Fs.closeSync(output)
+    const entry = { child, home, name }
+    runners.push(entry)
+    return entry
+  }
+  const waitFor = async <T>(what: string, read: () => Promise<T | undefined>): Promise<T> => {
+    for (const since = Date.now(); ; ) {
+      const found = await read()
+      if (found !== undefined) return found
+      if (Date.now() - since > 120_000) assert.fail('timed out waiting for ' + what)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+    }
+  }
+  const standingBy = (api: ReturnType<typeof client>) =>
+    waitFor('a runner to stand by in the pool', async () =>
+      ((await api.pool())['members'] as Record<string, any>[]).find(
+        (member) =>
+          member['state'] === 'idle' &&
+          member['holding'] &&
+          (member['paidUntil'] === null ||
+            member['paidUntil'] - Date.now() > leaseSec * 1000 + 500),
+      ),
+    )
   const runnerId = (home: string | undefined): number | undefined => {
     try {
       return (
@@ -597,7 +653,7 @@ async function main(): Promise<void> {
     if (
       scenario !== 'tasks' &&
       model !== 'scripted' &&
-      !(judged && model === 'oracle') &&
+      !((judged || warm) && model === 'oracle') &&
       !(installed && ['closed', 'failures', 'lost', 'resume', 'runners'].includes(scenario))
     )
       throw new Error('the ' + scenario + ' scenario runs on the scripted model')
@@ -789,6 +845,7 @@ async function main(): Promise<void> {
         slots,
         timeoutSec: 3600,
         ...(cached ? { verifierCache: true as const } : {}),
+        ...(warm ? { warm: { idleSec: 8, usd: 1 } } : {}),
       },
     }
     if (closed && !(backend === 'krun' && network === 'private')) {
@@ -798,6 +855,10 @@ async function main(): Promise<void> {
       )
       console.log('e2e passed: ' + label)
       return
+    }
+    if (standing) {
+      stand('a')
+      await standingBy(api)
     }
     const started = Date.now()
     const created = await api.create(config)
@@ -821,7 +882,7 @@ async function main(): Promise<void> {
     if ((fleet || lapse) && !mock)
       throw new Error('the ' + scenario + ' scenario runs through the scripted gateway')
     assert.deepEqual(created.eval, { name: evalName, version: version.digest })
-    if (attached) {
+    if (attached && !standing) {
       attach(created.id, 'a')
       if (scenario !== 'resume') attach(created.id, 'b')
     }
@@ -936,7 +997,7 @@ async function main(): Promise<void> {
 
     assert.deepEqual(status['eval'], { name: evalName, version: version.digest })
     if (attached) {
-      for (const runner of runners) {
+      for (const runner of standing ? [] : runners) {
         if (runner.child.exitCode === null && runner.child.signalCode === null)
           await new Promise((resolve) => runner.child.once('exit', resolve))
       }
@@ -1023,7 +1084,7 @@ async function main(): Promise<void> {
       assert.equal(opened.length, 1, 'every attempt shares one sandbox')
       assert.equal(status['sandboxes'].length, gateway ? 2 : 1)
       const sandbox = status['sandboxes'].at(-1)
-      assert.equal(sandbox.state, 'closed')
+      assert.equal(sandbox.state, warm ? 'kept' : 'closed')
       assert.equal(sandbox.capabilities.ca_bundle, caBundle !== undefined)
       assert.equal(sandbox.capabilities.slot_env, true)
       assert.equal(sandbox.capabilities.slot_forward, forward !== undefined)
@@ -1044,7 +1105,7 @@ async function main(): Promise<void> {
           assert.ok(sized.has(size), 'a microVM ran with ' + size + ' vCPUs and MiB')
       }
     }
-    if (backend === 'ns')
+    if (backend === 'ns' && !warm)
       assert.equal(
         (
           await there(
@@ -1056,10 +1117,10 @@ async function main(): Promise<void> {
         '',
         'no slot and no relay outlives the run',
       )
-    assert.deepEqual(
-      (await there('ls -A ' + sandboxes)).split('\n').filter(Boolean),
-      [],
-      'no sandbox directory outlives the run',
+    assert.equal(
+      (await there('ls -A ' + sandboxes)).split('\n').filter(Boolean).length,
+      warm ? 1 : 0,
+      'no sandbox directory outlives the run, unless the run keeps its sandbox warm',
     )
 
     if (failures) {
@@ -1256,9 +1317,28 @@ async function main(): Promise<void> {
           await api.artifact(created.id, attempt.id, 'verifier/test-stdout.txt'),
         )
     } else if (model === 'scripted' || installed) {
-      assert.equal(status['agents'].right.passed, total / 2)
+      let interrupted = 0
+      if (scenario === 'restart' && !installed)
+        for (const attempt of status['attempts'] as {
+          agent: string
+          id: string
+          outcome: string
+        }[])
+          if (
+            attempt.agent === 'right' &&
+            attempt.outcome === 'failed' &&
+            (await api.artifact(created.id, attempt.id, 'agent/events.jsonl')).includes(
+              '"outcome_unknown":true',
+            )
+          )
+            interrupted++
+      assert.equal(
+        status['agents'].right.passed + interrupted,
+        total / 2,
+        'a right attempt passes unless the restart cut a tool call, whose outcome nanocode reports as unknown',
+      )
       assert.equal(status['agents'].wrong.failed, total / 2)
-      assert.equal(status['agents'].right.passAtK['1'], 1)
+      if (!interrupted) assert.equal(status['agents'].right.passAtK['1'], 1)
       assert.equal(status['agents'].wrong.passAtK['1'], 0)
     } else if (model === 'oracle') {
       assert.equal(status['counts'].passed, total, 'every solution passes its verifier')
@@ -1370,29 +1450,39 @@ async function main(): Promise<void> {
         usd: payment.usd,
       }))
       const micro = (charge: MockGateway.Charge) => Math.round(charge.usd * 1e6)
-      assert.deepEqual(
-        payments.map((payment) => [payment.operation, Math.round(payment.usd * 1e6)]),
+      const charged = () =>
         mock.log.flatMap((entry) => [
           ['compute.' + entry.operation, micro(entry)],
           ...(entry.refused === undefined
             ? []
             : [['compute.' + entry.operation + ' refused with ' + entry.refused, -micro(entry)]]),
-        ]),
-        'the payments of the run are what the gateway charged in order, and what it refused written back',
-      )
+        ])
+      const paid = (list: readonly { detail: string; usd: number }[]) =>
+        list.map((payment) => [
+          (JSON.parse(payment.detail) as { description: string }).description,
+          Math.round(payment.usd * 1e6),
+        ])
+      if (!warm) {
+        assert.deepEqual(
+          paid(status['payments']),
+          charged(),
+          'the payments of the run are what the gateway charged in order, and what it refused written back',
+        )
+        assert.ok(
+          Math.abs(status['spend'].sandboxUsd - sum(mock.charges.map((charge) => charge.usd))) <
+            1e-9,
+          'the sandbox spend of the run is what the gateway charged, without what it refused',
+        )
+      }
       assert.deepEqual(
         mock.unavailable.map((charge) => charge.operation),
         lapse ? ['create'] : ['create', 'renew'],
         'the first sandbox and the first renewal were refused',
       )
-      assert.ok(
-        Math.abs(status['spend'].sandboxUsd - sum(mock.charges.map((charge) => charge.usd))) < 1e-9,
-        'the sandbox spend of the run is what the gateway charged, without what it refused',
-      )
       assert.ok(Math.abs(status['spend'].sandboxUsd - sum(payments.map((p) => p.usd))) < 1e-9)
       const operations = payments.map((payment) => payment.operation)
       assert.equal(operations[0], 'compute.create')
-      assert.equal(operations.at(-1), 'compute.terminate')
+      if (!warm) assert.equal(operations.at(-1), 'compute.terminate')
       assert.equal(
         operations.includes('compute.renew'),
         !lapse,
@@ -1405,7 +1495,7 @@ async function main(): Promise<void> {
           leased.every((sandbox) => sandbox.ended !== undefined && sandbox.renewals === 0),
           'every sandbox ended, by its lease or by the run, and none was renewed',
         )
-      } else {
+      } else if (!warm) {
         assert.deepEqual(
           leased.map((sandbox) => sandbox.ended),
           fleet ? ['died', ...leased.slice(1).map(() => 'terminated')] : ['terminated'],
@@ -1414,7 +1504,120 @@ async function main(): Promise<void> {
       }
       assert.equal(status['sandboxes'][0].state, 'failed')
       assert.match(status['sandboxes'][0].error, /the gateway refused create with 503: /)
-      assert.equal(status['sandboxes'].at(-1).state, 'closed')
+      assert.equal(status['sandboxes'].at(-1).state, warm ? 'kept' : 'closed')
+      if (warm) {
+        const kept = await standingBy(api)
+        assert.equal(status['sandboxes'].at(-1).member, kept['id'])
+        const second = await api.create({ ...config, name: config.name + '-again' })
+        const again = await waitFor('the run on the kept sandbox', async () => {
+          const current = await api.status(second.id)
+          return current['state'] === 'finished' ? current : undefined
+        })
+        assert.deepEqual(again['counts'], status['counts'], 'the second run ends as the first')
+        assert.equal(again['sandboxes'].length, 1, 'the second run opened no sandbox')
+        assert.equal(again['sandboxes'][0].member, kept['id'], 'it took the kept sandbox')
+        assert.equal(again['sandboxes'][0].state, 'kept')
+        assert.ok(
+          !paid(again['payments']).some(([operation]) => operation === 'compute.create'),
+          'the second run paid for no sandbox',
+        )
+        assert.ok(again['start'].poolMs !== undefined && again['start'].sandboxMs === undefined)
+        assert.ok(
+          again['start'].claimMs < 2000,
+          'a row was claimed ' + again['start'].claimMs + ' ms after the second run was created',
+        )
+        console.log('kept sandbox: ' + JSON.stringify(again['start']))
+        if (backend !== 'dir' && slots < directories.length) {
+          const fetched = (run: string) =>
+            api
+              .timeline(run)
+              .then(({ marks }) => marks.filter((mark) => mark.name === 'attempt.disk.fetch'))
+          assert.ok(
+            (await fetched(created.id)).some((mark) => mark.attempt === undefined),
+            'a disk of a queued row was fetched while the slot was busy',
+          )
+          assert.deepEqual(await fetched(second.id), [], 'the kept sandbox fetched no disk again')
+        }
+        const closed = await waitFor('the pool to terminate the kept sandbox', async () => {
+          const pool = await api.pool()
+          return (pool['members'] as { state: string }[]).every(
+            (member) => member.state === 'closed',
+          )
+            ? pool
+            : undefined
+        })
+        assert.equal(mock.sandboxes.size, 1, 'one sandbox served both runs')
+        assert.equal([...mock.sandboxes.values()][0]!.ended, 'terminated')
+        assert.equal(
+          (await there('ls -A ' + sandboxes)).trim(),
+          '',
+          'no sandbox directory outlives the pool',
+        )
+        if (backend === 'ns')
+          assert.equal(
+            (
+              await there(
+                "ps -eo args= | grep -F '" +
+                  sandboxes +
+                  "/' | grep -E '^(unshare|[^ ]*nanoeval-net host) ' || true",
+              )
+            ).trim(),
+            '',
+            'no slot and no relay outlives the pool',
+          )
+        const idle = paid(closed['payments'])
+        assert.equal(idle.at(-1)![0], 'compute.terminate', 'the pool terminated it')
+        assert.ok(
+          idle.some(([operation]) => operation === 'compute.renew'),
+          'the pool renewed the lease while the sandbox was idle',
+        )
+        const order = (left: (string | number)[], right: (string | number)[]) =>
+          String(left).localeCompare(String(right))
+        assert.deepEqual(
+          [...paid(status['payments']), ...paid(again['payments']), ...idle].sort(order),
+          charged().sort(order),
+          'the two runs and the pool recorded every charge of the gateway once',
+        )
+        assert.ok(
+          Math.abs(
+            closed['spendUsd'] -
+              sum((closed['payments'] as { usd: number }[]).map((payment) => payment.usd)),
+          ) < 1e-9,
+        )
+      }
+    }
+    if (standing) {
+      const member = await standingBy(api)
+      assert.equal(member['runs'], 1)
+      assert.ok(
+        status['start'].claimMs < 2000,
+        'a row was claimed ' + status['start'].claimMs + ' ms after the run was created',
+      )
+      const second = await api.create({ ...config, name: config.name + '-again' })
+      const again = await waitFor('the second run of the standing runner', async () => {
+        const current = await api.status(second.id)
+        return current['state'] === 'finished' ? current : undefined
+      })
+      assert.deepEqual(again['counts'], status['counts'], 'the second run ends as the first')
+      assert.ok(
+        again['start'].claimMs < 2000,
+        'a row was claimed ' + again['start'].claimMs + ' ms after the second run was created',
+      )
+      console.log(
+        'standing runner: ' +
+          JSON.stringify(status['start']) +
+          ' ' +
+          JSON.stringify(again['start']),
+      )
+      assert.equal((await standingBy(api))['runs'], 2)
+      runners[0]!.child.kill('SIGTERM')
+      await waitFor('the pool to close the runner that left', async () =>
+        ((await api.pool())['members'] as { state: string }[]).every(
+          (entry) => entry.state === 'closed',
+        )
+          ? true
+          : undefined,
+      )
     }
 
     const job = JSON.parse(files['result.json']!)

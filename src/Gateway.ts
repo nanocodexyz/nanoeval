@@ -76,7 +76,9 @@ export function create(options: create.Options): Sandbox.Provider {
       headers: { 'gateway-app': app, ...sent.headers, ...headers },
       method: 'POST',
     })
+    const askedAt = Date.now()
     const asked = await send(base + operation, init({}))
+    options.onCall?.({ ms: Date.now() - askedAt, operation, paid: false })
     if (asked.status !== 402)
       throw new UnpricedError(
         'the gateway answered ' +
@@ -100,9 +102,11 @@ export function create(options: create.Options): Sandbox.Provider {
       })
     let response: Response
     let answer = ''
+    const paidAt = Date.now()
     try {
       response = await send(base + operation, init({ authorization: 'Bearer ' + options.key }))
       if (!response.ok) answer = await response.text()
+      options.onCall?.({ ms: Date.now() - paidAt, operation, paid: true })
     } catch (error) {
       await kept('unanswered')
       throw new RequestError(
@@ -225,6 +229,7 @@ export declare namespace create {
     budget: Budget.Budget
     fetch?: Fetch
     key: string
+    onCall?(call: { ms: number; operation: string; paid: boolean }): void
     onCharge(charge: Payment.Charge): void | Promise<void>
     url?: string
   }

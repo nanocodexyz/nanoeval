@@ -1,7 +1,9 @@
 import { execFile, spawn } from 'node:child_process'
+import { type FSWatcher, watch } from 'node:fs'
 import * as Fs from 'node:fs/promises'
 import * as Path from 'node:path'
 import * as Admission from '../src/Admission.ts'
+import * as Bootstrap from '../src/Bootstrap.ts'
 import * as Config from '../src/Config.ts'
 import * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
@@ -12,6 +14,7 @@ import type * as Result from '../src/Result.ts'
 import * as Sandbox from '../src/Sandbox.ts'
 import * as Slot from '../src/Slot.ts'
 import * as Task from '../src/Task.ts'
+import type * as Timeline from '../src/Timeline.ts'
 import * as Verdict from '../src/Verdict.ts'
 import * as Converter from './Converter.ts'
 import * as Disks from './Disks.ts'
@@ -28,31 +31,52 @@ export class RefusedError extends Error {
 
 export type Options = {
   cache: string
-  config: Config.Runner
+  config?: Config.Runner
   home: string
   log?(line: string): void
+  override?: Partial<Config.Runner>
+  standing?: Standing
   store?: string
 }
+
+export type Standing = {
+  backend: Config.Backend
+  leaseSec: number
+  network: Slot.Network
+  pollMs: number
+  pool: Protocol.Standing
+  setupSec: number
+  url: string
+}
+
+type Ready = { backend: Slot.Backend; capabilities: Sandbox.Capabilities }
+
+type Shared = { ready?: Ready; stop?: () => void; stopping: boolean }
 
 type Stage = 'agent' | 'attach' | 'cli' | 'judge' | 'prepare' | 'solve' | 'up' | 'verify'
 
 type Work = {
   at: number
   busy: boolean
+  changed: number
   delay: number
   errors: number
   instruction?: string
+  marks: Mark[]
   message: string
   next: number
   round: 1 | 2
   row: Protocol.Claimed
+  session?: Protocol.Session
   stage: Stage
+  watcher?: FSWatcher
 }
 
-type Saved = Pick<Work, 'at' | 'message' | 'round' | 'row' | 'stage'>
+type Saved = Pick<Work, 'at' | 'message' | 'round' | 'row' | 'session' | 'stage'>
+
+type Mark = { at: number; ms?: number; name: string }
 
 const hostUtilization = 0.8
-const loopMs = 25
 const firstPollMs = 25
 const script = Path.join(import.meta.dirname, 'slot.sh')
 
@@ -87,8 +111,183 @@ async function freeDiskMb(paths: readonly string[]): Promise<number> {
   return Number.isFinite(least) ? least : 0
 }
 
+function changed(directory: string, name: string, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    let watcher: FSWatcher | undefined
+    const done = () => {
+      clearTimeout(timer)
+      watcher?.close()
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    try {
+      watcher = watch(directory, (_event, file) => {
+        if (file === name) done()
+      })
+      watcher.on('error', done)
+    } catch {
+      watcher = undefined
+    }
+  })
+}
+
+async function setup(input: {
+  backend: Config.Backend
+  cache: string
+  home: string
+  network: Slot.Network
+  pollMs: number
+  setupSec: number
+}): Promise<Ready> {
+  const { home } = input
+  const env: NodeJS.ProcessEnv = {
+    ...Host.environment(),
+    NANOEVAL_CACHE: input.cache,
+    NANOEVAL_HOME: home,
+  }
+  const slots = Slot.create({ home })
+  const shell = async (command: string): Promise<string> => {
+    const result = await output(command, env)
+    if (result.exitCode !== 0)
+      throw new Error(
+        'the slot command exited with ' +
+          result.exitCode +
+          ': ' +
+          (result.stderr.trim() || result.stdout.trim()).slice(-2000),
+      )
+    return result.stdout
+  }
+  await Fs.mkdir(Path.join(home, 'slots'), { recursive: true })
+  await Fs.mkdir(Path.join(input.cache, 'blobs'), { recursive: true })
+  await Fs.copyFile(script, slots.script)
+  const backend = Config.backend(
+    input.backend,
+    JSON.parse(await shell(slots.probe())) as Sandbox.Capabilities,
+  )
+  if (!backend)
+    throw new RefusedError(
+      'this machine has neither /dev/kvm for the krun backend nor root for the ns backend',
+    )
+  await shell(slots.setup({ backend, network: input.network, runtime: Slot.runtime }))
+  for (const started = Date.now(); ; ) {
+    const moved = changed(home, 'setup.status', input.pollMs)
+    const code = Slot.exit(await phase(Path.join(home, 'setup.status')))
+    if (code === 0) break
+    if (code !== undefined || Date.now() - started > input.setupSec * 1000)
+      throw new RefusedError(
+        (code === undefined
+          ? 'sandbox setup did not finish within ' + input.setupSec + ' s'
+          : 'sandbox setup exited with ' + code) +
+          ': ' +
+          (await shell(slots.log('-', 'setup', Protocol.logBytes))).slice(-2000),
+      )
+    await moved
+  }
+  return { backend, capabilities: JSON.parse(await shell(slots.probe())) as Sandbox.Capabilities }
+}
+
+async function ask(
+  standing: Standing,
+  input: { done?: string; log(line: string): void; shared: Shared },
+): Promise<Config.Runner | undefined> {
+  const { log, shared } = input
+  const base = standing.url.replace(/\/+$/, '') + '/v1/pool/members/' + standing.pool.member
+  const send = (path: string, body: unknown, signal?: AbortSignal) =>
+    fetch(base + path, {
+      body: JSON.stringify(body),
+      headers: {
+        authorization: 'Bearer ' + standing.pool.token,
+        'content-type': 'application/json',
+      },
+      method: 'POST',
+      ...(signal ? { signal } : {}),
+    })
+  const query = standing.pool.location ? '?location=' + standing.pool.location : ''
+  const waitMs = Math.floor((standing.leaseSec * 1000) / 3)
+  log('standing as member ' + standing.pool.member + ' of the pool')
+  while (!shared.stopping) {
+    const abort = new AbortController()
+    shared.stop = () => abort.abort()
+    const askedAt = Date.now()
+    let answer: Protocol.Next | undefined
+    try {
+      const response = await send(
+        '/next' + query,
+        {
+          capabilities: shared.ready!.capabilities,
+          ...(input.done ? { done: input.done } : {}),
+          waitMs,
+        } satisfies Protocol.Waiting,
+        abort.signal,
+      )
+      if (response.status === 401 || response.status === 404) {
+        log('the pool does not know this runner any more')
+        return undefined
+      }
+      if (response.ok) answer = (await response.json()) as Protocol.Next
+      else
+        log('the pool answered ' + response.status + ': ' + (await response.text()).slice(0, 500))
+    } catch (error) {
+      if (!shared.stopping) log('asking the pool failed: ' + String(error))
+    }
+    shared.stop = undefined
+    if (answer?.state === 'assigned') return answer.config
+    if (answer?.state === 'closed') {
+      log('the pool closed this runner')
+      return undefined
+    }
+    if (!shared.stopping && Date.now() - askedAt < waitMs)
+      await new Promise((resolve) => setTimeout(resolve, standing.pollMs))
+  }
+  await send('/leave' + query, {}).catch(() => {})
+  return undefined
+}
+
 export async function run(options: Options): Promise<void> {
+  const log = options.log ?? ((line: string) => console.log(new Date().toISOString() + ' ' + line))
+  const shared: Shared = { stopping: false }
+  const stop = () => {
+    shared.stopping = true
+    shared.stop?.()
+  }
+  process.once('SIGINT', stop)
+  process.once('SIGTERM', stop)
+  let config = options.config
+  let standing = options.standing
+  let done: string | undefined
+  for (;;) {
+    if (config) {
+      await serve({ ...options, config }, shared)
+      if (shared.stopping || !config.pool) return
+      standing = {
+        backend: config.backend,
+        leaseSec: config.leaseSec,
+        network: config.network,
+        pollMs: config.pollMs,
+        pool: config.pool,
+        setupSec: config.limits.setupSec,
+        url: config.url,
+      }
+      done = config.run
+    }
+    if (!standing) return
+    shared.ready ??= await setup({
+      backend: standing.backend,
+      cache: options.cache,
+      home: options.home,
+      network: standing.network,
+      pollMs: standing.pollMs,
+      setupSec: standing.setupSec,
+    })
+    const next = await ask(standing, { ...(done ? { done } : {}), log, shared })
+    if (!next) return
+    config = { ...next, ...options.override, url: standing.url }
+  }
+}
+
+async function serve(options: Options & { config: Config.Runner }, shared: Shared): Promise<void> {
   const { cache, home } = options
+  const startedAt = Date.now()
   const log = options.log ?? ((line: string) => console.log(new Date().toISOString() + ' ' + line))
   const env: NodeJS.ProcessEnv = {
     ...Host.environment(),
@@ -109,9 +308,18 @@ export async function run(options: Options): Promise<void> {
   const work = new Map<string, Work>()
   const unpacking = new Map<string, Promise<void>>()
   const config = options.config
+  const holdMs = Math.floor((config.leaseSec * 1000) / 3)
+  const reported: Mark[] = []
+  let claimAt = 0
   const mark = '.run-' + config.run
-  let stopping = false
   let finished = false
+  let frees = 0
+  let signalled = false
+  let wake = () => {}
+  const signal = () => {
+    signalled = true
+    wake()
+  }
 
   const shell = async (command: string): Promise<string> => {
     const result = await output(command, env)
@@ -150,7 +358,23 @@ export async function run(options: Options): Promise<void> {
   }
 
   const rowCall = <T>(item: Work, action: string, body: Record<string, unknown> = {}) =>
-    call<T>('/rows/' + item.row.id + '/' + action, { ...body, claim: item.row.claim })
+    call<T>('/rows/' + item.row.id + '/' + action, {
+      ...body,
+      claim: item.row.claim,
+      ...(item.marks.length
+        ? {
+            timeline: { marks: item.marks.splice(0), sentAt: Date.now() } satisfies Timeline.Report,
+          }
+        : {}),
+    })
+  const timed = async <T>(item: Work, name: string, work: () => Promise<T>): Promise<T> => {
+    const at = Date.now()
+    try {
+      return await work()
+    } finally {
+      item.marks.push({ at, ms: Date.now() - at, name })
+    }
+  }
 
   const upload = async (item: Work, name: string, content: string | Uint8Array) => {
     const response = await fetch(
@@ -182,6 +406,7 @@ export async function run(options: Options): Promise<void> {
       message: item.message,
       round: item.round,
       row: item.row,
+      ...(item.session ? { session: item.session } : {}),
       stage: item.stage,
     }
     const file = Path.join(directory(item), 'row.json')
@@ -199,6 +424,27 @@ export async function run(options: Options): Promise<void> {
     item.next = Date.now() + item.delay
     item.delay = Math.min(Math.ceil(item.delay * 1.6), config.pollMs)
   }
+  const again = (item: Work, askedAt: number) => {
+    if (Date.now() - askedAt < holdMs) return later(item)
+    item.delay = firstPollMs
+    item.next = 0
+  }
+  const pending = (item: Work) => {
+    item.next = Date.now() + config.pollMs
+  }
+  const observe = (item: Work) => {
+    try {
+      item.watcher = watch(directory(item), (_event, name) => {
+        if (!name?.endsWith('.status')) return
+        item.changed++
+        item.next = 0
+        signal()
+      })
+      item.watcher.on('error', (error) => log('watching ' + item.row.slot + ' failed: ' + error))
+    } catch (error) {
+      log('watching ' + item.row.slot + ' failed: ' + String(error))
+    }
+  }
   const slotLog = (item: Work, name: 'agent' | 'hand' | 'solve' | 'up' | 'verify', bytes: number) =>
     shell(slots.log(item.row.slot, name, bytes))
 
@@ -213,7 +459,11 @@ export async function run(options: Options): Promise<void> {
       ))
     await output(slots.down(item.row.slot, marked ? 'remove' : 'keep'), env)
     if (marked) await forget(disk!.trim())
+    item.watcher?.close()
     work.delete(item.row.id)
+    claimAt = 0
+    frees++
+    signal()
   }
 
   const forget = async (prefix: string) => {
@@ -255,7 +505,7 @@ export async function run(options: Options): Promise<void> {
   const fail = (item: Work, kind: Result.FailureKind, message: string) =>
     finish(item, { failure: { kind, message } })
 
-  const ensureDisk = async (environment: Extract<Eval.Environment, { kind: 'disk' }>) => {
+  const ensureDisk = async (environment: Protocol.Ahead, marks: Mark[]) => {
     const prefix = Path.join(cache, 'disks', environment.disk.digest)
     let pending = unpacking.get(prefix)
     if (!pending) {
@@ -273,9 +523,13 @@ export async function run(options: Options): Promise<void> {
               ', and this runner unpacks ' +
               converter.format,
           )
+        const fetchAt = Date.now()
         const packed = await Store.ensure(stores, { blob: environment.disk, cache })
+        const unpackAt = Date.now()
+        marks.push({ at: fetchAt, ms: unpackAt - fetchAt, name: 'attempt.disk.fetch' })
         await converter.unpack(packed, prefix + '.ext4')
         await Fs.writeFile(prefix + mark, '')
+        marks.push({ at: unpackAt, ms: Date.now() - unpackAt, name: 'attempt.disk.unpack' })
         if (config.disks === 'remove') await Fs.rm(packed, { force: true })
       })().finally(() => unpacking.delete(prefix))
       unpacking.set(prefix, pending)
@@ -283,6 +537,14 @@ export async function run(options: Options): Promise<void> {
     await pending
     await Host.describe(prefix, environment.meta)
     return prefix
+  }
+
+  const prefetch = (ahead: readonly Protocol.Ahead[] | undefined) => {
+    if (config.disks !== 'keep' || config.freeDiskMb !== undefined) return
+    for (const environment of ahead ?? [])
+      void ensureDisk(environment, reported).catch((error) =>
+        log('fetching a disk ahead failed: ' + String(error)),
+      )
   }
 
   const hostPolicy = Fs.readFile(process.env['NANOEVAL_SLOT_ENV'] ?? '').then(
@@ -294,6 +556,7 @@ export async function run(options: Options): Promise<void> {
     const task = item.row.task
     const target = directory(item)
     await Fs.mkdir(target, { recursive: true })
+    observe(item)
     await save(item)
     const fetch = async (blob: Eval.Blob, name: string) => {
       const file = Path.join(target, name)
@@ -301,11 +564,27 @@ export async function run(options: Options): Promise<void> {
       await Fs.copyFile(await Store.ensure(stores, { blob, cache }), file)
       await Fs.chmod(file, 0o644)
     }
-    await fetch(task.tests, 'tests.tar')
-    if (task.solution && item.row.agent.oracle) await fetch(task.solution.archive, 'solution.tar')
-    let disk: string | undefined
-    if (task.environment.kind === 'disk') disk = await ensureDisk(task.environment)
-    else await fetch(task.environment.files, 'environment.tar')
+    const environment = task.environment
+    const [disk] = await Promise.all([
+      environment.kind === 'disk'
+        ? timed(item, 'attempt.disk', () => ensureDisk(environment, item.marks))
+        : undefined,
+      timed(item, 'attempt.blobs', () =>
+        Promise.all([
+          fetch(task.tests, 'tests.tar'),
+          task.solution && item.row.agent.oracle
+            ? fetch(task.solution.archive, 'solution.tar')
+            : undefined,
+          environment.kind === 'disk' ? undefined : fetch(environment.files, 'environment.tar'),
+        ]),
+      ),
+      item.row.agent.oracle ? undefined : instruct(item),
+      item.row.agent.cli
+        ? undefined
+        : rowCall<Protocol.Session>(item, 'session').then((session) => {
+            item.session = session
+          }),
+    ])
     const variables: [
       name: 'env' | 'solution.env' | 'verifier.env',
       env: Record<string, string>,
@@ -327,7 +606,10 @@ export async function run(options: Options): Promise<void> {
     if (offline.length)
       await Fs.writeFile(slots.offlineFile(item.row.slot), offline.join('\n') + '\n')
     const cli = item.row.agent.cli
-    if (cli) await shell(slots.agents(cli.kind, Installed.releases[cli.kind]))
+    if (cli)
+      await timed(item, 'attempt.cli', () =>
+        shell(slots.agents(cli.kind, Installed.releases[cli.kind])),
+      )
     await shell(
       slots.up(item.row.slot, {
         backend,
@@ -501,7 +783,7 @@ export async function run(options: Options): Promise<void> {
               'environment',
               'the task environment was not ready within ' + setupSec + ' s',
             )
-          return
+          return pending(item)
         }
         if (code !== 0) {
           const upLog = await slotLog(item, 'up', Protocol.logBytes)
@@ -512,29 +794,31 @@ export async function run(options: Options): Promise<void> {
             'the task environment failed with exit code ' + code + ': ' + upLog.slice(-2000),
           )
         }
+        item.marks.push({ at: item.at, ms: now - item.at, name: 'attempt.up' })
         if (item.row.agent.cli) return startCli(item, item.row.agent.cli)
-        const session = await rowCall<Protocol.Session>(item, 'session')
+        const session = (item.session ??= await rowCall<Protocol.Session>(item, 'session'))
         const file = Path.join(target, 'token')
         await Fs.writeFile(file, session.token + '\n', { mode: 0o600 })
         try {
-          await shell(
-            slots.hand(item.row.slot, { name: session.name, url: session.url }) +
-              ' < ' +
-              Sandbox.quote(file),
+          await timed(item, 'attempt.hand', () =>
+            shell(
+              slots.hand(item.row.slot, { name: session.name, url: session.url }) +
+                ' < ' +
+                Sandbox.quote(file),
+            ),
           )
         } finally {
           await Fs.rm(file, { force: true })
         }
-        if (!item.row.agent.oracle) await instruct(item)
         return move(item, 'attach')
       }
       case 'attach': {
         if (!item.row.agent.oracle) await instruct(item)
-        const state = await rowCall<Protocol.Agent>(
-          item,
-          'agent',
-          item.instruction === undefined ? {} : { instruction: item.instruction },
-        )
+        const askedAt = Date.now()
+        const state = await rowCall<Protocol.Agent>(item, 'agent', {
+          ...(item.instruction === undefined ? {} : { instruction: item.instruction }),
+          waitMs: holdMs,
+        })
         if (state.state === 'attached') {
           await shell(slots.solve(item.row.slot, state.timeoutSec))
           return move(item, 'solve')
@@ -554,10 +838,11 @@ export async function run(options: Options): Promise<void> {
               handLog.slice(-2000),
           )
         }
-        return later(item)
+        return again(item, askedAt)
       }
       case 'agent': {
-        const state = await rowCall<Protocol.Agent>(item, 'agent')
+        const askedAt = Date.now()
+        const state = await rowCall<Protocol.Agent>(item, 'agent', { waitMs: holdMs })
         if (state.state === 'completed' || state.state === 'timeout') {
           item.message = state.state === 'completed' ? state.message : ''
           return startVerifier(item)
@@ -572,14 +857,14 @@ export async function run(options: Options): Promise<void> {
           await upload(item, 'hand.log', handLog)
           return fail(item, 'environment', 'the hand left during the turn: ' + handLog.slice(-2000))
         }
-        return later(item)
+        return again(item, askedAt)
       }
       case 'cli': {
         const code = Slot.exit(await phase(Path.join(target, 'agent.status')))
         if (code === undefined) {
           if (elapsed > (task.agent.timeoutSec + config.limits.attachSec) * 1000)
             return fail(item, 'environment', 'the agent did not report within its deadline')
-          return
+          return pending(item)
         }
         return endCli(item, { cli: item.row.agent.cli!, code })
       }
@@ -588,7 +873,7 @@ export async function run(options: Options): Promise<void> {
         if (code === undefined) {
           if (elapsed > (task.agent.timeoutSec + config.limits.attachSec) * 1000)
             return fail(item, 'environment', 'the solution did not report within its deadline')
-          return
+          return pending(item)
         }
         await upload(
           item,
@@ -606,9 +891,10 @@ export async function run(options: Options): Promise<void> {
         if (code === undefined) {
           if (elapsed > (task.verifier.timeoutSec + config.limits.setupSec) * 1000)
             return fail(item, 'verifier_timeout', 'the verifier did not report within its deadline')
-          return
+          return pending(item)
         }
-        return collect(item, code)
+        item.marks.push({ at: item.at, ms: now - item.at, name: 'attempt.verifier' })
+        return timed(item, 'attempt.collect', () => collect(item, code))
       }
       case 'judge': {
         const judged = await rowCall<Protocol.Judgement>(item, 'judge')
@@ -630,6 +916,7 @@ export async function run(options: Options): Promise<void> {
 
   const step = async (item: Work) => {
     item.busy = true
+    const seen = item.changed
     try {
       await advance(item)
       item.errors = 0
@@ -651,39 +938,29 @@ export async function run(options: Options): Promise<void> {
       else item.next = Date.now() + config.pollMs
     } finally {
       item.busy = false
+      if (item.changed !== seen) item.next = 0
+      signal()
     }
   }
 
-  await Fs.mkdir(Path.join(home, 'slots'), { recursive: true })
-  await Fs.mkdir(Path.join(cache, 'blobs'), { recursive: true })
-  await Fs.copyFile(script, slots.script)
-  const chosen = Config.backend(
-    config.backend,
-    JSON.parse(await shell(slots.probe())) as Sandbox.Capabilities,
-  )
-  if (!chosen) {
-    const error =
-      'this machine has neither /dev/kvm for the krun backend nor root for the ns backend'
-    await call('/hello', { error, runner: config.runner }).catch(() => {})
-    throw new RefusedError(error)
-  }
-  const backend: Slot.Backend = chosen
-  await shell(slots.setup({ backend, network: config.network, runtime: Slot.runtime }))
-  for (const started = Date.now(); ; ) {
-    const code = Slot.exit(await phase(Path.join(home, 'setup.status')))
-    if (code === 0) break
-    if (code !== undefined || Date.now() - started > config.limits.setupSec * 1000) {
-      const error =
-        (code === undefined
-          ? 'sandbox setup did not finish within ' + config.limits.setupSec + ' s'
-          : 'sandbox setup exited with ' + code) +
-        ': ' +
-        (await shell(slots.log('-', 'setup', Protocol.logBytes))).slice(-2000)
-      await call('/hello', { error, runner: config.runner }).catch(() => {})
-      throw new RefusedError(error)
+  const fresh = shared.ready === undefined
+  if (!shared.ready)
+    try {
+      shared.ready = await setup({
+        backend: config.backend,
+        cache,
+        home,
+        network: config.network,
+        pollMs: config.pollMs,
+        setupSec: config.limits.setupSec,
+      })
+    } catch (error) {
+      if (error instanceof RefusedError)
+        await call('/hello', { error: error.message, runner: config.runner }).catch(() => {})
+      throw error
     }
-    await new Promise((resolve) => setTimeout(resolve, 50))
-  }
+  const { backend, capabilities } = shared.ready
+  prefetch(config.ahead)
   for (const name of await Fs.readdir(Path.join(home, 'slots'))) {
     const saved = await text(Path.join(home, 'slots', name, 'row.json'))
     if (!saved) {
@@ -693,23 +970,40 @@ export async function run(options: Options): Promise<void> {
     const item: Work = {
       ...(JSON.parse(saved) as Saved),
       busy: false,
+      changed: 0,
       delay: firstPollMs,
       errors: 0,
+      marks: [],
       next: 0,
     }
     work.set(item.row.id, item)
+    observe(item)
     log('resumed ' + item.row.id + ' in ' + item.stage)
   }
 
-  const capabilities = JSON.parse(await shell(slots.probe())) as Sandbox.Capabilities
-  try {
-    await call<Config.Runner>('/hello', {
-      capabilities,
-      held: [...work.values()].map((item) => ({ claim: item.row.claim, id: item.row.id })),
-      runner: config.runner,
-    } satisfies Protocol.Hello)
-  } catch (error) {
-    throw new RefusedError(error instanceof Error ? error.message : String(error))
+  if (fresh)
+    reported.push(
+      ...((await text(Path.join(home, Bootstrap.files.marks))) ?? '')
+        .split('\n')
+        .map((line) => line.split(' '))
+        .filter((fields) => fields.length === 2 && Number.isFinite(Number(fields[1])))
+        .map(([name, at]) => ({ at: Number(at), name: name! })),
+      { at: startedAt, name: 'runner.start' },
+      { at: startedAt, ms: Date.now() - startedAt, name: 'runner.setup' },
+    )
+  if (!config.ready) {
+    const helloAt = Date.now()
+    try {
+      await call<Config.Runner>('/hello', {
+        capabilities,
+        held: [...work.values()].map((item) => ({ claim: item.row.claim, id: item.row.id })),
+        runner: config.runner,
+        ...(reported.length ? { timeline: { marks: reported.splice(0), sentAt: Date.now() } } : {}),
+      } satisfies Protocol.Hello)
+    } catch (error) {
+      throw new RefusedError(error instanceof Error ? error.message : String(error))
+    }
+    reported.push({ at: helloAt, ms: Date.now() - helloAt, name: 'runner.hello.call' })
   }
   const capacity: Admission.Capacity = {
     ...(config.freeDiskMb === undefined ? {} : { freeDiskMb: config.freeDiskMb }),
@@ -749,21 +1043,16 @@ export async function run(options: Options): Promise<void> {
   })
   const held = () => [...work.values()].map((item) => ({ claim: item.row.claim, id: item.row.id }))
 
-  const stop = () => {
-    stopping = true
-  }
-  process.once('SIGINT', stop)
-  process.once('SIGTERM', stop)
-
   let beatAt = 0
-  let claimAt = 0
   let claiming = false
   let beating = false
-  while (!stopping && !(finished && !work.size)) {
+  const beatMs = (config.leaseSec * 1000) / 3
+  shared.stop = signal
+  while (!shared.stopping && !(finished && !work.size)) {
     const now = Date.now()
     for (const item of work.values()) if (!item.busy && now >= item.next) void step(item)
 
-    if (!beating && now - beatAt > (config.leaseSec * 1000) / 3) {
+    if (!beating && now - beatAt > beatMs) {
       beating = true
       beatAt = now
       void (async () => {
@@ -774,6 +1063,7 @@ export async function run(options: Options): Promise<void> {
             runner: config.runner,
           } satisfies Protocol.Heartbeat)
           finished = answer.finished
+          prefetch(answer.ahead)
           for (const id of answer.lost) {
             const item = work.get(id)
             if (item && !item.busy) {
@@ -786,14 +1076,16 @@ export async function run(options: Options): Promise<void> {
           log('heartbeat failed: ' + String(error))
         } finally {
           beating = false
+          signal()
         }
       })()
     }
 
-    if (!claiming && !finished && now - claimAt >= config.pollMs) {
+    if (!claiming && !finished && now >= claimAt) {
       claiming = true
-      claimAt = now
+      const freed = frees
       void (async () => {
+        let next = Date.now() + config.pollMs
         try {
           let current = await load()
           if (
@@ -806,18 +1098,24 @@ export async function run(options: Options): Promise<void> {
           }
           const offer = Admission.offer(current, capacity)
           if (offer.slots > 0 || Admission.starved(current, capacity)) {
+            const sentAt = Date.now()
             const answer = await call<Protocol.ClaimResponse>('/claims', {
               offer,
               report: report(current),
               runner: config.runner,
+              ...(reported.length ? { timeline: { marks: reported.splice(0), sentAt } } : {}),
+              waitMs: holdMs,
             } satisfies Protocol.ClaimRequest)
+            const claimed: Mark = { at: sentAt, ms: Date.now() - sentAt, name: 'attempt.claim' }
             finished = answer.finished
             for (const row of answer.rows) {
               work.set(row.id, {
                 at: Date.now(),
                 busy: false,
+                changed: 0,
                 delay: firstPollMs,
                 errors: 0,
+                marks: [claimed],
                 message: '',
                 next: 0,
                 round: 1,
@@ -826,19 +1124,40 @@ export async function run(options: Options): Promise<void> {
               })
               log('claimed ' + row.id + ' ' + row.task.name)
             }
-            if (answer.rows.length) claimAt = 0
+            prefetch(answer.ahead)
+            if (answer.rows.length || Date.now() - sentAt >= holdMs) next = 0
           }
         } catch (error) {
           log('claim failed: ' + String(error))
         } finally {
           claiming = false
+          claimAt = frees === freed ? next : 0
+          signal()
         }
       })()
     }
-    await new Promise((resolve) => setTimeout(resolve, loopMs))
-  }
 
-  if (stopping) {
+    if (!signalled) {
+      const due = Math.min(
+        beating ? Infinity : beatAt + beatMs + 1,
+        claiming || finished ? Infinity : claimAt,
+        ...[...work.values()].filter((item) => !item.busy).map((item) => item.next),
+      )
+      await new Promise<void>((resolve) => {
+        const timer = Number.isFinite(due)
+          ? setTimeout(resolve, Math.max(0, due - Date.now()))
+          : undefined
+        wake = () => {
+          clearTimeout(timer)
+          resolve()
+        }
+      })
+    }
+    signalled = false
+  }
+  shared.stop = undefined
+
+  if (shared.stopping) {
     log('stopping: releasing ' + work.size + ' attempts')
     await call('/leave', { held: held(), runner: config.runner } satisfies Protocol.Leave).catch(
       () => {},

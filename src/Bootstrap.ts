@@ -21,6 +21,7 @@ export const node: Node = {
 export const files = {
   config: 'runner.json',
   hand: 'nanocode',
+  marks: 'bootstrap.marks',
   runner: 'runner.mjs',
   script: 'bootstrap.sh',
   tools: 'krun',
@@ -38,18 +39,35 @@ export function script(input: script.Input): string {
     'cache=' + quote(input.cache ?? input.home + '/cache'),
     'runtime=$cache/runtime/' + input.runtime.digest,
     '$as mkdir -p "$home" "$cache/runtime"',
-    'cd "$cache/runtime"',
-    'if [ ! -f "$runtime/' + files.runner + '" ]; then',
+    ...(input.config === undefined
+      ? []
+      : [
+          '$as tee "$home/' + files.config + "\" >/dev/null <<'NANOEVAL_CONFIG'",
+          input.config,
+          'NANOEVAL_CONFIG',
+        ]),
+    'mark() { printf \'%s %s\\n\' "$1" "$(date +%s%3N)" | $as tee -a "$home/' +
+      files.marks +
+      '" >/dev/null; }',
+    'mark bootstrap.start',
+    'fetch_runtime() {',
+    '  cd "$cache/runtime"',
     '  $as curl -fsS --retry 5 -H ' +
       quote('authorization: Bearer ' + input.token) +
       ' -o runtime.tgz ' +
       quote(blob + input.runtime.digest),
+    '  mark bootstrap.runtime.fetched',
     "  printf '%s  runtime.tgz\\n' " + quote(input.runtime.digest) + ' | sha256sum -c - >/dev/null',
     '  $as rm -rf runtime.new',
     '  $as mkdir runtime.new',
     '  $as tar -xzf runtime.tgz -C runtime.new',
     '  $as rm runtime.tgz',
     '  $as mv runtime.new "$runtime"',
+    '}',
+    'fetching=',
+    'if [ ! -f "$runtime/' + files.runner + '" ]; then',
+    '  fetch_runtime &',
+    '  fetching=$!',
     'fi',
     'cd "$cache"',
     'node=$(command -v node || true)',
@@ -73,6 +91,9 @@ export function script(input: script.Input): string {
     '  fi',
     '  node=$cache/node/bin/node',
     'fi',
+    'mark bootstrap.node',
+    'if [ -n "$fetching" ]; then wait "$fetching"; fi',
+    'mark bootstrap.runtime',
     'exec $as env NANOEVAL_CACHE="$cache" NANOEVAL_KRUN="$runtime/' +
       files.tools +
       '" NANOEVAL_NANOCODE="$runtime/' +
@@ -89,6 +110,7 @@ export function script(input: script.Input): string {
 export declare namespace script {
   type Input = {
     cache?: string
+    config?: string
     home: string
     node?: Node
     run: string

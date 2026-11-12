@@ -1,8 +1,10 @@
 import type * as Admission from './Admission.ts'
+import type * as Config from './Config.ts'
 import type * as Eval from './Eval.ts'
 import type * as Installed from './Installed.ts'
 import type * as Result from './Result.ts'
 import type * as Sandbox from './Sandbox.ts'
+import type * as Timeline from './Timeline.ts'
 import type * as Verdict from './Verdict.ts'
 
 export const handName = 'slot'
@@ -19,9 +21,20 @@ export type Report = {
 
 export type Held = { claim: string; id: string }
 
-export type Hello = { capabilities: Sandbox.Capabilities; held: readonly Held[]; runner: number }
+export type Hello = {
+  capabilities: Sandbox.Capabilities
+  held: readonly Held[]
+  runner: number
+  timeline?: Timeline.Report
+}
 
-export type ClaimRequest = { offer: Admission.Offer; report: Report; runner: number }
+export type ClaimRequest = {
+  offer: Admission.Offer
+  report: Report
+  runner: number
+  timeline?: Timeline.Report
+  waitMs?: number
+}
 
 export type Claimed = {
   agent: { cli?: Installed.Agent; id: string; oracle: boolean }
@@ -32,17 +45,30 @@ export type Claimed = {
   task: Eval.Task
 }
 
-export type ClaimResponse = { finished: boolean; rows: Claimed[] }
+export type Ahead = Extract<Eval.Environment, { kind: 'disk' }>
+
+export type ClaimResponse = { ahead?: Ahead[]; finished: boolean; rows: Claimed[] }
 
 export type Heartbeat = { held: readonly Held[]; report: Report; runner: number }
 
-export type HeartbeatResponse = { finished: boolean; lost: string[] }
+export type HeartbeatResponse = { ahead?: Ahead[]; finished: boolean; lost: string[] }
 
 export type Leave = { held: readonly Held[]; runner: number }
 
 export type Session = { name: string; token: string; url: string }
 
 export type Endpoint = { token: string; url: string }
+
+export type Ask = { instruction?: string; waitMs?: number }
+
+export type Standing = { location?: string; member: number; token: string }
+
+export type Waiting = { capabilities?: Sandbox.Capabilities; done?: string; waitMs?: number }
+
+export type Next =
+  | { config: Config.Runner; state: 'assigned' }
+  | { state: 'closed' }
+  | { state: 'idle' }
 
 export type Agent =
   | { state: 'attached'; timeoutSec: number }

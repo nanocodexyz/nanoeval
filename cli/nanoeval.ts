@@ -19,8 +19,10 @@ import * as E2b from '../src/E2b.ts'
 import type * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
 import type * as Ledger from '../src/Ledger.ts'
+import type * as Protocol from '../src/Protocol.ts'
 import * as Sandbox from '../src/Sandbox.ts'
 import * as Task from '../src/Task.ts'
+import * as Timeline from '../src/Timeline.ts'
 import * as Import from './Import.ts'
 import * as Plan from './Plan.ts'
 import * as Runtime from './Runtime.ts'
@@ -85,7 +87,7 @@ const usage = `nanoeval <command>
             [--sandbox-budget-usd 0] [--model-budget-usd N] [--setup-sec 600] [--attach-sec 60]
             [--lease-sec 60] [--claims 3] [--step-retries 3] [--poll-ms 250]
             [--disks keep|remove] [--free-disk-mb N] [--verifier-cache] [--name NAME] [--wait]
-            [--out DIR]
+            [--out DIR] [--location HINT] [--warm-sec N [--warm-budget-usd 0]]
             Create the rows of a run, task x agent x attempt, against one version of an eval.
             Task runners claim the rows: the run starts one in each sandbox it opens
             (--sandboxes, with --slots attempts at once each), and nanoeval runner attaches
@@ -120,13 +122,33 @@ const usage = `nanoeval <command>
             gateway imply, publishes the runner as one archive in the Worker's blob store, so
             a sandbox without this checkout starts its runner from it. --runtime-blob names
             an archive that nanoeval runtime --publish put there before, for a machine that
-            cannot build one.
-  runner    --url URL --token T --run RUN [--home DIR] [--backend krun|ns] [--slots N] [--memory-mb N]
+            cannot build one. --location asks Cloudflare to keep the run in one of its
+            regions (wnam, enam, weur, eeur, apac, oc, sam, afr, me) instead of the one
+            nearest to this command: every call of a runner and every hand goes there, so
+            name the region of the sandboxes. A Worker's RUN_LOCATION_HINT is its default.
+            With --warm-sec, a sandbox the run opens is kept in the pool of the deployment
+            for that long after the run is done with it, with its runner standing by and its
+            disks unpacked, and a later run with the same provider, template, runtime,
+            backend and network takes it instead of opening one. The pool renews its lease
+            from --warm-budget-usd while it is idle and terminates it when the idle time or
+            what is paid ends. Any run takes a sandbox that is kept, with or without the
+            option.
+  runner    --url URL --token T (--run RUN | --standing --backend krun|ns|dir [--location HINT])
+            [--home DIR]
+            [--backend krun|ns] [--slots N] [--memory-mb N]
             [--free-disk-mb N] [--poll-ms N] [--store DIR] [--cache DIR]
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
             Attach a task runner on this machine to a run: it claims rows up to its own
             capacity, fetches their blobs by digest, boots each environment disk under a
             copy-on-write disk of its own, and reports to the run until the run is finished.
+            With --standing it attaches to the deployment instead: it sets its slots up once,
+            waits in the pool, and a run created with --sandboxes 0 and its backend and
+            network is handed to it the moment it is created, one run after another.
+  pool      --url URL --token T [--close] [--location HINT]
+            List the runners and sandboxes the deployment keeps between runs, and what it
+            paid for them while no run had them. --close terminates the idle ones now. A
+            deployment has one pool per region that a run or a standing runner names with
+            --location, beside the one of its default: a run takes from the pool of its own.
   sandbox   --url URL --token T --run RUN --e2b FILE [--backend krun|ns] [--slots N]
             [--memory-mb N] [--free-disk-mb N] [--poll-ms N]
             Attach a runner in an E2B sandbox that someone else opened and paid for: FILE is
@@ -139,6 +161,9 @@ const usage = `nanoeval <command>
             --publish, put it in the Worker's blob store and print the SHA-256 that
             run --runtime-blob takes.
   status    --url URL --token T RUN
+  timeline  --url URL --token T RUN
+            Print where the time of a run went: every mark the run and its runners recorded,
+            by its offset from the creation of the run, with the span it measured.
   attempt   --url URL --token T RUN ATTEMPT [ARTIFACT]
   export    --url URL --token T RUN --out DIR
             Write the run as a Harbor job directory.
@@ -288,9 +313,9 @@ export function client(options: { token: string; url: string }) {
       >,
     cancel: async (run: string) =>
       (await call('/v1/runs/' + run + '/cancel', { method: 'POST' })).json(),
-    create: async (config: Config.Config) =>
+    create: async (config: Config.Config, placement: { location?: string } = {}) =>
       (await (
-        await call('/v1/runs', {
+        await call('/v1/runs' + (placement.location ? '?location=' + placement.location : ''), {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(config),
@@ -298,10 +323,34 @@ export function client(options: { token: string; url: string }) {
       ).json()) as { attempts: number; eval: { name: string; version: string }; id: string },
     harbor: async (run: string) =>
       (await (await call('/v1/runs/' + run + '/harbor')).json()) as Job,
+    pool: async (action?: 'close', location?: string) =>
+      (
+        await call(
+          '/v1/pool' + (action ? '/close' : '') + (location ? '?location=' + location : ''),
+          action ? { method: 'POST' } : {},
+        )
+      ).json() as Promise<Record<string, any>>,
     results: async (run: string) =>
       (await (await call('/v1/runs/' + run + '/results')).json()) as Compare.Run,
+    standing: async (
+      body: { backend: string; network: string; noticeSec: number },
+      location?: string,
+    ) =>
+      (await (
+        await call('/v1/pool/members' + (location ? '?location=' + location : ''), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+      ).json()) as Protocol.Standing,
     status: async (run: string) =>
       (await call('/v1/runs/' + run)).json() as Promise<Record<string, any>>,
+    timeline: async (run: string) =>
+      (await (await call('/v1/runs/' + run + '/timeline')).json()) as {
+        createdAt: number
+        id: string
+        marks: Timeline.Mark[]
+      },
   }
 }
 
@@ -359,6 +408,8 @@ export function summary(status: Record<string, any>): string {
           .map(([k, value]) => 'pass@' + k + ' ' + (value * 100).toFixed(1) + '%')
           .join(', '),
     )
+  const start = Timeline.summary((status['start'] ?? {}) as Timeline.Start)
+  if (start) lines.splice(3, 0, 'start: ' + start)
   if (status['eval'])
     lines.splice(1, 0, 'eval: ' + status['eval'].name + '@' + status['eval'].version)
   if (status['rerunOf'])
@@ -429,6 +480,53 @@ export async function importEval(
   }
 }
 
+export function poolSummary(status: Record<string, any>): string {
+  const time = (at: number | null) => (at === null ? 'never' : new Date(at).toISOString())
+  const members = status['members'] as Record<string, any>[]
+  return [
+    'pool: ' +
+      members.filter((member) => member['state'] === 'idle').length +
+      ' idle, ' +
+      members.filter((member) => member['state'] === 'assigned').length +
+      ' with a run, spend $' +
+      Number(status['spendUsd']).toFixed(4),
+    ...members.map(
+      (member) =>
+        '  ' +
+        [
+          'm' + member['id'],
+          member['spec'].kind,
+          member['spec'].provider,
+          member['spec'].template,
+          member['spec'].backend,
+          member['state'],
+          member['holding'] ? 'standing by' : undefined,
+          member['run'] ? 'run ' + member['run'] : undefined,
+          'runs ' + member['runs'],
+          member['handle'],
+          member['state'] === 'idle' && member['idleUntil'] !== null
+            ? 'idle until ' + time(member['idleUntil'])
+            : undefined,
+          member['paidUntil'] === null ? undefined : 'paid until ' + time(member['paidUntil']),
+          member['error'],
+        ]
+          .filter(Boolean)
+          .join(' '),
+    ),
+    ...(status['payments'] as Record<string, any>[]).map(
+      (payment) =>
+        '  paid $' +
+        Number(payment['usd']).toFixed(6) +
+        ' for m' +
+        payment['member'] +
+        ' at ' +
+        time(payment['at']) +
+        ': ' +
+        (JSON.parse(payment['detail']) as { description: string }).description,
+    ),
+  ].join('\n')
+}
+
 export function blobStore(
   name: string | undefined,
   api: { token: string; url: string },
@@ -450,6 +548,7 @@ async function main(): Promise<void> {
       'ca-bundle': { type: 'string' },
       cache: { type: 'string' },
       claims: { default: '3', type: 'string' },
+      close: { default: false, type: 'boolean' },
       'claude-login': { type: 'string' },
       'codex-login': { type: 'string' },
       config: { type: 'string' },
@@ -470,6 +569,7 @@ async function main(): Promise<void> {
       layers: { type: 'string' },
       'lease-sec': { default: '60', type: 'string' },
       limit: { type: 'string' },
+      location: { type: 'string' },
       'memory-mb': { type: 'string' },
       'model-budget-usd': { type: 'string' },
       name: { type: 'string' },
@@ -497,6 +597,7 @@ async function main(): Promise<void> {
       sandboxes: { default: '1', type: 'string' },
       'setup-sec': { default: '600', type: 'string' },
       'slot-env': { type: 'string' },
+      standing: { default: false, type: 'boolean' },
       'slot-forward': { multiple: true, type: 'string' },
       slots: { type: 'string' },
       sources: { type: 'string' },
@@ -510,6 +611,8 @@ async function main(): Promise<void> {
       url: { default: process.env['NANOEVAL_URL'], type: 'string' },
       'verifier-cache': { default: false, type: 'boolean' },
       wait: { default: false, type: 'boolean' },
+      'warm-budget-usd': { default: '0', type: 'string' },
+      'warm-sec': { type: 'string' },
     },
   })
   const [command, ...rest] = positionals
@@ -739,10 +842,12 @@ async function main(): Promise<void> {
       'evals',
       'export',
       'import',
+      'pool',
       'run',
       'runner',
       'sandbox',
       'status',
+      'timeline',
     ].includes(command)
   ) {
     console.log(usage)
@@ -924,6 +1029,43 @@ async function main(): Promise<void> {
     return
   }
 
+  if (command === 'pool') {
+    console.log(poolSummary(await api.pool(values.close ? 'close' : undefined, values.location)))
+    return
+  }
+
+  if (command === 'runner' && values.standing) {
+    if (backend === 'auto') throw new Error('a standing runner names its --backend')
+    const home = Path.resolve(values.home ?? Path.join('output', 'runners', 'standing'))
+    await Fs.mkdir(home, { recursive: true })
+    const leaseSec = Number(values['lease-sec'])
+    const network = (values.network ?? Config.network({ backend })) as Config.Runner['network']
+    const pool = await api.standing({ backend, network, noticeSec: leaseSec }, values.location)
+    process.chdir(home)
+    Object.assign(process.env, hostPolicy)
+    await Runner.run({
+      cache,
+      home,
+      override: {
+        ...(values['free-disk-mb'] ? { freeDiskMb: Number(values['free-disk-mb']) } : {}),
+        ...(values['memory-mb'] ? { memoryMb: Number(values['memory-mb']) } : {}),
+        ...(values['poll-ms'] ? { pollMs: Number(values['poll-ms']) } : {}),
+        ...(values.slots ? { slots: Number(values.slots) } : {}),
+      },
+      standing: {
+        backend,
+        leaseSec,
+        network,
+        pollMs: Number(values['poll-ms'] ?? '250'),
+        pool,
+        setupSec: Number(values['setup-sec']),
+        url: access.url,
+      },
+      store: Path.resolve(values.store ?? Store.defaultRoot()),
+    })
+    process.exit(0)
+  }
+
   if (command === 'runner') {
     const run = required(values.run, 'run')
     const home = Path.resolve(values.home ?? Path.join('output', 'runners', run.slice(0, 8)))
@@ -1036,9 +1178,17 @@ async function main(): Promise<void> {
         ...(values['verifier-cache'] || parent?.sandbox.verifierCache
           ? { verifierCache: true as const }
           : {}),
+        ...(values['warm-sec']
+          ? {
+              warm: {
+                idleSec: Number(values['warm-sec']),
+                usd: Number(values['warm-budget-usd']),
+              },
+            }
+          : {}),
       },
     }
-    const created = await api.create(config)
+    const created = await api.create(config, values.location ? { location: values.location } : {})
     console.log(
       'run ' +
         created.id +
@@ -1080,6 +1230,10 @@ async function main(): Promise<void> {
     return
   }
   if (command === 'status') console.log(summary(await api.status(run)))
+  if (command === 'timeline') {
+    const timeline = await api.timeline(run)
+    console.log(Timeline.table(timeline.marks, timeline.createdAt))
+  }
   if (command === 'cancel') console.log(JSON.stringify(await api.cancel(run)))
   if (command === 'export') await exportJob(api, { out: required(values.out, 'out'), run })
   if (command === 'attempt') {

@@ -1,6 +1,7 @@
 import * as Eval from './Eval.ts'
 import * as Installed from './Installed.ts'
 import type * as Ledger from './Ledger.ts'
+import type * as Protocol from './Protocol.ts'
 import type * as Sandbox from './Sandbox.ts'
 import * as Slot from './Slot.ts'
 
@@ -61,10 +62,12 @@ export type Config = {
     template?: string
     timeoutSec?: number
     verifierCache?: true
+    warm?: { idleSec: number; usd: number }
   }
 }
 
 export type Runner = {
+  ahead?: Protocol.Ahead[]
   backend: Backend
   disks: 'keep' | 'remove'
   freeDiskMb?: number
@@ -74,6 +77,8 @@ export type Runner = {
   network: Slot.Network
   oracle: boolean
   pollMs: number
+  pool?: Protocol.Standing
+  ready?: true
   run: string
   runner: number
   slots: number
@@ -271,6 +276,14 @@ export function parse(value: unknown): Config {
         ? {}
         : { timeoutSec: integer(sandbox.timeoutSec, 'sandbox.timeoutSec', 1) }),
       ...(sandbox.verifierCache ? { verifierCache: true as const } : {}),
+      ...(sandbox.warm === undefined
+        ? {}
+        : {
+            warm: {
+              idleSec: integer(sandbox.warm?.idleSec, 'sandbox.warm.idleSec', 1),
+              usd: amount(sandbox.warm?.usd, 'sandbox.warm.usd'),
+            },
+          }),
     },
   }
 }

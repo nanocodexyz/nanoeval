@@ -8,24 +8,28 @@ import * as E2b from '../src/E2b.ts'
 import * as Eval from '../src/Eval.ts'
 import * as Gateway from '../src/Gateway.ts'
 import * as Harbor from '../src/Harbor.ts'
+import * as Hold from '../src/Hold.ts'
 import * as Installed from '../src/Installed.ts'
 import * as Judge from '../src/Judge.ts'
 import * as Ledger from '../src/Ledger.ts'
 import * as Bytes from '../src/internal/Bytes.ts'
 import * as Local from '../src/Local.ts'
 import * as Payment from '../src/Payment.ts'
+import * as Members from '../src/Pool.ts'
 import * as Protocol from '../src/Protocol.ts'
 import * as Proxy from '../src/Proxy.ts'
 import * as Result from '../src/Result.ts'
 import * as Sandbox from '../src/Sandbox.ts'
 import * as Slot from '../src/Slot.ts'
 import * as SqlSetup from '../src/Sql.ts'
+import * as Timeline from '../src/Timeline.ts'
 import * as Verdict from '../src/Verdict.ts'
 import * as Blobs from './Blobs.ts'
 import type { Env } from './Env.ts'
 import * as Evals from './Evals.ts'
 import * as Harness from './Harness.ts'
 import * as Model from './Model.ts'
+import * as PoolObject from './Pool.ts'
 import * as Storage from './Storage.ts'
 
 type SandboxRow = {
@@ -35,9 +39,10 @@ type SandboxRow = {
   expires_at: number | null
   handle: string | null
   id: number
+  member: number | null
   paid_until: number | null
   runner: number | null
-  state: 'closed' | 'creating' | 'ending' | 'failed' | 'ready' | 'starting' | 'unknown'
+  state: 'closed' | 'creating' | 'ending' | 'failed' | 'kept' | 'ready' | 'starting' | 'unknown'
 }
 
 type RunnerRow = {
@@ -57,6 +62,7 @@ type Meta = {
   eval: { name: string; version: string }
   finishedAt: number | null
   id: string
+  location?: string
   publicUrl: string
   reruns: string[]
   runnerToken: string
@@ -92,7 +98,8 @@ const tables = [
     expires_at INTEGER,
     error TEXT,
     runner INTEGER,
-    paid_until INTEGER
+    paid_until INTEGER,
+    member INTEGER
   )`,
   `CREATE TABLE IF NOT EXISTS runners (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,6 +136,7 @@ const tables = [
     usage TEXT
   )`,
   ...Ledger.tables,
+  ...Timeline.tables,
 ]
 
 const json = Storage.json
@@ -159,6 +167,8 @@ class Refusal extends Error {
 
 export class Run extends DurableObject<Env> {
   private readonly creating = new Set<number>()
+  private readonly cursors = new Map<string, number>()
+  private readonly holds = Hold.create()
   private readonly specs = new Map<string, Eval.Task>()
   private readonly sql: SqlSetup.Sql
   private ticking: Promise<void> | undefined
@@ -170,6 +180,8 @@ export class Run extends DurableObject<Env> {
     const columns = this.sql.all('PRAGMA table_info(sandboxes)')
     if (!columns.some((column) => column['name'] === 'paid_until'))
       this.sql.run('ALTER TABLE sandboxes ADD COLUMN paid_until INTEGER')
+    if (!columns.some((column) => column['name'] === 'member'))
+      this.sql.run('ALTER TABLE sandboxes ADD COLUMN member INTEGER')
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -190,6 +202,8 @@ export class Run extends DurableObject<Env> {
       if (request.method === 'GET' && parts[0] === 'status') return json(this.status())
       if (request.method === 'GET' && parts[0] === 'harbor') return json(this.harbor())
       if (request.method === 'GET' && parts[0] === 'config') return json(this.config())
+      if (request.method === 'GET' && parts[0] === 'timeline')
+        return json({ createdAt: meta.createdAt, id: meta.id, marks: Timeline.all(this.sql) })
       if (request.method === 'GET' && parts[0] === 'results')
         return json({
           attempts: this.results(),
@@ -218,6 +232,7 @@ export class Run extends DurableObject<Env> {
       if (request.method === 'POST' && parts[0] === 'runners') return json(this.attach(), 201)
       if (request.method === 'POST' && parts[0] === 'cancel') {
         this.setMeta({ ...meta, cancelled: true })
+        this.wake()
         this.ctx.waitUntil(this.tick())
         return json({ cancelled: true })
       }
@@ -272,6 +287,7 @@ export class Run extends DurableObject<Env> {
 
   private async create(request: Request, params: URLSearchParams): Promise<Response> {
     if (this.meta()) return json({ error: 'the run exists' }, 409)
+    const receivedAt = Date.now()
     const id = params.get('id')!
     const config = Config.parse(await request.json().catch(() => null))
     if (config.sandbox.max > 0) {
@@ -352,10 +368,12 @@ export class Run extends DurableObject<Env> {
     const byName = new Map(tasks.map((task) => [task.name, task]))
     const timeoutSec =
       config.sandbox.timeoutSec ??
-      Config.lifetimeSec(
-        config,
-        seeds.map((seed) => byName.get(seed.task)!),
-      )
+      (config.sandbox.warm && config.sandbox.provider === 'gateway'
+        ? Gateway.maxTimeoutSec
+        : Config.lifetimeSec(
+            config,
+            seeds.map((seed) => byName.get(seed.task)!),
+          ) + (config.sandbox.warm?.idleSec ?? 0))
     const longest =
       config.sandbox.provider === 'e2b'
         ? E2b.maxTimeoutSec
@@ -394,12 +412,14 @@ export class Run extends DurableObject<Env> {
           JSON.stringify(task),
         )
       Ledger.create(this.sql, seeds)
+      Timeline.add(this.sql, { at: receivedAt, ms: Date.now() - receivedAt, name: 'run.created' })
       this.setMeta({
         cancelled: false,
-        createdAt: Date.now(),
+        createdAt: receivedAt,
         eval: { name: config.eval.name, version: snapshot.version.digest },
         finishedAt: null,
         id,
+        ...(params.get('location') ? { location: params.get('location')! } : {}),
         publicUrl: params.get('url')!,
         reruns: [],
         runnerToken: secret(),
@@ -520,6 +540,12 @@ export class Run extends DurableObject<Env> {
       return Gateway.create({
         budget,
         key: this.env.TEMPO_KEY!,
+        onCall: (call) =>
+          Timeline.add(this.sql, {
+            at: Date.now() - call.ms,
+            ms: call.ms,
+            name: 'gateway.' + call.operation + (call.paid ? '.paid' : '.quote'),
+          }),
         onCharge,
         ...(this.env.TEMPO_GATEWAY_URL ? { url: this.env.TEMPO_GATEWAY_URL } : {}),
       })
@@ -630,6 +656,7 @@ export class Run extends DurableObject<Env> {
       payments: this.sql.all('SELECT at, usd, detail FROM payments ORDER BY id'),
       rerunOf: config.rerun ?? null,
       reruns: meta.reruns,
+      start: Timeline.start(Timeline.all(this.sql), meta.createdAt),
       runners: this.runners().map((row) => ({
         capabilities: row.capabilities ? JSON.parse(row.capabilities) : null,
         error: row.error,
@@ -642,7 +669,9 @@ export class Run extends DurableObject<Env> {
         capabilities: row.capabilities ? JSON.parse(row.capabilities) : null,
         error: row.error,
         expiresAt: row.expires_at,
+        handle: row.handle ? (JSON.parse(row.handle) as Sandbox.Handle).id : null,
         id: row.id,
+        member: row.member,
         paidUntil: row.paid_until,
         provider: config.sandbox.provider,
         runner: row.runner,
@@ -664,20 +693,28 @@ export class Run extends DurableObject<Env> {
         names: this.artifactNames(attempt.id),
         trial: Harbor.trialName(attempt),
       })),
-      files: Harbor.files({
-        artifacts: {},
-        attempts,
-        job: {
-          finishedAt: meta.finishedAt,
-          id: meta.id,
-          name: config.name,
-          startedAt: meta.createdAt,
-        },
-        running: rows.filter(Ledger.active).length,
-        source: config.eval.name + '@' + config.eval.version,
-        total: rows.length,
-        version,
-      }),
+      files: {
+        ...Harbor.files({
+          artifacts: {},
+          attempts,
+          job: {
+            finishedAt: meta.finishedAt,
+            id: meta.id,
+            name: config.name,
+            startedAt: meta.createdAt,
+          },
+          running: rows.filter(Ledger.active).length,
+          source: config.eval.name + '@' + config.eval.version,
+          total: rows.length,
+          version,
+        }),
+        'timeline.json':
+          JSON.stringify(
+            { createdAt: meta.createdAt, id: meta.id, marks: Timeline.all(this.sql) },
+            null,
+            2,
+          ) + '\n',
+      },
     }
   }
 
@@ -703,6 +740,7 @@ export class Run extends DurableObject<Env> {
       if (provider) await this.renew(provider)
       if (provider) await this.lapse(provider)
       if (provider && !this.meta()!.cancelled) await this.grow(provider)
+      if (!provider && !this.meta()!.cancelled && this.wanting()) await this.adopt(false)
     } catch (error) {
       console.error('nanoeval tick failed', message(error))
     }
@@ -723,6 +761,16 @@ export class Run extends DurableObject<Env> {
       Config.harness(this.agentOf(row)) === 'session' &&
       ['judge', 'run', 'verify'].includes(row.phase)
     )
+  }
+
+  private wake(row?: string): void {
+    this.holds.release((key) =>
+      row === undefined ? key.startsWith('claim:') : key.startsWith('row:' + row + ':'),
+    )
+  }
+
+  private holdMs(asked: unknown): number {
+    return typeof asked === 'number' && asked > 0 ? Math.min(asked, Number(this.env.HOLD_MS)) : 0
   }
 
   private agentOf(row: Pick<Ledger.Attempt, 'agent'>): Config.Agent {
@@ -867,7 +915,12 @@ export class Run extends DurableObject<Env> {
       if (submitted && row.phase === 'run') await this.halt(row.session)
       if (submitted)
         usage = await Harness.events(this.env, row.session).then(
-          (events) => JSON.stringify(Atif.usage(events)),
+          (events) => {
+            const requested = Timeline.modelRequest(events)
+            if (requested !== undefined)
+              Timeline.add(this.sql, { at: requested, attempt: row.id, name: 'attempt.model' })
+            return JSON.stringify(Atif.usage(events))
+          },
           () => undefined,
         )
       const installed = this.installed(row) !== undefined
@@ -885,9 +938,11 @@ export class Run extends DurableObject<Env> {
       now: Date.now(),
       ...(usage ? { usage } : {}),
     })
+    this.wake(row.id)
     if (requeued) {
       this.sql.run('DELETE FROM artifacts WHERE attempt = ?', row.id)
       this.sql.run('DELETE FROM binary_artifacts WHERE attempt = ?', row.id)
+      this.wake()
       return
     }
     const current = Ledger.get(this.sql, row.id)
@@ -994,12 +1049,36 @@ export class Run extends DurableObject<Env> {
     }
     this.setMeta({ ...this.meta()!, sandboxFailures: this.meta()!.sandboxFailures + 1 })
     if (row.handle) await provider.kill(JSON.parse(row.handle) as Sandbox.Handle).catch(() => {})
+    await this.forget(row, error)
   }
 
-  private runnerConfig(runner: number): Config.Runner {
+  private async forget(row: Pick<SandboxRow, 'member'>, error?: string): Promise<void> {
+    if (row.member === null) return
+    await PoolObject.call(this.env, {
+      action: 'drop',
+      body: { ...(error === undefined ? {} : { error }), id: row.member, run: this.meta()!.id },
+      location: this.meta()!.location,
+    }).catch(() => {})
+  }
+
+  private ahead(): Protocol.Ahead[] {
+    const found = new Map<string, Protocol.Ahead>()
+    const slots = this.config().sandbox.slots
+    for (const row of this.rows()) {
+      if (found.size >= slots) break
+      if (row.phase !== 'unclaimed') continue
+      const environment = this.task(row.task).environment
+      if (environment.kind === 'disk') found.set(environment.disk.digest, environment)
+    }
+    return [...found.values()]
+  }
+
+  private runnerConfig(runner: number, pool?: Protocol.Standing): Config.Runner {
     const meta = this.meta()!
     const config = this.config()
+    const ahead = this.ahead()
     return {
+      ...(ahead.length ? { ahead } : {}),
       backend: config.sandbox.backend,
       disks: config.sandbox.disks,
       ...(config.sandbox.freeDiskMb === undefined ? {} : { freeDiskMb: config.sandbox.freeDiskMb }),
@@ -1013,6 +1092,7 @@ export class Run extends DurableObject<Env> {
       network: config.sandbox.network,
       oracle: Config.oracle(config) !== undefined,
       pollMs: config.sandbox.pollMs,
+      ...(pool ? { pool } : {}),
       run: meta.id,
       runner,
       slots: config.sandbox.slots,
@@ -1052,13 +1132,23 @@ export class Run extends DurableObject<Env> {
     this.sql.run('INSERT INTO sandboxes (state, created_at) VALUES (?, ?)', 'creating', Date.now())
     const id = this.sql.all('SELECT MAX(id) AS id FROM sandboxes')[0]!['id'] as number
     this.creating.add(id)
+    const timed = async <T>(name: string, work: () => Promise<T>): Promise<T> => {
+      const at = Date.now()
+      try {
+        return await work()
+      } finally {
+        Timeline.add(this.sql, { at, ms: Date.now() - at, name, sandbox: id })
+      }
+    }
     try {
-      const created = await provider.create({
-        ...(config.sandbox.leaseSec === undefined ? {} : { leaseSec: config.sandbox.leaseSec }),
-        metadata: { nanoeval_run: meta.id, nanoeval_sandbox: String(id) },
-        template: config.sandbox.template,
-        timeoutSec: config.sandbox.timeoutSec!,
-      })
+      const created = await timed('sandbox.create', () =>
+        provider.create({
+          ...(config.sandbox.leaseSec === undefined ? {} : { leaseSec: config.sandbox.leaseSec }),
+          metadata: { nanoeval_run: meta.id, nanoeval_sandbox: String(id) },
+          template: config.sandbox.template,
+          timeoutSec: config.sandbox.timeoutSec!,
+        }),
+      )
       const handle = created.handle
       const runner = this.register(id)
       this.update('sandboxes', id, {
@@ -1067,25 +1157,50 @@ export class Run extends DurableObject<Env> {
         paid_until: created.paidUntil ?? null,
         runner,
       })
+      const pool = config.sandbox.warm
+        ? await PoolObject.call<Protocol.Standing>(this.env, {
+            action: 'enroll',
+            body: {
+              expiresAt: created.expiresAt,
+              handle,
+              idleSec: config.sandbox.warm.idleSec,
+              ...(config.sandbox.leaseSec === undefined
+                ? {}
+                : { leaseSec: config.sandbox.leaseSec }),
+              noticeSec: config.limits.leaseSec,
+              paidUntil: created.paidUntil ?? null,
+              run: meta.id,
+              spec: { ...Members.wanted(config.sandbox), backend: config.sandbox.backend },
+              usd: config.sandbox.warm.usd,
+            },
+            location: meta.location,
+          })
+        : undefined
+      if (pool) this.update('sandboxes', id, { member: pool.member })
       const sandbox = provider.connect(handle)
-      const file = handle.home + '/runner.json'
-      await sandbox.write(file, Bytes.fromText(JSON.stringify(this.runnerConfig(runner))))
+      const settings = JSON.stringify(this.runnerConfig(runner, pool))
       if (config.sandbox.runtime) {
-        const script = handle.home + '/' + Bootstrap.files.script
-        await sandbox.write(
-          script,
-          Bytes.fromText(
+        const runtime = config.sandbox.runtime
+        await timed('sandbox.exec', () =>
+          Sandbox.run(
+            sandbox,
             Bootstrap.script({
+              config: settings,
               home: handle.home,
               run: meta.id,
-              runtime: config.sandbox.runtime,
+              runtime,
               token: meta.runnerToken,
               url: meta.publicUrl,
             }),
           ),
         )
-        await Sandbox.run(sandbox, 'bash ' + Sandbox.quote(script))
-      } else await Sandbox.run(sandbox, 'nanoeval runner --detach --config ' + Sandbox.quote(file))
+      } else {
+        const file = handle.home + '/' + Bootstrap.files.config
+        await timed('sandbox.write', () => sandbox.write(file, Bytes.fromText(settings)))
+        await timed('sandbox.exec', () =>
+          Sandbox.run(sandbox, 'nanoeval runner --detach --config ' + Sandbox.quote(file)),
+        )
+      }
       this.update('sandboxes', id, { state: 'starting' })
     } catch (error) {
       const row = this.sandboxes().find((candidate) => candidate.id === id)!
@@ -1182,7 +1297,74 @@ export class Run extends DurableObject<Env> {
         })
       return
     }
-    if (live.length < config.sandbox.max) await this.open(provider)
+    if (live.length < config.sandbox.max && !(await this.adopt(true))) await this.open(provider)
+  }
+
+  private wanting(): boolean {
+    if (!this.rows().some((row) => row.phase === 'unclaimed')) return false
+    return !this.runners().some((runner) => {
+      if (runner.state !== 'ready') return false
+      const report = runner.report ? (JSON.parse(runner.report) as Protocol.Report) : undefined
+      return !report?.offer || (report.offer.slots > 0 && !report.unfit)
+    })
+  }
+
+  private async adopt(marked: boolean): Promise<boolean> {
+    const meta = this.meta()!
+    const config = this.config()
+    const at = Date.now()
+    const unclaimed = this.rows().filter((row) => row.phase === 'unclaimed')
+    const { member } = await PoolObject.call<{ member: Members.Taken | null }>(this.env, {
+      action: 'take',
+      body: {
+        lifetimeSec: Config.lifetimeSec(
+          config,
+          unclaimed.map((row) => this.task(row.task)),
+        ),
+        run: meta.id,
+        wanted: Members.wanted(config.sandbox),
+      },
+      location: meta.location,
+    })
+    const now = Date.now()
+    if (member || marked) Timeline.add(this.sql, { at, ms: now - at, name: 'pool.take' })
+    if (!member) return false
+    let sandbox: number | null = null
+    if (member.handle) {
+      this.sql.run(
+        'INSERT INTO sandboxes (state, created_at, handle, capabilities, expires_at, paid_until, member) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        'ready',
+        now,
+        JSON.stringify(member.handle),
+        JSON.stringify(member.capabilities),
+        member.expiresAt,
+        member.paidUntil,
+        member.id,
+      )
+      sandbox = this.sql.all('SELECT MAX(id) AS id FROM sandboxes')[0]!['id'] as number
+    }
+    const runner = this.register(sandbox)
+    this.update('runners', runner, {
+      capabilities: JSON.stringify(member.capabilities),
+      state: 'ready',
+    })
+    if (sandbox !== null) this.update('sandboxes', sandbox, { runner })
+    Timeline.add(this.sql, {
+      at: now,
+      name: 'sandbox.adopt',
+      ...(sandbox === null ? {} : { sandbox }),
+    })
+    Timeline.add(this.sql, { at: now, name: 'runner.hello', runner })
+    const { assigned } = await PoolObject.call<{ assigned: boolean }>(this.env, {
+      action: 'assign',
+      body: { config: { ...this.runnerConfig(runner), ready: true }, id: member.id, run: meta.id },
+      location: meta.location,
+    })
+    if (assigned) return true
+    const error = 'the pool did not hand its runner to this run'
+    this.update('runners', runner, { error, state: 'lost' })
+    if (sandbox !== null) this.update('sandboxes', sandbox, { error, state: 'failed' })
+    return false
   }
 
   private async closeIdle(provider: Sandbox.Provider): Promise<void> {
@@ -1192,12 +1374,34 @@ export class Run extends DurableObject<Env> {
       if (record.state !== 'ready' && record.state !== 'ending') continue
       if (rows.some((row) => Ledger.active(row) && row.runner === record.runner)) continue
       const handle = JSON.parse(record.handle!) as Sandbox.Handle
+      if (record.member !== null && record.state === 'ready') {
+        const warm = this.config().sandbox.warm
+        const { kept } = await PoolObject.call<{ kept: boolean }>(this.env, {
+          action: 'settle',
+          body: {
+            ...(record.capabilities
+              ? { capabilities: JSON.parse(record.capabilities) as Sandbox.Capabilities }
+              : {}),
+            id: record.member,
+            ...(warm ? { idleSec: warm.idleSec, usd: warm.usd } : {}),
+            paidUntil: record.paid_until,
+            run: this.meta()!.id,
+          },
+          location: this.meta()!.location,
+        })
+        if (kept) {
+          this.update('sandboxes', record.id, { state: 'kept' })
+          if (record.runner !== null) this.update('runners', record.runner, { state: 'left' })
+          continue
+        }
+      }
       try {
         await provider.kill(handle)
         this.update('sandboxes', record.id, { state: 'closed' })
       } catch (error) {
         this.update('sandboxes', record.id, { error: message(error), state: 'failed' })
       }
+      await this.forget(record)
       if (record.runner !== null) this.update('runners', record.runner, { state: 'left' })
     }
   }
@@ -1269,6 +1473,7 @@ export class Run extends DurableObject<Env> {
         })
       if (record.handle)
         await provider.kill(JSON.parse(record.handle) as Sandbox.Handle).catch(() => {})
+      await this.forget(record, 'the lease of its sandbox ended')
     }
   }
 
@@ -1300,9 +1505,16 @@ export class Run extends DurableObject<Env> {
     if (resource === 'leave') return json(await this.leave(body as Protocol.Leave))
     if (resource === 'rows' && id && action) {
       const row = this.fenced(id, String(body['claim'] ?? ''))
-      if (action === 'session') return json(await this.session(row))
+      if (Timeline.valid(body['timeline']))
+        Timeline.report(this.sql, {
+          attempt: row.id,
+          receivedAt: Date.now(),
+          report: body['timeline'],
+          ...(row.runner === null ? {} : { runner: row.runner }),
+        })
+      if (action === 'session') return json(await this.handSession(row))
       if (action === 'endpoint') return json(await this.endpoint(row))
-      if (action === 'agent') return json(await this.agent(row, body as { instruction?: string }))
+      if (action === 'agent') return json(await this.agent(row, body as Protocol.Ask))
       if (action === 'verify') return json(this.verify(row, body as { solve?: { code: number } }))
       if (action === 'judge') return json(await this.judge(row, body as { request?: string }))
       if (action === 'finish') return json(await this.finish(row, body as Protocol.Finish))
@@ -1351,12 +1563,16 @@ export class Run extends DurableObject<Env> {
           ' network, and the run asks for ' +
           config.sandbox.network,
       )
+    const now = Date.now()
     this.update('runners', runner.id, {
       capabilities: JSON.stringify(capabilities),
       error: null,
-      seen_at: Date.now(),
+      seen_at: now,
       state: 'ready',
     })
+    if (Timeline.valid(body.timeline))
+      Timeline.report(this.sql, { receivedAt: now, report: body.timeline, runner: runner.id })
+    Timeline.add(this.sql, { at: now, name: 'runner.hello', runner: runner.id })
     const held = new Set((body.held ?? []).map((entry) => entry.id + ' ' + entry.claim))
     for (const row of this.rows())
       if (row.runner === runner.id && Ledger.active(row) && !held.has(row.id + ' ' + row.claim))
@@ -1369,20 +1585,47 @@ export class Run extends DurableObject<Env> {
   }
 
   private async claim(body: Protocol.ClaimRequest): Promise<Protocol.ClaimResponse> {
-    const meta = this.meta()!
-    const config = this.config()
     const runner = this.known(body.runner)
     if (runner.state !== 'ready') throw new Refusal(409, 'the runner is ' + runner.state)
+    if (Timeline.valid(body.timeline))
+      Timeline.report(this.sql, {
+        receivedAt: Date.now(),
+        report: body.timeline,
+        runner: runner.id,
+      })
+    const first = await this.grant(runner.id, body)
+    const waitMs = this.holdMs(body.waitMs)
+    if (
+      first.rows.length ||
+      first.finished ||
+      !waitMs ||
+      body.offer.slots < 1 ||
+      this.meta()!.cancelled
+    )
+      return first
+    const outcome = await this.holds.wait('claim:' + runner.id, waitMs)
+    if (outcome !== 'released' || this.known(runner.id).state !== 'ready')
+      return { finished: this.finished(), rows: [] }
+    return this.grant(runner.id, body)
+  }
+
+  private async grant(
+    runner: number,
+    body: Protocol.ClaimRequest,
+  ): Promise<Protocol.ClaimResponse> {
+    const meta = this.meta()!
+    const config = this.config()
     const now = Date.now()
     const idle = (unfit: boolean): Protocol.ClaimResponse => {
-      this.update('runners', runner.id, {
+      this.update('runners', runner, {
         report: JSON.stringify({ ...body.report, offer: body.offer, unfit }),
         seen_at: now,
       })
       return { finished: this.finished(), rows: [] }
     }
     if (meta.cancelled || (await this.overBudget())) return idle(false)
-    if (this.sandboxes().some((row) => row.id === runner.sandbox && row.state === 'ending'))
+    const sandbox = this.known(runner).sandbox
+    if (this.sandboxes().some((row) => row.id === sandbox && row.state === 'ending'))
       return idle(true)
     const claimed = Ledger.claim(this.sql, {
       leaseMs: config.limits.leaseSec * 1000,
@@ -1390,13 +1633,17 @@ export class Run extends DurableObject<Env> {
       now,
       offer: body.offer,
       run: meta.id,
-      runner: runner.id,
+      runner,
       token: secret,
     })
+    for (const row of claimed)
+      Timeline.add(this.sql, { at: now, attempt: row.id, name: 'attempt.claimed', runner })
     const waiting = this.rows().some((row) => row.phase === 'unclaimed')
     const response = idle(!claimed.length && body.offer.slots > 0 && waiting)
+    const ahead = waiting ? this.ahead() : []
     return {
       ...response,
+      ...(ahead.length ? { ahead } : {}),
       rows: claimed.map((row) => ({
         agent: this.claimedAgent(row),
         claim: row.claim!,
@@ -1417,7 +1664,9 @@ export class Run extends DurableObject<Env> {
       seen_at: Date.now(),
       ...(runner.state === 'lost' ? { error: null, state: 'ready' } : {}),
     })
+    const ahead = this.ahead()
     return {
+      ...(ahead.length ? { ahead } : {}),
       finished: this.finished(),
       lost: Ledger.heartbeat(this.sql, {
         held: body.held,
@@ -1467,11 +1716,10 @@ export class Run extends DurableObject<Env> {
     }
   }
 
-  private async session(row: Ledger.Attempt): Promise<Protocol.Session> {
+  private async handSession(row: Ledger.Attempt): Promise<Protocol.Session> {
     if (this.installed(row))
       throw new Refusal(409, 'the agent of the attempt is an installed command, not a session')
     const token = await Harness.token(this.env, row.session!)
-    this.attaching(row)
     return {
       name: Protocol.handName,
       token,
@@ -1485,7 +1733,8 @@ export class Run extends DurableObject<Env> {
 
   private attaching(row: Ledger.Attempt): void {
     const now = Date.now()
-    if (row.phase === 'claimed')
+    if (row.phase === 'claimed') {
+      Timeline.add(this.sql, { at: now, attempt: row.id, name: 'attempt.environment' })
       Ledger.update(this.sql, row.id, {
         phase: 'attach',
         phase_at: now,
@@ -1495,24 +1744,34 @@ export class Run extends DurableObject<Env> {
           { at: now, edge: 'start' },
         ),
       })
+    }
   }
 
-  private async agent(
-    row: Ledger.Attempt,
-    body: { instruction?: string },
-  ): Promise<Protocol.Agent> {
-    const config = this.config()
-    const task = this.task(row.task)
-    const agent = config.agents.find((candidate) => candidate.id === row.agent)!
-    const harness = Config.harness(agent)
-    const session = row.session!
-    const now = Date.now()
-    if (row.phase === 'attach') {
-      if (
-        harness !== 'installed' &&
-        !(await Harness.hands(this.env, session)).includes(Protocol.handName)
+  private async listed(row: Ledger.Attempt, waitMs: number): Promise<boolean> {
+    const until = Date.now() + waitMs
+    for (;;) {
+      if ((await Harness.hands(this.env, row.session!)).includes(Protocol.handName)) return true
+      const left = until - Date.now()
+      if (left <= 0) return false
+      await this.holds.wait(
+        'row:' + row.id + ':hand',
+        Math.min(left, Number(this.env.HAND_LIST_MS)),
       )
-        return { state: 'waiting' }
+      if (!Ledger.held(this.sql, { claim: row.claim!, id: row.id }))
+        throw new Refusal(410, 'the attempt is not claimed by this runner any more')
+    }
+  }
+
+  private async agent(claimed: Ledger.Attempt, body: Protocol.Ask): Promise<Protocol.Agent> {
+    const task = this.task(claimed.task)
+    const agent = this.agentOf(claimed)
+    const harness = Config.harness(agent)
+    const waitMs = this.holdMs(body.waitMs)
+    if (claimed.phase === 'claimed') this.attaching(claimed)
+    const row = Ledger.get(this.sql, claimed.id)!
+    const session = row.session!
+    if (row.phase === 'attach') {
+      if (harness !== 'installed' && !(await this.listed(row, waitMs))) return { state: 'waiting' }
       if (harness !== 'oracle') {
         if (
           typeof body.instruction !== 'string' ||
@@ -1532,12 +1791,17 @@ export class Run extends DurableObject<Env> {
           ...(agent.thinking ? { thinking: agent.thinking } : {}),
         })
       }
+      const now = Date.now()
+      Timeline.add(this.sql, { at: now, attempt: row.id, name: 'attempt.agent' })
       Ledger.update(this.sql, row.id, {
         deadline_at: now + task.agent.timeoutSec * 1000,
         phase: 'run',
         phase_at: now,
         timing: Ledger.mark(
-          Ledger.mark(row.timing, 'agentSetup', { at: now, edge: 'finish' }),
+          Ledger.mark(Ledger.get(this.sql, row.id)!.timing, 'agentSetup', {
+            at: now,
+            edge: 'finish',
+          }),
           'agentExecution',
           { at: now, edge: 'start' },
         ),
@@ -1549,26 +1813,51 @@ export class Run extends DurableObject<Env> {
     if (row.phase !== 'run' && row.phase !== 'verify')
       throw new Refusal(409, 'the attempt is in the ' + row.phase + ' phase')
     if (harness !== 'session') return { state: 'attached', timeoutSec: task.agent.timeoutSec }
-    const earlier = row.failure ? (JSON.parse(row.failure) as Result.Failure) : undefined
-    if (earlier?.kind === 'agent_timeout') return { state: 'timeout' }
 
-    const report = await Harness.turn(this.env, session, requestId)
-    if (report.status === 'completed')
-      return { message: report.ok?.message ?? '', state: 'completed' }
-    if (report.status === 'failed' || report.status === 'cancelled')
-      return { error: report.error ?? 'the turn ended as ' + report.status, state: 'failed' }
-    if (now > row.deadline_at!) {
-      await Harness.cancel(this.env, session, requestId)
-      Ledger.update(this.sql, row.id, {
-        failure: JSON.stringify({
-          at: now,
-          kind: 'agent_timeout',
-          message: 'the agent did not finish within ' + task.agent.timeoutSec + ' s',
-        } satisfies Result.Failure),
-      })
-      return { state: 'timeout' }
+    const read = async (): Promise<Protocol.Agent> => {
+      const current = Ledger.held(this.sql, { claim: row.claim!, id: row.id })
+      if (!current) throw new Refusal(410, 'the attempt is not claimed by this runner any more')
+      const earlier = current.failure ? (JSON.parse(current.failure) as Result.Failure) : undefined
+      if (earlier?.kind === 'agent_timeout') return { state: 'timeout' }
+      const report = await Harness.turn(this.env, session, requestId)
+      if (report.status === 'completed')
+        return { message: report.ok?.message ?? '', state: 'completed' }
+      if (report.status === 'failed' || report.status === 'cancelled')
+        return { error: report.error ?? 'the turn ended as ' + report.status, state: 'failed' }
+      const now = Date.now()
+      if (now > current.deadline_at!) {
+        await Harness.cancel(this.env, session, requestId)
+        Ledger.update(this.sql, row.id, {
+          failure: JSON.stringify({
+            at: now,
+            kind: 'agent_timeout',
+            message: 'the agent did not finish within ' + task.agent.timeoutSec + ' s',
+          } satisfies Result.Failure),
+        })
+        return { state: 'timeout' }
+      }
+      return { detached: report.kind === 'detached', state: 'running' }
     }
-    return { detached: report.kind === 'detached', state: 'running' }
+    const state = await read()
+    if (state.state !== 'running' || state.detached || !waitMs) return state
+    const key = 'row:' + row.id + ':agent'
+    const released = this.holds.wait(key, waitMs).then(() => undefined)
+    try {
+      const seen = await Harness.watch(this.env, session, {
+        after: this.cursors.get(session) ?? 0,
+        released,
+        requestId,
+        types: ['result'],
+        waitMs: Math.max(1, Math.min(waitMs, row.deadline_at! - Date.now() + 1)),
+      })
+      this.cursors.set(session, seen.cursor)
+    } catch (error) {
+      if (!(error instanceof Harness.RequestError)) throw error
+      return state
+    } finally {
+      this.holds.release((held) => held === key)
+    }
+    return read()
   }
 
   private verify(row: Ledger.Attempt, body: { solve?: { code: number } }): { ok: true } {
@@ -1576,6 +1865,7 @@ export class Run extends DurableObject<Env> {
     if (row.phase !== 'run') throw new Refusal(409, 'the attempt is in the ' + row.phase + ' phase')
     const task = this.task(row.task)
     const now = Date.now()
+    Timeline.add(this.sql, { at: now, attempt: row.id, name: 'attempt.verify' })
     Ledger.update(this.sql, row.id, {
       ...(body.solve && Verdict.timeoutCodes.includes(body.solve.code)
         ? {
@@ -1746,6 +2036,9 @@ export class Run extends DurableObject<Env> {
       try {
         const events = await Harness.events(this.env, session)
         usage = Atif.usage(events)
+        const requested = Timeline.modelRequest(events)
+        if (requested !== undefined)
+          Timeline.add(this.sql, { at: requested, attempt: row.id, name: 'attempt.model' })
         this.putArtifact(
           row.id,
           'agent/events.jsonl',
@@ -1774,6 +2067,13 @@ export class Run extends DurableObject<Env> {
       const stream = this.textArtifact(row.id, Installed.events) ?? ''
       const summary = Installed.summarize(kind, stream)
       const metered = this.metered(row)
+      const requested = this.sql.all(
+        'SELECT MIN(at) AS at FROM model_requests WHERE attempt = ? AND claim = ?',
+        row.id,
+        row.claims,
+      )[0]?.['at']
+      if (typeof requested === 'number')
+        Timeline.add(this.sql, { at: requested, attempt: row.id, name: 'attempt.model' })
       usage = {
         ...metered,
         costUsd: metered.costUsd ?? summary.costUsd,
@@ -1854,6 +2154,11 @@ export class Run extends DurableObject<Env> {
       now,
       result,
     })
+    if (row.phase !== 'unclaimed')
+      Timeline.add(this.sql, { at: Date.now(), attempt: row.id, name: 'attempt.verdict' })
+    this.cursors.delete(session)
+    this.wake(row.id)
+    if (this.finished()) this.wake()
     if (row.session && row.phase !== 'unclaimed' && row.phase !== 'claimed' && !kind)
       await Harness.remove(this.env, session).catch(() => {})
   }
