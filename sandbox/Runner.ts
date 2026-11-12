@@ -257,32 +257,30 @@ export async function run(options: Options): Promise<void> {
 
   const ensureDisk = async (environment: Extract<Eval.Environment, { kind: 'disk' }>) => {
     const prefix = Path.join(cache, 'disks', environment.disk.digest)
-    await Fs.mkdir(Path.dirname(prefix), { recursive: true })
-    const present = () =>
-      Fs.stat(prefix + '.ext4').then(
-        () => true,
-        () => false,
-      )
-    if (!(await present())) {
-      if (environment.format !== converter.format)
-        throw new Error(
-          'the environment disk is packed as ' +
-            environment.format +
-            ', and this runner unpacks ' +
-            converter.format,
+    let pending = unpacking.get(prefix)
+    if (!pending) {
+      pending = (async () => {
+        await Fs.mkdir(Path.dirname(prefix), { recursive: true })
+        const present = await Fs.stat(prefix + '.ext4').then(
+          () => true,
+          () => false,
         )
-      const packed = await Store.ensure(stores, { blob: environment.disk, cache })
-      let pending = unpacking.get(prefix)
-      if (!pending) {
-        pending = converter
-          .unpack(packed, prefix + '.ext4')
-          .then(() => Fs.writeFile(prefix + '.run-' + config.run, ''))
-          .finally(() => unpacking.delete(prefix))
-        unpacking.set(prefix, pending)
-      }
-      await pending
-      if (config.disks === 'remove') await Fs.rm(packed, { force: true })
+        if (present) return
+        if (environment.format !== converter.format)
+          throw new Error(
+            'the environment disk is packed as ' +
+              environment.format +
+              ', and this runner unpacks ' +
+              converter.format,
+          )
+        const packed = await Store.ensure(stores, { blob: environment.disk, cache })
+        await converter.unpack(packed, prefix + '.ext4')
+        await Fs.writeFile(prefix + mark, '')
+        if (config.disks === 'remove') await Fs.rm(packed, { force: true })
+      })().finally(() => unpacking.delete(prefix))
+      unpacking.set(prefix, pending)
     }
+    await pending
     await Host.describe(prefix, environment.meta)
     return prefix
   }

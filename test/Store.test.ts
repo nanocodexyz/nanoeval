@@ -140,6 +140,20 @@ test('the remote store uploads small blobs whole and large ones in parts', async
   const cached = await Store.ensure([local, store], { blob: second, cache })
   assert.ok(Fs.readFileSync(cached).equals(bytes))
 
+  Fs.rmSync(cached)
+  remote.requests.length = 0
+  const both = await Promise.all([
+    Store.ensure([local, store], { blob: second, cache }),
+    Store.ensure([local, store], { blob: second, cache }),
+  ])
+  assert.deepEqual(both, [cached, cached])
+  assert.deepEqual(
+    remote.requests,
+    ['GET /v1/blobs/' + second.digest],
+    'two rows that need one blob at once fetch it once',
+  )
+  assert.ok(Fs.readFileSync(cached).equals(bytes))
+
   remote.objects.set(first.digest, Buffer.from('tampered'))
   await assert.rejects(Store.ensure([local, store], { blob: first, cache }), Store.DigestError)
   const denied = Store.remote({

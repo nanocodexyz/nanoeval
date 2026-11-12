@@ -288,11 +288,26 @@ export async function addBytes(
   return { bytes: input.bytes.length, digest: name }
 }
 
-export async function ensure(
+const fetching = new Map<string, Promise<string>>()
+
+export function ensure(
   stores: readonly Store[],
   input: { blob: Eval.Blob; cache: string },
 ): Promise<string> {
   const file = Path.join(input.cache, 'blobs', input.blob.digest)
+  let pending = fetching.get(file)
+  if (!pending) {
+    pending = obtain(stores, { blob: input.blob, file }).finally(() => fetching.delete(file))
+    fetching.set(file, pending)
+  }
+  return pending
+}
+
+async function obtain(
+  stores: readonly Store[],
+  input: { blob: Eval.Blob; file: string },
+): Promise<string> {
+  const file = input.file
   const present = await FsPromises.stat(file).then(
     () => true,
     () => false,
