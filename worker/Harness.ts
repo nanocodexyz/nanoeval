@@ -1,4 +1,5 @@
 import type * as Atif from '../src/Atif.ts'
+import * as Sse from '../src/Sse.ts'
 import { account, type Env } from './Env.ts'
 import { nanocode } from './Sessions.ts'
 
@@ -109,6 +110,61 @@ export async function events(env: Env, name: string): Promise<Atif.SessionEvent[
     if (!page.has_more || page.next_cursor <= after) return all
     after = page.next_cursor
   }
+}
+
+export async function watch(env: Env, name: string, input: watch.Input): Promise<watch.Seen> {
+  const response = await call(
+    env,
+    session(name) + '/events?after=' + input.after + '&limit=' + env.EVENT_PAGE_SIZE,
+    { headers: { accept: 'text/event-stream' } },
+  )
+  if (!response.ok || !response.body)
+    throw new RequestError(
+      'watching events answered ' + response.status + ': ' + (await response.text()).slice(0, 500),
+    )
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let cursor = input.after
+  let rest = ''
+  let stop = () => {}
+  const expired = new Promise<undefined>((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), input.waitMs)
+    stop = () => clearTimeout(timer)
+  })
+  try {
+    for (;;) {
+      const chunk = await Promise.race([reader.read(), input.released, expired])
+      if (!chunk || chunk.done) return { cursor }
+      const parsed = Sse.parse(rest + decoder.decode(chunk.value, { stream: true }))
+      rest = parsed.rest
+      for (const message of parsed.messages) {
+        if (message.data === undefined || message.event !== undefined) continue
+        const event = JSON.parse(message.data) as Atif.SessionEvent
+        cursor = Math.max(cursor, event.seq)
+        const type = event.event.type
+        if (
+          event.request_id === input.requestId &&
+          type !== undefined &&
+          input.types.includes(type)
+        )
+          return { at: event.created_at, cursor, type }
+      }
+    }
+  } finally {
+    stop()
+    await reader.cancel().catch(() => {})
+  }
+}
+
+export declare namespace watch {
+  type Input = {
+    after: number
+    released?: Promise<undefined>
+    requestId: string
+    types: readonly string[]
+    waitMs: number
+  }
+  type Seen = { at?: number; cursor: number; type?: string }
 }
 
 export async function remove(env: Env, name: string): Promise<void> {
