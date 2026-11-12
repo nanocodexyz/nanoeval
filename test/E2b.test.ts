@@ -231,10 +231,11 @@ test('templates and lifetimes outside what E2B serves over MPP are refused befor
     E2b.RequestError,
   )
   await assert.rejects(
-    provider.create({ metadata: {}, template: 'base', timeoutSec: 86_401 }),
-    E2b.RequestError,
+    provider.create({ metadata: {}, template: 'base', timeoutSec: 3601 }),
+    /an E2B sandbox timeout is 1 to 3600 seconds/,
   )
-  assert.equal(seen.length, 0)
+  assert.equal(E2b.maxTimeoutSec, 3600, 'E2B over MPP keeps a sandbox an hour at most')
+  assert.equal(seen.length, 0, 'a lifetime E2B charges and then refuses is never sent')
 })
 
 test('an envelope round-trips through the stream collector', async () => {

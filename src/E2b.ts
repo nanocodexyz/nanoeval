@@ -17,7 +17,7 @@ export const domain = 'e2b.app'
 
 export const envdPort = 49983
 
-export const maxTimeoutSec = 86_400
+export const maxTimeoutSec = 3_600
 
 export const templates = [
   'amp',
