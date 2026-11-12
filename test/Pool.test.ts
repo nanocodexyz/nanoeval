@@ -169,8 +169,17 @@ test('the pool renews an idle sandbox inside its idle time and closes it when th
 
   assert.equal(Pool.wakeAt(sql), 40_000)
   const second = Pool.due(sql, { holding, now: 40_000 })
-  assert.equal(Pool.renewal(second[0]!.member, 300), 10, 'never past the idle time')
-  Pool.renewed(sql, { id: member.id, paidUntil: 60_000 })
+  assert.equal(Pool.renewal(second[0]!.member, 300), 10, 'only to the end of the idle time')
+  Pool.renewed(sql, { id: member.id, paidUntil: 59_400 })
+
+  assert.equal(Pool.wakeAt(sql), 49_400)
+  const third = Pool.due(sql, { holding, now: 49_400 })
+  assert.equal(
+    Pool.renewal(third[0]!.member, 300),
+    1,
+    'a whole second covers what is left, so the pool and not the lease ends the sandbox',
+  )
+  Pool.renewed(sql, { id: member.id, paidUntil: 60_400 })
 
   assert.equal(Pool.wakeAt(sql), 60_000)
   assert.deepEqual(Pool.due(sql, { holding, now: 59_999 }), [])

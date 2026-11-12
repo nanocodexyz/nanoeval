@@ -237,7 +237,7 @@ A run keeps a **timeline**: a table of marks, each a name, a time on the run's c
                                 the pool marks it taken by that run and hands the runner's held request the run's configuration
                                 the runner claims at once: the run already knows its capabilities, so it says no hello
  the run is done with it        a machine's runner says so with its next request; a sandbox goes back when its run settles it
- the idle time                  the pool renews the lease of an idle sandbox from --warm-budget-usd, never past the idle time,
+ the idle time                  the pool renews the lease of an idle sandbox from --warm-budget-usd, in whole seconds to the end of the idle time,
                                 and terminates it when the idle time or what is paid ends
 ```
 

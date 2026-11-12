@@ -303,7 +303,7 @@ export function renewal(member: Member, defaultLeaseSec: number): number {
     0,
     Math.min(
       member.lease_sec ?? defaultLeaseSec,
-      Math.floor((horizon(member) - member.paid_until) / 1000),
+      Math.ceil((horizon(member) - member.paid_until) / 1000),
     ),
   )
 }
@@ -325,7 +325,7 @@ export function due(sql: Sql.Sql, input: due.Input): Due[] {
       member.paid_until !== null &&
       !member.unrenewed &&
       member.paid_until - input.now <= member.notice_sec * 1000 &&
-      horizon(member) - member.paid_until >= 1000
+      horizon(member) > member.paid_until
     )
       found.push({ action: 'renew', member, reason: 'the lease ends inside the idle time' })
   }
@@ -350,7 +350,7 @@ export function wakeAt(sql: Sql.Sql): number | undefined {
     sooner(horizon(member))
     if (member.paid_until !== null)
       sooner(
-        member.unrenewed || horizon(member) - member.paid_until < 1000
+        member.unrenewed || horizon(member) <= member.paid_until
           ? member.paid_until
           : member.paid_until - member.notice_sec * 1000,
       )
