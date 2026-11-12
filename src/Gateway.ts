@@ -75,26 +75,53 @@ export function create(options: create.Options): Sandbox.Provider {
       )
     await asked.body?.cancel()
     const charge = quote(asked.headers.get('www-authenticate'))
-    if (operation !== 'terminate') options.budget.charge(charge.usd, 'compute.' + operation)
+    const budgeted = operation !== 'terminate'
+    if (budgeted) options.budget.charge(charge.usd, 'compute.' + operation)
     await options.onCharge(charge)
-    const response = await send(base + operation, init({ authorization: 'Bearer ' + options.key }))
-    if (!response.ok && response.status < 500)
-      await options.onCharge({
+    const kept = (outcome: string) =>
+      options.onCharge({
         ...charge,
-        amount: '-' + charge.amount,
-        description: charge.description + ' refused with ' + response.status,
-        usd: -charge.usd,
+        amount: '0',
+        description: charge.description + ' ' + outcome,
+        usd: 0,
       })
-    if (!response.ok)
+    let response: Response
+    let answer = ''
+    try {
+      response = await send(base + operation, init({ authorization: 'Bearer ' + options.key }))
+      if (!response.ok) answer = await response.text()
+    } catch (error) {
+      await kept('unanswered')
       throw new RequestError(
-        'the gateway refused ' +
+        'the gateway did not answer the paid ' +
           operation +
-          ' with ' +
-          response.status +
-          ': ' +
-          (await response.text()).slice(0, 500),
+          ', which may have been charged, so its price stays in the spend: ' +
+          (error instanceof Error ? error.message : String(error)),
+        { cause: error },
       )
-    return response
+    }
+    if (response.ok) return response
+    if (response.status >= 500 && code(answer) === undefined) {
+      await kept('answered ' + response.status + ' without a problem')
+      throw new RequestError(
+        'the paid ' +
+          operation +
+          ' was answered ' +
+          response.status +
+          ' without a problem of the gateway, which may have been charged, so its price stays in the spend: ' +
+          answer.slice(0, 500),
+      )
+    }
+    if (budgeted) options.budget.refund(charge.usd, 'compute.' + operation)
+    await options.onCharge({
+      ...charge,
+      amount: '-' + charge.amount,
+      description: charge.description + ' refused with ' + response.status,
+      usd: -charge.usd,
+    })
+    throw new RequestError(
+      'the gateway refused ' + operation + ' with ' + response.status + ': ' + answer.slice(0, 500),
+    )
   }
   const call = async <T>(operation: string, body: unknown): Promise<T> =>
     (await (
@@ -186,5 +213,14 @@ export declare namespace create {
     key: string
     onCharge(charge: Payment.Charge): void | Promise<void>
     url?: string
+  }
+}
+
+function code(answer: string): string | undefined {
+  try {
+    const problem = JSON.parse(answer) as { code?: unknown } | null
+    return typeof problem?.code === 'string' ? problem.code : undefined
+  } catch {
+    return undefined
   }
 }

@@ -955,12 +955,17 @@ async function main(): Promise<void> {
             )
       }
     } else {
-      assert.equal(status['sandboxes'].length, 1, 'every attempt shares one sandbox')
-      assert.equal(status['sandboxes'][0].state, 'closed')
-      assert.equal(status['sandboxes'][0].capabilities.ca_bundle, caBundle !== undefined)
-      assert.equal(status['sandboxes'][0].capabilities.slot_env, true)
-      assert.equal(status['sandboxes'][0].capabilities.slot_forward, forward !== undefined)
-      assert.equal(status['sandboxes'][0].capabilities.network, network)
+      const opened = (status['sandboxes'] as { state: string }[]).filter(
+        (sandbox) => sandbox.state !== 'failed',
+      )
+      assert.equal(opened.length, 1, 'every attempt shares one sandbox')
+      assert.equal(status['sandboxes'].length, gateway ? 2 : 1)
+      const sandbox = status['sandboxes'].at(-1)
+      assert.equal(sandbox.state, 'closed')
+      assert.equal(sandbox.capabilities.ca_bundle, caBundle !== undefined)
+      assert.equal(sandbox.capabilities.slot_env, true)
+      assert.equal(sandbox.capabilities.slot_forward, forward !== undefined)
+      assert.equal(sandbox.capabilities.network, network)
     }
     if (backend === 'krun') {
       assert.deepEqual(Network.relays(sandboxes), [], 'no relay outlives the run')
@@ -1295,10 +1300,22 @@ async function main(): Promise<void> {
         operation: (JSON.parse(payment.detail) as { description: string }).description,
         usd: payment.usd,
       }))
+      const micro = (charge: MockGateway.Charge) => Math.round(charge.usd * 1e6)
       assert.deepEqual(
         payments.map((payment) => [payment.operation, Math.round(payment.usd * 1e6)]),
-        mock.charges.map((charge) => ['compute.' + charge.operation, Math.round(charge.usd * 1e6)]),
-        'the payments of the run are the charges of the gateway, in order',
+        [
+          ...mock.unavailable.flatMap((charge) => [
+            ['compute.' + charge.operation, micro(charge)],
+            ['compute.' + charge.operation + ' refused with 503', -micro(charge)],
+          ]),
+          ...mock.charges.map((charge) => ['compute.' + charge.operation, micro(charge)]),
+        ],
+        'the payments of the run are the sandbox the gateway refused, written back, and then its charges in order',
+      )
+      assert.equal(mock.unavailable.length, 1)
+      assert.ok(
+        Math.abs(status['spend'].sandboxUsd - sum(mock.charges.map((charge) => charge.usd))) < 1e-9,
+        'the sandbox spend of the run is what the gateway charged, without what it refused',
       )
       assert.ok(Math.abs(status['spend'].sandboxUsd - sum(payments.map((p) => p.usd))) < 1e-9)
       const operations = payments.map((payment) => payment.operation)
@@ -1309,7 +1326,9 @@ async function main(): Promise<void> {
       assert.equal(leased.length, 1)
       assert.equal(leased[0]!.ended, 'terminated', 'the sandbox was terminated, not left to lapse')
       assert.ok(leased[0]!.renewals >= 1)
-      assert.equal(status['sandboxes'][0].state, 'closed')
+      assert.equal(status['sandboxes'][0].state, 'failed')
+      assert.match(status['sandboxes'][0].error, /the gateway refused create with 503: /)
+      assert.equal(status['sandboxes'][1].state, 'closed')
     }
 
     const job = JSON.parse(files['result.json']!)

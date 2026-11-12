@@ -6,6 +6,7 @@ export type Budget = {
   readonly limitUsd: number
   readonly spentUsd: number
   charge(usd: number, purpose: string): void
+  refund(usd: number, purpose: string): void
   remaining(): number
 }
 
@@ -34,6 +35,11 @@ export function create(options: create.Options): Budget {
             ' budget is spent',
         )
       spent = (microUsd(spent) + microUsd(usd)) / 1e6
+    },
+    refund(usd, purpose) {
+      if (!Number.isFinite(usd) || usd < 0 || microUsd(usd) > microUsd(spent))
+        throw new Error(purpose + ' refunds an amount that was not charged: ' + usd)
+      spent = (microUsd(spent) - microUsd(usd)) / 1e6
     },
     remaining() {
       return (microUsd(options.limitUsd) - microUsd(spent)) / 1e6

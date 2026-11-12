@@ -200,7 +200,7 @@ test('a price over the budget is refused before the key is used', async () => {
 })
 
 test('what the gateway refuses is an error with its answer, and an ended sandbox is killed', async () => {
-  const { charges, provider } = gateway(
+  const { charges, provider, spent } = gateway(
     { create: '1000', exec: '100', renew: '1000', terminate: '100' },
     {
       create: () => Response.json({ sandboxId: 'sbx-3' }),
@@ -230,6 +230,12 @@ test('what the gateway refuses is an error with its answer, and an ended sandbox
     'what the gateway refused is written back, and what it answered stays paid',
   )
 
+  assert.equal(
+    spent(),
+    0.0011,
+    'what was refused leaves the budget, and a termination was never in it',
+  )
+
   const free = Gateway.create({
     budget: Budget.create({ limitUsd: 1 }),
     fetch: async () => Response.json({ sandboxId: 'free' }),
@@ -240,6 +246,124 @@ test('what the gateway refuses is an error with its answer, and an ended sandbox
     free.create({ metadata: {}, template: 'desktop', timeoutSec: 60 }),
     /answered 200 to an unpaid create instead of its price/,
   )
+})
+
+test('a refusal at any status leaves the spend, and an answer or a silence that proves nothing stays', async () => {
+  const unavailable =
+    "The gateway cannot pay the network fee to open your key's channel right now: its fee sponsor is out of funds."
+  const refusal = (status: number, code: string, detail: string) => () =>
+    new Response(JSON.stringify({ code, detail, status }), {
+      headers: { 'content-type': 'application/problem+json' },
+      status,
+    })
+  const create = (provider: ReturnType<typeof Gateway.create>) =>
+    provider.create({ metadata: {}, template: 'desktop', timeoutSec: 3600 })
+  const recorded = (charges: Payment.Charge[]) =>
+    charges.map((charge) => [charge.description, charge.amount, charge.usd])
+
+  const refused = gateway(
+    { create: '42280', renew: '50835' },
+    {
+      create: refusal(503, 'unavailable', unavailable),
+      renew: refusal(500, 'internal', 'Something failed before the lease was paid.'),
+    },
+  )
+  await assert.rejects(create(refused.provider), /refused create with 503: .*network fee/)
+  await assert.rejects(create(refused.provider), /refused create with 503: /)
+  await assert.rejects(
+    refused.provider.renew!({ home: Gateway.home, id: 'sbx-5' }, 300),
+    /refused renew with 500: /,
+  )
+  assert.deepEqual(recorded(refused.charges), [
+    ['compute.create', '42280', 0.04228],
+    ['compute.create refused with 503', '-42280', -0.04228],
+    ['compute.create', '42280', 0.04228],
+    ['compute.create refused with 503', '-42280', -0.04228],
+    ['compute.renew', '50835', 0.050835],
+    ['compute.renew refused with 500', '-50835', -0.050835],
+  ])
+  assert.equal(
+    refused.charges.reduce((sum, charge) => sum + Math.round(charge.usd * 1e6), 0),
+    0,
+    'a sandbox the gateway refused to open twice costs the run nothing',
+  )
+  assert.equal(refused.spent(), 0)
+
+  for (const [status, body] of [
+    [502, '<html>502 Bad Gateway</html>'],
+    [500, '{"error":"the script threw"}'],
+    [503, '"unavailable"'],
+  ] as const) {
+    const unknown = gateway({ create: '42280' }, { create: () => new Response(body, { status }) })
+    await assert.rejects(
+      create(unknown.provider),
+      new RegExp(
+        'paid create was answered ' +
+          status +
+          ' without a problem of the gateway, which may have been charged',
+      ),
+    )
+    assert.deepEqual(recorded(unknown.charges), [
+      ['compute.create', '42280', 0.04228],
+      ['compute.create answered ' + status + ' without a problem', '0', 0],
+    ])
+    assert.equal(unknown.spent(), 0.04228, 'a 5xx that is not the gateway refusing proves nothing')
+  }
+
+  for (const [answer, reason] of [
+    [
+      () => {
+        throw new TypeError('the connection was reset')
+      },
+      /connection was reset/,
+    ],
+    [
+      () =>
+        new Response(
+          new ReadableStream({
+            pull(controller) {
+              controller.error(new TypeError('the answer was cut'))
+            },
+          }),
+          { status: 503 },
+        ),
+      /answer was cut/,
+    ],
+  ] as const) {
+    const silent = gateway({ create: '42280' }, { create: answer })
+    await assert.rejects(
+      create(silent.provider),
+      (error: Error) =>
+        error.name === 'Gateway.RequestError' &&
+        /did not answer the paid create, which may have been charged/.test(error.message) &&
+        reason.test(error.message),
+    )
+    assert.deepEqual(recorded(silent.charges), [
+      ['compute.create', '42280', 0.04228],
+      ['compute.create unanswered', '0', 0],
+    ])
+    assert.equal(silent.spent(), 0.04228, 'a request that left with the key may have been paid')
+  }
+
+  for (const fetch of [
+    async () => {
+      throw new TypeError('no route to the gateway')
+    },
+    async () => refusal(503, 'unavailable', unavailable)(),
+  ]) {
+    const budget = Budget.create({ limitUsd: 1 })
+    const unpriced = Gateway.create({
+      budget,
+      fetch,
+      key: 'sk-tempo-test',
+      onCharge: () => assert.fail('nothing was quoted'),
+    })
+    await assert.rejects(
+      create(unpriced),
+      /no route to the gateway|answered 503 to an unpaid create/,
+    )
+    assert.equal(budget.spentUsd, 0, 'a request that fails before its price leaves nothing behind')
+  }
 })
 
 test('a run takes the gateway as its provider with a lease no shorter than a claim lease', () => {

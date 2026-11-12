@@ -22,6 +22,7 @@ export type Mock = {
   readonly modelCosts: readonly number[]
   readonly refused: readonly string[]
   readonly sandboxes: ReadonlyMap<string, Leased>
+  readonly unavailable: readonly Charge[]
   readonly url: string
 }
 
@@ -67,6 +68,7 @@ export async function start(options: Options): Promise<Mock> {
   const modelCosts: number[] = []
   const refused: string[] = []
   const sandboxes = new Map<string, Leased>()
+  const unavailable: Charge[] = []
   const provider = Local.create(options.sandboxd)
   const problem = (
     response: Http.ServerResponse,
@@ -133,6 +135,18 @@ export async function start(options: Options): Promise<Mock> {
       return problem(response, 401, 'The API key is unknown, revoked or expired.')
     if (operation !== 'create' && (!leased || leased.ended))
       return problem(response, 404, 'Sandbox ' + body['sandboxId'] + ' ended.')
+    if (operation === 'create' && !unavailable.length) {
+      unavailable.push({ operation, usd })
+      response.writeHead(503, { 'content-type': 'application/problem+json' })
+      response.end(
+        JSON.stringify({
+          code: 'unavailable',
+          detail: "The gateway cannot pay the network fee to open your key's channel right now.",
+          status: 503,
+        }),
+      )
+      return
+    }
     charges.push({ operation, usd })
     const answer = (value: unknown) => {
       response.writeHead(200, { 'content-type': 'application/json' })
@@ -223,6 +237,7 @@ export async function start(options: Options): Promise<Mock> {
     modelCosts,
     refused,
     sandboxes,
+    unavailable,
     url: 'http://127.0.0.1:' + (server.address() as AddressInfo).port,
   }
 }
