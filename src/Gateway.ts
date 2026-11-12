@@ -75,7 +75,7 @@ export function create(options: create.Options): Sandbox.Provider {
       )
     await asked.body?.cancel()
     const charge = quote(asked.headers.get('www-authenticate'))
-    options.budget.charge(charge.usd, 'compute.' + operation)
+    if (operation !== 'terminate') options.budget.charge(charge.usd, 'compute.' + operation)
     await options.onCharge(charge)
     const response = await send(base + operation, init({ authorization: 'Bearer ' + options.key }))
     if (!response.ok && response.status < 500)

@@ -154,7 +154,7 @@ test('a gateway sandbox is asked its price, charged to the budget and then paid 
       ['compute.terminate', 0.0001],
     ],
   )
-  assert.equal(spent(), 0.094315)
+  assert.equal(spent(), 0.094215, 'a termination is recorded and not held against the budget')
 })
 
 test('a lease is never longer than the lifetime, and the default template is named', async () => {
@@ -186,6 +186,17 @@ test('a price over the budget is refused before the key is used', async () => {
   assert.equal(seen.length, 1)
   assert.equal(seen[0]!.authorization, undefined)
   assert.deepEqual(charges, [])
+
+  const spent = gateway(
+    { terminate: '200000' },
+    { terminate: () => Response.json({ status: 'terminated' }) },
+  )
+  await spent.provider.kill({ home: Gateway.home, id: 'sbx-4' })
+  assert.deepEqual(
+    spent.charges.map((charge) => [charge.description, charge.usd]),
+    [['compute.terminate', 0.2]],
+    'ending a sandbox is recorded and never refused for the budget, since it ends the spending',
+  )
 })
 
 test('what the gateway refuses is an error with its answer, and an ended sandbox is killed', async () => {
