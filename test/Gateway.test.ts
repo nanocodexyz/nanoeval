@@ -51,7 +51,11 @@ function gateway(
           headers: { 'www-authenticate': challenge(operation, prices[operation]!) },
           status: 402,
         })
-      assert.equal(charges.length, seen.filter((entry) => entry.authorization).length)
+      assert.equal(
+        charges.filter((charge) => charge.usd > 0).length,
+        seen.filter((entry) => entry.authorization).length,
+        'the charge is recorded before the paid request leaves',
+      )
       return answers[operation]!()
     },
     key: 'sk-tempo-test',
@@ -185,7 +189,7 @@ test('a price over the budget is refused before the key is used', async () => {
 })
 
 test('what the gateway refuses is an error with its answer, and an ended sandbox is killed', async () => {
-  const { provider } = gateway(
+  const { charges, provider } = gateway(
     { create: '1000', exec: '100', renew: '1000', terminate: '100' },
     {
       create: () => Response.json({ sandboxId: 'sbx-3' }),
@@ -202,6 +206,18 @@ test('what the gateway refuses is an error with its answer, and an ended sandbox
   await assert.rejects(provider.connect(handle).exec('sleep 1000'), /did not finish within 120 s/)
   await assert.rejects(provider.renew!(handle, 300), /refused renew with 409: .*already paid/)
   await provider.kill(handle)
+  assert.deepEqual(
+    charges.map((charge) => [charge.description, charge.usd]),
+    [
+      ['compute.create', 0.001],
+      ['compute.exec', 0.0001],
+      ['compute.renew', 0.001],
+      ['compute.renew refused with 409', -0.001],
+      ['compute.terminate', 0.0001],
+      ['compute.terminate refused with 404', -0.0001],
+    ],
+    'what the gateway refused is written back, and what it answered stays paid',
+  )
 
   const free = Gateway.create({
     budget: Budget.create({ limitUsd: 1 }),

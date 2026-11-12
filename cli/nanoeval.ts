@@ -41,7 +41,10 @@ const usage = `nanoeval <command>
             [--sandbox-url URL --sandbox-token T] [--claude-login FILE] [--codex-login FILE]
             [--public-url URL]
             Run the Worker under local workerd. Model API keys and base URLs are taken from
-            ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL, OPENAI_API_KEY and OPENAI_BASE_URL. A login
+            ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN (sent as a bearer token),
+            ANTHROPIC_BASE_URL, OPENAI_API_KEY and OPENAI_BASE_URL, and TEMPO_KEY with
+            TEMPO_GATEWAY_URL pays for the models of both providers and for the sandboxes of
+            run --provider gateway where a provider has no key of its own. A login
             file (~/.claude/.credentials.json, ~/.codex/auth.json) makes that provider's
             agents run on the plan signed in there: its access token is read once at start,
             is never refreshed, and reaches workerd through a private file. --public-url

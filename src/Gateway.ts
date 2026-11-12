@@ -78,6 +78,13 @@ export function create(options: create.Options): Sandbox.Provider {
     options.budget.charge(charge.usd, 'compute.' + operation)
     await options.onCharge(charge)
     const response = await send(base + operation, init({ authorization: 'Bearer ' + options.key }))
+    if (!response.ok && response.status < 500)
+      await options.onCharge({
+        ...charge,
+        amount: '-' + charge.amount,
+        description: charge.description + ' refused with ' + response.status,
+        usd: -charge.usd,
+      })
     if (!response.ok)
       throw new RequestError(
         'the gateway refused ' +
