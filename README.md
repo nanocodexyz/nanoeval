@@ -34,6 +34,10 @@ The table says what was run. "The first version" is the flow before the eval tab
 | Host policy for the `RUN` steps of a Dockerfile (`import --ca-bundle`, `--slot-env`, `--slot-forward`) | Implemented, tested on a Linux machine whose network re-signs TLS and serves the Python and npm registries on its loopback: a fixture that installs with pip and npm is refused without the options and imports with them, five Terminal-Bench 2.1 tasks built from their Dockerfiles, and no disk holds the bundle, a variable or a forward. On the base layers of the published images the trees differ only in what the day of a build decides, see [DECISIONS.md](DECISIONS.md#2026-11-11-the-smaller-gaps) |
 | Run table (`Run` Durable Object): rows, claims, leases, CLI and API | Implemented, tested: unit tests for claims, leases, expiry and fencing, and end to end under local workerd |
 | Task runners (`nanoeval runner`), started by a run through a sandbox or attached by hand | Implemented, tested: two runners with separate caches on one machine work one run |
+| A timeline of every run: what the run, its sandbox and its runners did from its creation to the first claim, the first model request and each verdict (`nanoeval status`, `nanoeval timeline RUN`, `timeline.json` of an exported job) | Implemented, tested: unit tests, and read on a deployed Worker for every run of [How fast a run starts](#how-fast-a-run-starts) |
+| No polling where a run starts: a claim, the attach of a hand and the end of a turn are requests the run holds until there is an answer, and a runner follows its slots by file events | Implemented, tested end to end: every lane runs on it |
+| Standing runners (`nanoeval runner --standing`) and the pool of a deployment (`nanoeval pool`): a run is handed to a runner that is already there | Implemented, tested: unit tests for the table, and an end-to-end lane where two runs are handed to one runner and claim 10 to 13 ms after they are created. Run for real: 20 runs handed to a krun runner on a Linux machine, the first row claimed 0.11 to 0.39 s after each was created |
+| A sandbox kept warm between runs (`run --warm-sec`): its runner stands by with its disks unpacked, and the pool renews and terminates it | Implemented, tested against the scripted gateway on directory and ns slots: the second run pays for no sandbox and fetches no disk, the pool renews the lease while the sandbox is idle and terminates it when the idle time ends, and every charge is recorded once. Run for real: one run on a kept sandbox claimed 0.55 s after it was created, and the pool terminated two sandboxes at the end of their idle time. **The pool has not paid a renewal for real**: the gateway sold none |
 | A runner lost during a run: its rows are claimed again, at most `--claims` times, and nothing scores twice | Implemented, tested end to end: a killed runner's rows end scored by the other runner, with the lost claims recorded |
 | A leased sandbox that dies during a run, and one whose lease ends | Implemented, tested end to end against the scripted gateway on directory and krun slots: the rows of a sandbox that died are claimed again in another, and a run goes on in new sandboxes when no renewal is sold. The second also ran for real |
 | A runner restarted during a run | Tested: it goes on with the slots it had and loses no claim |
@@ -358,6 +362,37 @@ node cli/nanoeval.ts run --eval terminal-bench-2.1 --oracle --provider e2b --tem
 
 **What isolates what.** ns slots share the sandbox's kernel: they keep attempts apart as containers do, less strongly than microVMs, and the sandbox is the boundary to the outside. The file a paid request answers with holds the sandbox's access token. Keep it private and delete it with the sandbox.
 
+### How fast a run starts
+
+A run keeps a timeline, and `nanoeval status` prints the first of each step as an offset from its creation. Three things decide it: whether a runner is already there, whether a sandbox is, and what the sandbox has to fetch.
+
+```sh
+# A machine of yours stands by for any run with --sandboxes 0 and its backend: the run is handed to it when it is created.
+node cli/nanoeval.ts runner --standing --backend krun --slots 4
+node cli/nanoeval.ts run --eval terminal-bench-2.1 --agent luna=codex:gpt-6-luna --sandboxes 0 --backend krun --wait
+
+# A leased sandbox is kept for 10 minutes after its run, and the next run with the same template, runtime and backend takes it.
+node cli/nanoeval.ts run --eval terminal-bench-2.1 --agent luna=codex:gpt-6-luna \
+  --provider gateway --template base --runtime-blob SHA256 --backend ns \
+  --sandbox-lease-sec 900 --warm-sec 600 --sandbox-budget-usd 1 --model-budget-usd 1 --wait
+node cli/nanoeval.ts pool            # what is kept, until when, and what the pool paid; --close ends it now
+node cli/nanoeval.ts timeline RUN    # every step of a run
+```
+
+Measured on a deployed Worker with `gpt-6-luna` on `openssl-selfsigned-cert` of Terminal-Bench 2.1, one row a run, seconds after the run was created, median and worst:
+
+| Start | Runs | First claim | First model request | First verdict |
+| --- | --- | --- | --- | --- |
+| Before: a `desktop` sandbox leased for the run | 5 | 17.9, worst 32.9 | 27.8, worst 150.1 | 75.9, worst 192.0 |
+| Before: a runner attached to the run by hand | 4 rows of one run | 1.2 | not measured | not measured |
+| Cold: a `base` sandbox leased for the run | 6 | 11.4, worst 31.2 | 14.5, worst 25.2 (4 runs) | 58.4, worst 175.4 (5 runs) |
+| Warm: a sandbox the pool kept | 1 | 0.55 | 2.69 | 53.9 |
+| A standing runner on a Linux machine, krun slots | 20 | 0.27, worst 0.39 | the turn was submitted at 1.75, worst 2.27 (5 runs) | 9.3, worst 11.2 (5 runs with the task's solution) |
+
+The warm row is one run and not the five that were planned: the key's limit was spent by another job before the rest ran, and the same end cut the first model request of the standing runner, whose turns were submitted and refused. Under local workerd, where nothing is far, a standing runner claims 10 to 13 ms after a run is created, the model is asked after 90 to 130 ms and the first verdict is in after 0.2 to 0.3 s.
+
+A cold start cannot be shorter than what E2B and the gateway take: 3.6 to 4.6 s for the paid create, 0.2 to 1.7 s for its price, and about 1.3 s before a command starts to run in the new sandbox. The runner then fetches and unpacks its 20 MB archive in 2.3 s, sets up in 0.4 s and claims. `base` is the template to lease: it has root, Node 20 and `mke2fs`, where `desktop` has no Node and costs five times as much. A kept `base` sandbox costs $0.104 an hour at E2B's price, a `desktop` one $0.51, and the pool pays $0.0001 to terminate it. The gateway sold no renewal, so a kept sandbox lives as long as the lease its run bought: `--sandbox-lease-sec` has to cover the runs and the idle time. [DECISIONS.md](DECISIONS.md#2026-11-12-a-run-that-starts-at-once) has every run and every step.
+
 ## Checks
 
 ```sh
@@ -374,6 +409,8 @@ NANOEVAL_E2E_SCENARIO=judge npm run e2e    # final messages and a judge, with th
 NANOEVAL_E2E_SCENARIO=failures npm run e2e # failure kinds and fixtures, then a rerun of what errored
 NANOEVAL_E2E_SCENARIO=restart npm run e2e  # the Worker killed and restarted during the run
 NANOEVAL_E2E_SCENARIO=runners npm run e2e  # two attached runners with separate caches
+NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=standing npm run e2e  # a standing runner that two runs are handed to
+NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_GATEWAY=1 NANOEVAL_E2E_SCENARIO=warm npm run e2e  # a leased sandbox kept for a second run, then ended by the pool
 NANOEVAL_E2E_SCENARIO=lost NANOEVAL_E2E_LEASE_SEC=3 npm run e2e  # a runner killed: its rows are claimed again
 NANOEVAL_E2E_SCENARIO=resume NANOEVAL_E2E_SLOTS=8 npm run e2e  # a runner killed and started again: it goes on
 NANOEVAL_E2E_SCENARIO=network npm run e2e  # what a private slot reaches and what reaches it
@@ -404,7 +441,7 @@ CI runs these on a GitHub-hosted runner, which has no libkrunfw: the `krun` lane
 
 | Path | Holds |
 | --- | --- |
-| `worker/` | The Worker: routes, the `Evals` and `Run` objects, the R2 blob routes, the harness sessions |
+| `worker/` | The Worker: routes, the `Evals`, `Run` and `Pool` objects, the R2 blob routes, the harness sessions |
 | `src/` | Host-agnostic modules: the eval row and its versions, the run ledger, the runner protocol, tasks, results, admission, budget, providers |
 | `sandbox/` | `Runner.ts`, the task runner, and `Main.ts`, its entry when it is bundled into one file. `slot.sh`, one attempt in one slot. `Store.ts`, the blob store and the cache. `Converter.ts`, where an environment becomes a disk through the launcher. `Prune.ts`, what can go from the layer cache and from a directory store. `Sandboxd.ts`, the local sandbox daemon |
 | `krun/` | The Rust workspace: the libkrun binding, the launcher and the guest binary of the krun backend, the image converter (`nanoeval-krun image`), and `nanoeval-net`, the relay of a private slot |

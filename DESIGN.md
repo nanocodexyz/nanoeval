@@ -189,7 +189,7 @@ A runner is one Node process on a sandbox host, `nanoeval runner`. A run starts 
 
 - **It picks the backend its machine has.** A run asks for `auto` unless `--backend` names one: a runner then boots disks in microVMs (`krun`) where `/dev/kvm` opens for it, and in namespaces (`ns`) where it is root. Both boot the same disk, so runners of both kinds work one run. The backend a runner took is in its capabilities, and in each result it finished. `nanoeval runner --backend` names one for that runner.
 - **It drives `slot.sh` and does not replace it.** The slot functions of the microVM backend were kept instead of being folded into the runner. A phase of a slot runs detached and leaves a status file, so the microVM, the hand and a running verifier outlive the runner. A runner that is restarted in the same directory reads each slot's saved row and goes on from the phase it was in, with the same runner id and claims. It tells the run which rows it still holds, and the run puts back at once any other row that the ledger gave it, such as one it claimed and had not saved when it died. The calls of a row can be repeated in any phase after the one they belong to, so a runner that is a step behind the ledger catches up instead of failing. The runner reads those status files itself every 25 ms, where the orchestrator used to ask for them through the provider once per tick.
-- **Calls that wait on the Worker back off** from 25 ms to `--poll-ms` (250 ms by default): the hand's attach, the turn and the judge. A deployed Worker wants a larger value, since each poll is a request.
+- **It waits for events, not for a clock.** A claim is one request that the run holds until a row can be claimed, and so are the wait for the hand to attach and the wait for the turn to end. A slot's phase leaves a status file, and the runner watches the slot's directory for it. `--poll-ms` (250 ms) is what a runner falls back to: how often it reads a status again when the machine reports no file events, and how long it waits after a request that the run did not hold. Only the judge is still asked on a backoff. See [Starting a run](#starting-a-run).
 - **The cache of a machine** is `$NANOEVAL_CACHE` (`~/.cache/nanoeval`): `blobs/<digest>` for verified blobs and `disks/<digest>.ext4` for unpacked disks with their metadata. A microVM holds a shared lock on its disk while it runs. With `--disks remove` a runner deletes the packed blob as soon as its disk is unpacked, removes a disk that it unpacked for this run when the run says no other row needs it, and below `--free-disk-mb` removes every such disk that none of its own rows uses. A disk that was in the cache before is kept. Rows of one task that a runner claims together fetch the blob and unpack the disk once. `nanoeval prune` removes every cached disk that no microVM holds, every cached blob and every [verifier cache](#verifier-cache).
 - **A stopped runner** (SIGTERM) releases its rows, which makes them claimable at once, and takes its slots down. A killed one is found by its leases.
 - **Host policy stays with the host**: `--ca-bundle`, `--slot-env` and `--slot-forward` are options of `sandboxd` or of an attached runner, and the capabilities a runner reports record them.
@@ -206,7 +206,8 @@ A sandbox of a public template has no checkout, no launcher and no Node that run
    krun/nanoeval-krun-guest       static: the agent of a slot
    krun/nanoeval-net              static: the relay
    nanocode                       the pinned hand, checked against its release checksum when the archive is built
- the run, or nanoeval sandbox   writes runner.json and bootstrap.sh into the sandbox and runs the script
+ the run                        runs one command in the sandbox: the script below with runner.json inside it
+ nanoeval sandbox               writes runner.json and bootstrap.sh into the sandbox and runs the script
  bootstrap.sh                   fetch GET /v1/runs/RUN/runner/blobs/DIGEST with the runner token, check its SHA-256,
                                 unpack under <cache>/runtime/DIGEST, find node >= 20 or fetch Node 24 by checksum,
                                 start runner.mjs as root with NANOEVAL_KRUN, NANOEVAL_NANOCODE and NANOEVAL_CACHE
@@ -215,6 +216,37 @@ A sandbox of a public template has no checkout, no launcher and no Node that run
 The archive is 20 MB and is named by its digest like every blob, so the run's blob route serves it beside the blobs its rows name, and a sandbox that already unpacked that digest fetches nothing. The script is generated in `src/Bootstrap.ts` from the run's address, id and runner token, and holds no other secret. Everything a slot needs after that is in the archive: no registry, package index or release page is asked at run time, with two exceptions: nodejs.org when the template has no Node, and the pinned release of an [installed agent](#installed-agents) when a row names one. The launcher of the archive starts no microVM, so its runner runs ns slots: installed agents and the verifier cache work there, and a task that closes a phase is refused, see [Closed phases](#slot-networks).
 
 **Blobs through the Worker.** A runner fetches its disks from the run's blob route, which reads R2. A `GET` may name `Range: bytes=N-`, and a download that breaks is requested again from the bytes the runner has, up to six times a second apart and doubling, then checked against its digest like any blob.
+
+## Starting a run
+
+A run keeps a **timeline**: a table of marks, each a name, a time on the run's clock and, for a span, how long it took. The run writes its own (its creation, the pool's answer, each call to the sandbox provider, each claim and verdict), and a runner sends what it measured with the calls it already makes, moved onto the run's clock by the difference between when the runner sent and when the run received. `src/Timeline.ts` holds the table. `nanoeval status` prints the first of each kind, `nanoeval timeline RUN` every mark, and an exported job has them as `timeline.json`.
+
+**Nothing on the way to the first attempt waits for a clock.**
+
+- A claim carries `waitMs`, a third of the lease. The run answers at once when it can give rows or the run is finished, and otherwise holds the request until a row becomes claimable: a lost claim that is put back, a cancel, the last verdict. `src/Hold.ts` keeps one waiter per key, and a later request of the same runner takes the place of an earlier one. A hold is at most `HOLD_MS` (50 s), half of what Cloudflare gives a request without a byte.
+- The runner asks for the session of its hand while it fetches the files of the attempt, the instruction and the disk together and starts the slot. The call that waits for the hand is held until the session lists it. The session has no event for that, so the run asks it every `HAND_LIST_MS` (25 ms) inside the Worker, where the question is a call between two objects and no request of a runner.
+- The call that waits for the turn is held on the session's event stream until the result of the turn arrives, read with `src/Sse.ts`.
+- Leases, fencing and claim tokens are unchanged: a held request of a row is fenced by its claim token when it arrives and again when it is released, a held claim asks again whether its runner is still ready, and a row that was lost meanwhile answers `410`.
+
+**A runner that is already there.** The `Pool` object of a deployment, one per region that a run can be kept in, holds the members that outlive a run (`src/Pool.ts` is its table, tested without workerd):
+
+```
+ nanoeval runner --standing     sets its slots up once, registers as a member, and holds a request for its next run
+ run --warm-sec N               the sandbox a run opens is enrolled as a member that this run has
+ a run is created               the run asks the pool for a member with its provider, template, runtime, backend and network
+                                the pool marks it taken by that run and hands the runner's held request the run's configuration
+                                the runner claims at once: the run already knows its capabilities, so it says no hello
+ the run is done with it        a machine's runner says so with its next request; a sandbox goes back when its run settles it
+ the idle time                  the pool renews the lease of an idle sandbox from --warm-budget-usd, never past the idle time,
+                                and terminates it when the idle time or what is paid ends
+```
+
+- A member serves one run at a time. Only the run that has a sandbox gives it back, and a run that fails its sandbox drops the member, so two runs never hold one sandbox and a run never ends a sandbox that another took.
+- A sandbox is taken only while its runner stands by (it holds a request now, or asked within the notice of its lease), more of its lease is paid than that notice, and its lifetime covers the rows of the run. A gateway sandbox opened with `--warm-sec` is given the longest lifetime the gateway allows, which costs nothing by itself.
+- What the pool pays, a renewal or a termination, is in its own table with the member it was for, and `nanoeval pool` prints it. The run that opened a sandbox paid for its lease, a run that takes it pays only what it renews, and a budget is checked before each payment as in a run.
+- A runner that was taken and died before its first claim is found by the lease, as any runner is: the run then fails the sandbox and opens another. A sandbox that could not be terminated is marked failed with the reason and ends with its lease.
+
+**A cold start** is the one case that still takes seconds, and most of them are not nanoeval's: the provider's create and the first command in a new sandbox. What nanoeval does around them: it asks the pool first, it starts the runner with one command that carries the configuration instead of two writes and a command, the bootstrap fetches the archive while it looks for Node, the runner fetches the disks of the first rows before it has claimed them, and a claim's answer names the disks of the rows that still wait, which a runner with busy slots fetches ahead unless it was told to keep its disk short (`--disks remove`, `--free-disk-mb`). The archive is still one file of 20 MB of which the hand is 17: fetching the hand beside the runner's start would save about a second and is not done.
 
 ## The slot splitter
 
@@ -592,7 +624,7 @@ An agent of a run is one of two kinds. A session agent (`claude`, `codex`) is th
 
 ## Sandbox providers
 
-A provider creates a sandbox, runs a command in it, writes a file to it, and kills it (`src/Sandbox.ts`). One that leases its sandboxes also renews them. The contract is unchanged, and a run now asks one thing of a sandbox: it writes `runner.json` into it and runs `nanoeval runner --detach --config runner.json`. A run with a runtime writes `bootstrap.sh` beside it and runs that instead, see [A runner without a checkout](#a-runner-without-a-checkout). Everything else is between that runner and the run.
+A provider creates a sandbox, runs a command in it, writes a file to it, and kills it (`src/Sandbox.ts`). One that leases its sandboxes also renews them. The contract is unchanged, and a run now asks one thing of a sandbox: it writes `runner.json` into it and runs `nanoeval runner --detach --config runner.json`, or with the runtime archive one command that does both. A run with a runtime writes `bootstrap.sh` beside it and runs that instead, see [A runner without a checkout](#a-runner-without-a-checkout). Everything else is between that runner and the run.
 
 **Local.** `nanoeval sandboxd` serves a machine over HTTP with a bearer token. A sandbox is a directory, and `nanoeval` on its path is this checkout. Deleting a sandbox ends its runner and every slot it still has. This is the single-machine mode of the earlier versions: one large machine, many slots.
 

@@ -2046,3 +2046,77 @@ From a fresh clone of `cefa134` on the Linux machine, with programs that log and
 - A disk that fills, an 8 GiB task that is killed at 6,364 MB, and a sandbox that dies during a paid run: lanes and unit tests only. Of the eight rows of 8 GiB, seven passed with 6,364 MB, the eighth failed for its own solution, and no process of any was killed.
 - A valid key in the Worker after these runs. The one it holds stopped answering at the end of the rerun.
 - CI on GitHub. Nothing is pushed.
+
+## 2026-11-12: a run that starts at once
+
+Machines: the Worker deployed on Cloudflare under a second name with the R2 bucket of the entries above, the gateway at `https://gateway.tempo-dev.workers.dev` with the key of the entry above, E2B sandboxes leased through it, which run in a western US region, and the 32-core Linux machine with KVM of the entries above (Node 24.22.2), in Europe, shared, which created the runs, ran the standing runner and the lanes. Every run is one row: `openssl-selfsigned-cert` of Terminal-Bench 2.1 from the eval of the entries above, with `codex:gpt-6-luna` unless it says the task's solution. The runs that lease a sandbox were kept in the `wnam` region, the ones of the standing runner in `weur`.
+
+### Before
+
+The run got a timeline first, so the numbers come from the run and not from a stopwatch. Five runs on the code before this entry, `--provider gateway --template desktop --backend ns --slots 1 --sandbox-lease-sec 100`, seconds after the run was created:
+
+| Run | Sandbox create starts | Runner says hello | First claim | Environment ready | First model request | First verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 0.65 | 17.35 | 17.66 | 21.39 | 22.34 | 58.16 |
+| 2 | 0.33 | 22.30 | 22.98 | 26.59 | 27.82 | 75.93 |
+| 3 | 0.19 | 17.45 | 17.86 | 42.07 | 150.11 | 192.00 |
+| 4 | 0.17 | 12.09 | 12.39 | 15.94 | 17.13 | 49.16 |
+| 5 | 0.45 | 32.61 | 32.91 | 39.24 | 137.42 | 175.40 |
+
+Median 17.9 s to the first claim, 27.8 s to the first model request, 75.9 s to the first verdict; worst 32.9, 150.1 and 192.0. Runs 3 and 5 lost their sandbox when its 100 s lease ended, because the gateway sold no renewal, and their model request is the one of the claim that replaced the first. Where run 3 spent its start: 2.6 s for the price of the create and 4.5 s for the paid create, 1.1 s for two file writes, 8.5 s for the bootstrap command (5.4 s for the 20 MB archive, 0.5 s to unpack it, 2.1 s for Node, which `desktop` lacks), 0.3 s for the runner's setup, 0.3 s for its hello and 0.4 s for its claim. Per attempt: 0.2 s for the task's files, 1.7 to 21.8 s for the disk and 0.4 to 0.6 s to unpack it, 0.3 s for the slot, and 1.2 s from the slot being up to the turn being submitted, most of it the hand dialing the session.
+
+A probe from a sandbox gave the size of a round trip: a request to the Worker's `/health` took 150 ms on a kept connection (18 ms once), one that reaches the run's object 200 to 230 ms, and a new connection 120 to 470 ms, although the sandbox reaches a Cloudflare edge in 2 to 14 ms. Cloudflare ran this Worker far from that edge. Nothing here changes that, and it is why this entry counts round trips.
+
+### What changed
+
+- **Held requests.** A claim, the wait for the hand and the wait for the turn are answered when they happen instead of asked again. A runner follows its slots by file events.
+- **A pool.** `nanoeval runner --standing` keeps a runner of a machine with the deployment, and `run --warm-sec` keeps the sandbox a run opened, with its runner and its disks. A run takes one when it is created and its runner claims without a hello.
+- **The cold path.** One command starts the runner in a new sandbox instead of two writes and a command, the bootstrap fetches the archive while it looks for Node, the runner fetches the disks of the first rows before it claims them and the files of an attempt together, and the session of the hand is asked for beside the environment instead of before the claim is answered: that one request took 0.8 to 0.9 s.
+- **The template.** `base` has root, Node 20.9, `mke2fs`, 2 vCPU and 512 MiB, which ran this task and the runner. `code-interpreter-v1` has Node 20 and no `mke2fs`; `codex`, `claude` and `opencode` have Node 20 to 22 and 2 to 4 GiB; `desktop` has 8 vCPU, 8 GiB and no Node. A paid create took 2.1 to 3.3 s when asked from a laptop whatever the template.
+
+### After
+
+**Cold: a `base` sandbox leased for the run.** Six runs, on this change before it was rebased onto the work that scales runs (the first two before the claim stopped waiting for the session):
+
+| Run | Lease | First claim | First model request | First verdict | Note |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 600 s | 10.62 | 14.58 | 58.35 | kept its sandbox |
+| 2 | 600 s | 17.02 | 25.22 | 68.38 | was to take the kept sandbox and opened one: see below |
+| 3 | 120 s | 10.53 | not known | 175.43 | the turn began at 13.46 and ran past the lease: no renewal was sold, the sandbox ended, and a second one finished the row |
+| 4 | 120 s | 7.86 | 12.62 | 46.67 | |
+| 5 | 240 s | 12.13 | 14.37 | 39.36 | |
+| 6 | 240 s | 31.22 | none | none | the runner said hello at 31.03; the key's limit ran out during the run and the model answered 401 |
+
+Median 11.4 s to the first claim (worst 31.2), 14.5 s to the first model request over the four runs that have one (worst 25.2), 58.4 s to the first verdict over five (worst 175.4). The steps of run 3: 0.51 s to create the run, 0.05 s for the pool to say it has nothing, 1.74 s for the price of the create and 4.00 s for the paid create, 1.3 s from the paid command to the first line of the bootstrap, 2.3 s for the archive (1.6 s to fetch it while Node was found in 0.9 s, 0.7 s to unpack), 0.4 s for the runner to start and set up, and its hello and claim. Run 1 took 0.61 s for the price and 4.59 s for the create. After the claim: the task's files and the disk together in 1.2 to 1.7 s, the slot in 0.3 to 0.4 s, and 1.1 to 1.2 s for the hand.
+
+**Warm: a sandbox the pool kept.** One run, on the sandbox that cold run 1 kept: the pool answered 0.22 s after the run was created, the first row was claimed at 0.55 s, the environment was ready at 1.61 s with no file and no disk fetched, the model was asked at 2.69 s, and the verdict came at 53.94 s. Of the 0.55 s, 0.22 s is the creation of the run and 0.12 s the pool. The claim was answered 0.8 s after it was sent, because it still waited for the session then, and the hand took 1.1 s. Cold run 2 was meant to be the second warm run: the pool passed the sandbox over because its runner was between two held requests at that moment. A runner that asked within the notice of its lease is taken since, and gets the run with its next request. The pool terminated both kept sandboxes when their idle time ended, 1.7 s and 0.1 s after it, and recorded $0.0001 for each with no run active. Four more warm runs were planned and did not run: the key's limit was spent by another job that used the same key.
+
+**A standing runner.** `nanoeval runner --standing --backend krun --slots 1 --lease-sec 10` on the Linux machine, runs created with `--sandboxes 0 --backend krun`:
+
+| Runs | Agent | First claim | Environment ready | Turn submitted or solution started | First verdict |
+| --- | --- | --- | --- | --- | --- |
+| 5 | `gpt-6-luna` | 0.39, 0.11, 0.12, 0.38, 0.35 | 0.96 to 1.69 | 2.27, 1.33, 1.51, 1.75, 2.10 | none: the model answered 401, the key was spent |
+| 5 | solution | 0.14, 0.28, 0.27, 0.28, 0.29 | 0.86 to 1.14 | 1.54 to 1.91 | errors: the runner was started without the host policy of this machine, and the verifier could not reach its package index |
+| 5 | solution | 0.16, 0.13, 0.29, 0.31, 0.11 | 0.83 to 1.14 | 1.68 to 1.83 | errors: the same, the policy was not applied to a home that was set up before |
+| 5 | solution, with `--ca-bundle`, `--slot-env` and `--slot-forward` | 0.34, 0.26, 0.11, 0.26, 0.11 | 0.79 to 1.41 | 1.48 to 2.11 | passed at 11.19, 9.02, 9.30, 9.89, 9.24 |
+
+Median 0.27 s to the first claim over the 20 runs, worst 0.39 s. One of them: the run was created in 26 ms, the pool answered in 28 ms, the runner sent its claim 48 ms later and the claim was recorded 167 ms after that, a request from Europe on a new connection. The microVM takes most of the second that follows. Before, a runner attached by hand claimed its first row 1.2 s after the run was created.
+
+Under local workerd on the Linux machine, where a request takes a millisecond, the lanes print the same offsets: a standing runner on directory slots claimed 11 and 13 ms after two runs were created, the model was asked at 88 and 126 ms and the first verdict was in at 212 and 266 ms; a second run on a kept sandbox of the scripted gateway claimed at 10 to 12 ms on directory and ns slots, with its environment ready at 125 to 186 ms on ns slots.
+
+### What a kept sandbox costs
+
+The gateway charged $0.017342 for 600 s of `base` and $0.006997 for 240 s: $0.104 an hour. `desktop` was $0.04238 for 300 s, $0.51 an hour. Each command costs $0.0001, and so does the termination the pool pays. The gateway answered every renewal with 502, as in the entry above, so a kept sandbox lived exactly as long as the lease its run bought, and the renewals of the pool ran against the scripted gateway only.
+
+### Lanes that changed
+
+- The restart lane kills the Worker as soon as an attempt is active. Attempts used to be in their environment phase then. They are in their turn now, and nanocode reports a tool call that a host crash cut as an unknown outcome and does not repeat it, so the scripted model ends the turn without the file. The lane counts such an attempt, and only such an attempt, as one that need not pass.
+- The lane of a gateway that sells no renewal expected its rows to outlast one lease of 8 s. They finish inside it now. It runs 8 attempts on a lease of 6 s.
+
+### Not verified
+
+- More than one run on a kept sandbox of the real gateway, and a renewal paid by the pool.
+- The first model request of a run on a standing runner against a real model: the turn was submitted and the gateway refused the key.
+- A cold start after the claim stopped waiting for the session, beyond runs 3 to 6 above, and any gateway run on the last commit of this entry: the key was spent before the rebase onto the work that scales runs. The lanes, and five runs of the standing runner on the deployed Worker, ran on that commit.
+- The pool with `--provider e2bT and `--provider local`: it is written for both and ran with neither.
+- More than one slot in a kept sandbox, and two runs asking the pool at the same moment, beyond the unit tests of the table.
