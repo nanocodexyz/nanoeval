@@ -56,6 +56,10 @@ const label =
 const out = Path.resolve('output/e2e', label)
 const largeTestBytes = 3 * 1024 * 1024
 const attached = ['lost', 'resume', 'runners'].includes(scenario)
+const fleet = scenario === 'fleet'
+const lapse = scenario === 'lapse'
+const sandboxLeaseSec = Number(process.env['NANOEVAL_E2E_SANDBOX_LEASE_SEC'] ?? leaseSec)
+const seededDisk = 'e'.repeat(64)
 const installed = model === 'installed'
 const fakeCli = Path.resolve('test/fixtures/fake-cli.sh')
 const fakeUsage = {
@@ -456,6 +460,7 @@ async function main(): Promise<void> {
             : path === '/v1/responses'
               ? responses(body, cost)
               : scripted(body, cost),
+        ...(lapse ? { renewals: false } : {}),
         sandboxd: { token: sandboxToken, url: sandboxd.url },
       })
     : undefined
@@ -765,10 +770,10 @@ async function main(): Promise<void> {
       name: 'e2e-' + label,
       sandbox: {
         backend,
-        disks: scenario === 'disks' ? 'remove' : 'keep',
+        disks: scenario === 'disks' || scenario === 'disk' ? 'remove' : 'keep',
         ...(scenario === 'disk' ? { freeDiskMb: 2 ** 40 } : {}),
-        ...(gateway ? { leaseSec } : {}),
-        max: attached ? 0 : 1,
+        ...(gateway ? { leaseSec: sandboxLeaseSec } : {}),
+        max: attached ? 0 : fleet ? 2 : 1,
         ...(packing ? { memoryMb: 768 } : {}),
         network,
         pollMs,
@@ -798,6 +803,23 @@ async function main(): Promise<void> {
     const created = await api.create(config)
     const total = directories.length * agents.length * config.attempts
     assert.equal(created.attempts, total)
+    const disks = (guest ? Guest.root + '/cache' : cache) + '/disks'
+    if (scenario === 'disk')
+      await there(
+        'mkdir -p ' +
+          disks +
+          ' && cd ' +
+          disks +
+          ' && touch ' +
+          seededDisk +
+          '.ext4 ' +
+          seededDisk +
+          '.run-' +
+          created.id +
+          ' other.ext4 other.run-other',
+      )
+    if ((fleet || lapse) && !mock)
+      throw new Error('the ' + scenario + ' scenario runs through the scripted gateway')
     assert.deepEqual(created.eval, { name: evalName, version: version.digest })
     if (attached) {
       attach(created.id, 'a')
@@ -871,11 +893,26 @@ async function main(): Promise<void> {
           }
         }
       }
+      if (fleet && !restarted) {
+        const first = (status['sandboxes'] as { runner: number; state: string }[]).find(
+          (sandbox) => sandbox.state === 'ready',
+        )
+        const busy = (status['attempts'] as { phase: string; runner: number | null }[]).some(
+          (attempt) =>
+            first !== undefined &&
+            attempt.runner === first.runner &&
+            !['claimed', 'done', 'unclaimed'].includes(attempt.phase),
+        )
+        if (busy) {
+          restarted = true
+          await mock!.die([...mock!.sandboxes.keys()][0]!)
+        }
+      }
       if (Date.now() - started > 20 * 60_000)
         throw new Error('the run did not finish:\n' + summary(status))
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
-    if (['lost', 'restart', 'resume'].includes(scenario))
+    if (['fleet', 'lost', 'restart', 'resume'].includes(scenario))
       assert.ok(restarted, 'the ' + scenario + ' happened during the run')
     const wallMs = Date.now() - started
     console.log(summary(status))
@@ -954,6 +991,31 @@ async function main(): Promise<void> {
               ['released', 'finished'],
             )
       }
+    } else if (lapse) {
+      const rows = (status['sandboxes'] as { error: string | null; state: string }[]).slice(1)
+      assert.ok(rows.length >= 2, 'a sandbox whose lease ended was replaced by another')
+      for (const row of rows) assert.equal(row.state, 'closed')
+      for (const row of rows.slice(0, -1))
+        assert.match(
+          row.error!,
+          /the gateway answered 502 to an unpaid renew instead of its price: /,
+          'a sandbox that is sold no renewal says so, and is used until its lease ends',
+        )
+    } else if (fleet) {
+      const rows = status['sandboxes'] as { error: string | null; state: string }[]
+      assert.match(rows[0]!.error!, /the gateway refused create with 503: /)
+      assert.equal(rows[1]!.state, 'failed', 'the sandbox that died is failed, not waited for')
+      assert.match(rows[1]!.error!, /the runner stopped answering|refused renew with 404: /)
+      assert.ok(rows.length >= 3, 'another sandbox worked the run')
+      for (const row of rows.slice(2)) assert.equal(row.state, 'closed')
+      assert.ok(status['lostClaims'] >= 1, 'the rows of the sandbox that died lost their claims')
+      const again = (status['attempts'] as { claims: number; runner: number }[]).filter(
+        (attempt) => attempt.claims === 2,
+      )
+      assert.ok(again.length >= 1, 'a row of the sandbox that died was claimed again')
+      const dead = (status['sandboxes'] as { runner: number }[])[1]!.runner
+      for (const attempt of again)
+        assert.notEqual(attempt.runner, dead, 'a row that was claimed again ends on another runner')
     } else {
       const opened = (status['sandboxes'] as { state: string }[]).filter(
         (sandbox) => sandbox.state !== 'failed',
@@ -1126,6 +1188,12 @@ async function main(): Promise<void> {
         assert.equal(attempt['failure'].kind, 'environment')
         assert.match(attempt['failure'].message, /MB of free disk with no attempt running/)
       }
+      assert.deepEqual(
+        (await there('ls ' + disks)).split('\n').filter(Boolean).sort(),
+        ['other.ext4', 'other.run-other'],
+        'a runner short of disk removes a disk of its run that no row of it uses, and no other',
+      )
+      await there('rm -f ' + disks + '/other.ext4 ' + disks + '/other.run-other')
       console.log('e2e passed: ' + label)
       return
     }
@@ -1147,7 +1215,8 @@ async function main(): Promise<void> {
 
     assert.equal(status['counts'].errored, 0, 'no attempt may end in an infrastructure error')
     assert.equal(status['counts'].passed + status['counts'].failed, total)
-    if (!attached) assert.equal(peak, Math.min(slots, total), 'the sandbox fills every slot')
+    if (!attached && !fleet && !lapse)
+      assert.equal(peak, Math.min(slots, total), 'the sandbox fills every slot')
     if (cached) {
       if (!disk) throw new Error('the cache scenario runs on krun or ns slots')
       const kept = async () =>
@@ -1303,16 +1372,19 @@ async function main(): Promise<void> {
       const micro = (charge: MockGateway.Charge) => Math.round(charge.usd * 1e6)
       assert.deepEqual(
         payments.map((payment) => [payment.operation, Math.round(payment.usd * 1e6)]),
-        [
-          ...mock.unavailable.flatMap((charge) => [
-            ['compute.' + charge.operation, micro(charge)],
-            ['compute.' + charge.operation + ' refused with 503', -micro(charge)],
-          ]),
-          ...mock.charges.map((charge) => ['compute.' + charge.operation, micro(charge)]),
-        ],
-        'the payments of the run are the sandbox the gateway refused, written back, and then its charges in order',
+        mock.log.flatMap((entry) => [
+          ['compute.' + entry.operation, micro(entry)],
+          ...(entry.refused === undefined
+            ? []
+            : [['compute.' + entry.operation + ' refused with ' + entry.refused, -micro(entry)]]),
+        ]),
+        'the payments of the run are what the gateway charged in order, and what it refused written back',
       )
-      assert.equal(mock.unavailable.length, 1)
+      assert.deepEqual(
+        mock.unavailable.map((charge) => charge.operation),
+        lapse ? ['create'] : ['create', 'renew'],
+        'the first sandbox and the first renewal were refused',
+      )
       assert.ok(
         Math.abs(status['spend'].sandboxUsd - sum(mock.charges.map((charge) => charge.usd))) < 1e-9,
         'the sandbox spend of the run is what the gateway charged, without what it refused',
@@ -1321,14 +1393,28 @@ async function main(): Promise<void> {
       const operations = payments.map((payment) => payment.operation)
       assert.equal(operations[0], 'compute.create')
       assert.equal(operations.at(-1), 'compute.terminate')
-      assert.ok(operations.includes('compute.renew'), 'the lease was renewed while rows ran')
+      assert.equal(
+        operations.includes('compute.renew'),
+        !lapse,
+        'the lease was renewed while rows ran, unless no renewal is sold',
+      )
       const leased = [...mock.sandboxes.values()]
-      assert.equal(leased.length, 1)
-      assert.equal(leased[0]!.ended, 'terminated', 'the sandbox was terminated, not left to lapse')
-      assert.ok(leased[0]!.renewals >= 1)
+      if (lapse) {
+        assert.ok(leased.length >= 2)
+        assert.ok(
+          leased.every((sandbox) => sandbox.ended !== undefined && sandbox.renewals === 0),
+          'every sandbox ended, by its lease or by the run, and none was renewed',
+        )
+      } else {
+        assert.deepEqual(
+          leased.map((sandbox) => sandbox.ended),
+          fleet ? ['died', ...leased.slice(1).map(() => 'terminated')] : ['terminated'],
+          'every sandbox was terminated, not left to lapse, the one whose renewal was refused in passing too',
+        )
+      }
       assert.equal(status['sandboxes'][0].state, 'failed')
       assert.match(status['sandboxes'][0].error, /the gateway refused create with 503: /)
-      assert.equal(status['sandboxes'][1].state, 'closed')
+      assert.equal(status['sandboxes'].at(-1).state, 'closed')
     }
 
     const job = JSON.parse(files['result.json']!)

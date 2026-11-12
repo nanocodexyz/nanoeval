@@ -136,6 +136,24 @@ jobs:
           NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
           NANOEVAL_E2E_SLOTS: '3'
           NANOEVAL_E2E_ATTEMPTS: '1'
+      - name: End to end, directory slots, two leased sandboxes of which one dies during the run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_GATEWAY: '1'
+          NANOEVAL_E2E_SCENARIO: fleet
+          NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
+          NANOEVAL_E2E_SLOTS: '1'
+      - name: End to end, directory slots, a gateway that sells no renewal, so sandboxes end with their lease and are replaced
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_GATEWAY: '1'
+          NANOEVAL_E2E_SCENARIO: lapse
+          NANOEVAL_E2E_SANDBOX_LEASE_SEC: '8'
+          NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
+          NANOEVAL_E2E_SLOTS: '1'
+          NANOEVAL_E2E_ATTEMPTS: '4'
       - name: End to end, krun slots, skipped where krun cannot run
         run: npm run e2e
       - name: End to end, krun slots, oracle, skipped where krun cannot run

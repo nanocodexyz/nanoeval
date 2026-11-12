@@ -7,8 +7,10 @@ import type * as Sandbox from '../src/Sandbox.ts'
 
 export type Charge = { operation: string; usd: number }
 
+export type Entry = Charge & { refused?: number }
+
 export type Leased = {
-  ended?: 'lapsed' | 'terminated'
+  ended?: 'died' | 'lapsed' | 'terminated'
   expiresAt: number
   handle: Sandbox.Handle
   paidUntil: number
@@ -18,7 +20,9 @@ export type Leased = {
 export type Mock = {
   readonly charges: readonly Charge[]
   close(): void
+  die(id: string): Promise<void>
   readonly key: string
+  readonly log: readonly Entry[]
   readonly modelCosts: readonly number[]
   readonly refused: readonly string[]
   readonly sandboxes: ReadonlyMap<string, Leased>
@@ -29,6 +33,7 @@ export type Mock = {
 export type Options = {
   key: string
   model(path: string, body: Record<string, any>, cost: number): string
+  renewals?: boolean
   sandboxd: { token: string; url: string }
 }
 
@@ -65,6 +70,8 @@ async function read(request: Http.IncomingMessage): Promise<Buffer> {
 
 export async function start(options: Options): Promise<Mock> {
   const charges: Charge[] = []
+  const log: Entry[] = []
+  const quoted = new Map<string, number>()
   const modelCosts: number[] = []
   const refused: string[] = []
   const sandboxes = new Map<string, Leased>()
@@ -112,13 +119,19 @@ export async function start(options: Options): Promise<Mock> {
       return problem(response, 400, 'the request names no app of its own')
     const leased = operation === 'create' ? undefined : sandboxes.get(String(body['sandboxId']))
     const until = leased ? Math.max(leased.paidUntil, now) + Number(body['seconds']) * 1000 : 0
-    const usd =
+    const priced =
       operation === 'create'
         ? secondUsd * Number(body['lease']) + callUsd
         : operation === 'renew'
           ? secondUsd * Math.ceil((until - now) / 1000) + callUsd
           : prices[operation]
-    if (usd === undefined) return problem(response, 404, 'the gateway has no compute/' + operation)
+    if (priced === undefined)
+      return problem(response, 404, 'the gateway has no compute/' + operation)
+    const asked = operation + ' ' + String(body['sandboxId'])
+    const authorized = request.headers['authorization'] !== undefined
+    const usd = authorized ? (quoted.get(asked) ?? priced) : priced
+    if (authorized) quoted.delete(asked)
+    else quoted.set(asked, priced)
     if (operation === 'create') {
       if (body['provider'] !== 'e2b' || !templates.includes(body['image']))
         return problem(response, 400, 'templateID must be a public template')
@@ -126,6 +139,17 @@ export async function start(options: Options): Promise<Mock> {
         return problem(response, 400, 'lease cannot exceed timeout.')
     }
 
+    if (operation === 'renew' && options.renewals === false) {
+      response.writeHead(502, { 'content-type': 'application/problem+json' })
+      response.end(
+        JSON.stringify({
+          code: 'upstream_failed',
+          detail: 'The provider sells no renewal of this sandbox.',
+          status: 502,
+        }),
+      )
+      return
+    }
     const authorization = request.headers['authorization']
     if (authorization === undefined)
       return problem(response, 402, 'Payment is required (compute.' + operation + ').', {
@@ -133,10 +157,16 @@ export async function start(options: Options): Promise<Mock> {
       })
     if (authorization !== 'Bearer ' + options.key)
       return problem(response, 401, 'The API key is unknown, revoked or expired.')
-    if (operation !== 'create' && (!leased || leased.ended))
+    if (operation !== 'create' && (!leased || leased.ended)) {
+      log.push({ operation, refused: 404, usd })
       return problem(response, 404, 'Sandbox ' + body['sandboxId'] + ' ended.')
-    if (operation === 'create' && !unavailable.length) {
+    }
+    if (
+      (operation === 'create' || operation === 'renew') &&
+      !unavailable.some((charge) => charge.operation === operation)
+    ) {
       unavailable.push({ operation, usd })
+      log.push({ operation, refused: 503, usd })
       response.writeHead(503, { 'content-type': 'application/problem+json' })
       response.end(
         JSON.stringify({
@@ -148,6 +178,7 @@ export async function start(options: Options): Promise<Mock> {
       return
     }
     charges.push({ operation, usd })
+    log.push({ operation, usd })
     const answer = (value: unknown) => {
       response.writeHead(200, { 'content-type': 'application/json' })
       response.end(JSON.stringify(value))
@@ -233,7 +264,9 @@ export async function start(options: Options): Promise<Mock> {
       clearInterval(lapse)
       server.close()
     },
+    die: (id) => end(id, 'died'),
     key: options.key,
+    log,
     modelCosts,
     refused,
     sandboxes,
