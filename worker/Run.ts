@@ -167,6 +167,9 @@ export class Run extends DurableObject<Env> {
     super(ctx, env)
     this.sql = Storage.sql(ctx)
     SqlSetup.setup(this.sql, tables)
+    const columns = this.sql.all('PRAGMA table_info(sandboxes)')
+    if (!columns.some((column) => column['name'] === 'paid_until'))
+      this.sql.run('ALTER TABLE sandboxes ADD COLUMN paid_until INTEGER')
   }
 
   override async fetch(request: Request): Promise<Response> {
