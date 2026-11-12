@@ -647,7 +647,7 @@ cmd__hand() {
       mapfile -t run < <(launcher "$rt")
       cd "$workdir"
       printf '%s\n' "$$" >"$dir/hand.pid"
-      NANOCODE_HOME=$dir/nanocode exec "${run[@]}" hand "$url" --name "$name" -C "$workdir"
+      NANOCODE_HOME=$dir/nanocode exec "${run[@]}" hand "$url" --name "$name" -C "$workdir" --own-processes
       ;;
     krun | ns)
       mapfile -t run < <(launcher /opt/nanoeval)
@@ -659,7 +659,7 @@ cmd__hand() {
       cd "$dir"
       printf '%s\n' "$$" >"$dir/hand.pid"
       exec "$krun/nanoeval-krun" exec "${options[@]}" --env NANOCODE_RUNNER_TOKEN --env NANOCODE_HOME=/tmp/.nanoeval-hand -- \
-        "${run[@]}" hand "$url" --name "$name" -C "$workdir"
+        "${run[@]}" hand "$url" --name "$name" -C "$workdir" --own-processes
       ;;
   esac
 }
