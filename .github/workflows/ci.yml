@@ -119,6 +119,23 @@ jobs:
           NANOEVAL_E2E_MODEL: installed
           NANOEVAL_E2E_SCENARIO: resume
           NANOEVAL_E2E_SLOTS: '8'
+      - name: End to end, directory slots, models and the sandbox through a scripted gateway
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_GATEWAY: '1'
+          NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
+          NANOEVAL_E2E_SLOTS: '3'
+          NANOEVAL_E2E_ATTEMPTS: '1'
+      - name: End to end, directory slots, installed agents and the sandbox through a scripted gateway
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_GATEWAY: '1'
+          NANOEVAL_E2E_MODEL: installed
+          NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
+          NANOEVAL_E2E_SLOTS: '3'
+          NANOEVAL_E2E_ATTEMPTS: '1'
       - name: End to end, krun slots, skipped where krun cannot run
         run: npm run e2e
       - name: End to end, krun slots, oracle, skipped where krun cannot run
@@ -210,6 +227,15 @@ jobs:
           NANOEVAL_E2E_MODEL: installed
           NANOEVAL_E2E_SCENARIO: resume
           NANOEVAL_E2E_SLOTS: '8'
+      - name: End to end, krun slots, models and the sandbox through a scripted gateway, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_GATEWAY: '1'
+      - name: End to end, krun slots, installed agents and the sandbox through a scripted gateway, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_GATEWAY: '1'
+          NANOEVAL_E2E_MODEL: installed
       - name: End to end, ns slots, skipped where the test is not root and no guest can boot
         run: npm run e2e
         env:
@@ -246,6 +272,21 @@ jobs:
         run: npm run e2e
         env:
           NANOEVAL_E2E_BACKEND: ns
+          NANOEVAL_E2E_MODEL: oracle
+          NANOEVAL_E2E_RUNTIME: '1'
+          NANOEVAL_E2E_STORE: r2
+          NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
+          NANOEVAL_E2E_ATTEMPTS: '1'
+      - name: End to end, ns slots, models and the sandbox through a scripted gateway, skipped where the test is not root and no guest can boot
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: ns
+          NANOEVAL_E2E_GATEWAY: '1'
+      - name: End to end, ns slots, a leased sandbox that starts its runner from the runtime archive, skipped where the test is not root and no guest can boot
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: ns
+          NANOEVAL_E2E_GATEWAY: '1'
           NANOEVAL_E2E_MODEL: oracle
           NANOEVAL_E2E_RUNTIME: '1'
           NANOEVAL_E2E_STORE: r2

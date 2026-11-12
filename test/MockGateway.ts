@@ -1,6 +1,7 @@
 import * as Http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import * as GatewayProvider from '../src/Gateway.ts'
+import * as Bytes from '../src/internal/Bytes.ts'
 import * as Local from '../src/Local.ts'
 import type * as Sandbox from '../src/Sandbox.ts'
 
@@ -167,7 +168,11 @@ export async function start(options: Options): Promise<Mock> {
     if (operation === 'write') {
       if (Number(request.headers['gateway-size']) !== raw.length)
         return problem(response, 400, 'Gateway-Size does not match the received bytes.')
-      await sandbox.write(there(String(request.headers['gateway-path'])), raw)
+      const text = Bytes.toValidText(raw)
+      await sandbox.write(
+        there(String(request.headers['gateway-path'])),
+        text === undefined ? raw : Bytes.fromText(there(text)),
+      )
       return answer({ bytes: raw.length })
     }
     const command = body['command'] as string[]
