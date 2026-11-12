@@ -40,6 +40,63 @@ export const origin = 'https://gateway.tempo-dev.workers.dev'
 
 export const template = 'code-interpreter-v1'
 
+export type KeyUsage = {
+  channelDepositUsd: number
+  channelSpentUsd: number
+  limitRemainingUsd: number
+  walletUsd: number
+}
+
+export type Charged = { channelUsd: number; outsideUsd: number; usd: number }
+
+export async function usage(options: {
+  fetch?: Fetch
+  key: string
+  url?: string
+}): Promise<KeyUsage> {
+  const send = options.fetch ?? ((input: string, init?: RequestInit) => fetch(input, init))
+  const response = await send((options.url || origin).replace(/\/+$/, '') + '/api/keys/me', {
+    headers: { authorization: 'Bearer ' + options.key },
+  })
+  const text = await response.text()
+  if (!response.ok)
+    throw new RefusedError(
+      response.status,
+      'the gateway refused to say what the key was charged with ' +
+        response.status +
+        ': ' +
+        text.slice(0, 300),
+    )
+  let used: Record<string, Record<string, unknown> | undefined> | undefined
+  try {
+    used = (JSON.parse(text) as { usage?: typeof used }).usage
+  } catch {
+    used = undefined
+  }
+  const amount = (value: unknown): number => {
+    const parsed = typeof value === 'string' && value.trim() !== '' ? Number(value) : value
+    if (typeof parsed !== 'number' || !Number.isFinite(parsed))
+      throw new RequestError('the gateway reported the usage of the key without its amounts')
+    return parsed
+  }
+  return {
+    channelDepositUsd: amount(used?.['channel']?.['deposit']),
+    channelSpentUsd: amount(used?.['channel']?.['spent']),
+    limitRemainingUsd: amount(used?.['limit']?.['remaining']),
+    walletUsd: amount(used?.['wallet']?.['balance']),
+  }
+}
+
+export function charged(start: KeyUsage, end: KeyUsage): Charged {
+  const micro = (usd: number) => Math.round(usd * 1e6)
+  const channel = micro(end.channelSpentUsd) - micro(start.channelSpentUsd)
+  const outside =
+    micro(start.limitRemainingUsd) -
+    micro(end.limitRemainingUsd) -
+    (micro(end.channelDepositUsd) - micro(start.channelDepositUsd))
+  return { channelUsd: channel / 1e6, outsideUsd: outside / 1e6, usd: (channel + outside) / 1e6 }
+}
+
 export function quote(header: string | null): Payment.Charge {
   const offers = [...(header ?? '').matchAll(/Payment ((?:[a-z]+="[^"]*"(?:, )?)+)/g)].map(
     (match) =>

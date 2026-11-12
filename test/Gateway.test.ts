@@ -394,3 +394,45 @@ test('a run takes the gateway as its provider with a lease no shorter than a cla
   assert.throws(() => Config.parse(config({ leaseSec: 59 })), /at least limits\.leaseSec/)
   assert.throws(() => Config.parse(config({ provider: 'modal' })), /e2b, gateway, local/)
 })
+
+test('what a key was charged is read from its usage, through its channel and outside it', async () => {
+  const seen: [string, string | undefined][] = []
+  const answer = {
+    usage: {
+      channel: { available: '0', deposit: '6.85', settled: '6.849748', spent: '6.85' },
+      limit: { remaining: '0.000803', total: '9.009' },
+      wallet: { balance: '0.291803' },
+    },
+  }
+  const read = (body: unknown, status = 200) =>
+    Gateway.usage({
+      fetch: async (input, init) => {
+        seen.push([input, new Headers(init?.headers).get('authorization') ?? undefined])
+        return Response.json(body, { status })
+      },
+      key: 'sk-tempo-test',
+      url: 'https://gateway.example/',
+    })
+  const end = await read(answer)
+  assert.deepEqual(end, {
+    channelDepositUsd: 6.85,
+    channelSpentUsd: 6.85,
+    limitRemainingUsd: 0.000803,
+    walletUsd: 0.291803,
+  })
+  assert.deepEqual(seen, [['https://gateway.example/api/keys/me', 'Bearer sk-tempo-test']])
+  const start = {
+    channelDepositUsd: 3,
+    channelSpentUsd: 0.02,
+    limitRemainingUsd: 6.009,
+    walletUsd: 6.3,
+  }
+  assert.deepEqual(Gateway.charged(start, end), {
+    channelUsd: 6.83,
+    outsideUsd: 2.158197,
+    usd: 8.988197,
+  })
+  assert.deepEqual(Gateway.charged(end, end), { channelUsd: 0, outsideUsd: 0, usd: 0 })
+  await assert.rejects(read({ status: 401 }, 401), Gateway.RefusedError)
+  await assert.rejects(read({ usage: { channel: { spent: '1' } } }), /without its amounts/)
+})

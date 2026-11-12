@@ -60,7 +60,8 @@ export default {
         }),
       )
     }
-    if (!/^[0-9a-f-]{36}$/.test(id)) return json({ error: 'route not found' }, 404)
+    if (!/^[0-9a-f-]{36}$/.test(id) || rest[0] === 'metered')
+      return json({ error: 'route not found' }, 404)
     return env.RUNS.get(env.RUNS.idFromName(id)).fetch(
       new Request('https://run.internal/' + (rest.join('/') || 'status') + url.search, {
         method: request.method,

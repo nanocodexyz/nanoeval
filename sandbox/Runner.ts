@@ -63,6 +63,7 @@ type Work = {
   errors: number
   instruction?: string
   marks: Mark[]
+  memoryMb?: number
   message: string
   next: number
   round: 1 | 2
@@ -72,7 +73,7 @@ type Work = {
   watcher?: FSWatcher
 }
 
-type Saved = Pick<Work, 'at' | 'message' | 'round' | 'row' | 'session' | 'stage'>
+type Saved = Pick<Work, 'at' | 'memoryMb' | 'message' | 'round' | 'row' | 'session' | 'stage'>
 
 type Mark = { at: number; ms?: number; name: string }
 
@@ -100,6 +101,11 @@ async function text(file: string): Promise<string | undefined> {
 
 async function phase(file: string): Promise<Slot.Phase> {
   return ((await text(file))?.trim() || 'none') as Slot.Phase
+}
+
+async function availableMb(): Promise<number | undefined> {
+  const found = /^MemAvailable:\s+(\d+) kB$/m.exec((await text('/proc/meminfo')) ?? '')
+  return found ? Math.floor(Number(found[1]) / 1024) : undefined
 }
 
 async function freeDiskMb(paths: readonly string[]): Promise<number> {
@@ -407,6 +413,7 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
   const save = async (item: Work) => {
     const saved: Saved = {
       at: item.at,
+      ...(item.memoryMb === undefined ? {} : { memoryMb: item.memoryMb }),
       message: item.message,
       round: item.round,
       row: item.row,
@@ -614,12 +621,17 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
       await timed(item, 'attempt.cli', () =>
         shell(slots.agents(cli.kind, Installed.releases[cli.kind])),
       )
+    item.memoryMb = Admission.alone({
+      availableMb: config.memoryMb === undefined ? await availableMb() : undefined,
+      capacityMb: capacity.memoryMb,
+      requestedMb: task.resources.memoryMb,
+    })
     await shell(
       slots.up(item.row.slot, {
         backend,
         cpus: task.resources.cpus,
         ...(disk ? { disk } : {}),
-        memoryMb: Admission.clamp(task.resources.memoryMb, capacity),
+        memoryMb: item.memoryMb,
         network: config.network,
         storageMb: task.resources.storageMb,
       }),
@@ -757,7 +769,7 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
         return move(item, 'judge')
       }
     }
-    const memoryMb = Admission.clamp(task.resources.memoryMb, capacity)
+    const memoryMb = item.memoryMb ?? Admission.clamp(task.resources.memoryMb, capacity)
     await finish(item, {
       verifier: {
         code,
@@ -932,6 +944,7 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
       }
       const reason = error instanceof Error ? error.name + ': ' + error.message : String(error)
       item.errors++
+      item.marks.push({ at: Date.now(), name: 'attempt.retry' })
       log('attempt ' + item.row.id + ' stumbled in ' + item.stage + ': ' + reason)
       const final = error instanceof Store.MissingError || error instanceof Store.DigestError
       if (final || item.errors > config.limits.stepRetries)
@@ -1027,7 +1040,10 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
       backend +
       ' on the ' +
       config.network +
-      ' network',
+      ' network' +
+      (config.endsAt === undefined
+        ? ''
+        : ', its sandbox ends at ' + new Date(config.endsAt).toISOString()),
   )
 
   const load = async (): Promise<Admission.Load> => ({
@@ -1050,9 +1066,10 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
   let beatAt = 0
   let claiming = false
   let beating = false
+  let drained = false
   const beatMs = (config.leaseSec * 1000) / 3
   shared.stop = signal
-  while (!shared.stopping && !(finished && !work.size)) {
+  while (!shared.stopping && !((finished || drained) && !work.size)) {
     const now = Date.now()
     for (const item of work.values()) if (!item.busy && now >= item.next) void step(item)
 
@@ -1085,7 +1102,7 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
       })()
     }
 
-    if (!claiming && !finished && now >= claimAt) {
+    if (!claiming && !finished && !drained && now >= claimAt) {
       claiming = true
       const freed = frees
       void (async () => {
@@ -1112,6 +1129,10 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
             } satisfies Protocol.ClaimRequest)
             const claimed: Mark = { at: sentAt, ms: Date.now() - sentAt, name: 'attempt.claim' }
             finished = answer.finished
+            if (answer.drained !== undefined) {
+              drained = true
+              log('claims no more rows: ' + answer.drained)
+            }
             for (const row of answer.rows) {
               work.set(row.id, {
                 at: Date.now(),
@@ -1144,7 +1165,7 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
     if (!signalled) {
       const due = Math.min(
         beating ? Infinity : beatAt + beatMs + 1,
-        claiming || finished ? Infinity : claimAt,
+        claiming || finished || drained ? Infinity : claimAt,
         ...[...work.values()].filter((item) => !item.busy).map((item) => item.next),
       )
       await new Promise<void>((resolve) => {

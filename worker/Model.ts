@@ -1,16 +1,7 @@
 import * as Proxy from '../src/Proxy.ts'
 import type { Env } from './Env.ts'
+import * as Meter from './Meter.ts'
 import { plan } from './Sessions.ts'
-
-export type Outcome = { status: number; usage?: Proxy.Usage }
-
-const hopHeaders = [
-  'connection',
-  'content-encoding',
-  'content-length',
-  'set-cookie',
-  'transfer-encoding',
-]
 
 export async function refuse(
   request: Request,
@@ -39,9 +30,10 @@ export function credential(env: Env, provider: Proxy.Provider): Proxy.Credential
 
 export async function forward(env: Env, input: forward.Input): Promise<Response> {
   const { provider, request } = input
+  const at = Date.now()
   const held = credential(env, provider)
   if (!held) {
-    input.settle({ status: 401 })
+    await input.hooks.settle({ at, ms: 0, status: 401 })
     return refuse(request, {
       message: 'the deployment has no ' + provider + ' credential',
       status: 401,
@@ -54,51 +46,31 @@ export async function forward(env: Env, input: forward.Input): Promise<Response>
     provider,
     search: input.search,
   })
-  let upstream: Response
+  const body = await request.arrayBuffer()
   try {
-    upstream = await fetch(target.url, {
-      body: request.body,
+    return await Meter.relay({
+      body,
       headers: target.headers,
+      hooks: input.hooks,
       method: request.method,
+      provider,
+      url: target.url,
     })
   } catch (error) {
-    input.settle({ status: 502 })
+    await input.hooks.settle({ at, ms: Date.now() - at, status: 502 })
     return refuse(request, {
       message: 'the model provider was not reached: ' + String(error),
       status: 502,
     })
   }
-  const headers = new Headers()
-  upstream.headers.forEach((value, name) => {
-    if (!hopHeaders.includes(name)) headers.set(name, value)
-  })
-  if (!upstream.body) {
-    input.settle({ status: upstream.status })
-    return new Response(null, { headers, status: upstream.status })
-  }
-  const meter = Proxy.meter(provider)
-  const decoder = new TextDecoder()
-  const body = upstream.body.pipeThrough(
-    new TransformStream<Uint8Array, Uint8Array>({
-      flush() {
-        const usage = meter.usage()
-        input.settle({ status: upstream.status, ...(usage ? { usage } : {}) })
-      },
-      transform(chunk, controller) {
-        meter.push(decoder.decode(chunk, { stream: true }))
-        controller.enqueue(chunk)
-      },
-    }),
-  )
-  return new Response(body, { headers, status: upstream.status })
 }
 
 export declare namespace forward {
   type Input = {
+    hooks: Meter.Hooks
     path: string
     provider: Proxy.Provider
     request: Request
     search: string
-    settle(outcome: Outcome): void
   }
 }

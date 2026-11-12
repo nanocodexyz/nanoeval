@@ -137,15 +137,29 @@ export function mark(
   return JSON.stringify(spans)
 }
 
+export function queue(sql: Sql.Sql, secOf?: (task: string) => number): Attempt[] {
+  const rows = sql.all(
+    "SELECT * FROM attempts WHERE phase = 'unclaimed' ORDER BY n, id",
+  ) as unknown as Attempt[]
+  if (!secOf) return rows
+  const seconds = new Map<string, number>()
+  for (const row of rows) if (!seconds.has(row.task)) seconds.set(row.task, secOf(row.task))
+  return rows
+    .map((row, index) => ({ index, row }))
+    .sort(
+      (left, right) =>
+        left.row.n - right.row.n ||
+        seconds.get(right.row.task)! - seconds.get(left.row.task)! ||
+        left.index - right.index,
+    )
+    .map((entry) => entry.row)
+}
+
 export function claim(sql: Sql.Sql, input: claim.Input): Attempt[] {
-  const candidates = (
-    sql.all(
-      "SELECT * FROM attempts WHERE phase = 'unclaimed' ORDER BY n, id",
-    ) as unknown as Attempt[]
-  ).filter((row) => input.accepts?.(row) ?? true)
+  const candidates = queue(sql, input.secOf).filter((row) => input.accepts?.(row) ?? true)
   const chosen = Admission.fill(
     candidates.map((row) => ({ item: row, memoryMb: input.memoryOf(row.task) })),
-    input.offer,
+    { ...input.offer, ...(input.wholeLast ? { wholeLast: true } : {}) },
   )
   return sql.transaction(() =>
     chosen.map((row) => {
@@ -189,7 +203,9 @@ export declare namespace claim {
     offer: Admission.Offer
     run: string
     runner: number
+    secOf?(task: string): number
     token(): string
+    wholeLast?: boolean
   }
 }
 
@@ -294,10 +310,10 @@ export function claims(sql: Sql.Sql, attempt?: string): Claim[] {
     : sql.all('SELECT * FROM claims WHERE attempt = ? ORDER BY id', attempt)) as unknown as Claim[]
 }
 
-export function lostUsage(sql: Sql.Sql): string[] {
+export function lostUsage(sql: Sql.Sql): { attempt: string; usage: string }[] {
   return sql
-    .all("SELECT usage FROM claims WHERE usage IS NOT NULL AND ending != 'finished'")
-    .map((row) => row['usage'] as string)
+    .all("SELECT attempt, usage FROM claims WHERE usage IS NOT NULL AND ending != 'finished'")
+    .map((row) => ({ attempt: row['attempt'] as string, usage: row['usage'] as string }))
 }
 
 export function retries(

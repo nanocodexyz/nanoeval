@@ -1,6 +1,7 @@
 import { App, Forward } from 'nanocode-ts/cloudflare'
 import * as Proxy from '../src/Proxy.ts'
 import { account, type Env } from './Env.ts'
+import * as Meter from './Meter.ts'
 
 export async function authorized(request: Request, env: Env): Promise<boolean> {
   const header = request.headers.get('authorization') ?? ''
@@ -38,7 +39,7 @@ export const nanocode = App.create<Env>({
   authenticate: async (request, env) => ((await authorized(request, env)) ? account : null),
   egress: (env) =>
     Forward.create({
-      fetch: (request, dispatch) => {
+      fetch: async (request, dispatch) => {
         const name = dispatch.provider ?? 'claude'
         const headers = new Headers(request.headers)
         const source = new URL(request.url)
@@ -46,7 +47,7 @@ export const nanocode = App.create<Env>({
 
         if (dispatch.subscription) {
           const credential = plan(env, name)
-          if (!credential) return Promise.resolve(refuse('no ' + name + ' plan login is set'))
+          if (!credential) return refuse('no ' + name + ' plan login is set')
           headers.delete('x-api-key')
           for (const [header, value] of Object.entries(credential)) headers.set(header, value)
           if (name === 'codex' && env.CHATGPT_RELAY_URL) {
@@ -55,19 +56,54 @@ export const nanocode = App.create<Env>({
           }
         } else {
           const held = Proxy.key(env, name)
-          if (!held) return Promise.resolve(refuse('no ' + name + ' credential is set'))
+          if (!held) return refuse('no ' + name + ' credential is set')
           Proxy.authorize(headers, held)
           if (held.base) target = held.base.replace(/\/+$/, '') + source.pathname + source.search
         }
 
-        return fetch(
-          new Request(target, {
-            method: request.method,
-            headers,
-            body: request.body,
-            signal: request.signal,
-          }),
-        )
+        if (request.method !== 'POST' || headers.has('upgrade'))
+          return fetch(
+            new Request(target, {
+              method: request.method,
+              headers,
+              body: request.body,
+              signal: request.signal,
+            }),
+          )
+        const session = Proxy.session(dispatch.authority.session_name ?? '')
+        const path =
+          (session?.judge === undefined ? '' : 'judge/') +
+          new URL(target).pathname.replace(/^\/+/, '')
+        const tell = async (body: Record<string, unknown>): Promise<{ pauseMs?: number }> => {
+          const answer = await env.RUNS.get(env.RUNS.idFromName(session!.run)).fetch(
+            'https://run.internal/metered',
+            { body: JSON.stringify({ ...session, ...body }), method: 'POST' },
+          )
+          if (!answer.ok) throw new Error('the run answered ' + answer.status)
+          return (await answer.json()) as { pauseMs?: number }
+        }
+        return Meter.relay({
+          body: await request.arrayBuffer(),
+          headers,
+          hooks: {
+            ...(session
+              ? {
+                  refused: (refused: Meter.Refused) =>
+                    tell({ refused }).then(
+                      (answer) => answer.pauseMs,
+                      () => undefined,
+                    ),
+                }
+              : {}),
+            settle: async (outcome) => {
+              if (session) await tell({ outcome, path }).catch(() => {})
+            },
+          },
+          method: request.method,
+          provider: name,
+          signal: request.signal,
+          url: target,
+        })
       },
     }),
   hands: 'always',

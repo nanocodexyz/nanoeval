@@ -55,7 +55,11 @@ const label =
     (gateway ? '-gateway' : '')
 const out = Path.resolve('output/e2e', label)
 const largeTestBytes = 3 * 1024 * 1024
-const attached = ['lost', 'resume', 'runners', 'standing'].includes(scenario)
+const ending = scenario === 'ending'
+const attached = ending || ['lost', 'resume', 'runners', 'standing'].includes(scenario)
+const alone = scenario === 'alone'
+const refusedPassing = scenario === 'refused'
+const spent = scenario === 'spent'
 const fleet = scenario === 'fleet'
 const lapse = scenario === 'lapse'
 const sandboxLeaseSec = Number(process.env['NANOEVAL_E2E_SANDBOX_LEASE_SEC'] ?? leaseSec)
@@ -462,6 +466,11 @@ async function main(): Promise<void> {
             : path === '/v1/responses'
               ? responses(body, cost)
               : scripted(body, cost),
+        ...(refusedPassing
+          ? { refusals: { passing: 3 } }
+          : spent
+            ? { refusals: { spentAfter: 2 } }
+            : {}),
         ...(lapse ? { renewals: false } : {}),
         sandboxd: { token: sandboxToken, url: sandboxd.url },
       })
@@ -540,7 +549,7 @@ async function main(): Promise<void> {
   let worker = await start()
 
   const runners: { child: ChildProcess; home: string; name: string }[] = []
-  const attach = (run: string, name: string) => {
+  const attach = (run: string, name: string, extra: readonly string[] = []) => {
     const home = Path.join(out, 'runner-' + name)
     Fs.mkdirSync(home, { recursive: true })
     const output = Fs.openSync(Path.join(out, 'runner-' + name + '.log'), 'a')
@@ -565,6 +574,7 @@ async function main(): Promise<void> {
         Path.join(out, 'slot.env'),
         ...(caBundle ? ['--ca-bundle', Path.resolve(caBundle)] : []),
         ...(forward ? ['--slot-forward', forward] : []),
+        ...extra,
       ],
       { env: { ...process.env, NANOEVAL_TOKEN: token }, stdio: ['ignore', output, output] },
     )
@@ -654,7 +664,10 @@ async function main(): Promise<void> {
       scenario !== 'tasks' &&
       model !== 'scripted' &&
       !((judged || warm) && model === 'oracle') &&
-      !(installed && ['closed', 'failures', 'lost', 'resume', 'runners'].includes(scenario))
+      !(
+        installed &&
+        ['closed', 'failures', 'lost', 'refused', 'resume', 'runners'].includes(scenario)
+      )
     )
       throw new Error('the ' + scenario + ' scenario runs on the scripted model')
     if (isolated) {
@@ -671,30 +684,34 @@ async function main(): Promise<void> {
     const lost = 'tasks/write-greeting'
     const directories = judged
       ? ['final-answer', 'judged-answer'].map((name) => Path.join('test/fixtures', name))
-      : packing
-        ? ['extract-todos', 'uppercase-message', 'write-greeting'].map((name) =>
-            Path.join('tasks', name),
-          )
-        : failures
-          ? [
-              ...[
-                'large-tests',
-                'no-reward',
-                'slow-agent',
-                'unreported-tests',
-                ...(backend === 'dir' ? [] : ['background-process', 'memory-limit', 'plain-user']),
-              ].map((name) => Path.join('test/fixtures', name)),
-              lost,
-            ]
-          : isolated
-            ? [Network.fixture]
-            : closed
-              ? ['closed-agent', 'closed-network', 'closed-verifier'].map((name) =>
-                  Path.join('test/fixtures', name),
-                )
-              : cached
-                ? [Path.join('test/fixtures', 'cached-verifier')]
-                : taskNames.map((name) => Path.join('tasks', name))
+      : alone
+        ? [Path.join('tasks', 'write-greeting')]
+        : packing
+          ? ['extract-todos', 'uppercase-message', 'write-greeting'].map((name) =>
+              Path.join('tasks', name),
+            )
+          : failures
+            ? [
+                ...[
+                  'large-tests',
+                  'no-reward',
+                  'slow-agent',
+                  'unreported-tests',
+                  ...(backend === 'dir'
+                    ? []
+                    : ['background-process', 'memory-limit', 'plain-user']),
+                ].map((name) => Path.join('test/fixtures', name)),
+                lost,
+              ]
+            : isolated
+              ? [Network.fixture]
+              : closed
+                ? ['closed-agent', 'closed-network', 'closed-verifier'].map((name) =>
+                    Path.join('test/fixtures', name),
+                  )
+                : cached
+                  ? [Path.join('test/fixtures', 'cached-verifier')]
+                  : taskNames.map((name) => Path.join('tasks', name))
     const agents: Config.Agent[] =
       model === 'oracle'
         ? [oracle]
@@ -721,10 +738,13 @@ async function main(): Promise<void> {
                   ...(thinking ? { thinking } : {}),
                 },
               ]
-            : cached || closed || failures || isolated || packing || model !== 'scripted'
+            : alone || cached || closed || failures || isolated || packing || model !== 'scripted'
               ? [
                   {
-                    id: cached || closed || failures || isolated || packing ? 'right' : 'nanocode',
+                    id:
+                      alone || cached || closed || failures || isolated || packing
+                        ? 'right'
+                        : 'nanocode',
                     model: realModel,
                     provider: 'claude',
                   },
@@ -759,6 +779,7 @@ async function main(): Promise<void> {
     const imported = await Import.cases(cases(), options)
     const importMs = Date.now() - importStarted
     if (packing) for (const task of imported.tasks.slice(0, 2)) task.resources.memoryMb = 512
+    if (alone) for (const task of imported.tasks) task.resources.memoryMb = 2 ** 30
     const evalName = 'e2e-' + label.replace(/[^a-z0-9.-]/g, '-')
     const { version } = await api.putVersion(evalName, {
       ...Import.local,
@@ -812,7 +833,7 @@ async function main(): Promise<void> {
 
     const config: Config.Config = {
       agents,
-      attempts: cached || closed || failures || packing ? 1 : isolated ? slots : attempts,
+      attempts: alone || cached || closed || failures || packing ? 1 : isolated ? slots : attempts,
       budget: { modelUsd: 1, sandboxUsd: gateway ? 1 : 0 },
       eval: { name: evalName, version: version.digest },
       ...(judged ? { judge: { model: 'claude-haiku-4-5', provider: 'claude' as const } } : {}),
@@ -820,7 +841,7 @@ async function main(): Promise<void> {
         attachSec: 60,
         claims: 3,
         leaseSec,
-        setupSec: scenario === 'disk' ? 5 : 600,
+        setupSec: scenario === 'disk' ? 5 : ending ? 4 : 600,
         stepRetries: failures ? 1 : 3,
       },
       name: 'e2e-' + label,
@@ -882,7 +903,17 @@ async function main(): Promise<void> {
     if ((fleet || lapse) && !mock)
       throw new Error('the ' + scenario + ' scenario runs through the scripted gateway')
     assert.deepEqual(created.eval, { name: evalName, version: version.digest })
-    if (attached && !standing) {
+    if (ending) {
+      const home = Path.join(out, 'runner-late')
+      Fs.mkdirSync(home, { recursive: true })
+      Fs.writeFileSync(
+        Path.join(home, 'runner.json'),
+        JSON.stringify(await api.attach(created.id, { leftSec: 60 })),
+        { mode: 0o600 },
+      )
+      await new Promise((resolve) => setTimeout(resolve, (config.limits.setupSec + 1) * 1000))
+      attach(created.id, 'late')
+    } else if (attached && !standing) {
       attach(created.id, 'a')
       if (scenario !== 'resume') attach(created.id, 'b')
     }
@@ -1123,6 +1154,78 @@ async function main(): Promise<void> {
       'no sandbox directory outlives the run, unless the run keeps its sandbox warm',
     )
 
+    if (ending) {
+      const rows = status['attempts'] as Record<string, any>[]
+      for (const row of rows) {
+        assert.equal(row['outcome'], 'errored')
+        assert.equal(row['failure'].kind, 'environment')
+        assert.match(row['failure'].message, /^no runner of the run could take the row for 4 s: /)
+        assert.equal(
+          row['claims'],
+          0,
+          'a row whose timeouts pass the end of the sandbox is not claimed',
+        )
+      }
+      assert.equal(status['lostClaims'], 0)
+      const late = (status['runners'] as Record<string, any>[])[0]!
+      assert.match(
+        late['drained'],
+        /^its sandbox ends in \d+ s, and the timeouts of every row that is left pass that$/,
+      )
+      assert.ok(late['endsAt'] > status['createdAt'])
+      assert.ok(
+        (await api.timeline(created.id)).marks.some(
+          (mark) => mark.name === 'runner.drain' && mark.runner === late['id'],
+        ),
+        'the timeline of the run says when the runner stopped claiming',
+      )
+      assert.match(
+        Fs.readFileSync(Path.join(out, 'runner-late.log'), 'utf8'),
+        /claims no more rows: its sandbox ends in /,
+      )
+      const second = await api.create({ ...config, name: config.name + '-new' })
+      attach(second.id, 'new', ['--ends-in-sec', '120'])
+      const again = await waitFor('the run of a runner whose sandbox is new', async () => {
+        const current = await api.status(second.id)
+        return current['state'] === 'finished' ? current : undefined
+      })
+      console.log(summary(again))
+      assert.equal(again['counts'].errored, 0, 'a new sandbox takes rows that none covers')
+      assert.equal(again['counts'].passed + again['counts'].failed, total)
+      assert.equal(again['lostClaims'], 0)
+      assert.ok(again['runners'][0].endsAt - again['createdAt'] <= 121_000)
+      console.log('e2e passed: ' + label)
+      return
+    }
+
+    if (spent) {
+      const rows = status['attempts'] as Record<string, any>[]
+      const errored = rows.filter((row) => row['outcome'] === 'errored')
+      assert.equal(rows.length - errored.length, 1, 'the row that ended before the key was spent')
+      for (const row of errored) assert.equal(row['failure'].kind, 'budget', row['failure'].message)
+      const started = errored.filter((row) => row['runner'] !== null)
+      assert.equal(started.length, 1, 'one row was running when the payment was refused')
+      assert.match(started[0]!['failure'].message, /402/)
+      for (const row of errored.filter((entry) => entry['runner'] === null)) {
+        assert.equal(row['claims'], 0, 'a row that had not started is never claimed')
+        assert.match(row['failure'].message, /^the payment for a model request was refused/)
+      }
+      assert.match(status['refused'].message, /^The wallet holds 0 of the 3 its channel needs now/)
+      assert.equal(status['lostClaims'], 0)
+      assert.equal(mock!.modelCosts.length, 2)
+      assert.ok(mock!.paymentRefusals.length >= 1)
+      assert.ok(
+        mock!.paymentRefusals.every((type) => type.endsWith('/payment-failed')),
+        'a payment that cannot succeed is not sent again',
+      )
+      assert.ok(
+        Math.abs(status['spend'].modelUsd - mock!.modelCosts.reduce((all, usd) => all + usd, 0)) <
+          1e-9,
+      )
+      console.log('e2e passed: ' + label)
+      return
+    }
+
     if (failures) {
       const byTask = Object.fromEntries(
         (status['attempts'] as Record<string, any>[]).map((attempt) => [attempt['task'], attempt]),
@@ -1224,6 +1327,25 @@ async function main(): Promise<void> {
       })
       assert.equal(refused.status, 400)
       assert.match(await refused.text(), /no failed attempt to rerun/)
+      console.log('e2e passed: ' + label)
+      return
+    }
+
+    if (alone) {
+      const detail = details[0]!
+      const machine = status['sandboxes'][0].capabilities.memory_mb as number
+      assert.equal(detail['attempt'].outcome, 'passed', JSON.stringify(detail['attempt'].failure))
+      assert.ok(
+        detail['result'].sandbox.memoryMb > Math.floor(machine * 0.8),
+        'a row that runs alone gets more than the runner admits to rows that share: ' +
+          detail['result'].sandbox.memoryMb +
+          ' MB of ' +
+          machine,
+      )
+      assert.ok(detail['result'].sandbox.memoryMb < machine)
+      console.log(
+        'alone: ' + detail['result'].sandbox.memoryMb + ' MB of a machine with ' + machine + ' MB',
+      )
       console.log('e2e passed: ' + label)
       return
     }
@@ -1397,7 +1519,7 @@ async function main(): Promise<void> {
             .map((line) => JSON.parse(line))
           assert.deepEqual(
             requests
-              .filter((entry) => entry.claim === detail['attempt'].claims)
+              .filter((entry) => entry.claim === detail['attempt'].claims && !entry.refusal)
               .map((entry) => [entry.path, entry.status]),
             [[kind === 'codex-cli' ? 'responses' : 'v1/messages', 200]],
           )
@@ -1444,6 +1566,48 @@ async function main(): Promise<void> {
         )
         for (const detail of details)
           assert.ok(detail['result'].usage.costUsd > 0, 'every attempt has the cost it was charged')
+        if (refusedPassing) {
+          assert.deepEqual(
+            mock.paymentRefusals.map((type) => type.split('/').at(-1)),
+            ['delta-too-small', 'insufficient-balance', 'delta-too-small'],
+            'three requests were refused in passing',
+          )
+          const requests: Record<string, any>[] = []
+          for (const detail of details)
+            for (const line of (
+              await api.artifact(created.id, detail['attempt'].id, 'agent/model-requests.jsonl')
+            )
+              .trim()
+              .split('\n'))
+              requests.push(JSON.parse(line))
+          assert.deepEqual(
+            requests.filter((entry) => entry.status === 402).map((entry) => entry.refusal),
+            ['passing', 'passing', 'passing'],
+            'each refusal is in the requests of its attempt, and the request was sent again',
+          )
+          assert.equal(
+            requests.filter((entry) => entry.status === 200).length,
+            mock.modelCosts.length,
+          )
+        }
+      }
+      if (!warm) {
+        const charged = status['key'].charged as {
+          channelUsd: number
+          outsideUsd: number
+          usd: number
+        }
+        const recorded = status['spend'].modelUsd + status['spend'].sandboxUsd
+        assert.ok(
+          Math.abs(charged.channelUsd - recorded) < 1e-9,
+          'what the channel of the key paid is what the run recorded: ' +
+            JSON.stringify([charged, recorded]),
+        )
+        assert.ok(
+          Math.abs(charged.outsideUsd - sum(mock.outside)) < 1e-9,
+          'what the key was charged outside its channel is beside it, in no spend of the run',
+        )
+        assert.match(summary(status), /key charged: \$[0-9.]+ while the run ran, /)
       }
       const payments = (status['payments'] as { detail: string; usd: number }[]).map((payment) => ({
         operation: (JSON.parse(payment.detail) as { description: string }).description,

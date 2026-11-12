@@ -606,6 +606,67 @@ test('the meter keeps the cost a gateway reports with the usage', () => {
   assert.equal(whole.usage()?.costUsd, 0.0000013)
 })
 
+test('the meter counts the searches and fetches a provider ran for a response', () => {
+  const messages = Proxy.meter('claude')
+  messages.push(
+    'event: message_start\ndata: {"type":"message_start","message":{"model":"claude-haiku-5-5","usage":{"input_tokens":10,"output_tokens":1}}}\n\n' +
+      'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":30,"cost":0.020016,"server_tool_use":{"web_search_requests":2,"web_fetch_requests":1}}}\n\n',
+  )
+  assert.deepEqual(messages.usage(), {
+    cacheWriteTokens: 0,
+    cachedTokens: 0,
+    costUsd: 0.020016,
+    inputTokens: 10,
+    model: 'claude-haiku-5-5',
+    outputTokens: 30,
+    webFetches: 1,
+    webSearches: 2,
+  })
+
+  const responses = Proxy.meter('codex')
+  responses.push(
+    'event: response.completed\ndata: {"type":"response.completed","response":{"model":"gpt-6-luna","output":[{"type":"web_search_call"},{"type":"message"},{"type":"web_search_call"}],"usage":{"input_tokens":12,"output_tokens":4}}}\n\n',
+  )
+  assert.equal(responses.usage()?.webSearches, 2)
+})
+
+test('a refused payment is told apart: one that passes, and one that says the key is spent', () => {
+  assert.equal(
+    Proxy.refusal(
+      '{"type":"https://paymentauth.org/problems/session/delta-too-small","title":"Delta Too Small","status":402,"detail":"Delta too small: voucher does not add new funds for this request.","challengeId":"c"}',
+    ),
+    'passing',
+  )
+  assert.equal(
+    Proxy.refusal(
+      '{"type":"https://paymentauth.org/problems/session/insufficient-balance","title":"Insufficient Balance","status":402,"detail":"Insufficient balance."}',
+    ),
+    'passing',
+  )
+  assert.equal(
+    Proxy.refusal(
+      '{"type":"/reference#description/payment-failed","title":"Payment failed","status":402,"code":"payment_failed","detail":"The wallet holds 0 of the 3 its channel needs now."}',
+    ),
+    'spent',
+  )
+  assert.equal(Proxy.refusal('{"type":"about:blank","status":402}'), undefined)
+  assert.equal(Proxy.refusal('Payment Required'), undefined)
+  assert.equal(Proxy.refusal('null'), undefined)
+})
+
+test('the name of a session says which attempt and claim of which run its requests belong to', () => {
+  const run = '0f8fad5b-d9cb-469f-a165-70867728950e'
+  assert.deepEqual(Proxy.session(run + '-a00012-2'), { attempt: 'a00012', claim: 2, run })
+  assert.deepEqual(Proxy.session(run + '-a00012-2-judge-1'), {
+    attempt: 'a00012',
+    claim: 2,
+    judge: 1,
+    run,
+  })
+  assert.equal(Proxy.session('some-other-session'), undefined)
+  assert.equal(Proxy.session(''), undefined)
+})
+
 test('the meter reads the usage of a response from its events, however they are cut', () => {
   const completed =
     'event: response.created\ndata: {"type":"response.created","response":{"model":"gpt-6.1-sol"}}\n\n' +

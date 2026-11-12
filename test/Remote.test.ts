@@ -56,6 +56,12 @@ test('a sandbox lifetime is the longest its slots can stay busy, after its setup
     sandbox: { max, slots } as Config.Config['sandbox'],
   })
   const row = 600 + 900 + 300
+  assert.equal(Config.rowSec(config(4, 1).limits, task(900, 300)), row)
+  assert.equal(
+    Config.rowSec(config(4, 1).limits, { ...task(900, 300), setupTimeoutSec: 1200 }),
+    1200 + 900 + 300,
+    'a task that names a longer setup is given it',
+  )
   assert.equal(Config.lifetimeSec(config(4, 1), [task(900, 300)]), 600 + row)
   assert.equal(
     Config.lifetimeSec(

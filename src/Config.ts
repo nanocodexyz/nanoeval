@@ -70,6 +70,7 @@ export type Runner = {
   ahead?: Protocol.Ahead[]
   backend: Backend
   disks: 'keep' | 'remove'
+  endsAt?: number
   freeDiskMb?: number
   leaseSec: number
   limits: { attachSec: number; setupSec: number; stepRetries: number }
@@ -119,15 +120,21 @@ export function lifetimeSec(
     () => 0,
   )
   const longest = rows
-    .map(
-      (task) =>
-        Math.max(task.setupTimeoutSec ?? 0, config.limits.setupSec) +
-        task.agent.timeoutSec +
-        task.verifier.timeoutSec * (task.verifier.judge ? 3 : 1),
-    )
+    .map((task) => rowSec(config.limits, task))
     .sort((left, right) => right - left)
   for (const seconds of longest) lanes[lanes.indexOf(Math.min(...lanes))]! += seconds
   return Math.ceil(config.limits.setupSec + Math.max(...lanes))
+}
+
+export function rowSec(
+  limits: Pick<Config['limits'], 'setupSec'>,
+  task: Pick<Eval.Task, 'agent' | 'setupTimeoutSec' | 'verifier'>,
+): number {
+  return (
+    Math.max(task.setupTimeoutSec ?? 0, limits.setupSec) +
+    task.agent.timeoutSec +
+    task.verifier.timeoutSec * (task.verifier.judge ? 3 : 1)
+  )
 }
 
 export function oracle(config: Pick<Config, 'agents'>): Agent | undefined {

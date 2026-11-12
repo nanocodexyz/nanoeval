@@ -47,7 +47,14 @@ export type Claimed = {
 
 export type Ahead = Extract<Eval.Environment, { kind: 'disk' }>
 
-export type ClaimResponse = { ahead?: Ahead[]; finished: boolean; rows: Claimed[] }
+export type ClaimResponse = {
+  ahead?: Ahead[]
+  drained?: string
+  finished: boolean
+  rows: Claimed[]
+}
+
+export type Attach = { leftSec?: number }
 
 export type Heartbeat = { held: readonly Held[]; report: Report; runner: number }
 

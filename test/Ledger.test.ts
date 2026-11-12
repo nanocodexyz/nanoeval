@@ -152,7 +152,7 @@ test('a lost lease makes the row claimable again, a bounded number of times, and
       [2, 2, 'expired', 4000],
     ],
   )
-  assert.deepEqual(Ledger.lostUsage(sql), ['{"costUsd":0.5}'])
+  assert.deepEqual(Ledger.lostUsage(sql), [{ attempt: 'a00001', usage: '{"costUsd":0.5}' }])
 })
 
 test('a row is finished once, and a stale runner cannot finish or extend it', () => {
@@ -337,5 +337,104 @@ test('a slot with less memory than its task asks for scores only what its limit 
     Verdict.verifier({ ...base, facts: { code: 1, files: [], oom: 2, reward: 0 } }),
     { reward: 0 },
     'a kill at the memory the task asks for is the task',
+  )
+})
+
+test('a runner takes a row only while the timeouts of the row end before its sandbox does', () => {
+  const life = { endsAt: 3_600_000, startedAt: 0 }
+  const fits = (now: number, rowSec: number) => Admission.fits({ life, now, rowSec, setupSec: 600 })
+  assert.ok(
+    Admission.fits({ life: undefined, now: 1e12, rowSec: 1e6, setupSec: 600 }),
+    'a machine without an end takes any row',
+  )
+  assert.ok(fits(1_200_000, 2400), 'a row that ends with the sandbox is taken')
+  assert.ok(!fits(1_200_001, 2400), 'and one that ends a moment after it is not')
+  assert.ok(!fits(3_000_000, 900), 'however short the row is')
+  assert.ok(
+    fits(600_000, 7800),
+    'a row that no part of the sandbox covers is taken while it is new',
+  )
+  assert.ok(!fits(600_001, 7800), 'and not once the setup time of the sandbox has passed')
+  assert.ok(Admission.outlives(life, 3601))
+  assert.ok(!Admission.outlives(life, 3600))
+})
+
+test('as many runners begin with a row that needs a whole machine as the share of the work such rows are', () => {
+  const share = { otherSec: 119_000, wholeSec: 33_000 }
+  assert.ok(Admission.wholeFirst({ ...share, holders: 0, runners: 6 }))
+  assert.ok(Admission.wholeFirst({ ...share, holders: 1, runners: 6 }))
+  assert.ok(!Admission.wholeFirst({ ...share, holders: 2, runners: 6 }), 'two of six runners')
+  assert.ok(Admission.wholeFirst({ ...share, holders: 0, runners: 1 }), 'a lone runner')
+  assert.ok(!Admission.wholeFirst({ holders: 0, otherSec: 100, runners: 6, wholeSec: 0 }))
+  assert.ok(
+    Admission.wholeFirst({ holders: 5, otherSec: 0, runners: 6, wholeSec: 100 }),
+    'every runner once only such rows are left',
+  )
+  const mixed = [
+    { item: 'whole', memoryMb: 768 },
+    { item: 'small', memoryMb: 256 },
+    { item: 'huge', memoryMb: 4096 },
+  ]
+  const empty = { capacityMb: 768, memoryMb: 768, slots: 4 }
+  assert.deepEqual(Admission.fill(mixed, empty), ['whole'])
+  assert.deepEqual(
+    Admission.fill(mixed, { ...empty, wholeLast: true }),
+    ['small'],
+    'an empty runner beyond that share takes the rows others can take too',
+  )
+  assert.deepEqual(
+    Admission.fill([mixed[0]!, mixed[2]!], { ...empty, wholeLast: true }),
+    ['whole'],
+    'and a row that needs all of it when nothing else is left for it',
+  )
+})
+
+test('rows are claimed longest timeouts first within an attempt number, and only those the runner accepts', () => {
+  const sql = open([
+    { agent: 'agent', n: 1, task: 'small' },
+    { agent: 'agent', n: 1, task: 'big' },
+    { agent: 'agent', n: 2, task: 'large' },
+    { agent: 'agent', n: 1, task: 'large' },
+  ])
+  const seconds: Record<string, number> = { big: 300, large: 900, small: 300 }
+  assert.deepEqual(
+    Ledger.queue(sql).map((row) => row.id),
+    ['a00001', 'a00002', 'a00004', 'a00003'],
+  )
+  assert.deepEqual(
+    Ledger.queue(sql, (task) => seconds[task]!).map((row) => row.id),
+    ['a00004', 'a00001', 'a00002', 'a00003'],
+  )
+  const claimed = Ledger.claim(sql, {
+    accepts: (row) => row.task !== 'large',
+    leaseMs: 1000,
+    memoryOf: (task) => memory[task]!,
+    now: 0,
+    offer: { capacityMb: 2048, memoryMb: 2048, slots: 2 },
+    run: '0123456789abcdef',
+    runner: 1,
+    secOf: (task) => seconds[task]!,
+    token: () => 'token-' + ++tokens,
+  })
+  assert.deepEqual(
+    claimed.map((row) => row.id),
+    ['a00001', 'a00002'],
+  )
+})
+
+test('a row that asks for more than a runner admits runs alone with the memory its machine has free', () => {
+  const runner = { capacityMb: 6364 }
+  assert.equal(Admission.alone({ ...runner, availableMb: 7400, requestedMb: 2048 }), 2048)
+  assert.equal(Admission.alone({ ...runner, availableMb: 7400, requestedMb: 8192 }), 7400)
+  assert.equal(Admission.alone({ ...runner, availableMb: 9000, requestedMb: 8192 }), 8192)
+  assert.equal(
+    Admission.alone({ ...runner, availableMb: 5000, requestedMb: 8192 }),
+    6364,
+    'never less than the runner admits',
+  )
+  assert.equal(
+    Admission.alone({ ...runner, availableMb: undefined, requestedMb: 8192 }),
+    6364,
+    'a capacity the operator named, or a machine that does not say what is free, keeps the capacity',
   )
 })

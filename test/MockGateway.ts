@@ -24,6 +24,8 @@ export type Mock = {
   readonly key: string
   readonly log: readonly Entry[]
   readonly modelCosts: readonly number[]
+  readonly outside: readonly number[]
+  readonly paymentRefusals: readonly string[]
   readonly refused: readonly string[]
   readonly sandboxes: ReadonlyMap<string, Leased>
   readonly unavailable: readonly Charge[]
@@ -33,8 +35,36 @@ export type Mock = {
 export type Options = {
   key: string
   model(path: string, body: Record<string, any>, cost: number): string
+  refusals?: { passing?: number; spentAfter?: number }
   renewals?: boolean
   sandboxd: { token: string; url: string }
+}
+
+export const limitUsd = 100
+export const searchUsd = 0.00005
+
+const refusals = {
+  passing: [
+    {
+      detail: 'Delta too small: voucher does not add new funds for this request.',
+      status: 402,
+      title: 'Delta Too Small',
+      type: 'https://paymentauth.org/problems/session/delta-too-small',
+    },
+    {
+      detail: 'Insufficient balance.',
+      status: 402,
+      title: 'Insufficient Balance',
+      type: 'https://paymentauth.org/problems/session/insufficient-balance',
+    },
+  ],
+  spent: {
+    code: 'payment_failed',
+    detail: 'The wallet holds 0 of the 3 its channel needs now. Add funds to the wallet.',
+    status: 402,
+    title: 'Payment failed',
+    type: '/reference#description/payment-failed',
+  },
 }
 
 export const callUsd = 0.0001
@@ -73,7 +103,10 @@ export async function start(options: Options): Promise<Mock> {
   const log: Entry[] = []
   const quoted = new Map<string, number>()
   const modelCosts: number[] = []
+  const outside: number[] = []
+  const paymentRefusals: string[] = []
   const refused: string[] = []
+  const sum = (values: readonly number[]) => values.reduce((all, value) => all + value, 0)
   const sandboxes = new Map<string, Leased>()
   const unavailable: Charge[] = []
   const provider = Local.create(options.sandboxd)
@@ -231,6 +264,25 @@ export async function start(options: Options): Promise<Mock> {
     const path = new URL(request.url ?? '/', 'http://gateway').pathname
     const handled = (async () => {
       if (request.headers.upgrade) return problem(response, 404, 'Not found')
+      if (request.method === 'GET' && path === '/api/keys/me') {
+        if (request.headers['authorization'] !== 'Bearer ' + options.key)
+          return problem(response, 401, 'The API key is unknown, revoked or expired.')
+        const channel = sum(modelCosts) + sum(charges.map((charge) => charge.usd))
+        response.writeHead(200, { 'content-type': 'application/json' })
+        response.end(
+          JSON.stringify({
+            usage: {
+              channel: { deposit: channel.toFixed(6), spent: channel.toFixed(6) },
+              limit: {
+                remaining: (limitUsd - channel - sum(outside)).toFixed(6),
+                total: limitUsd.toFixed(6),
+              },
+              wallet: { balance: (limitUsd - channel - sum(outside)).toFixed(6) },
+            },
+          }),
+        )
+        return
+      }
       if (request.method !== 'POST') return problem(response, 405, 'Method not allowed')
       if (path.startsWith('/v1/compute/'))
         return compute(request, response, path.slice('/v1/compute/'.length))
@@ -246,9 +298,24 @@ export async function start(options: Options): Promise<Mock> {
         refused.push(path + ' with another key')
         return problem(response, 401, 'The API key is unknown, revoked or expired.')
       }
+      const passing = options.refusals?.passing ?? 0
+      const spent = options.refusals?.spentAfter
+      const refusal =
+        spent !== undefined && modelCosts.length >= spent
+          ? refusals.spent
+          : paymentRefusals.length < passing
+            ? refusals.passing[paymentRefusals.length % refusals.passing.length]!
+            : undefined
+      if (refusal) {
+        paymentRefusals.push(refusal.type)
+        response.writeHead(402, { 'content-type': 'application/problem+json' })
+        response.end(JSON.stringify(refusal))
+        return
+      }
       const cost = modelUsd[path]
       const reply = options.model(path, body, cost)
       modelCosts.push(cost)
+      outside.push(searchUsd)
       response.writeHead(200, { 'content-type': 'text/event-stream' }).end(reply)
     })()
     handled.catch((error: unknown) => {
@@ -268,6 +335,8 @@ export async function start(options: Options): Promise<Mock> {
     key: options.key,
     log,
     modelCosts,
+    outside,
+    paymentRefusals,
     refused,
     sandboxes,
     unavailable,

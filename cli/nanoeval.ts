@@ -99,7 +99,13 @@ const usage = `nanoeval <command>
             the attempts of RUN that did not pass (--failed or --errored narrow it), each
             pointing at the attempt it retries, on the same eval version and agents.
             A row whose runner stops answering for --lease-sec is claimable again, at most
-            --claims times in all, and then ends as an error.
+            --claims times in all, and then ends as an error. Rows are claimed longest
+            timeouts first. A row that no runner could take for --setup-sec ends as an
+            error when the run opens no sandbox itself: no runner is attached, or the
+            sandbox of every runner ends before the timeouts of the row do.
+            A model request whose payment is refused in passing is sent again, at most
+            --step-retries times. One that is refused because the key or its wallet is
+            spent ends its row as a budget error, and every row not yet started with it.
             With --disks remove, a runner removes each environment disk it unpacked once no
             row of the run needs it. With --free-disk-mb, a runner claims only while its
             machine has that much free disk, and prepares one environment at a time.
@@ -113,9 +119,11 @@ const usage = `nanoeval <command>
             verifier. --judge names the model that answers the verifiers of judged tasks.
             With --wait, poll until the run finishes, print the summary and write the Harbor
             job to --out, or under NANOEVAL_RUNS_DIR when that is set.
-            An e2b sandbox is paid for its whole lifetime when it is opened: without
-            --sandbox-timeout-sec the run takes the longest its rows can keep its slots busy,
-            from the setup, agent and verifier timeouts of their tasks. A gateway sandbox is
+            An e2b sandbox is paid for its whole lifetime when it is opened, 3600 s at most:
+            without --sandbox-timeout-sec the run takes the longest its rows can keep its
+            slots busy, from the setup, agent and verifier timeouts of their tasks, up to
+            that. A sandbox takes a row only while the timeouts of the row end before it
+            does, and the run opens another for the rows that are left. A gateway sandbox is
             opened with the Worker's TEMPO_KEY and paid by the lease: --sandbox-lease-sec at
             first, and as much again whenever less than --lease-sec of it is left while rows
             need the sandbox, never past that lifetime. --runtime, which --provider e2b and
@@ -134,13 +142,16 @@ const usage = `nanoeval <command>
             what is paid ends. Any run takes a sandbox that is kept, with or without the
             option.
   runner    --url URL --token T (--run RUN | --standing --backend krun|ns|dir [--location HINT])
-            [--home DIR]
+            [--home DIR] [--ends-in-sec N]
             [--backend krun|ns] [--slots N] [--memory-mb N]
             [--free-disk-mb N] [--poll-ms N] [--store DIR] [--cache DIR]
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
             Attach a task runner on this machine to a run: it claims rows up to its own
             capacity, fetches their blobs by digest, boots each environment disk under a
             copy-on-write disk of its own, and reports to the run until the run is finished.
+            With --ends-in-sec, the machine is one that ends then: the runner takes a row
+            only while the setup, agent and verifier timeouts of the row end before that, and
+            leaves once no row that is left does.
             With --standing it attaches to the deployment instead: it sets its slots up once,
             waits in the pool, and a run created with --sandboxes 0 and its backend and
             network is handed to it the moment it is created, one run after another.
@@ -149,12 +160,18 @@ const usage = `nanoeval <command>
             paid for them while no run had them. --close terminates the idle ones now. A
             deployment has one pool per region that a run or a standing runner names with
             --location, beside the one of its default: a run takes from the pool of its own.
-  sandbox   --url URL --token T --run RUN --e2b FILE [--backend krun|ns] [--slots N]
-            [--memory-mb N] [--free-disk-mb N] [--poll-ms N]
+  sandbox   --url URL --token T --run RUN --e2b FILE --sandbox-timeout-sec N [--opened-at TIME]
+            [--backend krun|ns] [--slots N] [--memory-mb N] [--free-disk-mb N] [--poll-ms N]
             Attach a runner in an E2B sandbox that someone else opened and paid for: FILE is
             the answer of POST https://mpp.e2b.dev/sandboxes, with its sandboxID and
             envdAccessToken. The run must have been created with --runtime, through an
             address the sandbox reaches or on a Worker started with --public-url.
+            --sandbox-timeout-sec is the timeout the sandbox was opened with, 3600 at most,
+            counted from --opened-at or else from the time FILE was written: the runner is
+            told when its sandbox ends, takes a row only while the timeouts of the row end
+            before that, and leaves once no row that is left does. A row whose timeouts no
+            sandbox of that length covers is taken in the first --setup-sec of a sandbox,
+            and ends as an error, without another claim, if the sandbox ends first.
   runtime   --out FILE [--cache DIR] [--publish --url URL --token T]
             Build the archive a remote sandbox starts its runner from: the bundled runner,
             slot.sh, the static launcher, guest and relay, and the pinned hand. With
@@ -253,9 +270,13 @@ export function client(options: { token: string; url: string }) {
     return response
   }
   return {
-    attach: async (run: string) =>
+    attach: async (run: string, body: Protocol.Attach = {}) =>
       (await (
-        await call('/v1/runs/' + run + '/runners', { method: 'POST' })
+        await call('/v1/runs/' + run + '/runners', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        })
       ).json()) as Config.Runner,
     blob: async (digest: string): Promise<Eval.Blob> => {
       const head = await call('/v1/blobs/' + digest, { method: 'HEAD' })
@@ -391,6 +412,52 @@ export function summary(status: Record<string, any>): string {
       ', sandboxes $' +
       Number(status['spend'].sandboxUsd).toFixed(4),
   ]
+  const usd = (value: unknown) => '$' + Number(value).toFixed(4)
+  const offset = (at: unknown) =>
+    '+' + ((Number(at) - Number(status['createdAt'])) / 1000).toFixed(0) + ' s'
+  const key = status['key'] as Record<string, any> | null | undefined
+  if (key?.['charged'])
+    lines.push(
+      'key charged: ' +
+        usd(key['charged'].usd) +
+        ' while the run ran, ' +
+        usd(key['charged'].channelUsd) +
+        ' through its channel and ' +
+        usd(key['charged'].outsideUsd) +
+        ' outside it, against ' +
+        usd(Number(status['spend'].modelUsd) + Number(status['spend'].sandboxUsd)) +
+        ' recorded',
+    )
+  else if (key?.['error']) lines.push('key charged: not read: ' + String(key['error']))
+  else if (key?.['start']) lines.push('key charged: read again when the run ends')
+  if (key && status['spend'].unpricedResponses)
+    lines.push(
+      'responses without a cost: ' +
+        status['spend'].unpricedResponses +
+        ', so the recorded spend leaves them out',
+    )
+  if (status['spend'].webSearches)
+    lines.push(
+      'web searches and fetches by the model provider: ' +
+        status['spend'].webSearches +
+        ', counted in the recorded spend only where a response reported them in its cost',
+    )
+  if (status['refused'])
+    lines.push(
+      'models: payment refused at ' +
+        offset(status['refused'].at) +
+        ', no row is started after that: ' +
+        String(status['refused'].message).slice(0, 300),
+    )
+  for (const runner of (status['runners'] ?? []) as Record<string, any>[])
+    if (runner['drained'] && runner['state'] === 'ready')
+      lines.push('runner ' + runner['id'] + ' claims no more rows: ' + runner['drained'])
+  if (status['strandedAt'])
+    lines.push(
+      'rows wait since ' +
+        offset(status['strandedAt']) +
+        ' for a runner whose sandbox lives as long as their timeouts, and end as errors when none comes',
+    )
   for (const [agent, row] of Object.entries(status['agents'] as Record<string, any>))
     lines.push(
       agent +
@@ -425,6 +492,7 @@ export function summary(status: Record<string, any>): string {
           attempt['outcome'] ?? attempt['phase'],
           attempt['oomKills'] ? 'oom_kills=' + attempt['oomKills'] : '',
           attempt['claims'] > 1 ? 'claims=' + attempt['claims'] : '',
+          attempt['retries'] ? 'retries=' + attempt['retries'] : '',
           attempt['retryOf']
             ? 'retries ' + attempt['retryOf'].run.slice(0, 8) + '/' + attempt['retryOf'].attempt
             : '',
@@ -557,9 +625,11 @@ async function main(): Promise<void> {
       disks: { default: 'keep', type: 'string' },
       'dry-run': { default: false, type: 'boolean' },
       e2b: { type: 'string' },
+      'ends-in-sec': { type: 'string' },
       errored: { default: false, type: 'boolean' },
       eval: { type: 'string' },
       'exec-timeout-ms': { default: '600000', type: 'string' },
+      help: { default: false, short: 'h', type: 'boolean' },
       failed: { default: false, type: 'boolean' },
       'free-disk-mb': { type: 'string' },
       home: { type: 'string' },
@@ -575,6 +645,7 @@ async function main(): Promise<void> {
       name: { type: 'string' },
       network: { type: 'string' },
       only: { multiple: true, type: 'string' },
+      'opened-at': { type: 'string' },
       oracle: { default: false, type: 'boolean' },
       out: { type: 'string' },
       'poll-ms': { type: 'string' },
@@ -616,9 +687,19 @@ async function main(): Promise<void> {
     },
   })
   const [command, ...rest] = positionals
+  if (values.help) {
+    console.log(usage)
+    return
+  }
   const required = (value: string | undefined, name: string): string => {
     if (!value) throw new Error('--' + name + ' is required')
     return value
+  }
+  const seconds = (value: string, name: string): number => {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed) || parsed <= 0)
+      throw new Error('--' + name + ' is a number of seconds above zero, not ' + value)
+    return parsed
   }
   const hostPolicy = {
     ...(values['ca-bundle'] ? { NANOEVAL_CA_BUNDLE: Path.resolve(values['ca-bundle']) } : {}),
@@ -989,9 +1070,34 @@ async function main(): Promise<void> {
       throw new Error(
         'the run was created without --runtime: a sandbox without this checkout cannot start its runner',
       )
+    const file = required(values.e2b, 'e2b')
+    const timeoutSec = seconds(
+      required(values['sandbox-timeout-sec'], 'sandbox-timeout-sec'),
+      'sandbox-timeout-sec',
+    )
+    if (timeoutSec > E2b.maxTimeoutSec)
+      throw new Error(
+        'E2B over MPP keeps a sandbox for at most ' +
+          E2b.maxTimeoutSec +
+          ' s: --sandbox-timeout-sec is the timeout the sandbox was opened with',
+      )
+    const openedAt = values['opened-at']
+      ? Date.parse(values['opened-at'])
+      : (await Fs.stat(file)).mtimeMs
+    if (!Number.isFinite(openedAt))
+      throw new Error('--opened-at is a time such as 2026-11-12T04:30:00Z')
+    const leftSec = Math.floor((openedAt + timeoutSec * 1000 - Date.now()) / 1000)
+    if (leftSec <= 0)
+      throw new Error(
+        'the sandbox was opened at ' +
+          new Date(openedAt).toISOString() +
+          ' for ' +
+          timeoutSec +
+          ' s and has ended',
+      )
     const handle = E2b.handle(created)
     const sandbox = E2b.connect(handle)
-    const answered = await api.attach(run)
+    const answered = await api.attach(run, { leftSec })
     const runner: Config.Runner = {
       ...answered,
       ...(values.backend ? { backend } : {}),
@@ -1023,7 +1129,9 @@ async function main(): Promise<void> {
         run +
         ' in sandbox ' +
         handle.id +
-        ': ' +
+        ', which ends in ' +
+        leftSec +
+        ' s: ' +
         (await Sandbox.run(sandbox, 'bash ' + Sandbox.quote(script))).trim(),
     )
     return
@@ -1075,7 +1183,13 @@ async function main(): Promise<void> {
       (text) => JSON.parse(text) as Config.Runner,
       () => undefined,
     )
-    const answered = earlier?.run === run ? earlier : await api.attach(run)
+    const answered =
+      earlier?.run === run
+        ? earlier
+        : await api.attach(
+            run,
+            values['ends-in-sec'] ? { leftSec: seconds(values['ends-in-sec'], 'ends-in-sec') } : {},
+          )
     await Fs.writeFile(file, JSON.stringify(answered), { mode: 0o600 })
     process.chdir(home)
     Object.assign(process.env, hostPolicy)

@@ -25,7 +25,13 @@ export type Usage = {
   inputTokens: number
   model?: string
   outputTokens: number
+  webFetches?: number
+  webSearches?: number
 }
+
+export type Refusal = 'passing' | 'spent'
+
+export type Session = { attempt: string; claim: number; judge?: number; run: string }
 
 export const oauthBeta = 'oauth-2025-04-20'
 export const relaySecretHeader = 'x-nanocode-relay-secret'
@@ -88,6 +94,32 @@ export function token(headers: Headers): string | undefined {
   const authorization = headers.get('authorization') ?? ''
   if (authorization.startsWith('Bearer ')) return authorization.slice('Bearer '.length)
   return headers.get('x-api-key') ?? undefined
+}
+
+export function refusal(body: string): Refusal | undefined {
+  let problem: { code?: unknown; type?: unknown } | null
+  try {
+    problem = JSON.parse(body) as { code?: unknown; type?: unknown } | null
+  } catch {
+    return undefined
+  }
+  if (typeof problem !== 'object' || problem === null) return undefined
+  const type = typeof problem.type === 'string' ? problem.type : ''
+  if (problem.code === 'payment_failed' || type.endsWith('/payment-failed')) return 'spent'
+  if (type.endsWith('/session/delta-too-small') || type.endsWith('/session/insufficient-balance'))
+    return 'passing'
+  return undefined
+}
+
+export function session(name: string): Session | undefined {
+  const match = /^([0-9a-f-]{36})-(a[0-9]+)-([0-9]+)(?:-judge-([0-9]+))?$/.exec(name)
+  if (!match) return undefined
+  return {
+    attempt: match[2]!,
+    claim: Number(match[3]),
+    ...(match[4] === undefined ? {} : { judge: Number(match[4]) }),
+    run: match[1]!,
+  }
 }
 
 export function route(provider: Provider, path: string): string | undefined {
@@ -165,6 +197,10 @@ export function meter(provider: Provider): {
       const response = value['response'] ?? value
       const used = response?.['usage']
       if (typeof used !== 'object' || used === null) return
+      const searches = Array.isArray(response['output'])
+        ? response['output'].filter((item: { type?: unknown }) => item?.type === 'web_search_call')
+            .length
+        : 0
       found = {
         cacheWriteTokens: count(used['input_tokens_details']?.['cache_write_tokens']),
         cachedTokens: count(used['input_tokens_details']?.['cached_tokens']),
@@ -172,6 +208,7 @@ export function meter(provider: Provider): {
         inputTokens: count(used['input_tokens']),
         ...(typeof response['model'] === 'string' ? { model: response['model'] } : {}),
         outputTokens: count(used['output_tokens']),
+        ...(searches ? { webSearches: searches } : {}),
       }
       return
     }
@@ -188,6 +225,15 @@ export function meter(provider: Provider): {
         : (found?.cachedTokens ?? 0)
     const model = typeof message['model'] === 'string' ? message['model'] : found?.model
     const cost = typeof used['cost'] === 'number' ? count(used['cost']) : found?.costUsd
+    const tools = used['server_tool_use']
+    const fetches =
+      typeof tools === 'object' && tools !== null
+        ? count(tools['web_fetch_requests'])
+        : (found?.webFetches ?? 0)
+    const searches =
+      typeof tools === 'object' && tools !== null
+        ? count(tools['web_search_requests'])
+        : (found?.webSearches ?? 0)
     found = {
       cacheWriteTokens: write,
       cachedTokens: cached,
@@ -199,6 +245,8 @@ export function meter(provider: Provider): {
       ...(model ? { model } : {}),
       outputTokens:
         'output_tokens' in used ? count(used['output_tokens']) : (found?.outputTokens ?? 0),
+      ...(fetches ? { webFetches: fetches } : {}),
+      ...(searches ? { webSearches: searches } : {}),
     }
   }
   const line = (text: string) => {

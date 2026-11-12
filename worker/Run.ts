@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers'
 import { privateKeyToAccount } from 'viem/accounts'
+import * as Admission from '../src/Admission.ts'
 import * as Atif from '../src/Atif.ts'
 import * as Bootstrap from '../src/Bootstrap.ts'
 import * as Budget from '../src/Budget.ts'
@@ -28,6 +29,7 @@ import * as Blobs from './Blobs.ts'
 import type { Env } from './Env.ts'
 import * as Evals from './Evals.ts'
 import * as Harness from './Harness.ts'
+import type * as Meter from './Meter.ts'
 import * as Model from './Model.ts'
 import * as PoolObject from './Pool.ts'
 import * as Storage from './Storage.ts'
@@ -47,6 +49,8 @@ type SandboxRow = {
 
 type RunnerRow = {
   capabilities: string | null
+  drained: string | null
+  ends_at: number | null
   error: string | null
   id: number
   registered_at: number
@@ -56,18 +60,23 @@ type RunnerRow = {
   state: 'left' | 'lost' | 'ready' | 'refused' | 'starting'
 }
 
+type KeyRead = Gateway.KeyUsage & { at: number }
+
 type Meta = {
   cancelled: boolean
   createdAt: number
   eval: { name: string; version: string }
   finishedAt: number | null
   id: string
+  key?: { end?: KeyRead; error?: string; start?: KeyRead }
   location?: string
   publicUrl: string
+  refused?: { at: number; message: string }
   reruns: string[]
   runnerToken: string
   sandboxFailures: number
   starvedAt?: number
+  strandedAt?: number
 }
 
 type Lineage = {
@@ -109,7 +118,9 @@ const tables = [
     registered_at INTEGER NOT NULL,
     seen_at INTEGER NOT NULL,
     report TEXT,
-    error TEXT
+    error TEXT,
+    ends_at INTEGER,
+    drained TEXT
   )`,
   `CREATE TABLE IF NOT EXISTS payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,7 +144,10 @@ const tables = [
     path TEXT NOT NULL,
     ms INTEGER,
     status INTEGER,
-    usage TEXT
+    usage TEXT,
+    cost REAL,
+    refusal TEXT,
+    searches INTEGER
   )`,
   ...Ledger.tables,
   ...Timeline.tables,
@@ -141,6 +155,18 @@ const tables = [
 
 const json = Storage.json
 const message = Storage.message
+
+type Settled = Proxy.Session & { outcome?: Meter.Outcome; path?: string; refused?: Meter.Refused }
+
+function detail(text: string): string {
+  let found: unknown
+  try {
+    found = (JSON.parse(text) as { detail?: unknown } | null)?.detail
+  } catch {
+    found = undefined
+  }
+  return (typeof found === 'string' && found ? found : text).slice(0, 500)
+}
 
 function secret(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(24)), (byte) =>
@@ -182,6 +208,16 @@ export class Run extends DurableObject<Env> {
       this.sql.run('ALTER TABLE sandboxes ADD COLUMN paid_until INTEGER')
     if (!columns.some((column) => column['name'] === 'member'))
       this.sql.run('ALTER TABLE sandboxes ADD COLUMN member INTEGER')
+    const added: [table: string, column: string, type: string][] = [
+      ['model_requests', 'cost', 'REAL'],
+      ['model_requests', 'refusal', 'TEXT'],
+      ['model_requests', 'searches', 'INTEGER'],
+      ['runners', 'drained', 'TEXT'],
+      ['runners', 'ends_at', 'INTEGER'],
+    ]
+    for (const [table, column, type] of added)
+      if (!this.sql.all('PRAGMA table_info(' + table + ')').some((row) => row['name'] === column))
+        this.sql.run('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + type)
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -193,6 +229,8 @@ export class Run extends DurableObject<Env> {
       const meta = this.meta()
       if (!meta) return json({ error: 'run not found' }, 404)
       if (parts[0] === 'model') return await this.model(request, parts.slice(1), url.search)
+      if (request.method === 'POST' && parts[0] === 'metered')
+        return json(this.settled((await request.json()) as Settled))
       if (parts[0] === 'runner') {
         const header = request.headers.get('authorization') ?? ''
         if (!(await same(header, 'Bearer ' + meta.runnerToken)))
@@ -229,7 +267,8 @@ export class Run extends DurableObject<Env> {
         this.setMeta({ ...meta, reruns: [...meta.reruns, id] })
         return json({ ok: true })
       }
-      if (request.method === 'POST' && parts[0] === 'runners') return json(this.attach(), 201)
+      if (request.method === 'POST' && parts[0] === 'runners')
+        return json(this.attach((await request.json().catch(() => ({}))) as Protocol.Attach), 201)
       if (request.method === 'POST' && parts[0] === 'cancel') {
         this.setMeta({ ...meta, cancelled: true })
         this.wake()
@@ -366,33 +405,43 @@ export class Run extends DurableObject<Env> {
           for (const agent of config.agents) seeds.push({ agent: agent.id, n, task: task.name })
 
     const byName = new Map(tasks.map((task) => [task.name, task]))
-    const timeoutSec =
-      config.sandbox.timeoutSec ??
-      (config.sandbox.warm && config.sandbox.provider === 'gateway'
-        ? Gateway.maxTimeoutSec
-        : Config.lifetimeSec(
-            config,
-            seeds.map((seed) => byName.get(seed.task)!),
-          ) + (config.sandbox.warm?.idleSec ?? 0))
     const longest =
       config.sandbox.provider === 'e2b'
         ? E2b.maxTimeoutSec
         : config.sandbox.provider === 'gateway'
           ? Gateway.maxTimeoutSec
           : undefined
-    if (config.sandbox.max > 0 && longest !== undefined && timeoutSec > longest)
+    if (
+      config.sandbox.max > 0 &&
+      longest !== undefined &&
+      config.sandbox.timeoutSec !== undefined &&
+      config.sandbox.timeoutSec > longest
+    )
       return json(
         {
           error:
-            'the rows of this run could keep a sandbox for ' +
-            timeoutSec +
-            ' s, and the ' +
+            'the ' +
             config.sandbox.provider +
-            ' provider keeps one for at most ' +
+            ' provider keeps a sandbox for at most ' +
             longest +
-            ' s: open more sandboxes or slots, or name the lifetime',
+            ' s, and the run asks for ' +
+            config.sandbox.timeoutSec +
+            ': name ' +
+            longest +
+            ' s or less, and the run opens another sandbox for the rows that one cannot finish',
         },
         400,
+      )
+    const timeoutSec =
+      config.sandbox.timeoutSec ??
+      Math.min(
+        config.sandbox.warm && config.sandbox.provider === 'gateway'
+          ? Gateway.maxTimeoutSec
+          : Config.lifetimeSec(
+              config,
+              seeds.map((seed) => byName.get(seed.task)!),
+            ) + (config.sandbox.warm?.idleSec ?? 0),
+        longest ?? Infinity,
       )
 
     this.ctx.storage.transactionSync(() => {
@@ -431,6 +480,7 @@ export class Run extends DurableObject<Env> {
         'https://run.internal/reruns',
         { body: JSON.stringify({ id }), method: 'POST' },
       )
+    this.ctx.waitUntil(this.readKey('start'))
     this.ctx.waitUntil(this.tick())
     return json(
       {
@@ -508,15 +558,179 @@ export class Run extends DurableObject<Env> {
   }
 
   private modelSpent(): number {
+    const priced = new Set<string>()
     let total = 0
+    for (const row of this.sql.all(
+      'SELECT attempt, SUM(cost) AS usd FROM model_requests WHERE cost IS NOT NULL GROUP BY attempt',
+    )) {
+      priced.add(row['attempt'] as string)
+      total += row['usd'] as number
+    }
     for (const row of this.rows())
-      if (row.result) {
+      if (row.result && !priced.has(row.id)) {
         const result = JSON.parse(row.result) as Result.Attempt
         total += (result.usage?.costUsd ?? 0) + (result.judge?.usage?.costUsd ?? 0)
       }
-    for (const usage of Ledger.lostUsage(this.sql))
-      total += (JSON.parse(usage) as Atif.Usage).costUsd ?? 0
+    for (const lost of Ledger.lostUsage(this.sql))
+      if (!priced.has(lost.attempt)) total += (JSON.parse(lost.usage) as Atif.Usage).costUsd ?? 0
     return total
+  }
+
+  private keyed(): boolean {
+    const config = this.config()
+    if (!this.env.TEMPO_KEY) return false
+    if (config.sandbox.provider === 'gateway' && config.sandbox.max > 0) return true
+    return [...config.agents, ...(config.judge ? [config.judge] : [])].some((agent) => {
+      if (agent.provider === 'oracle') return false
+      const held = Model.credential(
+        this.env,
+        Installed.is(agent.provider) ? Installed.releases[agent.provider].provider : agent.provider,
+      )
+      return held?.kind === 'key' && held.key === this.env.TEMPO_KEY
+    })
+  }
+
+  private async readKey(edge: 'end' | 'start'): Promise<void> {
+    if (!this.keyed()) return
+    let read: NonNullable<Meta['key']>
+    try {
+      const used = await Gateway.usage({
+        key: this.env.TEMPO_KEY!,
+        ...(this.env.TEMPO_GATEWAY_URL ? { url: this.env.TEMPO_GATEWAY_URL } : {}),
+      })
+      read = { [edge]: { ...used, at: Date.now() } }
+    } catch (error) {
+      read = { error: message(error) }
+    }
+    const meta = this.meta()!
+    this.setMeta({ ...meta, key: { ...meta.key, ...read } })
+  }
+
+  private record(input: {
+    attempt: string
+    claim: number
+    outcome: Meter.Outcome
+    path: string
+  }): void {
+    const { outcome } = input
+    const usage = outcome.usage
+    this.sql.run(
+      'INSERT INTO model_requests (attempt, claim, at, path, ms, status, usage, cost, refusal, searches) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      input.attempt,
+      input.claim,
+      outcome.at,
+      input.path,
+      outcome.ms,
+      outcome.status,
+      usage ? JSON.stringify(usage) : null,
+      usage?.costUsd ?? null,
+      outcome.refusal ?? null,
+      usage ? (usage.webFetches ?? 0) + (usage.webSearches ?? 0) : null,
+    )
+  }
+
+  private refuse(refused: Meter.Refused): number | undefined {
+    const config = this.config()
+    if (refused.kind === 'passing')
+      return refused.tries < config.limits.stepRetries
+        ? config.sandbox.pollMs * 2 ** refused.tries
+        : undefined
+    const meta = this.meta()!
+    if (!meta.refused) {
+      const now = Date.now()
+      this.setMeta({ ...meta, refused: { at: now, message: detail(refused.text) } })
+      Timeline.add(this.sql, { at: now, name: 'model.refused' })
+      this.ctx.waitUntil(this.tick())
+    }
+    return undefined
+  }
+
+  private settled(body: Settled): { pauseMs?: number } {
+    if (typeof body?.attempt !== 'string' || !Ledger.get(this.sql, body.attempt))
+      throw new Refusal(404, 'the run has no such attempt')
+    if (body.refused) {
+      const pauseMs = this.refuse(body.refused)
+      return pauseMs === undefined ? {} : { pauseMs }
+    }
+    if (body.outcome && typeof body.path === 'string')
+      this.record({
+        attempt: body.attempt,
+        claim: Number(body.claim),
+        outcome: body.outcome,
+        path: body.path,
+      })
+    return {}
+  }
+
+  private life(runner: RunnerRow): Admission.Life | undefined {
+    const sandbox =
+      runner.sandbox === null
+        ? undefined
+        : this.sandboxes().find((candidate) => candidate.id === runner.sandbox)
+    const ends = [runner.ends_at, sandbox?.expires_at ?? null].filter(
+      (end): end is number => end !== null,
+    )
+    if (!ends.length) return undefined
+    return { endsAt: Math.min(...ends), startedAt: sandbox?.created_at ?? runner.registered_at }
+  }
+
+  private fitting(runner: RunnerRow, now: number): (task: string) => boolean {
+    const config = this.config()
+    const life = this.life(runner)
+    return (task) =>
+      Admission.fits({
+        life,
+        now,
+        rowSec: Config.rowSec(config.limits, this.task(task)),
+        setupSec: config.limits.setupSec,
+      })
+  }
+
+  private drain(runner: RunnerRow, now: number): string | undefined {
+    const life = this.life(runner)
+    if (!life) return undefined
+    const open = this.rows().filter((row) => row.phase !== 'done')
+    const fits = this.fitting(runner, now)
+    if (!open.length || open.some((row) => fits(row.task))) return undefined
+    const reason =
+      'its sandbox ends in ' +
+      Math.max(0, Math.floor((life.endsAt - now) / 1000)) +
+      ' s, and the timeouts of every row that is left pass that'
+    this.update('runners', runner.id, { drained: reason })
+    Timeline.add(this.sql, { at: now, name: 'runner.drain', runner: runner.id })
+    return reason
+  }
+
+  private share(runner: number, capacityMb: number): Admission.Share {
+    const config = this.config()
+    const runners = this.runners().filter(
+      (candidate) => candidate.state === 'ready' && candidate.drained === null,
+    )
+    const capacity = new Map(
+      runners.map((candidate) => [
+        candidate.id,
+        (candidate.report ? (JSON.parse(candidate.report) as Protocol.Report) : undefined)?.offer
+          ?.capacityMb ?? capacityMb,
+      ]),
+    )
+    const holders = new Set<number>()
+    let otherSec = 0
+    let wholeSec = 0
+    for (const row of this.rows()) {
+      if (row.phase === 'done') continue
+      const task = this.task(row.task)
+      const seconds = Config.rowSec(config.limits, task)
+      if (task.resources.memoryMb >= capacityMb) wholeSec += seconds
+      else otherSec += (seconds * task.resources.memoryMb) / capacityMb
+      if (
+        row.runner !== null &&
+        row.runner !== runner &&
+        Ledger.active(row) &&
+        task.resources.memoryMb >= (capacity.get(row.runner) ?? capacityMb)
+      )
+        holders.add(row.runner)
+    }
+    return { holders: holders.size, otherSec, runners: runners.length, wholeSec }
   }
 
   private provider(): Sandbox.Provider {
@@ -633,9 +847,25 @@ export class Run extends DurableObject<Env> {
     const results = this.results()
     const count = (outcome: Result.Attempt['outcome']) =>
       results.filter((result) => result.outcome === outcome).length
+    const retries = new Map(
+      this.sql
+        .all(
+          "SELECT attempt, COUNT(*) AS n FROM timeline WHERE name = 'attempt.retry' GROUP BY attempt",
+        )
+        .map((row) => [row['attempt'] as string, row['n'] as number]),
+    )
+    const unpriced = this.sql.all(
+      'SELECT COUNT(*) AS responses, COALESCE(SUM(searches), 0) AS searches FROM model_requests WHERE status = 200 AND usage IS NOT NULL AND cost IS NULL',
+    )[0]!
+    const searches = this.sql.all('SELECT COALESCE(SUM(searches), 0) AS n FROM model_requests')[0]![
+      'n'
+    ] as number
     return {
       agents: Result.summarize(results),
-      attempts: rows.map((row) => this.view(row)),
+      attempts: rows.map((row) => ({
+        ...this.view(row),
+        ...(retries.has(row.id) ? { retries: retries.get(row.id) } : {}),
+      })),
       cancelled: meta.cancelled,
       counts: {
         active: rows.filter(Ledger.active).length,
@@ -649,16 +879,27 @@ export class Run extends DurableObject<Env> {
       eval: meta.eval,
       finishedAt: meta.finishedAt,
       id: meta.id,
+      key: meta.key
+        ? {
+            ...meta.key,
+            ...(meta.key.start && meta.key.end
+              ? { charged: Gateway.charged(meta.key.start, meta.key.end) }
+              : {}),
+          }
+        : null,
       lostClaims: Ledger.claims(this.sql).filter(
         (claim) => claim.ending === 'expired' || claim.ending === 'released',
       ).length,
       name: config.name,
       payments: this.sql.all('SELECT at, usd, detail FROM payments ORDER BY id'),
+      refused: meta.refused ?? null,
       rerunOf: config.rerun ?? null,
       reruns: meta.reruns,
       start: Timeline.start(Timeline.all(this.sql), meta.createdAt),
       runners: this.runners().map((row) => ({
         capabilities: row.capabilities ? JSON.parse(row.capabilities) : null,
+        drained: row.drained,
+        endsAt: this.life(row)?.endsAt ?? null,
         error: row.error,
         id: row.id,
         sandbox: row.sandbox,
@@ -677,8 +918,14 @@ export class Run extends DurableObject<Env> {
         runner: row.runner,
         state: row.state,
       })),
-      spend: { modelUsd: this.modelSpent(), sandboxUsd: this.spent() },
+      spend: {
+        modelUsd: this.modelSpent(),
+        sandboxUsd: this.spent(),
+        unpricedResponses: unpriced['responses'] as number,
+        webSearches: searches,
+      },
       state: meta.finishedAt === null ? 'running' : 'finished',
+      strandedAt: meta.strandedAt ?? null,
     }
   }
 
@@ -733,7 +980,7 @@ export class Run extends DurableObject<Env> {
       const provider = this.config().sandbox.max > 0 ? this.provider() : undefined
       for (const row of Ledger.expired(this.sql, Date.now())) await this.lose(row, 'expired')
       if (this.meta()!.cancelled) await this.cancelAll()
-      this.watch()
+      await this.watch()
       if (provider) await this.advanceSandboxes(provider)
       if (!this.meta()!.cancelled) await this.enforce()
       if (provider) await this.closeIdle(provider)
@@ -745,12 +992,12 @@ export class Run extends DurableObject<Env> {
       console.error('nanoeval tick failed', message(error))
     }
 
-    const current = this.meta()!
     const open = this.sandboxes().some((row) =>
       ['creating', 'ending', 'ready', 'starting'].includes(row.state),
     )
     if (this.rows().every((row) => row.phase === 'done') && !open) {
-      this.setMeta({ ...current, finishedAt: Date.now() })
+      await this.readKey('end')
+      this.setMeta({ ...this.meta()!, finishedAt: Date.now() })
       return
     }
     await this.ctx.storage.setAlarm(Date.now() + Number(this.env.TICK_MS))
@@ -865,39 +1112,33 @@ export class Run extends DurableObject<Env> {
         message: 'the run forwards POST requests only',
         status: 405,
       })
-    const at = Date.now()
-    this.sql.run(
-      'INSERT INTO model_requests (attempt, claim, at, path) VALUES (?, ?, ?, ?)',
-      row.id,
-      row.claims,
-      at,
-      path,
-    )
-    const entry = this.sql.all('SELECT MAX(id) AS id FROM model_requests')[0]!['id'] as number
     return Model.forward(this.env, {
+      hooks: {
+        refused: async (refused) => this.refuse(refused),
+        settle: (outcome) => this.record({ attempt: row.id, claim: row.claims, outcome, path }),
+      },
       path,
       provider,
       request,
       search,
-      settle: (outcome) => {
-        this.sql.run(
-          'UPDATE model_requests SET ms = ?, status = ?, usage = ? WHERE id = ?',
-          Date.now() - at,
-          outcome.status,
-          outcome.usage ? JSON.stringify(outcome.usage) : null,
-          entry,
-        )
-      },
     })
   }
 
-  private async halt(session: string): Promise<void> {
-    const cancelled = Harness.cancel(this.env, session, requestId).catch(() => {})
-    this.ctx.waitUntil(cancelled)
+  private async within(work: Promise<unknown>): Promise<void> {
+    const ended = work.catch(() => {})
+    this.ctx.waitUntil(ended)
     await Promise.race([
-      cancelled,
+      ended,
       new Promise((resolve) => setTimeout(resolve, Number(this.env.TICK_MS))),
     ])
+  }
+
+  private halt(session: string): Promise<void> {
+    return this.within(Harness.cancel(this.env, session, requestId))
+  }
+
+  private remove(session: string): Promise<void> {
+    return this.within(Harness.remove(this.env, session))
   }
 
   private judgeSessions(row: Ledger.Attempt): string[] {
@@ -907,7 +1148,11 @@ export class Run extends DurableObject<Env> {
       : []
   }
 
-  private async lose(row: Ledger.Attempt, ending: 'expired' | 'released'): Promise<void> {
+  private async lose(
+    row: Ledger.Attempt,
+    ending: 'expired' | 'released',
+    final?: string,
+  ): Promise<void> {
     const config = this.config()
     const submitted = this.submitted(row)
     let usage: string | undefined
@@ -926,15 +1171,13 @@ export class Run extends DurableObject<Env> {
       const installed = this.installed(row) !== undefined
       if (installed && ['judge', 'run', 'verify'].includes(row.phase))
         usage = JSON.stringify(this.metered(row))
-      for (const name of this.judgeSessions(row))
-        await Harness.remove(this.env, name).catch(() => {})
-      if (row.phase !== 'claimed' && !installed)
-        await Harness.remove(this.env, row.session).catch(() => {})
+      for (const name of this.judgeSessions(row)) await this.remove(name)
+      if (row.phase !== 'claimed' && !installed) await this.remove(row.session)
     }
     const requeued = Ledger.requeue(this.sql, {
       ending,
       id: row.id,
-      limit: config.limits.claims,
+      limit: final === undefined ? config.limits.claims : 0,
       now: Date.now(),
       ...(usage ? { usage } : {}),
     })
@@ -953,14 +1196,15 @@ export class Run extends DurableObject<Env> {
           at: Date.now(),
           kind: 'environment',
           message:
+            final ??
             'the attempt lost its runner ' +
-            row.claims +
-            ' times, the limit of the run: the lease of runner ' +
-            row.runner +
-            (ending === 'expired' ? ' expired' : ' was released') +
-            ' in the ' +
-            row.phase +
-            ' phase',
+              row.claims +
+              ' times, the limit of the run: the lease of runner ' +
+              row.runner +
+              (ending === 'expired' ? ' expired' : ' was released') +
+              ' in the ' +
+              row.phase +
+              ' phase',
         },
         reward: null,
       })
@@ -978,10 +1222,41 @@ export class Run extends DurableObject<Env> {
     }
   }
 
-  private watch(): void {
+  private async watch(): Promise<void> {
     const config = this.config()
     const now = Date.now()
     for (const runner of this.runners()) {
+      const life = ['lost', 'ready', 'starting'].includes(runner.state)
+        ? this.life(runner)
+        : undefined
+      if (life && now >= life.endsAt) {
+        const lived = Math.floor((life.endsAt - life.startedAt) / 1000)
+        for (const row of this.rows()) {
+          if (!Ledger.active(row) || row.runner !== runner.id) continue
+          const seconds = Config.rowSec(config.limits, this.task(row.task))
+          await this.lose(
+            row,
+            'expired',
+            Admission.outlives(life, seconds)
+              ? 'the sandbox of runner ' +
+                  runner.id +
+                  ' ended after its ' +
+                  lived +
+                  ' s with the attempt in the ' +
+                  row.phase +
+                  ' phase: the timeouts of the row allow ' +
+                  seconds +
+                  ' s, more than that sandbox lives, so it had the whole of it and is not claimed again'
+              : undefined,
+          )
+        }
+        this.update('runners', runner.id, {
+          error: 'the sandbox of the runner ended',
+          state: 'left',
+        })
+        continue
+      }
+      if (life && runner.state === 'ready' && runner.drained === null) this.drain(runner, now)
       if (runner.state === 'ready' && now - runner.seen_at > config.limits.leaseSec * 1000)
         this.update('runners', runner.id, {
           error: 'the runner stopped answering',
@@ -1063,10 +1338,11 @@ export class Run extends DurableObject<Env> {
 
   private ahead(): Protocol.Ahead[] {
     const found = new Map<string, Protocol.Ahead>()
-    const slots = this.config().sandbox.slots
-    for (const row of this.rows()) {
-      if (found.size >= slots) break
-      if (row.phase !== 'unclaimed') continue
+    const config = this.config()
+    for (const row of Ledger.queue(this.sql, (task) =>
+      Config.rowSec(config.limits, this.task(task)),
+    )) {
+      if (found.size >= config.sandbox.slots) break
       const environment = this.task(row.task).environment
       if (environment.kind === 'disk') found.set(environment.disk.digest, environment)
     }
@@ -1077,10 +1353,12 @@ export class Run extends DurableObject<Env> {
     const meta = this.meta()!
     const config = this.config()
     const ahead = this.ahead()
+    const life = this.life(this.known(runner))
     return {
       ...(ahead.length ? { ahead } : {}),
       backend: config.sandbox.backend,
       disks: config.sandbox.disks,
+      ...(life ? { endsAt: life.endsAt } : {}),
       ...(config.sandbox.freeDiskMb === undefined ? {} : { freeDiskMb: config.sandbox.freeDiskMb }),
       leaseSec: config.limits.leaseSec,
       limits: {
@@ -1122,8 +1400,14 @@ export class Run extends DurableObject<Env> {
     return this.sql.all('SELECT MAX(id) AS id FROM runners')[0]!['id'] as number
   }
 
-  private attach(): Config.Runner {
-    return this.runnerConfig(this.register(null))
+  private attach(body: Protocol.Attach): Config.Runner {
+    const left = body?.leftSec
+    if (left !== undefined && !(typeof left === 'number' && Number.isFinite(left) && left > 0))
+      throw new Refusal(400, 'leftSec is the seconds the machine of the runner still lives')
+    const runner = this.register(null)
+    if (left !== undefined)
+      this.update('runners', runner, { ends_at: Date.now() + Math.floor(left * 1000) })
+    return this.runnerConfig(runner)
   }
 
   private async open(provider: Sandbox.Provider): Promise<void> {
@@ -1212,10 +1496,11 @@ export class Run extends DurableObject<Env> {
 
   private async enforce(): Promise<void> {
     const config = this.config()
-    const unclaimed = this.rows().filter((row) => row.phase === 'unclaimed')
-    if (!unclaimed.length) return
+    if (!this.rows().some((row) => row.phase === 'unclaimed')) return
     if (await this.overBudget()) return
-    if (config.sandbox.freeDiskMb === undefined) return
+    await this.strand()
+    const unclaimed = this.rows().filter((row) => row.phase === 'unclaimed')
+    if (!unclaimed.length || config.sandbox.freeDiskMb === undefined) return
 
     const reports = this.runners()
       .filter((runner) => runner.state === 'ready')
@@ -1246,16 +1531,67 @@ export class Run extends DurableObject<Env> {
       })
   }
 
+  private async strand(): Promise<void> {
+    const config = this.config()
+    const now = Date.now()
+    const forget = () => {
+      const { strandedAt, ...rest } = this.meta()!
+      if (strandedAt !== undefined) this.setMeta(rest)
+    }
+    if (config.sandbox.max > 0) return forget()
+    const able = this.runners()
+      .filter(
+        (runner) =>
+          (runner.state === 'ready' || runner.state === 'starting') && runner.drained === null,
+      )
+      .map((runner) => this.fitting(runner, now))
+    const stranded = this.rows().filter(
+      (row) => row.phase === 'unclaimed' && !able.some((fits) => fits(row.task)),
+    )
+    if (!stranded.length) return forget()
+    const since = this.meta()!.strandedAt
+    if (since === undefined) {
+      Timeline.add(this.sql, { at: now, name: 'run.stranded' })
+      return this.setMeta({ ...this.meta()!, strandedAt: now })
+    }
+    if (now - since <= config.limits.setupSec * 1000) return
+    for (const row of stranded)
+      await this.complete(row, {
+        failure: {
+          at: now,
+          kind: 'environment',
+          message:
+            'no runner of the run could take the row for ' +
+            config.limits.setupSec +
+            ' s: ' +
+            (able.length
+              ? 'its timeouts allow ' +
+                Config.rowSec(config.limits, this.task(row.task)) +
+                ' s, and the sandbox of every runner that is left ends sooner'
+              : 'the run has no runner, and opens no sandbox itself'),
+        },
+        reward: null,
+      })
+    forget()
+  }
+
   private async overBudget(): Promise<boolean> {
     const config = this.config()
-    if (config.budget.modelUsd === undefined || this.modelSpent() < config.budget.modelUsd)
+    const refused = this.meta()!.refused
+    if (
+      !refused &&
+      (config.budget.modelUsd === undefined || this.modelSpent() < config.budget.modelUsd)
+    )
       return false
     for (const row of this.rows().filter((candidate) => candidate.phase === 'unclaimed'))
       await this.complete(row, {
         failure: {
           at: Date.now(),
           kind: 'budget',
-          message: 'the model budget of $' + config.budget.modelUsd + ' is spent',
+          message: refused
+            ? 'the payment for a model request was refused, and no row is started after that: ' +
+              refused.message
+            : 'the model budget of $' + config.budget.modelUsd + ' is spent',
         },
         reward: null,
       })
@@ -1274,8 +1610,13 @@ export class Run extends DurableObject<Env> {
     const ending = new Set(
       sandboxes.filter((sandbox) => sandbox.state === 'ending').map((sandbox) => sandbox.runner),
     )
+    const drained = new Set(
+      this.runners()
+        .filter((runner) => runner.drained !== null)
+        .map((runner) => runner.id),
+    )
     const ready = this.runners().filter(
-      (runner) => runner.state === 'ready' && !ending.has(runner.id),
+      (runner) => runner.state === 'ready' && !ending.has(runner.id) && !drained.has(runner.id),
     )
     const room = ready.some((runner) => {
       const report = runner.report ? (JSON.parse(runner.report) as Protocol.Report) : undefined
@@ -1297,7 +1638,10 @@ export class Run extends DurableObject<Env> {
         })
       return
     }
-    if (live.length < config.sandbox.max && !(await this.adopt(true))) await this.open(provider)
+    const claiming = live.filter(
+      (sandbox) => sandbox.runner === null || !drained.has(sandbox.runner),
+    )
+    if (claiming.length < config.sandbox.max && !(await this.adopt(true))) await this.open(provider)
   }
 
   private wanting(): boolean {
@@ -1369,9 +1713,15 @@ export class Run extends DurableObject<Env> {
 
   private async closeIdle(provider: Sandbox.Provider): Promise<void> {
     const rows = this.rows()
-    if (rows.some((row) => row.phase === 'unclaimed')) return
+    const waiting = rows.some((row) => row.phase === 'unclaimed')
+    const drained = new Set(
+      this.runners()
+        .filter((runner) => runner.drained !== null)
+        .map((runner) => runner.id),
+    )
     for (const record of this.sandboxes()) {
       if (record.state !== 'ready' && record.state !== 'ending') continue
+      if (waiting && !(record.runner !== null && drained.has(record.runner))) continue
       if (rows.some((row) => Ledger.active(row) && row.runner === record.runner)) continue
       const handle = JSON.parse(record.handle!) as Sandbox.Handle
       if (record.member !== null && record.state === 'ready') {
@@ -1459,21 +1809,21 @@ export class Run extends DurableObject<Env> {
   private async lapse(provider: Sandbox.Provider): Promise<void> {
     for (const record of this.sandboxes()) {
       if (!['ending', 'ready', 'starting'].includes(record.state)) continue
-      if (record.paid_until === null || record.paid_until > Date.now()) continue
+      const paid = record.paid_until ?? Infinity
+      const lifetime = record.expires_at ?? Infinity
+      if (Math.min(paid, lifetime) > Date.now()) continue
+      const reason = paid <= lifetime ? 'the lease of its sandbox ended' : 'its sandbox ended'
       for (const row of this.rows())
         if (Ledger.active(row) && row.runner === record.runner) await this.lose(row, 'expired')
       this.update('sandboxes', record.id, {
-        error: record.error ?? 'its lease ended',
+        error: record.error ?? (paid <= lifetime ? 'its lease ended' : 'its lifetime ended'),
         state: 'closed',
       })
       if (record.runner !== null)
-        this.update('runners', record.runner, {
-          error: 'the lease of its sandbox ended',
-          state: 'left',
-        })
+        this.update('runners', record.runner, { error: reason, state: 'left' })
       if (record.handle)
         await provider.kill(JSON.parse(record.handle) as Sandbox.Handle).catch(() => {})
-      await this.forget(record, 'the lease of its sandbox ended')
+      await this.forget(record, reason)
     }
   }
 
@@ -1624,17 +1974,23 @@ export class Run extends DurableObject<Env> {
       return { finished: this.finished(), rows: [] }
     }
     if (meta.cancelled || (await this.overBudget())) return idle(false)
-    const sandbox = this.known(runner).sandbox
-    if (this.sandboxes().some((row) => row.id === sandbox && row.state === 'ending'))
+    const record = this.known(runner)
+    if (this.sandboxes().some((row) => row.id === record.sandbox && row.state === 'ending'))
       return idle(true)
+    const drained = record.drained ?? this.drain(record, now)
+    if (drained) return { ...idle(false), drained }
+    const fits = this.fitting(record, now)
     const claimed = Ledger.claim(this.sql, {
+      accepts: (row) => fits(row.task),
       leaseMs: config.limits.leaseSec * 1000,
       memoryOf: (task) => this.task(task).resources.memoryMb,
       now,
       offer: body.offer,
       run: meta.id,
       runner,
+      secOf: (task) => Config.rowSec(config.limits, this.task(task)),
       token: secret,
+      wholeLast: !Admission.wholeFirst(this.share(runner, body.offer.capacityMb)),
     })
     for (const row of claimed)
       Timeline.add(this.sql, { at: now, attempt: row.id, name: 'attempt.claimed', runner })
@@ -1985,7 +2341,17 @@ export class Run extends DurableObject<Env> {
         timing: Ledger.mark(row.timing, 'verifier', { at: now, edge: 'finish' }),
       })
     } else if (body.failure) {
-      end = { failure: { at: now, ...body.failure }, reward: null }
+      const spent =
+        body.failure.kind === 'agent' &&
+        this.sql.all(
+          "SELECT id FROM model_requests WHERE attempt = ? AND claim = ? AND refusal = 'spent' LIMIT 1",
+          row.id,
+          row.claims,
+        ).length > 0
+      end = {
+        failure: { at: now, ...body.failure, ...(spent ? { kind: 'budget' as const } : {}) },
+        reward: null,
+      }
     } else throw new Refusal(400, 'finishing an attempt reports a verifier or a failure')
     if (row.session && row.phase === 'run' && this.submitted(row)) await this.halt(row.session)
     await this.complete(Ledger.get(this.sql, row.id)!, end)
@@ -2028,7 +2394,7 @@ export class Run extends DurableObject<Env> {
       } catch (error) {
         this.putArtifact(row.id, 'verifier/judge-error.txt', message(error))
       }
-      await Harness.remove(this.env, name).catch(() => {})
+      await this.remove(name)
     }
 
     let usage: Atif.Usage | null = null
@@ -2079,23 +2445,6 @@ export class Run extends DurableObject<Env> {
         costUsd: metered.costUsd ?? summary.costUsd,
         toolCalls: summary.toolCalls,
       }
-      this.putArtifact(
-        row.id,
-        modelRequests,
-        this.sql
-          .all(
-            'SELECT claim, at, path, ms, status, usage FROM model_requests WHERE attempt = ? ORDER BY id',
-            row.id,
-          )
-          .map(
-            (request) =>
-              JSON.stringify({
-                ...request,
-                usage: request['usage'] ? JSON.parse(request['usage'] as string) : null,
-              }) + '\n',
-          )
-          .join(''),
-      )
       const instruction = this.textArtifact(row.id, Installed.instruction)
       this.putArtifact(
         row.id,
@@ -2110,6 +2459,39 @@ export class Run extends DurableObject<Env> {
           2,
         ) + '\n',
       )
+    }
+
+    if (end.collect !== false) {
+      const requests = this.sql.all(
+        'SELECT claim, at, path, ms, status, usage, cost, refusal FROM model_requests WHERE attempt = ? ORDER BY id',
+        row.id,
+      )
+      const priced = requests.filter(
+        (request) =>
+          request['claim'] === row.claims &&
+          request['cost'] !== null &&
+          !(request['path'] as string).startsWith('judge/'),
+      )
+      if (usage && !kind && priced.length)
+        usage = {
+          ...usage,
+          costUsd: priced.reduce((sum, request) => sum + (request['cost'] as number), 0),
+        }
+      if (requests.length)
+        this.putArtifact(
+          row.id,
+          modelRequests,
+          requests
+            .map(
+              ({ cost: _, refusal, ...request }) =>
+                JSON.stringify({
+                  ...request,
+                  ...(refusal === null ? {} : { refusal }),
+                  usage: request['usage'] ? JSON.parse(request['usage'] as string) : null,
+                }) + '\n',
+            )
+            .join(''),
+        )
     }
 
     const result: Result.Attempt = {
@@ -2160,6 +2542,6 @@ export class Run extends DurableObject<Env> {
     this.wake(row.id)
     if (this.finished()) this.wake()
     if (row.session && row.phase !== 'unclaimed' && row.phase !== 'claimed' && !kind)
-      await Harness.remove(this.env, session).catch(() => {})
+      await this.remove(session)
   }
 }
