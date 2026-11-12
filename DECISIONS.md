@@ -1838,3 +1838,88 @@ Every `run:` step of `.github/workflows/ci.yml`, 56 of them, in order and each w
 - A sandbox from the gateway: creation, root, the bootstrap inside one, a renewal, a termination, what a renewal really costs, and a run with nothing of the operator's running.
 - The price of a request against what the key was charged for it.
 - A vendor's command on an ns slot or in a remote sandbox, as before.
+
+## 2026-11-12: the gateway for real: models, installed agents and a leased sandbox
+
+Machines: the Worker deployed on Cloudflare with its R2 bucket, as in the entry above. A laptop checkout started every run, and no runner ran on a machine of the operator's: the gateway leased one E2B `desktop` sandbox for each run. The 32-core Linux machine with KVM of the entries above (Node 24.22.2), shared, for the fix and the checks of a fresh clone. The gateway is `https://gateway.tempo-dev.workers.dev`. Times are UTC on 2026-11-12. Commit `87936e4` and this entry. Every run below was made before `87936e4`, on the Worker as it was deployed then.
+
+The entry above ends with what was not verified, because the key at hand was invalid. A valid key now exists, and every item of that list ran except a renewal. That entry stays as the record of its day. This one supersedes its list.
+
+### What ran
+
+Every run was started from the laptop with `nanoeval run --provider gateway --template desktop --runtime-blob SHA256 --backend ns` on the eval of the entry above: the Terminal-Bench 2.1 tasks `cancel-async-tasks`, `fix-git`, `log-summary-date-ranges` and `openssl-selfsigned-cert`. Each run that worked leased one sandbox for 300 s, started its runner in it from the runtime archive through the bootstrap, served its rows on ns slots, and terminated the sandbox. One run each, one attempt per row. The time to the first attempt is from the creation of the run and includes the lease and the bootstrap:
+
+| Run | Created | Finished | First attempt after | Result | Spend recorded |
+| --- | --- | --- | --- | --- | --- |
+| The tasks' solutions (`--oracle`), before the key's wallet could pay a network fee | | | none started | 4 errored as `environment`: the gateway answered `503 unavailable` to `compute/create` | sandboxes $0.0846, of which nothing was charged, see below |
+| The same command, once the wallet could | 00:51:44.3 | 00:52:33.6 | 17.0 s | 4 of 4 passed, in 56 s for the command | sandboxes $0.0445 |
+| `--agent luna=codex:gpt-6-luna --agent haiku=claude:claude-haiku-5-5`, 3 slots | 00:52:53.5 | 00:55:48.7 | 8.5 s | 8 of 8 passed | models $0.0610, sandboxes $0.0445 |
+| `--agent cli=codex-cli:gpt-6-luna --agent cc=claude-code:claude-haiku-5-5` on `fix-git` | 00:56:09.5 | 00:57:36.3 | 11.9 s | 2 of 2 passed | models $0.0103, sandboxes $0.0445 |
+| Four arms at high effort on `fix-git`, 4 slots | 00:58:12.8 | 00:59:45.1 | 10.1 s | 4 of 4 passed | models $0.3843, sandboxes $0.0445 |
+
+`nanoeval compare` of the run with the two sessions, on the four tasks:
+
+| Agent | Passed | Agent time | Input tokens | Of them cached | Output tokens | Cost |
+| --- | --- | --- | --- | --- | --- | --- |
+| `luna`, `codex:gpt-6-luna` | 4 of 4 | 2 min 58 s | 790,000 | 630,582 | 7,308 | $0.0507 |
+| `haiku`, `claude:claude-haiku-5-5` | 4 of 4 | 1 min 9 s | 157,014 | 131,306 | 11,460 | $0.0103 |
+
+| Task | `luna` | `haiku` |
+| --- | --- | --- |
+| `cancel-async-tasks` | 20 s | 25 s |
+| `fix-git` | 46 s | 19 s |
+| `log-summary-date-ranges` | 1 min 40 s | 15 s |
+| `openssl-selfsigned-cert` | 11 s | 10 s |
+
+The run with the vendors' commands, on `fix-git`:
+
+| Agent | Result | Agent time | Input tokens | Of them cached | Output tokens | Cost |
+| --- | --- | --- | --- | --- | --- | --- |
+| `cli`, Codex CLI 0.166.0 on `gpt-6-luna` | passed | 48 s | 132,908 | 114,580 | 3,529 | $0.0052 |
+| `cc`, Claude Code 2.1.318 on `claude-haiku-5-5` | passed | 25 s | 141,503 | 121,447 | 2,694 | $0.0051 |
+
+It is the first run of Claude Code against a real Messages endpoint, and the first of a vendor's command on ns slots and in a remote sandbox: the runner fetched the pinned releases there.
+
+The run with four arms at high effort, on `fix-git`:
+
+| Agent | Result | Agent time | Input tokens | Of them cached | Output tokens | Cost |
+| --- | --- | --- | --- | --- | --- | --- |
+| `nano-codex=codex:gpt-6.1-sol:high` | passed | 35 s | 103,910 | 86,190 | 1,481 | $0.0677 |
+| `codex-cli=codex-cli:gpt-6.1-sol:high` | passed | 39 s | 112,291 | 96,022 | 1,474 | $0.0650 |
+| `nano-claude=claude:claude-opus-5-5:high` | passed | 26 s | 60,622 | 49,474 | 1,636 | $0.0983 |
+| `claude-code=claude-code:claude-opus-5-5:high` | passed | 27 s | 102,113 | 82,458 | 1,926 | $0.1533 |
+
+One task and one attempt for each arm: a smoke test of four paths, not a benchmark, and no difference between two rows of it is a result.
+
+### What was charged
+
+The key's usage route was read before the four runs that worked and after them. Its payment channel had spent $0.465518. The runs recorded $0.4556 of model spend and about $0.0021 of compute fees each, and the rest, about $0.0015, is a handful of list and status calls made by hand. Each lease, a `desktop` sandbox for 300 s, took $0.04238 from the key's limit directly, outside the channel, and a run recorded $0.0445 for its sandbox: the lease and the fees of its calls. So the recorded spend matched what was charged to within the calls made by hand.
+
+After every run the key's list of sandboxes was empty: a termination ends the sandbox at the gateway. No run was renewed, since each ended inside its first lease.
+
+### What was wrong
+
+**A sandbox the gateway refused stayed in the spend.** The first run met a gateway that could not open the key's payment channel. It answered `503 unavailable` to the paid `compute/create`, "cannot pay the network fee to open your key's channel right now: its fee sponsor is out of funds, and the key could not pay the fee from its wallet", and again to the run's second attempt. Nothing was charged: the key's usage showed no channel and its whole limit. The run reported `spend: sandboxes $0.0846`, two quotes of $0.04228. `8d9f476` wrote back a refusal below `500` and kept every `5xx` as an unknown outcome, and this `5xx` was a refusal like any other. Once the wallet held a fee token, the same command worked.
+
+### Decisions
+
+- **A refusal is the gateway's answer, at any status.** The gateway answers its errors as problem JSON with a stable `code`: its documentation says so, and its `400` to a malformed request, which costs nothing to ask for, is one. An answer below `500`, or a problem with a `code` at any status, is written back as the same amount negated, with the status.
+- **What proves nothing stays, and says so.** A `5xx` without such a problem may come from in front of the gateway after the gateway took the payment, and a paid request whose answer never arrived may have been served. Their price stays in the spend, as a sandbox whose creation a restart interrupted stays `unknown`, and a row of amount zero beside it says `answered 502 without a problem` or `unanswered`. Counting too much holds the budget, and counting too little would let a run spend past it. The sandbox fails with a message that says the same, and that request is not sent again.
+- **The budget of a tick forgets a refusal too.** A tick builds its budget from `payments` once. A refusal written back to the table stayed in that budget until the next tick, so a renewal refused for one sandbox could have refused the next one's for the budget. `Budget.refund` takes it out.
+- **Nothing before the price.** A request that fails before its `402` is read was never recorded, and a test now holds that.
+- **The scripted gateway refuses the first sandbox.** It answers the first paid `create` with `503 unavailable`, so each of the six gateway lanes opens its sandbox at the second attempt and asserts that the run's payments are the refused price, written back, and then the gateway's charges in order. On the code before `87936e4` the directory lane fails there: the run reported $0.0032 for its sandbox where the scripted gateway had charged $0.0027.
+- **A key that has to pay its own network fee.** The gateway pays the fee of opening a key's channel, and when it cannot, the key does. A key whose wallet holds only the machine token is refused with `503` until the wallet holds a little of a fee token, which the gateway's message names. The README says so under Deploy it.
+
+### The checks of a fresh clone
+
+Every `run:` step of `.github/workflows/ci.yml`, 56 of them, in order and each with exactly its variables and command, from a fresh clone of `87936e4` on the Linux machine with a `docker` first on the path that only logs: all 56 exited 0 in 6.6 minutes, at a load average between 1.5 and 5.8. Nothing was skipped: 112 unit tests, the 48 end-to-end lanes with the six gateway lanes among them, and the launcher's tests. `docker` was never called. This entry changes only the three documents after it.
+
+### Not verified
+
+- A renewal at the real gateway, what one costs there, and a run longer than one lease. Every run ended inside its first 300 s.
+- `87936e4` at the real gateway. The `503` was met before it and not since, so that the gateway's refusal carries a `code` rests on its documentation and on the name the refusal was reported with, `unavailable`.
+- `gpt-6.1-sol` and `claude-opus-5-5` beyond one task and one attempt.
+- The 89 tasks of Terminal-Bench 2.1 through the gateway, and more than four attempts at once.
+- Claude Code with an Anthropic API key or a plan login.
+- CI on GitHub: the workflow has not run there.
+- A task that closes the network of a phase in a gateway sandbox. Its slots are ns slots, where such a run is refused by design.
