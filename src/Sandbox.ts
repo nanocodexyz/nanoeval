@@ -29,6 +29,7 @@ export type Handle = Record<string, unknown> & { home: string; id: string }
 export type Created = {
   expiresAt: number | null
   handle: Handle
+  paidUntil?: number
 }
 
 export type Sandbox = {
@@ -40,11 +41,13 @@ export type Provider = {
   readonly name: string
   connect(handle: Handle): Sandbox
   create(options: {
+    leaseSec?: number
     metadata: Record<string, string>
     template: string | undefined
     timeoutSec: number
   }): Promise<Created>
   kill(handle: Handle): Promise<void>
+  renew?(handle: Handle, seconds: number): Promise<{ paidUntil: number }>
 }
 
 export class CommandError extends Error {

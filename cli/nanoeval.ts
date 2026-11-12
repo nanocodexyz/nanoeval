@@ -76,9 +76,9 @@ const usage = `nanoeval <command>
   run       --url URL --token T (--eval NAME[@DIGEST] [--only ID]... [--limit N] | --task DIR...
             | --rerun RUN [--failed | --errored])
             (--agent ID=HARNESS:MODEL[:THINKING]... | --oracle) [--judge PROVIDER:MODEL[:THINKING]]
-            [--attempts 1] [--provider local|e2b] [--backend auto|krun|ns|dir] [--slots 4] [--sandboxes 1]
-            [--memory-mb N] [--network private|host] [--template NAME] [--sandbox-timeout-sec N]
-            [--runtime]
+            [--attempts 1] [--provider local|e2b|gateway] [--backend auto|krun|ns|dir] [--slots 4]
+            [--sandboxes 1] [--memory-mb N] [--network private|host] [--template NAME]
+            [--sandbox-timeout-sec N] [--sandbox-lease-sec 300] [--runtime | --runtime-blob SHA256]
             [--sandbox-budget-usd 0] [--model-budget-usd N] [--setup-sec 600] [--attach-sec 60]
             [--lease-sec 60] [--claims 3] [--step-retries 3] [--poll-ms 250]
             [--disks keep|remove] [--free-disk-mb N] [--verifier-cache] [--name NAME] [--wait]
@@ -108,11 +108,16 @@ const usage = `nanoeval <command>
             verifier. --judge names the model that answers the verifiers of judged tasks.
             With --wait, poll until the run finishes, print the summary and write the Harbor
             job to --out, or under NANOEVAL_RUNS_DIR when that is set.
-            A sandbox is paid for its whole lifetime when it is opened: without
+            An e2b sandbox is paid for its whole lifetime when it is opened: without
             --sandbox-timeout-sec the run takes the longest its rows can keep its slots busy,
-            from the setup, agent and verifier timeouts of their tasks. --runtime, which
-            --provider e2b implies, publishes the runner as one archive in the Worker's
-            blob store, so a sandbox without this checkout starts its runner from it.
+            from the setup, agent and verifier timeouts of their tasks. A gateway sandbox is
+            opened with the Worker's TEMPO_KEY and paid by the lease: --sandbox-lease-sec at
+            first, and as much again whenever less than --lease-sec of it is left while rows
+            need the sandbox, never past that lifetime. --runtime, which --provider e2b and
+            gateway imply, publishes the runner as one archive in the Worker's blob store, so
+            a sandbox without this checkout starts its runner from it. --runtime-blob names
+            an archive that nanoeval runtime --publish put there before, for a machine that
+            cannot build one.
   runner    --url URL --token T --run RUN [--home DIR] [--backend krun|ns] [--slots N] [--memory-mb N]
             [--free-disk-mb N] [--poll-ms N] [--store DIR] [--cache DIR]
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
@@ -125,9 +130,11 @@ const usage = `nanoeval <command>
             the answer of POST https://mpp.e2b.dev/sandboxes, with its sandboxID and
             envdAccessToken. The run must have been created with --runtime, through an
             address the sandbox reaches or on a Worker started with --public-url.
-  runtime   --out FILE [--cache DIR]
+  runtime   --out FILE [--cache DIR] [--publish --url URL --token T]
             Build the archive a remote sandbox starts its runner from: the bundled runner,
-            slot.sh, the static launcher, guest and relay, and the pinned hand.
+            slot.sh, the static launcher, guest and relay, and the pinned hand. With
+            --publish, put it in the Worker's blob store and print the SHA-256 that
+            run --runtime-blob takes.
   status    --url URL --token T RUN
   attempt   --url URL --token T RUN ATTEMPT [ARTIFACT]
   export    --url URL --token T RUN --out DIR
@@ -222,6 +229,10 @@ export function client(options: { token: string; url: string }) {
       (await (
         await call('/v1/runs/' + run + '/runners', { method: 'POST' })
       ).json()) as Config.Runner,
+    blob: async (digest: string): Promise<Eval.Blob> => {
+      const head = await call('/v1/blobs/' + digest, { method: 'HEAD' })
+      return { bytes: Number(head.headers.get('content-length')), digest }
+    },
     config: async (run: string) =>
       (await (await call('/v1/runs/' + run + '/config')).json()) as Config.Config & {
         eval: { name: string; version: string }
@@ -467,13 +478,16 @@ async function main(): Promise<void> {
       port: { type: 'string' },
       provider: { default: 'local', type: 'string' },
       'public-url': { type: 'string' },
+      publish: { default: false, type: 'boolean' },
       remove: { default: false, type: 'boolean' },
       report: { type: 'string' },
       rerun: { type: 'string' },
       root: { type: 'string' },
       run: { type: 'string' },
       runtime: { default: false, type: 'boolean' },
+      'runtime-blob': { type: 'string' },
       'sandbox-budget-usd': { default: '0', type: 'string' },
+      'sandbox-lease-sec': { type: 'string' },
       'sandbox-token': { default: process.env['NANOEVAL_SANDBOX_TOKEN'], type: 'string' },
       'sandbox-url': { type: 'string' },
       'sandbox-timeout-sec': { type: 'string' },
@@ -657,7 +671,19 @@ async function main(): Promise<void> {
   }
 
   if (command === 'runtime') {
-    const built = await Runtime.build({ cache, out: Path.resolve(required(values.out, 'out')) })
+    const out = Path.resolve(required(values.out, 'out'))
+    const built = values.publish
+      ? {
+          ...(await Runtime.publish(
+            blobStore('r2', {
+              token: required(values.token, 'token'),
+              url: required(values.url, 'url'),
+            }),
+            { cache, out },
+          )),
+          file: out,
+        }
+      : await Runtime.build({ cache, out })
     console.log(built.file + ': sha256 ' + built.digest + ', ' + built.bytes + ' bytes')
     return
   }
@@ -944,8 +970,9 @@ async function main(): Promise<void> {
       reference = { name: name!, ...(digest ? { version: digest } : {}) }
     }
     const provider = values.provider as Config.Config['sandbox']['provider']
-    const runtime =
-      values.runtime || provider === 'e2b'
+    const runtime = values['runtime-blob']
+      ? await api.blob(values['runtime-blob'])
+      : values.runtime || provider === 'e2b' || provider === 'gateway'
         ? await Runtime.publish(blobStore('r2', access), {
             cache,
             out: Path.join(cache, 'runtime.tgz'),
@@ -990,6 +1017,7 @@ async function main(): Promise<void> {
         backend,
         disks: values.disks as 'keep' | 'remove',
         ...(values['free-disk-mb'] ? { freeDiskMb: Number(values['free-disk-mb']) } : {}),
+        ...(values['sandbox-lease-sec'] ? { leaseSec: Number(values['sandbox-lease-sec']) } : {}),
         max: Number(values.sandboxes),
         ...(values['memory-mb'] ? { memoryMb: Number(values['memory-mb']) } : {}),
         network: (values.network ??

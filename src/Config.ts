@@ -50,11 +50,12 @@ export type Config = {
     backend: Backend
     disks: 'keep' | 'remove'
     freeDiskMb?: number
+    leaseSec?: number
     max: number
     memoryMb?: number
     network: Slot.Network
     pollMs: number
-    provider: 'e2b' | 'local'
+    provider: 'e2b' | 'gateway' | 'local'
     runtime?: Eval.Blob
     slots: number
     template?: string
@@ -204,6 +205,8 @@ export function parse(value: unknown): Config {
     fail('sandbox.verifierCache needs the krun or the ns backend')
   const budget = config.budget ?? fail('budget is required')
   const limits = config.limits ?? fail('limits is required')
+  if (sandbox.leaseSec !== undefined && !(sandbox.leaseSec >= limits.leaseSec))
+    fail('sandbox.leaseSec is at least limits.leaseSec, the notice a renewal is given')
   return {
     agents,
     attempts: integer(config.attempts, 'attempts', 1),
@@ -242,13 +245,16 @@ export function parse(value: unknown): Config {
       ...(sandbox.freeDiskMb === undefined
         ? {}
         : { freeDiskMb: integer(sandbox.freeDiskMb, 'sandbox.freeDiskMb', 1) }),
+      ...(sandbox.leaseSec === undefined
+        ? {}
+        : { leaseSec: integer(sandbox.leaseSec, 'sandbox.leaseSec', 1) }),
       max: integer(sandbox.max, 'sandbox.max', 0),
       ...(sandbox.memoryMb === undefined
         ? {}
         : { memoryMb: integer(sandbox.memoryMb, 'sandbox.memoryMb', 1) }),
       network: sandbox.network,
       pollMs: integer(sandbox.pollMs, 'sandbox.pollMs', 1),
-      provider: choice(sandbox.provider, 'sandbox.provider', ['e2b', 'local']),
+      provider: choice(sandbox.provider, 'sandbox.provider', ['e2b', 'gateway', 'local']),
       ...(sandbox.runtime === undefined
         ? {}
         : {

@@ -6,6 +6,7 @@ import * as Budget from '../src/Budget.ts'
 import * as Config from '../src/Config.ts'
 import * as E2b from '../src/E2b.ts'
 import * as Eval from '../src/Eval.ts'
+import * as Gateway from '../src/Gateway.ts'
 import * as Harbor from '../src/Harbor.ts'
 import * as Installed from '../src/Installed.ts'
 import * as Judge from '../src/Judge.ts'
@@ -34,6 +35,7 @@ type SandboxRow = {
   expires_at: number | null
   handle: string | null
   id: number
+  paid_until: number | null
   runner: number | null
   state: 'closed' | 'creating' | 'failed' | 'ready' | 'starting' | 'unknown'
 }
@@ -89,7 +91,8 @@ const tables = [
     created_at INTEGER NOT NULL,
     expires_at INTEGER,
     error TEXT,
-    runner INTEGER
+    runner INTEGER,
+    paid_until INTEGER
   )`,
   `CREATE TABLE IF NOT EXISTS runners (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -279,6 +282,8 @@ export class Run extends DurableObject<Env> {
         )
       if (config.sandbox.provider === 'e2b' && !this.env.TEMPO_PRIVATE_KEY)
         return json({ error: 'the e2b provider needs TEMPO_PRIVATE_KEY' }, 400)
+      if (config.sandbox.provider === 'gateway' && !this.env.TEMPO_KEY)
+        return json({ error: 'the gateway provider needs TEMPO_KEY' }, 400)
     }
 
     const query = new URLSearchParams({ tasks: '1' })
@@ -348,18 +353,22 @@ export class Run extends DurableObject<Env> {
         config,
         seeds.map((seed) => byName.get(seed.task)!),
       )
-    if (
-      config.sandbox.max > 0 &&
-      config.sandbox.provider === 'e2b' &&
-      timeoutSec > E2b.maxTimeoutSec
-    )
+    const longest =
+      config.sandbox.provider === 'e2b'
+        ? E2b.maxTimeoutSec
+        : config.sandbox.provider === 'gateway'
+          ? Gateway.maxTimeoutSec
+          : undefined
+    if (config.sandbox.max > 0 && longest !== undefined && timeoutSec > longest)
       return json(
         {
           error:
             'the rows of this run could keep a sandbox for ' +
             timeoutSec +
-            ' s, and E2B sells at most ' +
-            E2b.maxTimeoutSec +
+            ' s, and the ' +
+            config.sandbox.provider +
+            ' provider keeps one for at most ' +
+            longest +
             ' s: open more sandboxes or slots, or name the lifetime',
         },
         400,
@@ -496,18 +505,26 @@ export class Run extends DurableObject<Env> {
       })
 
     const budget = Budget.create({ limitUsd: config.budget.sandboxUsd, spentUsd: this.spent() })
+    const onCharge = (charge: Payment.Charge) => {
+      this.sql.run(
+        'INSERT INTO payments (at, usd, detail) VALUES (?, ?, ?)',
+        Date.now(),
+        charge.usd,
+        JSON.stringify(charge),
+      )
+    }
+    if (config.sandbox.provider === 'gateway')
+      return Gateway.create({
+        budget,
+        key: this.env.TEMPO_KEY!,
+        onCharge,
+        ...(this.env.TEMPO_GATEWAY_URL ? { url: this.env.TEMPO_GATEWAY_URL } : {}),
+      })
     return E2b.create({
       pay: Payment.payer({
         account: privateKeyToAccount(this.env.TEMPO_PRIVATE_KEY as `0x${string}`),
         budget,
-        onCharge: (charge) => {
-          this.sql.run(
-            'INSERT INTO payments (at, usd, detail) VALUES (?, ?, ?)',
-            Date.now(),
-            charge.usd,
-            JSON.stringify(charge),
-          )
-        },
+        onCharge,
       }),
     })
   }
@@ -623,6 +640,7 @@ export class Run extends DurableObject<Env> {
         error: row.error,
         expiresAt: row.expires_at,
         id: row.id,
+        paidUntil: row.paid_until,
         provider: config.sandbox.provider,
         runner: row.runner,
         state: row.state,
@@ -682,6 +700,7 @@ export class Run extends DurableObject<Env> {
         if (provider) await this.grow(provider)
       }
       if (provider) await this.closeIdle(provider)
+      if (provider) await this.renew(provider)
     } catch (error) {
       console.error('nanoeval tick failed', message(error))
     }
@@ -1026,6 +1045,7 @@ export class Run extends DurableObject<Env> {
     this.creating.add(id)
     try {
       const created = await provider.create({
+        ...(config.sandbox.leaseSec === undefined ? {} : { leaseSec: config.sandbox.leaseSec }),
         metadata: { nanoeval_run: meta.id, nanoeval_sandbox: String(id) },
         template: config.sandbox.template,
         timeoutSec: config.sandbox.timeoutSec!,
@@ -1035,6 +1055,7 @@ export class Run extends DurableObject<Env> {
       this.update('sandboxes', id, {
         expires_at: created.expiresAt,
         handle: JSON.stringify(handle),
+        paid_until: created.paidUntil ?? null,
         runner,
       })
       const sandbox = provider.connect(handle)
@@ -1164,6 +1185,27 @@ export class Run extends DurableObject<Env> {
         this.update('sandboxes', record.id, { error: message(error), state: 'failed' })
       }
       if (record.runner !== null) this.update('runners', record.runner, { state: 'left' })
+    }
+  }
+
+  private async renew(provider: Sandbox.Provider): Promise<void> {
+    if (!provider.renew) return
+    const config = this.config()
+    for (const record of this.sandboxes()) {
+      if (record.state !== 'ready' && record.state !== 'starting') continue
+      if (record.paid_until === null || record.expires_at === null) continue
+      if (record.paid_until - Date.now() > config.limits.leaseSec * 1000) continue
+      const seconds = Math.min(
+        config.sandbox.leaseSec ?? Gateway.leaseSec,
+        Math.floor((record.expires_at - record.paid_until) / 1000),
+      )
+      if (seconds < 1) continue
+      try {
+        const renewed = await provider.renew(JSON.parse(record.handle!) as Sandbox.Handle, seconds)
+        this.update('sandboxes', record.id, { paid_until: renewed.paidUntil })
+      } catch (error) {
+        await this.failSandbox(provider, record, message(error))
+      }
     }
   }
 
