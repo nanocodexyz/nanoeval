@@ -1,12 +1,27 @@
+import * as Gateway from './Gateway.ts'
+
 export type Provider = 'claude' | 'codex'
 
+export type Key = { base?: string; key: string; kind: 'key'; scheme: 'bearer' | 'x-api-key' }
+
 export type Credential =
-  | { base?: string; key: string; kind: 'key' }
+  | Key
   | { headers: Record<string, string>; kind: 'plan'; relay?: { secret: string; url: string } }
+
+export type Variables = {
+  ANTHROPIC_API_KEY?: string
+  ANTHROPIC_AUTH_TOKEN?: string
+  ANTHROPIC_BASE_URL?: string
+  OPENAI_API_KEY?: string
+  OPENAI_BASE_URL?: string
+  TEMPO_GATEWAY_URL?: string
+  TEMPO_KEY?: string
+}
 
 export type Usage = {
   cacheWriteTokens: number
   cachedTokens: number
+  costUsd?: number
   inputTokens: number
   model?: string
   outputTokens: number
@@ -38,6 +53,37 @@ const dropped = [
   'x-real-ip',
 ]
 
+export function key(variables: Variables, provider: Provider): Key | undefined {
+  const base = provider === 'claude' ? variables.ANTHROPIC_BASE_URL : variables.OPENAI_BASE_URL
+  const own = (value: string, scheme: Key['scheme']): Key => ({
+    ...(base ? { base } : {}),
+    key: value,
+    kind: 'key',
+    scheme,
+  })
+  if (provider === 'claude' && variables.ANTHROPIC_AUTH_TOKEN)
+    return own(variables.ANTHROPIC_AUTH_TOKEN, 'bearer')
+  if (provider === 'claude' && variables.ANTHROPIC_API_KEY)
+    return own(variables.ANTHROPIC_API_KEY, 'x-api-key')
+  if (provider === 'codex' && variables.OPENAI_API_KEY)
+    return own(variables.OPENAI_API_KEY, 'bearer')
+  return variables.TEMPO_KEY
+    ? {
+        base: variables.TEMPO_GATEWAY_URL || Gateway.origin,
+        key: variables.TEMPO_KEY,
+        kind: 'key',
+        scheme: 'bearer',
+      }
+    : undefined
+}
+
+export function authorize(headers: Headers, credential: Key): void {
+  headers.delete('authorization')
+  headers.delete('x-api-key')
+  if (credential.scheme === 'x-api-key') headers.set('x-api-key', credential.key)
+  else headers.set('authorization', 'Bearer ' + credential.key)
+}
+
 export function token(headers: Headers): string | undefined {
   const authorization = headers.get('authorization') ?? ''
   if (authorization.startsWith('Bearer ')) return authorization.slice('Bearer '.length)
@@ -63,8 +109,7 @@ export function forward(input: forward.Input): { headers: Headers; url: string }
   const base = (value: string) => value.replace(/\/+$/, '')
 
   if (credential.kind === 'key') {
-    if (provider === 'claude') headers.set('x-api-key', credential.key)
-    else headers.set('authorization', 'Bearer ' + credential.key)
+    authorize(headers, credential)
     return {
       headers,
       url:
@@ -123,6 +168,7 @@ export function meter(provider: Provider): {
       found = {
         cacheWriteTokens: count(used['input_tokens_details']?.['cache_write_tokens']),
         cachedTokens: count(used['input_tokens_details']?.['cached_tokens']),
+        ...(typeof used['cost'] === 'number' ? { costUsd: count(used['cost']) } : {}),
         inputTokens: count(used['input_tokens']),
         ...(typeof response['model'] === 'string' ? { model: response['model'] } : {}),
         outputTokens: count(used['output_tokens']),
@@ -141,9 +187,11 @@ export function meter(provider: Provider): {
         ? count(used['cache_read_input_tokens'])
         : (found?.cachedTokens ?? 0)
     const model = typeof message['model'] === 'string' ? message['model'] : found?.model
+    const cost = typeof used['cost'] === 'number' ? count(used['cost']) : found?.costUsd
     found = {
       cacheWriteTokens: write,
       cachedTokens: cached,
+      ...(cost === undefined ? {} : { costUsd: cost }),
       inputTokens:
         'input_tokens' in used
           ? count(used['input_tokens']) + cached + write

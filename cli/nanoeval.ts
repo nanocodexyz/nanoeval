@@ -527,9 +527,12 @@ async function main(): Promise<void> {
     const vars: Record<string, string> = { ACCESS_TOKEN: required(values.token, 'token') }
     for (const name of [
       'ANTHROPIC_API_KEY',
+      'ANTHROPIC_AUTH_TOKEN',
       'ANTHROPIC_BASE_URL',
       'OPENAI_API_KEY',
       'OPENAI_BASE_URL',
+      'TEMPO_GATEWAY_URL',
+      'TEMPO_KEY',
     ])
       if (process.env[name]) vars[name] = process.env[name]
     if (values['sandbox-url']) {

@@ -2,11 +2,6 @@ import { App, Forward } from 'nanocode-ts/cloudflare'
 import * as Proxy from '../src/Proxy.ts'
 import { account, type Env } from './Env.ts'
 
-const providers = {
-  claude: { base: 'ANTHROPIC_BASE_URL', key: 'ANTHROPIC_API_KEY' },
-  codex: { base: 'OPENAI_BASE_URL', key: 'OPENAI_API_KEY' },
-} as const
-
 export async function authorized(request: Request, env: Env): Promise<boolean> {
   const header = request.headers.get('authorization') ?? ''
   if (!env.ACCESS_TOKEN || !header.startsWith('Bearer ')) return false
@@ -45,7 +40,6 @@ export const nanocode = App.create<Env>({
     Forward.create({
       fetch: (request, dispatch) => {
         const name = dispatch.provider ?? 'claude'
-        const provider = providers[name]
         const headers = new Headers(request.headers)
         const source = new URL(request.url)
         let target = request.url
@@ -60,12 +54,10 @@ export const nanocode = App.create<Env>({
             headers.set(Proxy.relaySecretHeader, env.CHATGPT_RELAY_SECRET ?? '')
           }
         } else {
-          const key = env[provider.key]
-          if (!key) return Promise.resolve(refuse(provider.key + ' is not set'))
-          if (provider.key === 'ANTHROPIC_API_KEY') headers.set('x-api-key', key)
-          else headers.set('authorization', 'Bearer ' + key)
-          const base = env[provider.base]
-          if (base) target = base.replace(/\/+$/, '') + source.pathname + source.search
+          const held = Proxy.key(env, name)
+          if (!held) return Promise.resolve(refuse('no ' + name + ' credential is set'))
+          Proxy.authorize(headers, held)
+          if (held.base) target = held.base.replace(/\/+$/, '') + source.pathname + source.search
         }
 
         return fetch(

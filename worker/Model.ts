@@ -34,9 +34,7 @@ export function credential(env: Env, provider: Proxy.Provider): Proxy.Credential
         ? { relay: { secret: env.CHATGPT_RELAY_SECRET ?? '', url: env.CHATGPT_RELAY_URL } }
         : {}),
     }
-  const key = provider === 'claude' ? env.ANTHROPIC_API_KEY : env.OPENAI_API_KEY
-  const base = provider === 'claude' ? env.ANTHROPIC_BASE_URL : env.OPENAI_BASE_URL
-  return key ? { ...(base ? { base } : {}), key, kind: 'key' } : undefined
+  return Proxy.key(env, provider)
 }
 
 export async function forward(env: Env, input: forward.Input): Promise<Response> {

@@ -741,6 +741,7 @@ export class Run extends DurableObject<Env> {
       outputTokens: 0,
       toolCalls: 0,
     }
+    const costs: (number | undefined)[] = []
     for (const request of this.sql.all(
       'SELECT path, usage FROM model_requests WHERE attempt = ? AND claim = ? ORDER BY id',
       row.id,
@@ -754,7 +755,10 @@ export class Run extends DurableObject<Env> {
       total.inputTokens += usage.inputTokens
       total.modelCalls++
       total.outputTokens += usage.outputTokens
+      costs.push(usage.costUsd)
     }
+    if (costs.length && costs.every((cost) => cost !== undefined))
+      total.costUsd = costs.reduce<number>((sum, cost) => sum + cost!, 0)
     return total
   }
 
@@ -1655,7 +1659,12 @@ export class Run extends DurableObject<Env> {
     if (kind && end.collect !== false && ['judge', 'run', 'verify'].includes(row.phase)) {
       const stream = this.textArtifact(row.id, Installed.events) ?? ''
       const summary = Installed.summarize(kind, stream)
-      usage = { ...this.metered(row), costUsd: summary.costUsd, toolCalls: summary.toolCalls }
+      const metered = this.metered(row)
+      usage = {
+        ...metered,
+        costUsd: metered.costUsd ?? summary.costUsd,
+        toolCalls: summary.toolCalls,
+      }
       this.putArtifact(
         row.id,
         modelRequests,

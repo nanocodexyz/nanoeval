@@ -8,6 +8,7 @@ import { after, test } from 'node:test'
 import { parseAgent } from '../cli/nanoeval.ts'
 import type * as Atif from '../src/Atif.ts'
 import * as Config from '../src/Config.ts'
+import * as Gateway from '../src/Gateway.ts'
 import * as Harbor from '../src/Harbor.ts'
 import * as Installed from '../src/Installed.ts'
 import * as Proxy from '../src/Proxy.ts'
@@ -396,7 +397,7 @@ test('forwarding swaps the token of the attempt for the credential of the deploy
   const cases: [Proxy.forward.Input, string, Record<string, string>][] = [
     [
       {
-        credential: { key: 'sk-openai', kind: 'key' },
+        credential: { key: 'sk-openai', kind: 'key', scheme: 'bearer' },
         headers: presented(),
         path: 'responses',
         provider: 'codex',
@@ -407,7 +408,12 @@ test('forwarding swaps the token of the attempt for the credential of the deploy
     ],
     [
       {
-        credential: { base: 'http://127.0.0.1:9000/', key: 'sk-ant', kind: 'key' },
+        credential: {
+          base: 'http://127.0.0.1:9000/',
+          key: 'sk-ant',
+          kind: 'key',
+          scheme: 'x-api-key',
+        },
         headers: presented(),
         path: 'v1/messages',
         provider: 'claude',
@@ -415,6 +421,22 @@ test('forwarding swaps the token of the attempt for the credential of the deploy
       },
       'http://127.0.0.1:9000/v1/messages?beta=true',
       { 'anthropic-beta': 'claude-code-20250219', 'x-api-key': 'sk-ant' },
+    ],
+    [
+      {
+        credential: {
+          base: 'https://gateway.example',
+          key: 'sk-gateway',
+          kind: 'key',
+          scheme: 'bearer',
+        },
+        headers: presented(),
+        path: 'v1/messages',
+        provider: 'claude',
+        search: '?beta=true',
+      },
+      'https://gateway.example/v1/messages?beta=true',
+      { 'anthropic-beta': 'claude-code-20250219', authorization: 'Bearer sk-gateway' },
     ],
     [
       {
@@ -482,10 +504,9 @@ test('forwarding swaps the token of the attempt for the credential of the deploy
     assert.equal(headers['content-type'], 'application/json')
     assert.equal(headers['originator'], 'codex_exec')
     assert.equal(headers['anthropic-version'], '2023-06-01')
-    if (input.provider === 'codex' || input.credential.kind === 'plan')
+    if (input.credential.kind === 'plan' || input.credential.scheme === 'bearer')
       assert.equal(headers['x-api-key'], undefined)
-    if (input.provider === 'claude' && input.credential.kind === 'key')
-      assert.equal(headers['authorization'], undefined)
+    else assert.equal(headers['authorization'], undefined)
   }
   const again = Proxy.forward({
     credential: { headers: { authorization: 'Bearer oauth-token' }, kind: 'plan' },
@@ -495,6 +516,94 @@ test('forwarding swaps the token of the attempt for the credential of the deploy
     search: '',
   })
   assert.equal(again.headers.get('anthropic-beta'), Proxy.oauthBeta + ',other')
+})
+
+test('a deployment holds a key of its own for a provider, or one Tempo Key for both', () => {
+  assert.equal(Proxy.key({}, 'claude'), undefined)
+  assert.equal(Proxy.key({ ANTHROPIC_BASE_URL: 'https://models.example' }, 'claude'), undefined)
+  assert.deepEqual(Proxy.key({ ANTHROPIC_API_KEY: 'sk-ant' }, 'claude'), {
+    key: 'sk-ant',
+    kind: 'key',
+    scheme: 'x-api-key',
+  })
+  assert.equal(Proxy.key({ ANTHROPIC_API_KEY: 'sk-ant' }, 'codex'), undefined)
+  assert.deepEqual(
+    Proxy.key(
+      {
+        ANTHROPIC_API_KEY: 'sk-ant',
+        ANTHROPIC_AUTH_TOKEN: 'token',
+        ANTHROPIC_BASE_URL: 'https://models.example',
+        TEMPO_KEY: 'sk-tempo',
+      },
+      'claude',
+    ),
+    { base: 'https://models.example', key: 'token', kind: 'key', scheme: 'bearer' },
+  )
+  assert.deepEqual(
+    Proxy.key({ OPENAI_API_KEY: 'sk-openai', OPENAI_BASE_URL: 'https://models.example' }, 'codex'),
+    { base: 'https://models.example', key: 'sk-openai', kind: 'key', scheme: 'bearer' },
+  )
+  for (const provider of ['claude', 'codex'] as const) {
+    assert.deepEqual(Proxy.key({ TEMPO_KEY: 'sk-tempo' }, provider), {
+      base: Gateway.origin,
+      key: 'sk-tempo',
+      kind: 'key',
+      scheme: 'bearer',
+    })
+    assert.deepEqual(
+      Proxy.key(
+        {
+          ANTHROPIC_BASE_URL: 'https://ignored.example',
+          OPENAI_BASE_URL: 'https://ignored.example',
+          TEMPO_GATEWAY_URL: 'http://127.0.0.1:9000',
+          TEMPO_KEY: 'sk-tempo',
+        },
+        provider,
+      ),
+      { base: 'http://127.0.0.1:9000', key: 'sk-tempo', kind: 'key', scheme: 'bearer' },
+    )
+  }
+
+  const headers = new Headers({ authorization: 'Bearer of-the-client', 'x-api-key': 'placeholder' })
+  Proxy.authorize(headers, { key: 'sk-tempo', kind: 'key', scheme: 'bearer' })
+  assert.deepEqual(sent(headers), { authorization: 'Bearer sk-tempo' })
+  Proxy.authorize(headers, { key: 'sk-ant', kind: 'key', scheme: 'x-api-key' })
+  assert.deepEqual(sent(headers), { 'x-api-key': 'sk-ant' })
+})
+
+test('the meter keeps the cost a gateway reports with the usage', () => {
+  const responses = Proxy.meter('codex')
+  responses.push(
+    'event: response.completed\ndata: {"type":"response.completed","response":{"model":"gpt-6-luna","usage":{"input_tokens":1200,"input_tokens_details":{"cached_tokens":1000},"output_tokens":40,"cost":0.00005}}}\n\n',
+  )
+  assert.deepEqual(responses.usage(), {
+    cacheWriteTokens: 0,
+    cachedTokens: 1000,
+    costUsd: 0.00005,
+    inputTokens: 1200,
+    model: 'gpt-6-luna',
+    outputTokens: 40,
+  })
+
+  const messages = Proxy.meter('claude')
+  messages.push(
+    'event: message_start\ndata: {"type":"message_start","message":{"model":"claude-haiku-5-5","usage":{"input_tokens":10,"output_tokens":1}}}\n\n' +
+      'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":30,"cost":0.000016}}\n\n',
+  )
+  assert.deepEqual(messages.usage(), {
+    cacheWriteTokens: 0,
+    cachedTokens: 0,
+    costUsd: 0.000016,
+    inputTokens: 10,
+    model: 'claude-haiku-5-5',
+    outputTokens: 30,
+  })
+
+  const whole = Proxy.meter('claude')
+  whole.push(
+    '{"type":"message","model":"claude-haiku-5-5","usage":{"input_tokens":3,"output_tokens":2,"cost":0.0000013}}',
+  )
+  assert.equal(whole.usage()?.costUsd, 0.0000013)
 })
 
 test('the meter reads the usage of a response from its events, however they are cut', () => {
