@@ -29,7 +29,7 @@ The table says what was run. "The first version" is the flow before the eval tab
 | --- | --- |
 | Eval table (`Evals` Durable Object): rows, immutable versions, `nanoeval import`, `evals`, `eval` | Implemented, tested: unit tests for digests and versions, and every end-to-end lane imports before it runs |
 | Blob store by SHA-256: a directory on a machine | Implemented, tested. Terminal-Bench 2.1 is imported into one: 89 tasks, 19.2 GB of packed disks, in under 5 minutes |
-| Blob store by SHA-256: R2 through the Worker | Implemented, tested end to end under local workerd: small evals, and one 1.40 GB disk uploaded in parts, downloaded, and downloaded again with the stream cut three times and resumed by range. Not run against Cloudflare's R2 |
+| Blob store by SHA-256: R2 through the Worker | Implemented, tested end to end under local workerd: small evals, and one 1.40 GB disk uploaded in parts, downloaded, and downloaded again with the stream cut three times and resumed by range. Run against Cloudflare's R2 on a deployed Worker with four Terminal-Bench 2.1 disks of 38.6 to 147.1 MB: imported from a Linux machine in 85 s, and fetched there by a runner |
 | Environment conversion at import (`sandbox/Converter.ts`), with no container engine | Implemented, tested: `nanoeval-krun image build`, `pack` and `unpack`. The 89 images of Terminal-Bench 2.1, one SWE-bench instance image, `python:3.12-slim` and the 14 Dockerfiles of this repository converted. The 89 disks have the same trees as disks made from `docker export`, apart from the files an engine adds. See [DESIGN.md](DESIGN.md#environment-conversion) for what a Dockerfile may use |
 | Host policy for the `RUN` steps of a Dockerfile (`import --ca-bundle`, `--slot-env`, `--slot-forward`) | Implemented, tested on a Linux machine whose network re-signs TLS and serves the Python and npm registries on its loopback: a fixture that installs with pip and npm is refused without the options and imports with them, five Terminal-Bench 2.1 tasks built from their Dockerfiles, and no disk holds the bundle, a variable or a forward. On the base layers of the published images the trees differ only in what the day of a build decides, see [DECISIONS.md](DECISIONS.md#2026-11-11-the-smaller-gaps) |
 | Run table (`Run` Durable Object): rows, claims, leases, CLI and API | Implemented, tested: unit tests for claims, leases, expiry and fencing, and end to end under local workerd |
@@ -38,7 +38,7 @@ The table says what was run. "The first version" is the flow before the eval tab
 | A runner restarted during a run | Tested: it goes on with the slots it had and loses no claim |
 | Rerun lineage (`nanoeval run --rerun RUN [--failed\|--errored]`) | Implemented, tested end to end: each row names the attempt it retries |
 | nanocode-ts harness sessions | Implemented. Tested end to end under local workerd |
-| Installed agents (`codex-cli`, `claude-code`): the vendor's command line inside the slot, its model requests through an endpoint of the run that adds the credential | Implemented, tested: unit tests for the agent syntax, the commands, the credential swap and the usage meter, and end-to-end lanes with a scripted command on directory and krun slots (tasks, failure kinds, a restarted and a lost runner), on ns slots in a guest (tasks), and on krun slots whose tasks close the agent's network. Codex CLI 0.166.0 ran 6 Terminal-Bench 2.1 tasks on krun slots through a ChatGPT plan login beside a nanocode session on the same model: 6 passed for each, and it passed two fixtures in an Alpine image. The Claude Code 2.1.318 binaries ran on krun slots in an Alpine and a Debian image against a scripted Messages endpoint. **Claude Code has not run against Anthropic**: no valid login was at hand. No vendor's command has run on an ns slot or in a remote sandbox, where the runner would fetch its release. See [DESIGN.md](DESIGN.md#installed-agents) |
+| Installed agents (`codex-cli`, `claude-code`): the vendor's command line inside the slot, its model requests through an endpoint of the run that adds the credential | Implemented, tested: unit tests for the agent syntax, the commands, the credential swap and the usage meter, and end-to-end lanes with a scripted command on directory and krun slots (tasks, failure kinds, a restarted and a lost runner), on ns slots in a guest (tasks), and on krun slots whose tasks close the agent's network. Codex CLI 0.166.0 ran 6 Terminal-Bench 2.1 tasks on krun slots through a ChatGPT plan login beside a nanocode session on the same model: 6 passed for each, and it passed two fixtures in an Alpine image. The Claude Code 2.1.318 binaries ran on krun slots in an Alpine and a Debian image against a scripted Messages endpoint. **Claude Code has not run against Anthropic**: no valid login was at hand. Both commands ran on krun slots against the gateway through a deployed Worker and were refused for its key, see [Deploy it](#deploy-it). No vendor's command has run on an ns slot or in a remote sandbox, where the runner would fetch its release. See [DESIGN.md](DESIGN.md#installed-agents) |
 | `nanoeval compare RUN...`: the agents of one or more runs in one table | Implemented, tested |
 | Local sandbox provider (`nanoeval sandboxd`) | Implemented, tested |
 | Slot backend `krun`, one libkrun microVM per slot | Implemented, tested on a Linux machine with KVM: every end-to-end lane, 32 microVMs at once, and Terminal-Bench 2.1 with the tasks' own solutions, imported once and run by two runners: 82 of the 89 pass, and all 89 rows end as they did when slots pulled images. [DECISIONS.md](DECISIONS.md#2026-11-11-no-container-engine-at-import-or-at-run-time) has the table |
@@ -46,7 +46,7 @@ The table says what was run. "The first version" is the flow before the eval tab
 | A runner that picks its backend (`--backend auto`, the default of a run) | Implemented, tested: `krun` where `/dev/kvm` opens, `ns` where the runner is root |
 | Slot backend `dir` | Implemented, tested. For development and for lanes on a machine with neither KVM nor root |
 | Released `nanocode hand` in a slot, including Alpine images | Implemented, tested |
-| Real model run | Tested with `gpt-6-luna` on a ChatGPT plan login: 3 Terminal-Bench tasks of the imported eval, 2 passed and 1 ended as a `verifier` error that its rerun passed, and the end-to-end lane before the eval table. `claude-haiku-4-5` through the Anthropic API ran on the first version only |
+| Real model run | Tested with `gpt-6-luna` on a ChatGPT plan login: 3 Terminal-Bench tasks of the imported eval, 2 passed and 1 ended as a `verifier` error that its rerun passed, and the end-to-end lane before the eval table. `claude-haiku-4-5` through the Anthropic API ran on the first version only. Through the gateway no model has answered, see [Deploy it](#deploy-it) |
 | Oracle run (`nanoeval run --oracle`): each task's own solution instead of a model | Implemented, tested |
 | Dataset adapters (`nanoeval import`, `datasets`) | Implemented, tested: unit tests import from recorded fixtures with no network |
 | `terminal-bench-2.1`, imported from the Harbor registry by digest | Verified: the 89 packages match the ones Harbor downloads byte for byte. Imported as an eval and run with the tasks' own solutions, see above |
@@ -69,19 +69,21 @@ The table says what was run. "The first version" is the flow before the eval tab
 | Orchestrator restart during a run | Tested: the Worker is killed with attempts in flight, restarts on the same state, and the run finishes |
 | E2B sandboxes paid by the operator (`nanoeval sandbox`) | Run for real: a sandbox opened with an MPP wallet CLI, a runner attached in it, 13 attempts of Terminal-Bench 2.1 tasks on ns slots, with the tasks' solutions and with `gpt-6-luna`. See [Run it on E2B](#run-it-on-e2b) |
 | E2B sandboxes paid by the Worker (`--provider e2b`) | Implemented and tested against a local mock, with the bodies, the envd calls and the kill checked against the real service. **The Worker has not paid for a sandbox**: no key was put in one |
+| Sandboxes leased from the gateway (`--provider gateway`) | Implemented, tested end to end against a scripted gateway on directory, krun and ns slots: each request priced before it is paid, the lease renewed while rows run, the sandbox terminated at the end, and on ns slots the runner started from the runtime archive. Against the real gateway a run started on a laptop read the price of a `desktop` sandbox, $0.04228 for a lease of 300 s, and its paid request was refused with 401 for the key. **No sandbox has been opened through the gateway**: the key at hand was no longer valid. See [Deploy it](#deploy-it) |
 | The runner runtime (`--runtime`, `nanoeval runtime`): the runner as one archive that a sandbox without a checkout starts from | Implemented, tested: in a guest on Node 20.9, and on E2B's `desktop` template, which has no Node |
 | A sandbox lifetime chosen by the run from the timeouts of its rows | Implemented, unit tested. Not exercised by a paid run: the sandboxes paid for had a lifetime named by hand |
 | `storage_mb` | The size of a krun slot's copy-on-write disk |
 | Images whose user is not root, and images without bash | Tested with a fixture: tests and solutions are put in place as root, and the agent and the verifier run as the image's user |
-| Codex models (`provider: codex`) | Tested on a ChatGPT plan login (`nanoeval worker --codex-login`). Not run with an OpenAI API key |
+| Codex models (`provider: codex`) | Tested on a ChatGPT plan login (`nanoeval worker --codex-login`). With a key nanocode-ts takes Responses over HTTPS: tested against a scripted gateway, and from a deployed Worker up to the gateway's refusal of the key. Not run with an OpenAI API key |
 | Claude plan login (`nanoeval worker --claude-login`) | Run once, on the first flow: `claude-haiku-4-5` on `uppercase-message` reached the model through the plan and ended `failed`. The hand's `Bash` tool needs bash, which that Alpine image lacks, see [DECISIONS.md](DECISIONS.md#2026-11-11-installed-agents-and-nanocode-beside-codex-cli). Not run on the eval table: the login had expired and its tool could not renew it without a browser |
+| Models through the gateway with one key (`TEMPO_KEY`), and a bearer token for an Anthropic endpoint (`ANTHROPIC_AUTH_TOKEN`) | Implemented, tested: unit tests, and end-to-end lanes where a scripted gateway serves a `codex` and a `claude` session, or a scripted Codex CLI and Claude Code, refuses anything but the key as a bearer token, and reports the cost of each response, which becomes the cost of the attempt. From a deployed Worker each of the four reached the gateway's Responses or Messages route with the key as a bearer token and was refused with 401, since the key at hand was no longer valid. **No model has answered through the gateway** |
 | Services on one Linux machine (`scripts/install-linux.sh`) | Implemented, tested: installed under a second name on other ports with the store, cache, layers and state on chosen paths, ran an import and a run through the installed services, and removed again |
 | A certificate bundle and variables for slots (`sandboxd --ca-bundle`, `--slot-env`) | Implemented, tested |
 | A private network per slot (`--network private`, the default for `krun` and `ns` slots) | Implemented, tested on a Linux machine with KVM: a slot has its own loopback and ports, reaches the internet, and is reached neither by another slot nor by the host |
 | The shared host network (`--network host`) | Implemented. Attempts that listen on a fixed port are not isolated from each other there |
-| A hand of a private slot attached to a Worker over `wss://` | Run from private ns slots in an E2B sandbox, through a tunnel in front of a local Worker. Not run from krun slots, and no Worker is deployed |
+| A hand of a private slot attached to a Worker over `wss://` | Run from private ns slots in an E2B sandbox, through a tunnel in front of a local Worker, and from private krun slots on a Linux machine to a deployed Worker |
 | Listeners on the machine's loopback that private slots may reach (`sandboxd --slot-forward`) | Implemented, tested with a registry proxy on a machine's loopback |
-| Deployment to Cloudflare | Bundles with `wrangler deploy --dry-run`. Not deployed |
+| Deployment to Cloudflare | Deployed and run: an import into R2, and four Terminal-Bench 2.1 tasks with their solutions on a krun runner attached from a Linux machine, 4 of 4 passed. See [Deploy it](#deploy-it) |
 | A task that closes the network of its agent, its verifier or both (`allow_internet = false`, Harbor's `network_mode`) | Implemented for krun slots on a private network, tested end to end: a closed phase reaches neither the internet, by name or by address, nor the machine, and the attempt completes. Refused on `dir` and `ns` slots, on `--network host`, and with `--backend auto`, whose runners may take ns: such a run names `--backend krun`. A network allowlist is refused. No dataset shipped here closes a phase yet |
 | Tasks with a Compose file or MCP servers, separate verifier environments, `reward.json` | Refused, except `reward.json`, which is not read: a verifier that writes only it ends as a `verifier` error. Planned |
 | Prompt-cache cohorts, duration-ordered dispatch, R2 artifacts, MPP sessions | Planned |
@@ -141,7 +143,7 @@ node cli/nanoeval.ts run --eval terminal-bench-2.1 --only fix-git --only regex-l
 node cli/nanoeval.ts compare RUN
 ```
 
-The first such run on a machine downloads the pinned release of the command into the cache and checks it against its SHA-256: an archive of 200 MB for Codex CLI, 517 MB unpacked, and 632 MB for the two builds of Claude Code. The task image is not changed, and the credential stays in the Worker: the command gets an address and a token that are good for that attempt only. Prompts and tools are each harness's own, see [DESIGN.md](DESIGN.md#installed-agents) for what such a comparison holds equal. A `codex-cli` agent has token counts and no cost estimate, so `--model-budget-usd` does not bound it.
+The first such run on a machine downloads the pinned release of the command into the cache and checks it against its SHA-256: an archive of 200 MB for Codex CLI, 517 MB unpacked, and 632 MB for the two builds of Claude Code. The task image is not changed, and the credential stays in the Worker: the command gets an address and a token that are good for that attempt only. Prompts and tools are each harness's own, see [DESIGN.md](DESIGN.md#installed-agents) for what such a comparison holds equal. A `codex-cli` agent has token counts and no cost estimate of its own, so `--model-budget-usd` bounds it only when the endpoint reports what it charged, as the gateway does.
 
 To check task environments and verifiers without a model, `nanoeval run --oracle --eval NAME --wait` runs each task's `solution/solve.sh` in the slot in place of the agent. A solution is a blob of its own, and only an oracle run is told its digest.
 
@@ -259,6 +261,51 @@ Each slot gets its own mount, PID, IPC, UTS, cgroup and network namespaces, the 
 
 Installed agents and `--verifier-cache` work in ns slots as in krun slots. A task that closes the network of a phase does not run there: only a microVM has the gate that closes it, so such a run is refused unless it names `--backend krun`.
 
+## Deploy it
+
+The Worker runs on Cloudflare with its three Durable Object classes and one R2 bucket, and takes its models and its sandboxes from the [Tempo gateway](https://gateway.tempo-dev.workers.dev/docs) with one key, so that a run needs no machine of yours once its eval is imported. The table below says how much of that has run.
+
+```sh
+npx wrangler r2 bucket create nanoeval-blobs
+npx wrangler deploy
+TOKEN=$(openssl rand -hex 32)
+printf %s "$TOKEN" | npx wrangler secret put ACCESS_TOKEN
+npx wrangler secret put TEMPO_KEY          # an sk-tempo- key: models and sandboxes are paid from its budget
+export NANOEVAL_URL=https://nanoeval.ACCOUNT.workers.dev NANOEVAL_TOKEN=$TOKEN
+
+# On a Linux machine with KVM, once: environments become disks in R2, and the runner one archive there.
+node cli/nanoeval.ts import terminal-bench-2.1 --only fix-git --only openssl-selfsigned-cert --store r2
+node cli/nanoeval.ts runtime --publish --out output/runtime.tgz      # prints its SHA-256
+
+# From anywhere: the run leases a sandbox from the gateway and ends it when its rows are done.
+node cli/nanoeval.ts run --eval terminal-bench-2.1 \
+  --agent luna=codex:gpt-6-luna --agent haiku=claude:claude-haiku-5-5 \
+  --provider gateway --template desktop --runtime-blob SHA256 --slots 3 \
+  --sandbox-budget-usd 1 --model-budget-usd 1 --wait
+
+# Or with a machine of yours as the runner.
+node cli/nanoeval.ts run --eval terminal-bench-2.1 --oracle --sandboxes 0   # prints RUN
+node cli/nanoeval.ts runner --run RUN --slots 4
+```
+
+| Variable of the Worker | For |
+| --- | --- |
+| `ACCESS_TOKEN` | The bearer token of the API, which the CLI takes as `NANOEVAL_TOKEN` |
+| `TEMPO_KEY` | The gateway: `codex` and `claude` agents, installed agents, judges, and the sandboxes of `--provider gateway`. `TEMPO_GATEWAY_URL` names another gateway |
+| `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY`, with `ANTHROPIC_BASE_URL` | A key of its own for `claude` agents instead. The first is sent as a bearer token, the second as `x-api-key` |
+| `OPENAI_API_KEY`, with `OPENAI_BASE_URL` | The same for `codex` agents |
+| `PUBLIC_URL` | The address that runners and hands dial, when it is not the one the run was created through |
+| `TEMPO_PRIVATE_KEY` | A wallet key for `--provider e2b`, see [Run it on E2B](#run-it-on-e2b) |
+
+**What it costs.** Model requests are charged per token, and the cost of an attempt is what the gateway reported with its responses. The gateway leases an E2B sandbox by the second at E2B's price, and runs commands in it as root. A run pays `--sandbox-lease-sec` (300) when it opens one, as much again whenever less than `--lease-sec` (60) of the lease is left while rows need the sandbox, and terminates it when they are done. E2B bills a renewal from the moment it is made, so each one pays the seconds that were left a second time: a longer lease loses less to renewals and more at the end. Every request to the gateway's compute API is first sent without the key and answered with its price, which is checked against `--sandbox-budget-usd` and listed under `payments` in the run's status before the request goes again with the key. A `desktop` sandbox was quoted $0.04228 for 300 s.
+
+| | State |
+| --- | --- |
+| The Worker on Cloudflare, evals and runs in Durable Objects, blobs in R2 | Run for real |
+| A krun runner on a Linux machine attached to it, hands dialing `wss://` from private slots | Run for real: four Terminal-Bench 2.1 tasks with their solutions, 4 passed, the first row claimed 1.2 s after the run was created |
+| `codex` and `claude` agents, Codex CLI and Claude Code through the gateway | Each reached the gateway through the deployed Worker and was refused with 401: the key at hand was no longer valid. Codex CLI 0.166.0 sent six requests and Claude Code 2.1.318 eleven before they gave up. No model answered |
+| A sandbox leased from the gateway | Its price was read, and its paid request was refused with 401 for the same key. Nothing was opened |
+
 ## Run it on E2B
 
 An E2B sandbox is a machine with root and no KVM: one was probed, see [DECISIONS.md](DECISIONS.md#2026-11-11-e2b-for-real-slots-without-kvm-a-runner-without-a-checkout-a-paid-run). Its runner boots the same environment disks in [ns slots](#ns-slots), several per sandbox, and is started from one archive that the run publishes, so the template needs nothing of nanoeval's. The Worker has to be reachable from the sandbox, for the runner, its blobs and the hands: a deployed Worker, or a tunnel in front of a local one.
@@ -320,6 +367,9 @@ NANOEVAL_E2E_BACKEND=ns NANOEVAL_E2E_SCENARIO=network npm run e2e         # what
 NANOEVAL_E2E_BACKEND=ns NANOEVAL_E2E_MODEL=installed npm run e2e          # installed agents on ns slots; also NANOEVAL_E2E_SCENARIO=cache
 NANOEVAL_E2E_MODEL=installed NANOEVAL_E2E_SCENARIO=closed npm run e2e     # an installed agent whose task closes its network
 NANOEVAL_E2E_BACKEND=ns NANOEVAL_E2E_MODEL=oracle NANOEVAL_E2E_RUNTIME=1 npm run e2e   # the runner from its archive
+NANOEVAL_E2E_GATEWAY=1 npm run e2e         # models and the run's sandbox through a scripted gateway, with one key
+NANOEVAL_E2E_GATEWAY=1 NANOEVAL_E2E_MODEL=installed npm run e2e          # installed agents through it; both also on dir and ns slots
+NANOEVAL_E2E_GATEWAY=1 NANOEVAL_E2E_BACKEND=ns NANOEVAL_E2E_MODEL=oracle NANOEVAL_E2E_RUNTIME=1 NANOEVAL_E2E_STORE=r2 npm run e2e   # a leased sandbox that starts its runner from the archive
 NANOEVAL_E2E_MODEL=anthropic npm run e2e   # a real model with ANTHROPIC_API_KEY
 NANOEVAL_E2E_MODEL=codex-plan npm run e2e  # a real model on the ChatGPT plan of ~/.codex/auth.json
 (cd krun && cargo clippy --all-targets -- -D warnings && cargo test)   # the launcher and its image converter
@@ -342,7 +392,7 @@ CI runs these on a GitHub-hosted runner, which has no libkrunfw: the `krun` lane
 | `datasets/` | The dataset adapters, and the graders they write into tasks |
 | `scripts/` | `install-linux.sh`, the E2B price quote, and `harbor-check.py`, which loads an exported job with Harbor's own models |
 | `tasks/` | Three small Harbor tasks from gakonst/nanoeval |
-| `test/` | Unit tests, the end-to-end test and its failure fixtures, and `Guest.ts`, the microVM guest that ns lanes run in on a machine without root |
+| `test/` | Unit tests, the end-to-end test and its failure fixtures, and `Guest.ts`, the microVM guest that ns lanes run in on a machine without root, and `MockGateway.ts`, the scripted gateway of the gateway lanes |
 
 ## License
 

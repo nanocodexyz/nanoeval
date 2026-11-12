@@ -45,7 +45,7 @@ The shape of the second is the shape here: import once, a durable table, runners
 | `sandbox/Store.ts` | Node | The blob store: a directory, or R2 through the Worker, and the verified cache of a machine |
 | `sandbox/Converter.ts` | Node | Where a task environment becomes a disk, and where a disk is packed and unpacked: three commands of the launcher in `krun/` |
 | `sandbox/Sandboxd.ts` | Any machine | The local provider's daemon: makes one machine a sandbox host |
-| `src/Sandbox.ts`, `src/Local.ts`, `src/E2b.ts` | Worker | The provider contract and its two providers |
+| `src/Sandbox.ts`, `src/Local.ts`, `src/E2b.ts`, `src/Gateway.ts` | Worker | The provider contract and its three providers |
 | `src/Payment.ts`, `src/Budget.ts` | Worker | MPP charges through mppx, refused past the run's budget, recorded in the ledger |
 | `src/Task.ts`, `src/Atif.ts`, `src/Harbor.ts`, `src/Result.ts`, `src/Verdict.ts` | Worker and CLI | Harbor task loading, ATIF-v1.7 trajectories, Harbor job export, outcomes, and what a verifier's facts mean |
 | `src/Judge.ts` | Worker | The judge request a verifier writes and the answer it reads |
@@ -194,7 +194,7 @@ A runner is one Node process on a sandbox host, `nanoeval runner`. A run starts 
 
 ## A runner without a checkout
 
-A sandbox of a public template has no checkout, no launcher and no Node that runs TypeScript. A run made with `--runtime`, which `--provider e2b` implies, publishes the runner as one blob and starts it from that.
+A sandbox of a public template has no checkout, no launcher and no Node that runs TypeScript. A run made with `--runtime`, which `--provider e2b` and `--provider gateway` imply, publishes the runner as one blob and starts it from that. The archive holds Linux binaries, so a machine that cannot build it names one that `nanoeval runtime --publish` stored before, by its SHA-256 (`run --runtime-blob`).
 
 ```
  nanoeval run --runtime         cli/Runtime.ts builds runtime.tgz and uploads it to the Worker's blob store
@@ -572,7 +572,7 @@ An agent of a run is one of two kinds. A session agent (`claude`, `codex`) is th
 
 **The endpoint.** A run forwards model requests for its installed agents at `/v1/runs/RUN/model/ROW/`. The token is an HMAC over the row and its current claim under a secret of the run, so it names one claim and needs no table. A request is served only while that claim holds the row, the row is in its `run` phase, and the agent's deadline has not passed: a finished agent, a verifier and a lost claim have no endpoint. Only the generation routes of the agent's provider are forwarded, `responses` and `responses/compact` for Codex, `v1/messages` and `v1/messages/count_tokens` for Claude. The credential is the one sessions use, see [Model credentials](#model-credentials): the plan login when the deployment has one, the API key otherwise, and for a ChatGPT plan the same loopback relay. The token, and any account or relay header the guest sent, are dropped before the request leaves. On a private network the slot relays the Worker's loopback address for exactly as long as the agent runs, as it does for a hand, and the allow list is reset before the verifier.
 
-**Accounting.** The run writes each request before it forwards it, and its status, duration and usage when the response has passed: the usage is read from the provider's events as they stream through. The attempt's token counts are the sum over the requests of its last claim, the requests are kept as `agent/model-requests.jsonl`, and a lost claim's tokens are recorded with that claim. The cost is what the command itself reports: Claude Code prints one, Codex CLI none, so a `codex-cli` attempt has tokens and no cost, and `--model-budget-usd` does not bound it.
+**Accounting.** The run writes each request before it forwards it, and its status, duration and usage when the response has passed: the usage is read from the provider's events as they stream through. The attempt's token counts are the sum over the requests of its last claim, the requests are kept as `agent/model-requests.jsonl`, and a lost claim's tokens are recorded with that claim. The cost is what the endpoint charged where it says so: the gateway reports `cost` in the usage of each response, the run keeps it with the request, and an attempt whose every generation carried one costs their sum. Otherwise it is what the command itself reports: Claude Code prints an estimate, Codex CLI none, so a `codex-cli` attempt on a plan or a provider's own key has tokens and no cost, and `--model-budget-usd` does not bound it. A session needs none of this: nanocode-ts passes the reported cost through as the `cost_usd` of its turn.
 
 **What is the same as for a session agent.** The row, its claims and leases, admission, the disk and the copy-on-write disk, the network, the user, the verifier and the judge, the export. The agent's timeout is the task's: `timeout` ends the command, and the attempt is an `agent_timeout` that keeps its verifier reward. A command that exits with another code is an `agent` error with what it printed. The command is a detached phase of the slot, so a runner that restarts goes on with it, a lost runner's row is claimed again from an empty environment, and a cancelled run takes the slot down with the command in it.
 
@@ -584,11 +584,11 @@ An agent of a run is one of two kinds. A session agent (`claude`, `codex`) is th
 - **The plan.** Both arms of a provider use one credential, so they share its rate limits when they run at once.
 - **Versions.** The commands are pinned here, the nanocode release in `src/Slot.ts`. A comparison names them, and the export carries them.
 
-**Not verified.** Claude Code against Anthropic, with an API key or a plan login: no valid login was at hand, see [DECISIONS.md](DECISIONS.md#2026-11-11-installed-agents-and-nanocode-beside-codex-cli). Its release was run on krun slots against a scripted Messages endpoint. For a plan login the endpoint adds the `oauth-2025-04-20` beta as nanocode-egress does, and whether Anthropic accepts a plan token on the requests Claude Code makes in this mode has not been tried. A deployed Worker reached over `https://`, and aarch64, have not been run either. On ns slots only the scripted command of the lanes ran, and no installed agent ran in a remote sandbox.
+**Not verified.** Claude Code against Anthropic, with an API key or a plan login: no valid login was at hand, see [DECISIONS.md](DECISIONS.md#2026-11-11-installed-agents-and-nanocode-beside-codex-cli). Its release was run on krun slots against a scripted Messages endpoint. For a plan login the endpoint adds the `oauth-2025-04-20` beta as nanocode-egress does, and whether Anthropic accepts a plan token on the requests Claude Code makes in this mode has not been tried. Through a deployed Worker reached over `https://`, both commands ran on krun slots against the gateway and were refused for its key, so neither has had an answer there. aarch64 has not been run. On ns slots only the scripted command of the lanes ran, and no installed agent ran in a remote sandbox.
 
 ## Sandbox providers
 
-A provider creates a sandbox, runs a command in it, writes a file to it, and kills it (`src/Sandbox.ts`). The contract is unchanged, and a run now asks one thing of a sandbox: it writes `runner.json` into it and runs `nanoeval runner --detach --config runner.json`. A run with a runtime writes `bootstrap.sh` beside it and runs that instead, see [A runner without a checkout](#a-runner-without-a-checkout). Everything else is between that runner and the run.
+A provider creates a sandbox, runs a command in it, writes a file to it, and kills it (`src/Sandbox.ts`). One that leases its sandboxes also renews them. The contract is unchanged, and a run now asks one thing of a sandbox: it writes `runner.json` into it and runs `nanoeval runner --detach --config runner.json`. A run with a runtime writes `bootstrap.sh` beside it and runs that instead, see [A runner without a checkout](#a-runner-without-a-checkout). Everything else is between that runner and the run.
 
 **Local.** `nanoeval sandboxd` serves a machine over HTTP with a bearer token. A sandbox is a directory, and `nanoeval` on its path is this checkout. Deleting a sandbox ends its runner and every slot it still has. This is the single-machine mode of the earlier versions: one large machine, many slots.
 
@@ -616,6 +616,22 @@ Two ways pay for a sandbox:
 The answer of the paid request holds the sandbox's access token: keep the file private and delete it with the sandbox.
 
 The E2B JavaScript SDK is not used. It cannot pay, and it needs `nodejs_compat`. The envd protocol it wraps is two requests.
+
+**The gateway.** `src/Gateway.ts` opens the same kind of sandbox through the compute API of the [Tempo gateway](https://gateway.tempo-dev.workers.dev/docs/compute), paid with the `TEMPO_KEY` that pays for the models, so a deployed Worker holds one secret for both and no wallet key:
+
+1. Every request is sent twice. Without the key the gateway validates it and answers `402` with its price in the `WWW-Authenticate: Payment …` challenge, an amount in base units of a six-decimal token. The provider charges that price to the run's budget and writes it to `payments`, and only then sends the request again with `Authorization: Bearer`. A request over budget never carries the key. What the gateway refuses below `500` is written back as the same amount negated, and a `5xx` stays charged, since its outcome is unknown.
+2. `POST /v1/compute/create {provider: "e2b", image, lease, timeout}` answers `sandboxId`, `paidUntil` and `expiresAt`. `timeout` is the run's lifetime and costs nothing by itself. `lease` is what is paid now.
+3. `exec` runs `bash -lc` as root for at most 120 s, and `write` takes a file as the body with its path in headers. The bootstrap is an `exec`: it took 21.7 s on a `desktop` sandbox, and a failure comes back with the request instead of at the setup limit. The runner's home is `/root/.nanoeval`.
+4. `renew {sandboxId, seconds}` adds to the lease, and `terminate` ends the sandbox. An ended sandbox answers `404`, which a kill takes as done.
+
+Requests carry `Gateway-App: nanoeval`, so the sandboxes of every run are listed under one app of the key's wallet. The gateway accepts only a bearer token for a key.
+
+| | E2B over MPP | The gateway |
+| --- | --- | --- |
+| Secret in the Worker | `TEMPO_PRIVATE_KEY`, a wallet key that signs charges | `TEMPO_KEY`, a key with a budget of its own, which also pays the models |
+| Paid | The whole lifetime at creation | A lease, renewed while rows need the sandbox |
+| Commands | envd, as `user` with `sudo` | The gateway's `exec`, as root |
+| State | Run against a local mock only | Run against a scripted gateway end to end. Against the real one up to its refusal of the key: the price of a sandbox was read, none was opened |
 
 ## Tasks and results
 
@@ -693,7 +709,7 @@ judge = true           # the verifier may ask a model
 
 ## Model credentials
 
-The session sends a model request without a credential, and `worker/Sessions.ts` adds one in the `Forward` egress. With `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` it is the API key. With a plan login it is that plan's access token: `CLAUDE_CODE_OAUTH_TOKEN` for Claude, and `CHATGPT_ACCESS_TOKEN` with `CHATGPT_ACCOUNT_ID` for Codex, which make nanocode-ts open the session in its subscription mode for that provider. chatgpt.com refuses requests from workerd, so Codex plan requests go to the nanocode-egress relay (`CHATGPT_RELAY_URL`, `CHATGPT_RELAY_SECRET`), a Node process that forwards only the Codex Responses endpoints.
+The session sends a model request without a credential, and `worker/Sessions.ts` adds one in the `Forward` egress. With `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` it is the API key, sent as `x-api-key` to Anthropic and as a bearer token to OpenAI. `ANTHROPIC_AUTH_TOKEN` is a key for an Anthropic-compatible endpoint that takes a bearer token, under the name Claude Code reads. A provider without a key of its own takes `TEMPO_KEY`, a key of the [Tempo gateway](https://gateway.tempo-dev.workers.dev/docs), as a bearer token at `TEMPO_GATEWAY_URL`: the gateway serves Responses at `/v1/responses` and Messages at `/v1/messages` for every model, and answers a request that carries the key any other way as unpaid, with `402`. `Proxy.key` is that choice, for sessions and for the model endpoint of installed agents. With a key, nanocode-ts opens a Codex session over HTTPS, which is what the gateway serves: it has no Responses WebSocket. With a plan login it is that plan's access token: `CLAUDE_CODE_OAUTH_TOKEN` for Claude, and `CHATGPT_ACCESS_TOKEN` with `CHATGPT_ACCOUNT_ID` for Codex, which make nanocode-ts open the session in its subscription mode for that provider. chatgpt.com refuses requests from workerd, so Codex plan requests go to the nanocode-egress relay (`CHATGPT_RELAY_URL`, `CHATGPT_RELAY_SECRET`), a Node process that forwards only the Codex Responses endpoints.
 
 `nanoeval worker` fills these for local workerd. It reads the access token of `--claude-login` or `--codex-login` once at start, never the refresh token, starts the relay on a loopback port with a random secret, and hands every variable to wrangler in a mode 600 file in a private temporary directory that it removes on exit. It does not refresh a login: an expired one fails at the provider, and the attempt ends as an `agent` error.
 
@@ -701,7 +717,9 @@ The session sends a model request without a credential, and `worker/Sessions.ts`
 
 A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP charge is checked against the sandbox budget before it is signed and is written to the run's `payments` table with its challenge. No row is claimed once the model spend reaches the model budget, and the rows that still wait end as `budget` errors. The spend counts finished attempts and the sessions of lost claims. A sandbox whose creation was interrupted by an orchestrator restart is marked `unknown` and is not retried, since its payment may have happened.
 
-**Lifetime.** A paid sandbox is bought for a lifetime when it is created, and an early kill refunds nothing. Unless `--sandbox-timeout-sec` names it, the run computes it when it is created (`Config.lifetimeSec`): the worst case of a row is its setup limit, its agent timeout and its verifier timeout, three times that last one for a judged task. The rows are placed longest first, each on the slot that is free soonest, over `--sandboxes` times `--slots` slots, and the lifetime is the busiest slot plus the setup limit for the bootstrap. A run whose lifetime exceeds what E2B sells, 86,400 s, is refused with the figure. The bound ignores memory admission: a sandbox that expires with rows in flight loses them like any lost runner, and the run opens another while the budget lasts. E2B can also extend a running sandbox (`refreshes`), which would let a run buy time as it uses it. That is not used yet.
+**Lifetime.** A paid sandbox is bought for a lifetime when it is created, and an early kill refunds nothing. Unless `--sandbox-timeout-sec` names it, the run computes it when it is created (`Config.lifetimeSec`): the worst case of a row is its setup limit, its agent timeout and its verifier timeout, three times that last one for a judged task. The rows are placed longest first, each on the slot that is free soonest, over `--sandboxes` times `--slots` slots, and the lifetime is the busiest slot plus the setup limit for the bootstrap. A run whose lifetime exceeds what E2B sells, 86,400 s, is refused with the figure. The bound ignores memory admission: a sandbox that expires with rows in flight loses them like any lost runner, and the run opens another while the budget lasts. E2B can also extend a running sandbox (`refreshes`), which would let a run buy time as it uses it. The E2B provider does not use that.
+
+**Lease.** A gateway sandbox is paid by the lease instead. The run pays `--sandbox-lease-sec` (300, the gateway's default) when it opens the sandbox and gives the lifetime above as its `timeout`, which only bounds it. On each tick, after it has closed the sandboxes that no row needs, the run renews every sandbox that is starting or ready and has less than a claim lease (`--lease-sec`, 60 s) of its lease left, by another lease and never past the lifetime. A claim lease is how long the run waits for a silent runner, so it is also the notice a renewal gets, and a run whose sandbox lease is shorter than that is refused. E2B bills a renewal from the moment it is made, so the seconds that were left are paid twice: at the defaults at most 60 s in every 300. A renewal that fails, for the budget or at the gateway, fails the sandbox: its rows are lost claims, and the run opens another while the budget lasts. A sandbox is terminated when its runner holds no row and no row waits, and what was left of its lease is not refunded.
 
 ## Rejected alternatives
 
@@ -712,6 +730,10 @@ A run carries `budget.sandboxUsd` and an optional `budget.modelUsd`. Every MPP c
 | Cloudflare Workflows or Queues for the attempt lifecycle | A run needs one writer for claims and payments. A Durable Object is that writer, and it runs unchanged under local workerd |
 | D1 for the tables, and R2 for results | A table belongs to one eval or one run and has one writer, so it lives in that object's SQLite. Artifacts are chunked there too. R2 holds the blobs of evals, and is planned for large artifacts |
 | The E2B SDK in the Worker | It cannot pay and needs `nodejs_compat` |
+| The whole lifetime of a gateway sandbox paid at creation | The worst case of a Terminal-Bench row is hours and its usual case minutes. A lease is paid as it is used |
+| The gateway's `spawn` for the bootstrap | A background job reports its failure in a file that the run would have to poll, each poll a paid request. `exec` answers it at once and its 120 s limit holds the bootstrap five times over |
+| The usage of a session metered in the Worker | nanocode-ts already passes the cost a provider reports through its events |
+| Prices from the gateway's published table | The table has the fixed prices but not a lease's, which is quoted from the provider. The unpaid request names the price of exactly this request |
 | bwrap or an unprivileged user namespace for slots without KVM | A user namespace cannot loop-mount the environment disk, so the disk would have to be unpacked into a tree whose owners are mapped. A remote sandbox has root, and with it the kernel mounts the disk as it is |
 | `dir` slots in a remote sandbox | They cannot run an imported image at all, and do not isolate attempts |
 | A second agent for ns slots, in shell or in the runner | Exec with a user and an environment, the copy of tests, the relay and the reaping of orphans would each exist twice. The guest agent got a second transport instead |
