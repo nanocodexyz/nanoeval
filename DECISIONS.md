@@ -1759,3 +1759,69 @@ The three new lanes are in the workflow.
 - The verifier cache on ns slots with a verifier of Terminal-Bench, and in a remote sandbox.
 - A closed phase on ns slots: refused, not built.
 - CI on GitHub. Nothing is pushed.
+
+## 2026-11-11: a deployed Worker, and models and sandboxes from the gateway with one key
+
+Machines: the Worker deployed on Cloudflare with an R2 bucket. The 32-core Linux machine with KVM of the entries above (Node 24.22.2), shared, at a load average between 0.4 and 14, for the import, the attached runners and the lanes. A laptop (macOS, Node 26) for the deployment and for the run that asks the gateway for a sandbox. The gateway is `https://gateway.tempo-dev.workers.dev`, as its `/docs` describe it. Commits `53ff0d9` to the head of this entry.
+
+**No paid request succeeded in this entry.** The gateway key at hand answered `401 invalid_api_key` on the gateway's own key route before the first request of this entry and after the last. Every route below was therefore exercised up to the gateway's check of the key and no further: no model answered, no sandbox was opened, and nothing was charged. What a response and a lease look like past that check is established against a scripted gateway only.
+
+### What was wrong
+
+- Nothing was deployed. R2 had only met workerd's emulation, and a hand in a krun slot had never dialed `wss://`.
+- A deployment needed a key per provider and sent an Anthropic key as `x-api-key`. The gateway takes a key only as a bearer token: a request with `x-api-key` is answered `402`, as unpaid.
+- A sandbox paid by the Worker needed a wallet key in the Worker, and was bought for the worst case of its rows before any of them ran.
+- A run that needs the runtime archive built it where the run was started, which only a Linux machine with a Rust toolchain can.
+
+### Decisions
+
+- **One key.** `TEMPO_KEY` is the credential of both providers and of the gateway's sandboxes, at `TEMPO_GATEWAY_URL` or the public gateway. A provider's own key wins where one is set: `ANTHROPIC_AUTH_TOKEN` as a bearer token, `ANTHROPIC_API_KEY` as `x-api-key`, `OPENAI_API_KEY` as a bearer token, each with its base URL. `Proxy.key` is the one place that chooses, for sessions and for the model endpoint of installed agents. A deployment now holds two secrets, its access token and the key.
+- **The cost of an attempt is what the gateway charged.** The gateway reports `cost` in the usage of a response, in `response.completed` and in `message_delta`. nanocode-ts passes it through: a turn ends with `cost_usd` and `cost_status: reported_by_provider`, so a session needed no change. The model endpoint of installed agents now keeps the cost with each request, and an attempt whose every generation carried one costs their sum, the command's own figure otherwise. So a `codex-cli` attempt has a cost for the first time, and `--model-budget-usd` bounds it.
+- **Codex over HTTPS.** With a key instead of a plan, nanocode-ts opens the session as `responses_https_sse` and sends `POST /v1/responses` with the tools of its Code Mode as one custom tool. That is the route the gateway serves. It has no Responses WebSocket: an upgrade of `/v1/responses` answers `404`.
+- **A price before a payment.** The gateway validates a request before it charges it, and answers an unpaid one with `402` and the price. The provider sends each compute request unpaid first, charges the price to the run's budget, writes it to `payments`, and sends the request again with the key. This is the rule of the E2B provider, intent before effect, without a wallet in the Worker. The price is a bound: the gateway settles what its provider charged, which can be less.
+- **What the gateway refuses is written back.** A paid request refused below `500` is recorded as the same amount negated, with its status, and the spend counts what was answered. A `5xx` keeps its charge.
+- **A lease, renewed.** The run pays `--sandbox-lease-sec` at creation and gives the lifetime of `Config.lifetimeSec` as the sandbox's `timeout`, which costs nothing. A sandbox with less than a claim lease left is renewed by another lease, after the tick has closed what no row needs. The claim lease is the notice because it is already the run's measure of how late a party may be. E2B bills a renewal from the moment it is made, so that notice is paid twice: at most 60 s in 300 at the defaults.
+- **The bootstrap is an `exec`.** The gateway runs a command for at most 120 s and a background job for as long as the lease. The bootstrap took 21.7 s in the E2B entry above, and an `exec` returns its failure with the request. The gateway runs commands as root, so the runner's home is `/root/.nanoeval` and the bootstrap needs no `sudo`.
+- **`run --runtime-blob`.** `nanoeval runtime --publish` stores the archive in the Worker's blob store and prints its SHA-256, and a run names it, so a run can be started from a machine that cannot build it.
+
+### What ran against the deployment
+
+Head `9a20cdf` was deployed with `OPENAI_API_KEY` and `OPENAI_BASE_URL` naming the gateway, then head `8d9f476` with `TEMPO_KEY` alone. One run each. The runner is a krun runner attached from the Linux machine, with private slot networks, four slots for the solutions and two for the agents. The tasks are `cancel-async-tasks`, `fix-git`, `log-summary-date-ranges` and `openssl-selfsigned-cert` of Terminal-Bench 2.1, imported as the eval `tb21-small`.
+
+| Run | Deployed | Result |
+| --- | --- | --- |
+| `nanoeval import terminal-bench-2.1 --only … --store r2` from the Linux machine | `9a20cdf` | 4 tasks in 85 s: conversion 28.4, 1.8, 1.2 and 1.2 s, upload 9.1, 23.6, 8.5 and 8.0 s for disks of 38.6, 147.1, 39.0 and 38.7 MB |
+| Solutions, 4 rows, the runner without the machine's policy for slots | `9a20cdf` | 4 errored as `verifier`: uv did not reach the Python registry, which this machine keeps behind a proxy on its loopback. The first row was claimed 3.8 s after the run was created, and the environment phase, with the four disks fetched from R2 and unpacked, took 3.9 to 6.2 s |
+| The same with `--ca-bundle`, `--slot-env` and `--slot-forward` on the runner | `9a20cdf` | 4 passed. 24.9 s from creation to the last result. First row claimed after 1.2 s. Environment 0.7 to 1.5 s, attach 0.5 to 0.8 s, solution 0.4 to 5.9 s, verifier 5.7 to 22.0 s |
+| `codex:gpt-6-luna` on `fix-git` | `9a20cdf` | errored as `agent` after 6 s: the hand attached from its private krun slot over `wss://`, the turn started, and the gateway refused `POST /v1/responses` with `401 invalid_api_key` |
+| The same | `8d9f476` | The same refusal, with `TEMPO_KEY` as the only credential |
+| `claude:claude-haiku-5-5` on `fix-git` | `8d9f476` | errored as `agent` after 5 s: `Messages HTTP 401`, so the key arrived as a bearer token. As `x-api-key` the answer is `402` |
+| `codex-cli:gpt-6-luna` on `fix-git` | `8d9f476` | errored as `agent`: Codex CLI 0.166.0 in the slot sent 6 requests through the run's endpoint in 10 s, each answered `401` by the gateway in about 0.2 s, and exited with 1 |
+| `claude-code:claude-haiku-5-5` on `fix-git` | `8d9f476` | errored as `agent`: Claude Code 2.1.318 in the slot sent 11 requests to `v1/messages` over 3.2 minutes, each answered `401`, and exited with "Failed to authenticate". Its release was fetched and unpacked in the environment phase, 18.4 s |
+| `run --oracle --provider gateway --template desktop --runtime-blob …` from the laptop, ns slots | `8d9f476` | 4 errored as `environment` in 5.8 s. The Worker read the price of the sandbox from the gateway, $0.04228 for a `desktop` lease of 300 s, wrote it to `payments`, sent the request with the key, was refused with `401` and wrote the price back. It tried twice, as a run does, and the sandbox spend ended at $0 |
+
+Every refusal ended as an error of its attempt, never as a score. The runtime archive, 20.1 MB, was published to R2 from the Linux machine before the last run.
+
+Without a key, which costs nothing, the gateway was asked what it serves: an unpaid `POST /v1/responses` and `POST /v1/messages` for `gpt-6-luna`, `gpt-6.1-sol`, `claude-haiku-5-5` and `claude-opus-5-5` each answered `402` with a price, and an unknown model name `400`. The request body of a nanocode Codex session, 56 kB with its tools, was answered `402` too, so the gateway did not refuse its shape before the payment.
+
+### Lanes against a scripted gateway
+
+`test/MockGateway.ts` answers Responses and Messages with a cost, refuses a model request that carries anything but the key as a bearer token, prices an unpaid compute request in a `402`, and ends a sandbox whose lease lapses. Its prices are its own. One run each on the tree of `d2bc08a`, the last with the change of `41ce817`:
+
+| Lane | Result |
+| --- | --- |
+| `NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_GATEWAY=1 NANOEVAL_E2E_ATTEMPTS=1` | passed: a `codex` and a `claude` session, 2 passed and 2 failed as the two arms should, model spend equal to what the gateway reported, payments equal to its charges in order, one renewal, the sandbox terminated |
+| The same with `NANOEVAL_E2E_MODEL=installed` | passed: the scripted Codex CLI and Claude Code, each attempt with the cost of its request |
+| `NANOEVAL_E2E_GATEWAY=1`, krun slots, and with `NANOEVAL_E2E_MODEL=installed` | passed, 8 attempts each |
+| `NANOEVAL_E2E_BACKEND=ns NANOEVAL_E2E_GATEWAY=1`, in the guest | passed, 8 attempts |
+| The same with `NANOEVAL_E2E_MODEL=oracle NANOEVAL_E2E_RUNTIME=1 NANOEVAL_E2E_STORE=r2` | passed: the leased sandbox started its runner from the archive through the bootstrap, 3 attempts |
+
+A first run of the directory lane failed on its own assertion: the run was over before a renewal was due. The lane now leases for exactly a claim lease, so the tick that opens the sandbox renews it.
+
+### Not verified
+
+- Any model through the gateway: an answer, streaming under load, the reported cost against the key's spend, and the four model names beyond the gateway naming a price for them.
+- Claude Code with an answer. Its release ran against a real Messages route for the first time here, and only met refusals.
+- A sandbox from the gateway: creation, root, the bootstrap inside one, a renewal, a termination, what a renewal really costs, and a run with nothing of the operator's running.
+- The price of a request against what the key was charged for it.
+- A vendor's command on an ns slot or in a remote sandbox, as before.
