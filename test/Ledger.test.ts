@@ -254,6 +254,25 @@ test('a runner offers what its machine has free, and nothing while its disk is s
     }),
     ['huge'],
   )
+  const mixed = [
+    { item: 'small', memoryMb: 256 },
+    { item: 'whole', memoryMb: 768 },
+    { item: 'huge', memoryMb: 4096 },
+  ]
+  assert.deepEqual(
+    Admission.fill(mixed, { capacityMb: 768, memoryMb: 768, slots: 4 }),
+    ['whole'],
+    'an empty runner takes a row that needs all of it before rows that others can take',
+  )
+  assert.deepEqual(
+    Admission.fill(mixed, { capacityMb: 768, memoryMb: 512, slots: 3 }),
+    ['small'],
+    'a runner that is not empty takes what fits, in order',
+  )
+  assert.deepEqual(
+    Admission.fill(mixed.slice(0, 1), { capacityMb: 768, memoryMb: 768, slots: 4 }),
+    ['small'],
+  )
 })
 
 test('a verifier is scored only when it reported, and an infrastructure failure is no score', () => {

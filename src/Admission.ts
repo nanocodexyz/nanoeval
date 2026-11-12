@@ -60,7 +60,12 @@ export function offer(load: Load, capacity: Capacity): Offer {
 export function fill<T>(candidates: readonly { item: T; memoryMb: number }[], offered: Offer): T[] {
   const chosen: T[] = []
   let memoryMb = offered.memoryMb
-  for (const candidate of candidates) {
+  const whole = (candidate: { memoryMb: number }) => candidate.memoryMb >= offered.capacityMb
+  const ordered =
+    offered.memoryMb >= offered.capacityMb
+      ? [...candidates.filter(whole), ...candidates.filter((candidate) => !whole(candidate))]
+      : candidates
+  for (const candidate of ordered) {
     if (chosen.length >= offered.slots) break
     const needed = Math.min(candidate.memoryMb, offered.capacityMb)
     if (needed > memoryMb) continue
