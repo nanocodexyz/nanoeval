@@ -2120,3 +2120,73 @@ The gateway charged $0.017342 for 600 s of `base` and $0.006997 for 240 s: $0.10
 - A cold start after the claim stopped waiting for the session, beyond runs 3 to 6 above, and any gateway run on the last commit of this entry: the key was spent before the rebase onto the work that scales runs. The lanes, and five runs of the standing runner on the deployed Worker, ran on that commit.
 - The pool with `--provider e2bT and `--provider local`: it is written for both and ran with neither.
 - More than one slot in a kept sandbox, and two runs asking the pool at the same moment, beyond the unit tests of the table.
+
+## 2026-11-12: three model arms over the whole of Terminal-Bench 2.1
+
+The entry above ran this size with solutions only. This one ran it with models: every task of `terminal-bench-2.1@312b07080ace` once with `claude:claude-haiku-5-5`, once with `claude-code:claude-haiku-5-5` and once with `codex:gpt-6-luna`, on the deployed Worker at `b992d93`, with nothing on a machine of the operator's but the commands that started it. No code changed: this entry records what ran and what it found.
+
+### Two payers
+
+The money decided the shape. Models went through the gateway with a key whose wallet held $9.30 of a stablecoin. The sandboxes could not be leased with that key without taking from the models, so they were opened at E2B over MPP with the machine token of another wallet and runners were attached in them, the operator-pays path of [README.md](README.md#run-it-on-e2b):
+
+```sh
+node cli/nanoeval.ts run --eval terminal-bench-2.1@312b07080ace --agent nano-claude=claude:claude-haiku-5-5 \
+  --sandboxes 0 --backend ns --runtime-blob SHA256 --slots 4 --disks remove --free-disk-mb 4000 \
+  --model-budget-usd 4.3 --attach-sec 600 --poll-ms 2000          # prints RUN
+tempo request --mach -X POST --json '{"templateID":"desktop","timeout":3600}' -o sandbox.json https://mpp.e2b.dev/sandboxes
+node cli/nanoeval.ts sandbox --run RUN --e2b sandbox.json --backend ns --slots 4 --free-disk-mb 4000 --poll-ms 2000
+```
+
+A run of eight attempts on the four-task eval came first, to see that the key paid for models and the machine token for a sandbox: 8 of 8 passed for $0.0345.
+
+### What ran
+
+One run an arm, one attempt a task. Each began in five or six sandboxes and got four more while it ran, 28 sandboxes of an hour in all.
+
+| Arm | Sandboxes | Passed | Failed | Errored | Agent time, summed | Last verdict after | Recorded model spend |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `claude:claude-haiku-5-5`, a nanocode session | 6, and 4 more after 22 min | 61 | 23 | 5 | 7 h 28 min | 4,303 s | $1.3614 |
+| `claude-code:claude-haiku-5-5`, Claude Code 2.1.318 in the slot | 5, and 4 more after 28 min | 64 | 20 | 5 | 7 h 10 min | 4,332 s | $2.0760 |
+| `codex:gpt-6-luna`, a nanocode session | 5, and 4 more after 18 min | 39 | 27 | 23 | 2 h 49 min | 1,953 s | $2.0187 |
+| The rerun of those 23 errored rows, in seven of the same sandboxes | 7 | 10 | 6 | 7 | 1 h 46 min | 1,382 s | $0.8013 |
+
+With its rerun the third arm stands at 49 passed, 33 failed and 7 errored. 84 of the 89 tasks pass with their solutions on these slots, so that is the ceiling here. One attempt a task says little about a difference of three rows between two arms.
+
+**Every row that ended without a verdict.**
+
+| Task | Arm | Cause |
+| --- | --- | --- |
+| `qemu-alpine-ssh`, `qemu-startup` | all three | Task: the verifier's `apt-get install curl` gets 404, as with the solutions. One of the six was refused payment before it got that far |
+| `caffe-cifar-10` | nanocode, haiku | The sandbox's hour: claimed twice, and both sandboxes ended before the agent did. Claude Code passed it in 37 min 36 s, the third arm in 9 min 40 s |
+| `regex-chess` | nanocode, haiku | The sandbox's hour: claimed 28 minutes into the run in a sandbox with 32 minutes left, and again in one with 22 |
+| `query-optimize` | nanocode, haiku | The gateway refused a request `402 delta-too-small`. Run again alone, it failed |
+| `rstan-to-pystan` | Claude Code | `environment`: the task asks for 8 GiB, the slot had 6,364 MB, and that limit killed two processes. The two other arms passed it with one killed process each |
+| `regex-chess` | Claude Code | Refused payment on its second claim, the key's limit being spent |
+| `schemelike-metacircular-eval` | Claude Code | The agent ran to its 2,400 s, the sandbox ended during the verifier, and the run was cancelled rather than paid for again |
+| `compile-compcert`, `extract-moves-from-video`, `make-doom-for-mips`, `train-fasttext`, `winning-avg-corewars` | nanocode, luna | Refused payment in the run and again in the rerun: the key was spent |
+
+### What it cost
+
+**Models.** The key's wallet paid $8.98 of its $9.30: $6.83 through its payment channel, $2.14 in 217 charges of $0.001 to $0.012 outside the channel, and $0.02 of network fees. The runs recorded $6.30. Two gaps:
+
+- The channel spent $0.53 more than the runs recorded. The comparison table has a cost for 79, 88 and 88 of the 89 attempts of the three arms: an attempt that ends in an error before its last response has spent what its earlier responses cost, and some of that is not in the run's spend. Not broken down further.
+- **The $2.14 outside the channel is in no run's spend and under no `--model-budget-usd`.** No response reported it. The agents searched the web: the events of the attempts have 29 `WebSearch` calls in four attempts of the first arm, 7 searches and fetches under Claude Code, and 52 `web.run` calls in twelve attempts of the third. A price per search fits the amounts, and the counts do not match charge for charge, so the cause is likely and not shown. Until a run can see these charges, its budget bounds the tokens only, and the key's limit is the bound on the rest.
+
+**Sandboxes.** 28 `desktop` sandboxes of 3,600 s at $0.50626 and one of 1,500 s at $0.211: $14.39. Six more requests asked for 10,800 s. E2B charged each $1.51858 and then answered `400 Timeout cannot be greater than 1 hours`: $9.11 for nothing, with no sandbox and no refund. A dry run of the same request had quoted that price and said nothing of the limit. They were sent at once, which was this work's mistake: one would have shown it.
+
+### What this found
+
+- **An MPP sandbox lives an hour.** Nothing tells an attached runner when its sandbox ends, so it claims rows it cannot finish: three rows never got a verdict for it, two more were claimed a second time, and each lost claim was paid for in tokens up to that point. `--sandbox-timeout-sec` is known only to a sandbox the run opens itself. A runner that is told its end could stop claiming rows whose timeouts pass it.
+- **The first minutes are thin.** An empty runner takes a row that needs the whole machine first, and there are eight such tasks. So six sandboxes ran six or seven rows at a time for the first six minutes, and 31 rows had ended after 22 minutes. The sandboxes added then were the ones that ran three rows at once from their start. With agents instead of solutions those eight rows are also the long ones.
+- **Sessions on one channel race.** With some twenty sessions on one key the gateway refused five requests `402 delta-too-small`: a voucher that added nothing to the one before. The row ends as an `agent` error. nanoeval does not retry a refused payment, which is right for a budget and wrong for this one.
+- **A top-up is a fixed amount.** The key's channel is topped up by its configured $3. When the wallet held $1.33 the top-up failed and every request was refused `402 payment-failed` until the key's deposit and top-up were lowered by hand: 19 rows of the third arm ended in those minutes, which is why it has a rerun.
+- **An 8 GiB task was killed at 6,364 MB for the first time**, and was reported as the `environment` error it is.
+- Two runners shared a sandbox for the reruns, one of a run that was ending and one of the next, and rows of both ended with verdicts. Whether a call of a runner failed or a disk came near its floor was not read.
+
+### Not verified
+
+- A second attempt of any row, so nothing here says how much of a difference between arms is noise.
+- `codex-cli` at this size, and `gpt-6.1-sol` or `claude-opus-5-5` on more than one task.
+- What each arm cost in full: the charges outside the channel are not attributed to a run.
+- A refund of the six refused requests. None was asked for.
+- CI on GitHub. The commit that records this changes this file and README.md only; every step of `ci.yml` ran from a fresh clone of it first.
