@@ -1609,7 +1609,12 @@ export class Run extends DurableObject<Env> {
     const config = this.config()
     const task = this.task(row.task)
     const now = Date.now()
-    let end: { failure?: Result.Failure; oomKills?: number; reward: number | null }
+    let end: {
+      failure?: Result.Failure
+      memoryMb?: number
+      oomKills?: number
+      reward: number | null
+    }
     if (body.verifier) {
       end = {
         ...Verdict.verifier({
@@ -1617,9 +1622,11 @@ export class Run extends DurableObject<Env> {
           ...(row.failure ? { earlier: JSON.parse(row.failure) as Result.Failure } : {}),
           facts: body.verifier,
           log: this.textArtifact(row.id, verifierLog) ?? '',
+          memoryMb: task.resources.memoryMb,
           now,
           timeoutSec: task.verifier.timeoutSec,
         }),
+        ...(body.verifier.memoryMb === undefined ? {} : { memoryMb: body.verifier.memoryMb }),
         ...(body.verifier.oom ? { oomKills: body.verifier.oom } : {}),
       }
       Ledger.update(this.sql, row.id, {
@@ -1650,6 +1657,7 @@ export class Run extends DurableObject<Env> {
       collect?: boolean
       ending?: Ledger.Ending
       failure?: Result.Failure
+      memoryMb?: number
       oomKills?: number
       reward: number | null
     },
@@ -1769,6 +1777,7 @@ export class Run extends DurableObject<Env> {
           : {
               backend: this.backend(row.runner),
               id: row.runner,
+              ...(end.memoryMb === undefined ? {} : { memoryMb: end.memoryMb }),
               provider: config.sandbox.provider,
               slot: row.slot!,
             },

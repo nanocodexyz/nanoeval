@@ -309,3 +309,33 @@ test('a verifier is scored only when it reported, and an infrastructure failure 
     { failure: timeout, reward: 0 },
   )
 })
+
+test('a slot with less memory than its task asks for scores only what its limit did not kill', () => {
+  const base = { ctrf: false, log: 'the log', memoryMb: 8192, now: 5, timeoutSec: 30 }
+  const short = { code: 1, files: [], memoryMb: 6000, oom: 2, reward: 0 }
+  const killed = Verdict.verifier({ ...base, facts: short })
+  assert.equal(killed.reward, null)
+  assert.equal(killed.failure!.kind, 'environment')
+  assert.equal(
+    killed.failure!.message,
+    'the slot had 6000 MB of the 8192 MB the task asks for, and that limit killed 2 of its processes',
+  )
+  assert.equal(
+    Verdict.verifier({ ...base, facts: { ...short, code: 124 } }).failure!.kind,
+    'environment',
+    'a verifier that ran out of time in such a slot is not blamed either',
+  )
+  assert.deepEqual(Verdict.verifier({ ...base, facts: { ...short, code: 0, reward: 1 } }), {
+    reward: 1,
+  })
+  assert.deepEqual(
+    Verdict.verifier({ ...base, facts: { code: 1, files: [], memoryMb: 6000, reward: 0 } }),
+    { reward: 0 },
+    'less memory without a kill changes nothing',
+  )
+  assert.deepEqual(
+    Verdict.verifier({ ...base, facts: { code: 1, files: [], oom: 2, reward: 0 } }),
+    { reward: 0 },
+    'a kill at the memory the task asks for is the task',
+  )
+})

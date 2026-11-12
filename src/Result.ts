@@ -42,7 +42,13 @@ export type Attempt = {
   outcome: 'errored' | 'failed' | 'passed'
   retryOf?: { attempt: string; run: string }
   reward: number | null
-  sandbox: { backend: string; id: number; provider: string; slot: string } | null
+  sandbox: {
+    backend: string
+    id: number
+    memoryMb?: number
+    provider: string
+    slot: string
+  } | null
   session: string
   startedAt: number
   task: { checksum: string; name: string }

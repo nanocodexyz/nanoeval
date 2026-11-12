@@ -317,7 +317,7 @@ export async function run(options: Options): Promise<void> {
         backend,
         cpus: task.resources.cpus,
         ...(disk ? { disk } : {}),
-        memoryMb: task.resources.memoryMb,
+        memoryMb: Admission.clamp(task.resources.memoryMb, capacity),
         network: config.network,
         storageMb: task.resources.storageMb,
       }),
@@ -455,8 +455,15 @@ export async function run(options: Options): Promise<void> {
         return move(item, 'judge')
       }
     }
+    const memoryMb = Admission.clamp(task.resources.memoryMb, capacity)
     await finish(item, {
-      verifier: { code, files: written.map((file) => file.path), ...(oom ? { oom } : {}), reward },
+      verifier: {
+        code,
+        files: written.map((file) => file.path),
+        ...(memoryMb < task.resources.memoryMb ? { memoryMb } : {}),
+        ...(oom ? { oom } : {}),
+        reward,
+      },
     })
   }
 
