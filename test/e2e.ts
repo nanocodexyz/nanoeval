@@ -19,6 +19,7 @@ import type * as Eval from '../src/Eval.ts'
 import type * as Slot from '../src/Slot.ts'
 import * as Guest from './Guest.ts'
 import * as Krun from './Krun.ts'
+import * as MockGateway from './MockGateway.ts'
 import * as Network from './Network.ts'
 
 const model = process.env['NANOEVAL_E2E_MODEL'] ?? 'scripted'
@@ -41,7 +42,8 @@ const network = (process.env['NANOEVAL_E2E_NETWORK'] ??
 const tickMs = process.env['NANOEVAL_E2E_TICK_MS'] ?? '500'
 const pollMs = Number(process.env['NANOEVAL_E2E_POLL_MS'] ?? '250')
 const storeKind = process.env['NANOEVAL_E2E_STORE'] ?? 'directory'
-const leaseSec = Number(process.env['NANOEVAL_E2E_LEASE_SEC'] ?? '60')
+const gateway = process.env['NANOEVAL_E2E_GATEWAY'] === '1'
+const leaseSec = Number(process.env['NANOEVAL_E2E_LEASE_SEC'] ?? (gateway ? '3' : '60'))
 const label =
   process.env['NANOEVAL_E2E_LABEL'] ??
   model +
@@ -49,7 +51,8 @@ const label =
     backend +
     (scenario === 'tasks' ? '' : '-' + scenario) +
     (storeKind === 'directory' ? '' : '-' + storeKind) +
-    (process.env['NANOEVAL_E2E_RUNTIME'] === '1' ? '-runtime' : '')
+    (process.env['NANOEVAL_E2E_RUNTIME'] === '1' ? '-runtime' : '') +
+    (gateway ? '-gateway' : '')
 const out = Path.resolve('output/e2e', label)
 const largeTestBytes = 3 * 1024 * 1024
 const attached = ['lost', 'resume', 'runners'].includes(scenario)
@@ -115,16 +118,12 @@ function sse(events: [string, unknown][]): string {
 let scriptedCalls = 0
 
 function fake(
-  request: Http.IncomingMessage,
+  path: string,
   body: { model?: string; prompt_base64?: string },
+  cost?: number,
 ): string {
-  const codex = request.url === '/v1/responses'
-  const credential = codex
-    ? request.headers['authorization'] === 'Bearer scripted-openai' &&
-      request.headers['x-api-key'] === undefined
-    : request.headers['x-api-key'] === 'scripted' && request.headers['authorization'] === undefined
-  if (!credential || (!codex && request.url !== '/v1/messages'))
-    throw new Error('the request of the installed agent did not carry the credential of the run')
+  const codex = path === '/v1/responses'
+  const charged = cost === undefined ? {} : { cost }
   const prompt = Buffer.from(body.prompt_base64 ?? '', 'base64').toString()
   const solution = solutions.find(([marker]) => prompt.includes(marker))
   if (!solution) throw new Error('the scripted model has no solution for this prompt')
@@ -144,6 +143,7 @@ function fake(
                 response: {
                   model: body.model,
                   usage: {
+                    ...charged,
                     input_tokens: 100,
                     input_tokens_details: { cached_tokens: 40 },
                     output_tokens: 7,
@@ -169,13 +169,65 @@ function fake(
                 type: 'message_start',
               },
             ],
-            ['message_delta', { type: 'message_delta', usage: { output_tokens: 7 } }],
+            ['message_delta', { type: 'message_delta', usage: { ...charged, output_tokens: 7 } }],
           ],
     )
   )
 }
 
-function scripted(body: { messages?: unknown; model?: string }): string {
+function responses(body: { input?: unknown; model?: string }, cost: number): string {
+  const text = JSON.stringify(body.input ?? [])
+  const id = ++scriptedCalls
+  const solution = solutions.find(([marker]) => text.includes(marker))
+  if (!solution) throw new Error('the scripted model has no solution for this prompt')
+  const code =
+    'await tools.exec_command({ cmd: ' + JSON.stringify(solution[1]) + ' }); text("done")'
+  const item = text.includes('"custom_tool_call_output"')
+    ? {
+        content: [{ annotations: [], text: 'The task is complete.', type: 'output_text' }],
+        id: 'msg_' + id,
+        role: 'assistant',
+        status: 'completed',
+        type: 'message',
+      }
+    : {
+        call_id: 'call_' + id,
+        id: 'ctc_' + id,
+        input: code,
+        name: 'exec',
+        status: 'completed',
+        type: 'custom_tool_call',
+      }
+  const response = {
+    created_at: 0,
+    id: 'resp_' + id,
+    model: body.model,
+    object: 'response',
+    output: [item],
+    status: 'completed',
+    usage: {
+      cost,
+      input_tokens: 100,
+      input_tokens_details: { cached_tokens: 40 },
+      output_tokens: 7,
+      output_tokens_details: { reasoning_tokens: 0 },
+      total_tokens: 107,
+    },
+  }
+  return sse([
+    [
+      'response.created',
+      {
+        response: { ...response, output: [], status: 'in_progress', usage: null },
+        type: 'response.created',
+      },
+    ],
+    ['response.output_item.done', { item, output_index: 0, type: 'response.output_item.done' }],
+    ['response.completed', { response, type: 'response.completed' }],
+  ])
+}
+
+function scripted(body: { messages?: unknown; model?: string }, cost?: number): string {
   const text = JSON.stringify(body.messages ?? [])
   const id = ++scriptedCalls
   const reply = text.includes('JUDGE-FIXTURE')
@@ -228,7 +280,7 @@ function scripted(body: { messages?: unknown; model?: string }): string {
       {
         delta: { stop_reason: answered ? 'end_turn' : 'tool_use', stop_sequence: null },
         type: 'message_delta',
-        usage: { output_tokens: 4 },
+        usage: { ...(cost === undefined ? {} : { cost }), output_tokens: 4 },
       },
     ],
     ['message_stop', { type: 'message_stop' }],
@@ -255,7 +307,19 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
     return listen(async (request, response) => {
       try {
         const body = JSON.parse((await read(request)).toString())
-        const reply = body.fake_cli ? fake(request, body) : scripted(body)
+        const codex = request.url === '/v1/responses'
+        const credential = !body.fake_cli
+          ? true
+          : codex
+            ? request.headers['authorization'] === 'Bearer scripted-openai' &&
+              request.headers['x-api-key'] === undefined
+            : request.headers['x-api-key'] === 'scripted' &&
+              request.headers['authorization'] === undefined
+        if (!credential || (body.fake_cli && !codex && request.url !== '/v1/messages'))
+          throw new Error(
+            'the request of the installed agent did not carry the credential of the run',
+          )
+        const reply = body.fake_cli ? fake(request.url!, body) : scripted(body)
         response.writeHead(200, { 'content-type': 'text/event-stream' }).end(reply)
       } catch (error) {
         response.writeHead(400, { 'content-type': 'application/json' })
@@ -383,7 +447,19 @@ async function main(): Promise<void> {
     root: sandboxes,
     token: sandboxToken,
   })
-  const upstream = await modelEndpoint()
+  const mock = gateway
+    ? await MockGateway.start({
+        key: 'sk-tempo-' + Crypto.randomBytes(16).toString('hex'),
+        model: (path, body, cost) =>
+          body['fake_cli']
+            ? fake(path, body, cost)
+            : path === '/v1/responses'
+              ? responses(body, cost)
+              : scripted(body, cost),
+        sandboxd: { token: sandboxToken, url: sandboxd.url },
+      })
+    : undefined
+  const upstream = mock ?? (await modelEndpoint())
   const plan =
     model === 'codex-plan'
       ? await Plan.codex(login ?? Path.join(Os.homedir(), '.codex', 'auth.json'))
@@ -399,11 +475,12 @@ async function main(): Promise<void> {
     LOCAL_SANDBOX_TOKEN: sandboxToken,
     LOCAL_SANDBOX_URL: sandboxd.url,
     TICK_MS: tickMs,
-    ...(upstream.url ? { ANTHROPIC_BASE_URL: upstream.url } : {}),
-    ...(model === 'scripted' || installed || scenario === 'judge'
+    ...(mock ? { TEMPO_GATEWAY_URL: mock.url, TEMPO_KEY: mock.key } : {}),
+    ...(upstream.url && !mock ? { ANTHROPIC_BASE_URL: upstream.url } : {}),
+    ...((model === 'scripted' || installed || scenario === 'judge') && !mock
       ? { ANTHROPIC_API_KEY: 'scripted' }
       : {}),
-    ...(installed && upstream.url
+    ...(installed && upstream.url && !mock
       ? { OPENAI_API_KEY: 'scripted-openai', OPENAI_BASE_URL: upstream.url }
       : {}),
     ...(model === 'anthropic' ? { ANTHROPIC_API_KEY: process.env['ANTHROPIC_API_KEY']! } : {}),
@@ -592,7 +669,9 @@ async function main(): Promise<void> {
                   },
                 ]
               : [
-                  { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
+                  gateway
+                    ? { id: 'right', model: 'gpt-right', provider: 'codex' }
+                    : { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
                   { id: 'wrong', model: 'claude-sonnet-4-6', provider: 'claude' },
                 ]
 
@@ -673,7 +752,7 @@ async function main(): Promise<void> {
     const config: Config.Config = {
       agents,
       attempts: cached || closed || failures || packing ? 1 : isolated ? slots : attempts,
-      budget: { modelUsd: 1, sandboxUsd: 0 },
+      budget: { modelUsd: 1, sandboxUsd: gateway ? 1 : 0 },
       eval: { name: evalName, version: version.digest },
       ...(judged ? { judge: { model: 'claude-haiku-4-5', provider: 'claude' as const } } : {}),
       limits: {
@@ -688,11 +767,12 @@ async function main(): Promise<void> {
         backend,
         disks: scenario === 'disks' ? 'remove' : 'keep',
         ...(scenario === 'disk' ? { freeDiskMb: 2 ** 40 } : {}),
+        ...(gateway ? { leaseSec } : {}),
         max: attached ? 0 : 1,
         ...(packing ? { memoryMb: 768 } : {}),
         network,
         pollMs,
-        provider: 'local',
+        provider: gateway ? 'gateway' : 'local',
         ...(bundled
           ? {
               runtime: await Runtime.publish(blobStore('r2', { token, url }), {
@@ -1141,7 +1221,16 @@ async function main(): Promise<void> {
         assert.ok(trajectory.final_metrics.extra.tool_calls >= 1)
         if (installed) {
           const kind = detail['result'].agent.provider as keyof typeof fakeUsage
-          assert.deepEqual(detail['result'].usage, fakeUsage[kind])
+          assert.deepEqual(
+            detail['result'].usage,
+            gateway
+              ? {
+                  ...fakeUsage[kind],
+                  costUsd:
+                    MockGateway.modelUsd[kind === 'codex-cli' ? '/v1/responses' : '/v1/messages'],
+                }
+              : fakeUsage[kind],
+          )
           assert.equal(trajectory.agent.name, kind)
           assert.equal(trajectory.steps[0].source, 'user')
           for (const name of ['agent/events.jsonl', 'agent/model-requests.jsonl'])
@@ -1181,12 +1270,46 @@ async function main(): Promise<void> {
         )
         assert.equal(refused.status, 401, 'the model endpoint of an attempt ends with its agent')
       }
-      assert.ok(
-        Math.abs(
-          status['spend'].modelUsd - fakeUsage['claude-code'].costUsd * (closed ? 0 : total / 2),
-        ) < 1e-9,
-        'the cost an installed agent reports counts against the model budget',
+      if (!gateway)
+        assert.ok(
+          Math.abs(
+            status['spend'].modelUsd - fakeUsage['claude-code'].costUsd * (closed ? 0 : total / 2),
+          ) < 1e-9,
+          'the cost an installed agent reports counts against the model budget',
+        )
+    }
+
+    if (mock) {
+      const sum = (values: readonly number[]) => values.reduce((all, value) => all + value, 0)
+      assert.deepEqual(mock.refused, [], 'every model request carried the one key as a bearer')
+      if (model !== 'oracle') {
+        assert.ok(mock.modelCosts.length >= total)
+        assert.ok(
+          Math.abs(status['spend'].modelUsd - sum(mock.modelCosts)) < 1e-9,
+          'the model spend of the run is what the gateway reported as charged',
+        )
+        for (const detail of details)
+          assert.ok(detail['result'].usage.costUsd > 0, 'every attempt has the cost it was charged')
+      }
+      const payments = (status['payments'] as { detail: string; usd: number }[]).map((payment) => ({
+        operation: (JSON.parse(payment.detail) as { description: string }).description,
+        usd: payment.usd,
+      }))
+      assert.deepEqual(
+        payments.map((payment) => [payment.operation, Math.round(payment.usd * 1e6)]),
+        mock.charges.map((charge) => ['compute.' + charge.operation, Math.round(charge.usd * 1e6)]),
+        'the payments of the run are the charges of the gateway, in order',
       )
+      assert.ok(Math.abs(status['spend'].sandboxUsd - sum(payments.map((p) => p.usd))) < 1e-9)
+      const operations = payments.map((payment) => payment.operation)
+      assert.equal(operations[0], 'compute.create')
+      assert.equal(operations.at(-1), 'compute.terminate')
+      assert.ok(operations.includes('compute.renew'), 'the lease was renewed while rows ran')
+      const leased = [...mock.sandboxes.values()]
+      assert.equal(leased.length, 1)
+      assert.equal(leased[0]!.ended, 'terminated', 'the sandbox was terminated, not left to lapse')
+      assert.ok(leased[0]!.renewals >= 1)
+      assert.equal(status['sandboxes'][0].state, 'closed')
     }
 
     const job = JSON.parse(files['result.json']!)
