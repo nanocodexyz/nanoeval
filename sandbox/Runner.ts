@@ -204,6 +204,7 @@ async function ask(
     })
   const query = standing.pool.location ? '?location=' + standing.pool.location : ''
   const waitMs = Math.floor((standing.leaseSec * 1000) / 3)
+  let pause = standing.pollMs
   log('standing as member ' + standing.pool.member + ' of the pool')
   while (!shared.stopping) {
     const abort = new AbortController()
@@ -236,8 +237,11 @@ async function ask(
       log('the pool closed this runner')
       return undefined
     }
-    if (!shared.stopping && Date.now() - askedAt < waitMs)
-      await new Promise((resolve) => setTimeout(resolve, standing.pollMs))
+    if (answer) pause = standing.pollMs
+    if (!shared.stopping && Date.now() - askedAt < waitMs) {
+      await new Promise((resolve) => setTimeout(resolve, pause))
+      if (!answer) pause = Math.min(pause * 2, Math.max(waitMs, standing.pollMs))
+    }
   }
   await send('/leave' + query, {}).catch(() => {})
   return undefined
