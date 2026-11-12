@@ -431,6 +431,12 @@ cmd__drop() {
   rm -f "$base.ext4" "$base.env" "$base.user" "$base.workdir"
 }
 
+cmd_drop() {
+  local base=$1
+  [ "${base%/*}" = "$disks" ] || die "drop removes a disk of the cache, $disks: $base"
+  drop_disk "$base" || true
+}
+
 cmd_tools() {
   mkdir -p "$rt"
   if [ -c /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then setup_krun; else launcher_files; fi
@@ -981,10 +987,10 @@ cmd_file() {
 }
 
 command=${1:-}
-[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|tools|agents|up|hand|agent|solve|verify|down|destroy|prune|status|log|files|file> ...'
+[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|tools|agents|up|hand|agent|solve|verify|down|drop|destroy|prune|status|log|files|file> ...'
 shift
 case $command in
-  probe | setup | _setup | tools | agents | up | _up | _ns | _drop | hand | _hand | agent | _agent | solve | _solve | verify | _verify | down | destroy | prune | status | log | files | file)
+  probe | setup | _setup | tools | agents | up | _up | _ns | drop | _drop | hand | _hand | agent | _agent | solve | _solve | verify | _verify | down | destroy | prune | status | log | files | file)
     "cmd_$command" "$@"
     ;;
   *) die "unknown command: $command" ;;

@@ -5,6 +5,7 @@ import * as Path from 'node:path'
 import { test } from 'node:test'
 import * as Import from '../cli/Import.ts'
 import { client, importEval, loadTask } from '../cli/nanoeval.ts'
+import * as Disks from '../sandbox/Disks.ts'
 import * as Prune from '../sandbox/Prune.ts'
 import * as Store from '../sandbox/Store.ts'
 import type * as Eval from '../src/Eval.ts'
@@ -255,4 +256,23 @@ test('what an import wrote is named by its version and is kept', async () => {
   assert.equal(pruned.kept.length, 4)
   assert.equal(pruned.missing, 0)
   Fs.rmSync(root, { force: true, recursive: true })
+})
+
+test('a runner short of disk removes the disks of its run that none of its rows uses', () => {
+  const mark = '.run-r1'
+  const names = [
+    'aa.ext4',
+    'aa.run-r1',
+    'aa.use',
+    'bb.ext4',
+    'bb.run-r1',
+    'cc.ext4',
+    'cc.run-r2',
+    'dd.ext4',
+    'ee.run-r1',
+    'mounts.lock',
+  ]
+  assert.deepEqual(Disks.idle(names, { held: new Set(['bb']), mark }), ['aa'])
+  assert.deepEqual(Disks.idle(names, { held: new Set(), mark }), ['aa', 'bb'])
+  assert.deepEqual(Disks.idle([], { held: new Set(), mark }), [])
 })

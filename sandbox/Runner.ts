@@ -14,6 +14,7 @@ import * as Slot from '../src/Slot.ts'
 import * as Task from '../src/Task.ts'
 import * as Verdict from '../src/Verdict.ts'
 import * as Converter from './Converter.ts'
+import * as Disks from './Disks.ts'
 import * as Host from './Host.ts'
 import * as Store from './Store.ts'
 
@@ -108,6 +109,7 @@ export async function run(options: Options): Promise<void> {
   const work = new Map<string, Work>()
   const unpacking = new Map<string, Promise<void>>()
   const config = options.config
+  const mark = '.run-' + config.run
   let stopping = false
   let finished = false
 
@@ -205,21 +207,37 @@ export async function run(options: Options): Promise<void> {
     const marked =
       evict &&
       disk !== undefined &&
-      (await Fs.stat(disk.trim() + '.run-' + config.run).then(
+      (await Fs.stat(disk.trim() + mark).then(
         () => true,
         () => false,
       ))
     await output(slots.down(item.row.slot, marked ? 'remove' : 'keep'), env)
-    if (marked) {
-      const gone = await Fs.stat(disk!.trim() + '.ext4').then(
-        () => false,
-        () => true,
-      )
-      if (gone)
-        for (const suffix of ['.run-' + config.run, '.use', '.lock'])
-          await Fs.rm(disk!.trim() + suffix, { force: true })
-    }
+    if (marked) await forget(disk!.trim())
     work.delete(item.row.id)
+  }
+
+  const forget = async (prefix: string) => {
+    const gone = await Fs.stat(prefix + '.ext4').then(
+      () => false,
+      () => true,
+    )
+    if (gone)
+      for (const suffix of [mark, '.use', '.lock']) await Fs.rm(prefix + suffix, { force: true })
+    return gone
+  }
+
+  const reclaim = async () => {
+    const held = new Set(
+      [...work.values()].flatMap((item) =>
+        item.row.task.environment.kind === 'disk' ? [item.row.task.environment.disk.digest] : [],
+      ),
+    )
+    const names = await Fs.readdir(Path.join(cache, 'disks')).catch(() => [] as string[])
+    for (const digest of Disks.idle(names, { held, mark })) {
+      const prefix = Path.join(cache, 'disks', digest)
+      await output(slots.drop(prefix), env)
+      if (await forget(prefix)) log('removed the disk ' + digest + ', which no row here uses')
+    }
   }
 
   const finish = async (item: Work, body: Protocol.Finish) => {
@@ -779,7 +797,15 @@ export async function run(options: Options): Promise<void> {
       claimAt = now
       void (async () => {
         try {
-          const current = await load()
+          let current = await load()
+          if (
+            config.disks === 'remove' &&
+            capacity.freeDiskMb !== undefined &&
+            (current.freeDiskMb ?? 0) < capacity.freeDiskMb
+          ) {
+            await reclaim()
+            current = await load()
+          }
           const offer = Admission.offer(current, capacity)
           if (offer.slots > 0 || Admission.starved(current, capacity)) {
             const answer = await call<Protocol.ClaimResponse>('/claims', {

@@ -77,6 +77,7 @@ export function create(options: create.Options) {
     disk: (input: { out: string; storageMb: number }) =>
       call('disk', String(input.storageMb), input.out),
     down: (slot: string, disks: 'keep' | 'remove') => call('down', slot, disks),
+    drop: (disk: string) => call('drop', disk),
     envFile: (slot: string, name: 'env' | 'solution.env' | 'verifier.env') =>
       home + '/slots/' + slot + '/' + name,
     file: (slot: string, path: string) => call('file', slot, path),
