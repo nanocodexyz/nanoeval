@@ -1923,3 +1923,122 @@ Every `run:` step of `.github/workflows/ci.yml`, 56 of them, in order and each w
 - Claude Code with an Anthropic API key or a plan login.
 - CI on GitHub: the workflow has not run there.
 - A task that closes the network of a phase in a gateway sandbox. Its slots are ns slots, where such a run is refused by design.
+
+## 2026-11-12: the whole of Terminal-Bench 2.1 on leased sandboxes
+
+Machines: the Worker deployed on Cloudflare with its blobs in R2, as in the entry above. Sandboxes: E2B's `desktop` template leased through the gateway, each 8 vCPUs, 7,955 MB of memory and 20.6 GB of free disk, kernel 6.1, root, no KVM, a core limit of zero, started by the bootstrap under `umask 077`. The import, the lanes and the fresh clones ran on the 32-core Linux machine with KVM of the earlier entries, shared with other work. Runs were started from a laptop that only created them and read their status. Every figure is one run unless it says otherwise, at the commit it names.
+
+### What was asked
+
+The four runs of the entry above each ended inside one 300 s lease of one sandbox with at most four rows. Nothing had renewed a lease, opened a second sandbox or run the benchmark. This entry reads the code for what breaks at 89 rows, fixes what the scripted gateway could show, and then runs all 89 tasks with their own solutions in sandboxes that the run leases, with no runner of the operator's.
+
+### The eval
+
+`nanoeval import terminal-bench-2.1 --store r2` from the Linux machine into the deployed Worker, at `d4a712f`: 89 tasks in 2,169 s, one after another, 19.2 GB of packed disks through the Worker into R2 at about 9 MB/s. The conversions took 1 to 15 s a task and the uploads the rest. The eval is `terminal-bench-2.1@312b07080ace`.
+
+### What reading and the lanes found before a sandbox was paid for
+
+| Found | By | Change | Test |
+| --- | --- | --- | --- |
+| A row that asks for a runner's whole memory can only start on an empty runner, and a runner that refills from the rows behind it is never empty. Eight tasks ask for 8 GiB, more than the 6,364 MB a `desktop` runner admits, so they would have waited for the end of the run, one after another | Reading `Admission.fill` | An empty runner takes such rows first | Unit |
+| The slot of such a row still got the 8 GiB it asked for as its limit, on a machine with less | Reading `slot.sh` | The slot gets the runner's memory, the result records it, and a row that did not pass after that limit killed a process is an `environment` error | Unit |
+| With `--disks remove` a disk is removed by the runner that finishes the last row of its task. With several attempts or agents the disks of rows that ended elsewhere stay: 51 GB of disks against 20 GB | Reading `Runner.ts` | Below `--free-disk-mb` a runner removes the disks of the run that none of its rows uses | Unit, the disk lanes, `slot.sh drop` in the slot test |
+| Two rows of one task claimed together each downloaded the disk, and the second unpacked from a file the first had removed, which cost it one of its step retries | Reading | One fetch and one unpack | Unit |
+| A sandbox that dies with rows in flight: cancelling the turn of a session whose hand is gone answered after 26 s. The tick waited that long for each row, renewed nothing meanwhile, the second sandbox ran out of its lease, and 10 of 12 rows ended as errors | The fleet lane, first run | A cancel is waited for one tick. Leases are renewed before a sandbox is opened | The fleet lane |
+| A renewal that failed killed the sandbox and its rows at once, with the rest of its lease paid | Reading, then for real below | A sandbox that is sold no renewal is used until its lease ends and is then replaced | The gateway lanes, the lapse lane |
+
+Read and left as it is:
+
+- **A disk that fills.** A download or an unpack that fails for space is a failed step: the runner tries it `--step-retries` times and the row ends as an `environment` error with the system's message. Not provoked for real. What a running solution writes is not reserved: a task whose own writes fill the disk fails as a task.
+- **CPUs** are not admitted. Slots that together ask for more than the machine has run slower, and a solution that then misses its timeout is scored as a timeout.
+- **The 24 hours.** The lifetime a run computes is the worst case of its rows over its slots. For the 89 rows that is 354,510 s summed, which one sandbox of four slots turns into a lifetime of 89,400 s, more than the 86,400 s a sandbox may live, and such a run is refused with the figure until `--sandbox-timeout-sec` names a lifetime. A gateway lifetime costs nothing by itself. A sandbox that reaches it ends like one whose lease is over.
+- **The Worker.** One `Run` object answers every runner. A runner with a free slot asks for rows every `--poll-ms`, and each answer reads the table of attempts, so a deployed run wants 1,000 ms or more. Nothing else grows with the number of slots: a slot reads its own status files, and artifacts are stored in parts.
+
+### What the gateway does with a renewal
+
+Asked directly with the key, on a `base` sandbox with a 60 s lease and a 600 s lifetime: `POST /v1/compute/renew` was answered `502` with the problem `upstream_failed` before any price, without the key and with it, for 60 s and for 300 s, right after the sandbox was created and with 20 s of its lease left. `create`, `exec`, `write` and `terminate` worked throughout. So on this day no lease of an E2B sandbox could be renewed through the gateway, which is not something this repository can change, and a lease has to be bought whole when the sandbox is opened: `--sandbox-lease-sec` up to the lifetime, with nothing refunded for what a run does not use.
+
+### Ten tasks, two sandboxes, leases of 240 s
+
+`run --oracle --only ...` for ten tasks, `--provider gateway --template desktop --runtime-blob SHA256 --backend ns --sandboxes 2 --slots 4 --disks remove --free-disk-mb 4000 --sandbox-lease-sec 240 --sandbox-timeout-sec 3600 --poll-ms 1000`, Worker and runtime at the tree of `f2f46bb`. The lease was chosen shorter than the run so that its end would be seen.
+
+| At | What happened |
+| ---: | --- |
+| 0 s | The run was created and opened the first sandbox |
+| 15 s | Its runner had started from the archive, reported 7,955 MB and 8 CPUs, and claimed `mteb-leaderboard`, which asks for 8 GiB: the empty runner took it first and ran it alone with 6,364 MB |
+| 50 s | The second sandbox's runner was ready and took the rows that fit, one claim at a time under the disk floor |
+| 185 s | The first sandbox asked for its renewal 60 s before its lease ended and was refused before a price. It became `ending` and kept its row |
+| 245 s | Its lease was over with `portfolio-optimization` in flight: the row was put back as a lost claim and the sandbox closed. The second, ending and idle, was terminated |
+| 257 s | A third sandbox was ready and had claimed the row again |
+| 470 s | The run finished: 9 passed, 1 failed, 1 lost claim, no sandbox listed for the key |
+
+It recorded $0.1081: three leases of 240 s at $0.0339 and the fees of 6 writes, 3 execs and 3 terminations. Each disk was removed with its row: read once during the run, one sandbox held three unpacked disks of 0.3 GB together and the other one of 4.5 GB, with 20.1 and 17.6 GB free.
+
+The one failure was `mailman`, which passes on krun slots: `postfix` did not start. See the next section.
+
+### What a slot inherited from its runner
+
+Two defects of ns slots showed only in a sandbox, because only there is the runner started by the bootstrap:
+
+- **The root of a slot was mode 700.** The bootstrap sets `umask 077` for the runner's files, `slot.sh` inherited it, and the upper directory it made became the root of the overlay. Root in the slot saw nothing wrong. Every other user of the image was refused at `/`: `postfix/master` could not open its lock file as `postfix` (read from a syslog socket put into the slot while it ran), `su` could not start a shell, `nginx` answered 403 as `www-data`, `apt` warned that `_apt` could not read its downloads. Four tasks failed for it.
+- **The core limit could not be raised.** A sandbox runs its commands with a hard core limit of zero, a slot has no `CAP_SYS_RESOURCE`, and the solution of `custom-memory-heap-crash` runs `ulimit -c unlimited` under `set -e`.
+
+Both were scored as failures, which they are not. `slot.sh` now sets its own umask and starts a slot with the kernel's default core limit (`d1d51cd`). The slot test sets up and boots its slot under `umask 077` and a core limit of zero and runs a command as another user: it fails without the two lines and passes with them.
+
+### All 89 tasks
+
+`run --eval terminal-bench-2.1 --oracle --provider gateway --template desktop --runtime-blob SHA256 --backend ns --sandboxes 4 --slots 4 --disks remove --free-disk-mb 4000 --sandbox-lease-sec 3300 --sandbox-timeout-sec 3600 --sandbox-budget-usd 1.9 --poll-ms 1000`, Worker and runtime at the tree of `f2f46bb`, so before the fix of the section above.
+
+**Why four sandboxes of four slots.** A `desktop` runner admits 6,364 MB, 80 % of the machine. 68 tasks ask for 2 GiB, 13 for 4 GiB and 8 for 8 GiB, so it runs three rows of 2 GiB, or one of 4 GiB and one of 2 GiB, or one of the eight alone. On krun slots the solutions took 9,884 s summed, 1,979 s for `caffe-cifar-10`, which is one of the eight. Counted in sandbox time that is about 9,000 s, and no number of sandboxes ends the run before `caffe-cifar-10` does. Without renewals the price is sandboxes times lease whatever is used, so the choice was the fewest sandboxes that end near that bound: one for `caffe-cifar-10` and three for the rest. The lease, 3,300 s, was sized for a sandbox one and a half times slower than the Linux machine, which it was not: the run needed 2,016 s.
+
+| | Passed | Failed | Errored | Wall |
+| --- | ---: | ---: | ---: | ---: |
+| krun slots on the Linux machine, entry of 2026-11-11 | 82 | 4 | 3 | 2,037 s |
+| This run, ns slots in four leased sandboxes | 79 | 8 | 2 | 2,016 s |
+| With the rerun of the five rows that the slot defects failed, at `d1d51cd` | 84 | 3 | 2 | |
+
+- The four runners finished 1, 11, 34 and 43 rows: the first ran `caffe-cifar-10` alone for 1,774 s, and the other three began with the seven other rows of 8 GiB. No claim was lost, no call of a runner to the Worker failed and no step was retried. The attempts took 10,794 s summed and 44 s at the median. The environment phase, fetching a disk from R2 through the Worker and unpacking it, took 8.2 s at the median and 67 s at most.
+- `caffe-cifar-10` 1,774 s against 1,979 s on krun slots, `crack-7z-hash` 590 s against 1,460 s, `compile-compcert` 1,374 s against 982 s, beside other rows.
+- Read twice during the run, the four sandboxes had 15.9 to 20.1 GB of disk free and one or two unpacked disks each.
+- Each sandbox was terminated when its runner held no row and none waited, 1,109 to 1,208 s before its lease ended. Nothing is refunded for that: a lease of 2,400 s would have done.
+- The run recorded $1.8651: four leases of 3,300 s at $0.46408, 8 writes, 4 execs and 4 terminations.
+
+**Every row that did not pass.**
+
+| Task | Here | krun | Cause |
+| --- | --- | --- | --- |
+| `build-cython-ext` | failed | failed | Task: its solution leaves `planarity` unpinned |
+| `mcmc-sampling-stan` | failed | failed | Task: its solution leaves `RcppParallel` unpinned |
+| `protein-assembly` | failed | failed | Task: its solution's optimizer ends in `NoSolutionError` |
+| `qemu-alpine-ssh`, `qemu-startup` | `verifier` error | `verifier` error | Task: the verifier's `apt-get install curl` gets 404 on Debian 11, so no test runs |
+| `configure-git-webserver`, `git-multibranch`, `mailman`, `nginx-request-logging` | failed, passed in the rerun | passed | This stack: the root of the slot was mode 700 |
+| `custom-memory-heap-crash` | failed, passed in the rerun | passed | This stack: the core limit could not be raised |
+
+Two rows passed here that did not on krun slots: `pypi-server`, which fails there for the hold that machine's registry puts on new releases, and `torch-tensor-parallelism`, whose deadlock the earlier entries found intermittent.
+
+**The rerun.** `run --rerun RUN --only ...` for the five rows, one sandbox, a lease of 420 s, Worker and runtime at `d1d51cd`: 5 of 5 passed in 146 s for $0.0613, each row naming the attempt it retries. The run could not terminate its sandbox: the gateway answered that request `401`, the key having been revoked or replaced while the run was in flight, which was not this work's doing. The refusal is in the run's payments, the sandbox is recorded as failed with that message, and it ended with its lease 4 minutes later. Whether it had was not read: the key no longer listed anything.
+
+### What the key was charged
+
+Read from the gateway before and after each run until the key stopped answering. Another job used the same key during these hours, so its figures bound this work's spend and do not equal it.
+
+| | Recorded by the run | The key's limit |
+| --- | ---: | --- |
+| A `base` sandbox for 60 s, the renewal asked by hand | | about $0.002 |
+| Ten tasks | $0.1081 | fell by $0.1038 |
+| `mailman` alone, to read why it fails, and a `desktop` sandbox for 60 s | $0.0234 and about $0.009 | |
+| All 89 tasks | $1.8651 | fell by $2.9025 with the other job |
+| The rerun of five rows | $0.0613 | not read |
+
+About $2.08 in all, with some 30 commands and files sent to sandboxes by hand at $0.0001 to $0.001.
+
+### Not verified
+
+- A renewal that is paid. The gateway sold none. The scripted gateway sells them, refuses the first in passing, and can sell none.
+- The 24 hours of a lifetime, and a sandbox that reaches it.
+- More than four sandboxes or sixteen slots in one run, and what E2B or the gateway allow one key at once.
+- A model or an installed agent at this scale. Only solutions ran. The four runs of the entry above are still the only ones with models in a leased sandbox.
+- Several attempts or agents of one task in sandboxes: the removal of idle disks under the floor ran in lanes and never for real, since no sandbox came near its floor with one attempt a task.
+- A disk that fills, an 8 GiB task that is killed at 6,364 MB, and a sandbox that dies during a paid run: lanes and unit tests only. Of the eight rows of 8 GiB, seven passed with 6,364 MB, the eighth failed for its own solution, and no process of any was killed.
+- A valid key in the Worker after these runs. The one it holds stopped answering at the end of the rerun.
+- CI on GitHub. Nothing is pushed.
