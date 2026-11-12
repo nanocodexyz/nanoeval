@@ -2032,6 +2032,10 @@ Read from the gateway before and after each run until the key stopped answering.
 
 About $2.08 in all, with some 30 commands and files sent to sandboxes by hand at $0.0001 to $0.001.
 
+### Every check, from a fresh clone
+
+From a fresh clone of `cefa134` on the Linux machine, with programs that log and exit 97 in place of the seven container tools first on `PATH`, whose log was empty afterwards: every `run` step of `ci.yml` in its order, 58 steps, and each exited 0 at its first try, in 7 minutes. `npm ci`, `npm run lint`, `npm run check:types`, `npm test` (114 tests, none skipped, the slot test in a guest), `npm run dry-run`, the 19 directory lanes with the two new ones (`fleet` in 8 s, `lapse` in 10 s), the 22 krun lanes, the 9 ns lanes in a guest, `cargo fmt --check`, `cargo clippy` and `cargo test` (25 tests). No image build stalled. The commit that records this changes this file only.
+
 ### Not verified
 
 - A renewal that is paid. The gateway sold none. The scripted gateway sells them, refuses the first in passing, and can sell none.
