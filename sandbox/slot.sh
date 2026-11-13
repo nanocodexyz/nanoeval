@@ -18,6 +18,8 @@ masked='acpi kcore keys latency_stats sched_debug scsi timer_list timer_stats'
 guarded='bus fs irq sys sysrq-trigger'
 subnet=10.213
 links=16384
+oserr=71
+side=''
 PATH=$PATH:/usr/sbin:/sbin
 umask 022
 
@@ -28,6 +30,11 @@ die() {
 
 valid() {
   [[ $1 =~ ^[a-z0-9][a-z0-9_-]{0,47}$ ]] || die "invalid slot name: $1"
+}
+
+fault() {
+  local code=$?
+  if [ "$code" != 0 ] && [ "$side" = machine ]; then exit "$oserr"; fi
 }
 
 spawn() {
@@ -440,6 +447,8 @@ cmd_up() {
   case $(state "$dir/up.status") in
     running | exit:0) return 0 ;;
   esac
+  side=machine
+  trap fault EXIT
   spawn "$dir/up.status" "$dir/up.log" bash "$self" _up "$@"
 }
 
@@ -472,8 +481,11 @@ cmd_tools() {
 cmd__up() {
   local slot=$1 backend=$2 cpus=$3 memory=$4 network=$5 storage=$6 base=${7:-}
   local dir=$home/slots/$slot archive
+  side=machine
+  trap fault EXIT
   rm -rf "$dir/task" "$dir/verifier"
   mkdir -p "$dir/task" "$dir/verifier"
+  side=task
   for archive in "$dir"/*.tar; do
     [ -f "$archive" ] || continue
     tar -xf "$archive" -C "$dir/task"
@@ -488,18 +500,22 @@ cmd__up() {
   printf '%s\n' "$network" >"$dir/network"
   case $backend in
     dir)
+      side=machine
       mkdir -p "$dir/work"
+      side=task
       if [ -d "$dir/task/environment" ]; then
         tar -C "$dir/task/environment" --exclude=./Dockerfile -cf - . | tar -C "$dir/work" -xf -
       fi
       printf '%s\n' "$dir/work" >"$dir/workdir"
       ;;
     krun | ns)
+      [ -n "$base" ] || die "a $backend slot boots an environment disk and was given none"
+      side=machine
       [ -x "$krun/nanoeval-krun" ] || die "the sandbox was not set up for the $backend backend"
       if [ -n "${NANOEVAL_SLOT_ENV:-}" ] && [ ! -f "$NANOEVAL_SLOT_ENV" ]; then die "NANOEVAL_SLOT_ENV is not a file: $NANOEVAL_SLOT_ENV"; fi
-      [ -n "$base" ] || die "a $backend slot boots an environment disk and was given none"
       exec 8>"$base.use"
       flock -s 8
+      side=task
       [ -f "$base.ext4" ] || die "the environment disk $base.ext4 is not in the cache"
       local vcpus workdir
       vcpus=$(awk -v cpus="$cpus" 'BEGIN { whole = int(cpus); print (whole < cpus ? whole + 1 : whole) }')
@@ -510,18 +526,18 @@ cmd__up() {
       printf '%s\n' "${workdir:-/}" >"$dir/workdir"
       local options=() forward
       : >"$dir/vm.log"
+      format "$dir/upper.ext4" "$storage"
+      side=machine
       if [ "$backend" = ns ]; then
         mkdir -p "$dir/ctl/io"
         chmod 700 "$dir/ctl"
         ln -sfn ctl "$dir/net"
         ln -sfn ctl/io "$dir/io"
         ln -sfn ctl/vm.sock "$dir/vm.sock"
-        format "$dir/upper.ext4" "$storage"
         if [ "$network" = private ]; then relay "$dir" 8>&-; fi
         namespace "$dir" "$slot" "$base" "$network" "$vcpus" "$memory" 8>&-
       else
         mkdir -p "$dir/io"
-        format "$dir/upper.ext4" "$storage"
         if [ "$network" = private ]; then
           relay "$dir" 8>&-
           options+=(--passt "$(command -v passt)" --relay net/relay.sock)
@@ -533,6 +549,7 @@ cmd__up() {
       fi
       (cd "$dir" && exec tail --pid="$(cat "$dir/vm.pid")" -f /dev/null -s 0.01) >/dev/null 2>&1 </dev/null &
       printf '%s\n' "$!" >"$dir/use.pid"
+      side=task
       if ! vm "$dir" ready --log vm.log --pid "$(cat "$dir/vm.pid")" --socket vm.sock; then
         cat "$dir/vm.log" >&2
         exit 1
@@ -572,10 +589,12 @@ namespace() {
   parent=$!
   printf '%s\n' "$parent" >"$dir/vm.pid"
   [ "$network" = private ] || return 0
+  side=task
   until child=$(pgrep -P "$parent") && [ -n "$child" ]; do
     kill -0 "$parent" 2>/dev/null || die "the slot ended before its namespaces existed: $(cat "$dir/vm.log")"
     sleep 0.01
   done
+  side=machine
   for ((index = 0; index < links; index++)); do
     [ ! -e "/sys/class/net/nev$index" ] || continue
     if ip link add "nev$index" type veth peer name eth0 netns "$child" 2>"$dir/link.log"; then break; fi

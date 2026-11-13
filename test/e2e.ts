@@ -56,12 +56,13 @@ const label =
 const out = Path.resolve('output/e2e', label)
 const largeTestBytes = 3 * 1024 * 1024
 const ending = scenario === 'ending'
-const attached = ending || ['lost', 'resume', 'runners', 'standing'].includes(scenario)
+const attached = ending || ['lost', 'machine', 'resume', 'runners', 'standing'].includes(scenario)
 const alone = scenario === 'alone'
 const refusedPassing = scenario === 'refused'
 const spent = scenario === 'spent'
 const fleet = scenario === 'fleet'
 const lapse = scenario === 'lapse'
+const machine = scenario === 'machine'
 const sandboxLeaseSec = Number(process.env['NANOEVAL_E2E_SANDBOX_LEASE_SEC'] ?? leaseSec)
 const seededDisk = 'e'.repeat(64)
 const standing = scenario === 'standing'
@@ -913,6 +914,21 @@ async function main(): Promise<void> {
       )
       await new Promise((resolve) => setTimeout(resolve, (config.limits.setupSec + 1) * 1000))
       attach(created.id, 'late')
+    } else if (machine) {
+      if (disk) attach(created.id, 'a', ['--slot-env', Path.join(out, 'missing.env')])
+      else {
+        if (process.getuid?.() === 0)
+          throw new Error('the machine scenario of directory slots runs without root')
+        Fs.mkdirSync(Path.join(out, 'runner-a', 'slots'), { recursive: true })
+        Fs.chmodSync(Path.join(out, 'runner-a', 'slots'), 0o555)
+        attach(created.id, 'a')
+      }
+      await waitFor('the run to refuse the runner whose machine brings no slot up', async () =>
+        ((await api.status(created.id))['runners'] as { state: string }[]).find(
+          (runner) => runner.state === 'refused',
+        ),
+      )
+      attach(created.id, 'b')
     } else if (attached && !standing) {
       attach(created.id, 'a')
       if (scenario !== 'resume') attach(created.id, 'b')
@@ -1066,6 +1082,60 @@ async function main(): Promise<void> {
               ['expired', 'finished'],
             )
           }
+      }
+      if (machine) {
+        const [broken, healthy] = runners.map((runner) => ({
+          code: runner.child.exitCode,
+          id: runnerId(runner.home),
+          log: Fs.readFileSync(Path.join(out, 'runner-' + runner.name + '.log'), 'utf8'),
+        }))
+        const shown = (status['runners'] as Record<string, any>[]).find(
+          (runner) => runner['id'] === broken!.id,
+        )!
+        assert.equal(shown['state'], 'refused')
+        assert.match(shown['error'], /^the machine could not bring a slot up: /)
+        assert.ok(
+          summary(status).includes(
+            'runner ' + broken!.id + ' (refused): the machine could not bring a slot up: ',
+          ),
+          'the status of the run names the runner and what its machine said',
+        )
+        assert.ok(
+          (await api.timeline(created.id)).marks.some(
+            (mark) => mark.name === 'runner.fault' && mark.runner === broken!.id,
+          ),
+          'the timeline of the run says when the machine of the runner failed',
+        )
+        const rows = status['attempts'] as { claims: number; id: string; runner: number }[]
+        const given = rows.filter((row) => row.claims === 2)
+        assert.ok(given.length >= 1, 'the runner of the broken machine claimed a row')
+        assert.ok(
+          given.length <= slots,
+          'a runner claims no more rows than it has slots before its machine fails the first',
+        )
+        assert.equal(status['lostClaims'], given.length)
+        for (const row of rows) {
+          assert.equal(row.runner, healthy!.id, 'every row ended on the other runner')
+          assert.deepEqual(
+            (await api.attempt(created.id, row.id))['claims'].map(
+              (claim: { ending: string; runner: number }) => [claim.runner, claim.ending],
+            ),
+            given.includes(row)
+              ? [
+                  [broken!.id, 'released'],
+                  [healthy!.id, 'finished'],
+                ]
+              : [[healthy!.id, 'finished']],
+          )
+        }
+        assert.equal(broken!.code, 1, 'the runner of the broken machine says so when it exits')
+        assert.match(
+          broken!.log,
+          /\[Runner\.MachineError\]: the machine could not bring a slot up: /,
+        )
+        assert.match(broken!.log, / goes back to the run and this runner claims no more rows: /)
+        assert.equal(healthy!.code, 0)
+        if (disk) assert.match(shown['error'], /NANOEVAL_SLOT_ENV is not a file/)
       }
       if (scenario === 'resume') {
         assert.equal(

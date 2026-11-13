@@ -1286,13 +1286,19 @@ export class Run extends DurableObject<Env> {
       const runner = this.runners().find((candidate) => candidate.id === row.runner)
       try {
         if (!runner) throw new Error('the sandbox has no runner')
-        if (runner.state === 'refused' || runner.state === 'lost')
-          throw new Error(runner.error ?? 'the runner of the sandbox stopped')
-        if (row.state !== 'starting') continue
-        if (runner.state === 'ready') {
+        const started =
+          row.state === 'starting' &&
+          runner.capabilities !== null &&
+          (runner.state === 'ready' || runner.state === 'refused')
+        if (started) {
           this.update('sandboxes', row.id, { capabilities: runner.capabilities, state: 'ready' })
           this.setMeta({ ...this.meta()!, sandboxFailures: 0 })
-        } else if (Date.now() - row.created_at > config.limits.setupSec * 1000) {
+        }
+        const holds = this.rows().some((held) => Ledger.active(held) && held.runner === runner.id)
+        if ((runner.state === 'refused' && !holds) || runner.state === 'lost')
+          throw new Error(runner.error ?? 'the runner of the sandbox stopped')
+        if (row.state !== 'starting' || started) continue
+        if (Date.now() - row.created_at > config.limits.setupSec * 1000) {
           const handle = JSON.parse(row.handle!) as Sandbox.Handle
           const log = await provider
             .connect(handle)
@@ -1867,6 +1873,7 @@ export class Run extends DurableObject<Env> {
         })
       if (action === 'session') return json(await this.handSession(row))
       if (action === 'endpoint') return json(await this.endpoint(row))
+      if (action === 'fault') return json(await this.fault(row, body as Protocol.Fault))
       if (action === 'agent') return json(await this.agent(row, body as Protocol.Ask))
       if (action === 'verify') return json(this.verify(row, body as { solve?: { code: number } }))
       if (action === 'judge') return json(await this.judge(row, body as { request?: string }))
@@ -1931,6 +1938,38 @@ export class Run extends DurableObject<Env> {
       if (row.runner === runner.id && Ledger.active(row) && !held.has(row.id + ' ' + row.claim))
         await this.lose(row, 'released')
     return this.runnerConfig(runner.id)
+  }
+
+  private async fault(row: Ledger.Attempt, body: Protocol.Fault): Promise<{ released: true }> {
+    if (typeof body.message !== 'string')
+      throw new Refusal(400, 'message is what the machine said when the slot did not come up')
+    if (row.phase !== 'claimed')
+      throw new Refusal(
+        409,
+        'the slot of the attempt came up: it is in the ' + row.phase + ' phase',
+      )
+    const now = Date.now()
+    if (row.runner !== null) {
+      this.update('runners', row.runner, {
+        error: 'the machine could not bring a slot up: ' + body.message,
+        seen_at: now,
+        state: 'refused',
+      })
+      Timeline.add(this.sql, { at: now, name: 'runner.fault', runner: row.runner })
+    }
+    await this.lose(
+      row,
+      'released',
+      row.claims < this.config().limits.claims
+        ? undefined
+        : 'the attempt was claimed ' +
+            row.claims +
+            ' times, the limit of the run, and the machine of runner ' +
+            row.runner +
+            ' could not bring its slot up: ' +
+            body.message,
+    )
+    return { released: true }
   }
 
   private finished(): boolean {
@@ -2051,7 +2090,10 @@ export class Run extends DurableObject<Env> {
       const row = Ledger.held(this.sql, entry)
       if (row && row.runner === runner.id) await this.lose(row, 'released')
     }
-    this.update('runners', runner.id, { seen_at: Date.now(), state: 'left' })
+    this.update('runners', runner.id, {
+      seen_at: Date.now(),
+      ...(runner.state === 'refused' ? {} : { state: 'left' }),
+    })
     this.ctx.waitUntil(this.tick())
     return { left: true }
   }

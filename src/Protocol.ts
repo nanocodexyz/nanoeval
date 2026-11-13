@@ -92,6 +92,8 @@ export type Judgement =
   | { state: 'timeout' }
   | { state: 'waiting' }
 
+export type Fault = { message: string }
+
 export type Finish = {
   failure?: { kind: Result.FailureKind; message: string }
   verifier?: Verdict.Verifier

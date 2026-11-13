@@ -450,7 +450,16 @@ export function summary(status: Record<string, any>): string {
         String(status['refused'].message).slice(0, 300),
     )
   for (const runner of (status['runners'] ?? []) as Record<string, any>[])
-    if (runner['drained'] && runner['state'] === 'ready')
+    if (runner['error'])
+      lines.push(
+        'runner ' +
+          runner['id'] +
+          ' (' +
+          runner['state'] +
+          '): ' +
+          String(runner['error']).slice(0, 300),
+      )
+    else if (runner['drained'] && runner['state'] === 'ready')
       lines.push('runner ' + runner['id'] + ' claims no more rows: ' + runner['drained'])
   if (status['strandedAt'])
     lines.push(

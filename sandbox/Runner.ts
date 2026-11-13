@@ -25,6 +25,10 @@ export class GoneError extends Error {
   override name = 'Runner.GoneError'
 }
 
+export class MachineError extends Error {
+  override name = 'Runner.MachineError'
+}
+
 export class RefusedError extends Error {
   override name = 'Runner.RefusedError'
 }
@@ -322,6 +326,7 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
   const reported: Mark[] = []
   let claimAt = 0
   const mark = '.run-' + config.run
+  let fault: string | undefined
   let finished = false
   let frees = 0
   let signalled = false
@@ -516,6 +521,18 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
   const fail = (item: Work, kind: Result.FailureKind, message: string) =>
     finish(item, { failure: { kind, message } })
 
+  const giveBack = async (item: Work, message: string) => {
+    fault ??= message
+    log(
+      'the machine could not bring a slot up, so ' +
+        item.row.id +
+        ' goes back to the run and this runner claims no more rows: ' +
+        message,
+    )
+    await rowCall(item, 'fault', { message } satisfies Protocol.Fault)
+    await down(item, false)
+  }
+
   const ensureDisk = async (environment: Protocol.Ahead, marks: Mark[]) => {
     const prefix = Path.join(cache, 'disks', environment.disk.digest)
     let pending = unpacking.get(prefix)
@@ -566,9 +583,14 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
   const prepare = async (item: Work) => {
     const task = item.row.task
     const target = directory(item)
-    await Fs.mkdir(target, { recursive: true })
-    observe(item)
-    await save(item)
+    if (fault !== undefined) throw new MachineError(fault)
+    try {
+      await Fs.mkdir(target, { recursive: true })
+      observe(item)
+      await save(item)
+    } catch (error) {
+      throw new MachineError(error instanceof Error ? error.message : String(error))
+    }
     const fetch = async (blob: Eval.Blob, name: string) => {
       const file = Path.join(target, name)
       await Fs.rm(file, { force: true })
@@ -626,7 +648,7 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
       capacityMb: capacity.memoryMb,
       requestedMb: task.resources.memoryMb,
     })
-    await shell(
+    const up = await output(
       slots.up(item.row.slot, {
         backend,
         cpus: task.resources.cpus,
@@ -635,7 +657,12 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
         network: config.network,
         storageMb: task.resources.storageMb,
       }),
+      env,
     )
+    const said = (up.stderr.trim() || up.stdout.trim()).slice(-2000)
+    if (up.exitCode === Slot.machineExit) throw new MachineError(said)
+    if (up.exitCode !== 0)
+      throw new Error('the slot command exited with ' + up.exitCode + ': ' + said)
     await move(item, 'up')
   }
 
@@ -803,6 +830,7 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
         }
         if (code !== 0) {
           const upLog = await slotLog(item, 'up', Protocol.logBytes)
+          if (code === Slot.machineExit) throw new MachineError(upLog.trim().slice(-2000))
           await upload(item, 'environment.log', upLog)
           return fail(
             item,
@@ -942,16 +970,22 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
         await down(item, false).catch(() => {})
         return
       }
+      const dropped = async (failure: unknown) => {
+        log('attempt ' + item.row.id + ' could not be finished: ' + String(failure))
+        await down(item, false).catch(() => {})
+      }
+      if (error instanceof MachineError) {
+        await giveBack(item, error.message).catch(dropped)
+        return
+      }
       const reason = error instanceof Error ? error.name + ': ' + error.message : String(error)
       item.errors++
       item.marks.push({ at: Date.now(), name: 'attempt.retry' })
       log('attempt ' + item.row.id + ' stumbled in ' + item.stage + ': ' + reason)
       const final = error instanceof Store.MissingError || error instanceof Store.DigestError
+      const full = item.stage === 'prepare' && (error as NodeJS.ErrnoException).code === 'ENOSPC'
       if (final || item.errors > config.limits.stepRetries)
-        await fail(item, 'environment', reason).catch(async (failure) => {
-          log('attempt ' + item.row.id + ' could not be finished: ' + String(failure))
-          await down(item, false).catch(() => {})
-        })
+        await (full ? giveBack(item, reason) : fail(item, 'environment', reason)).catch(dropped)
       else item.next = Date.now() + config.pollMs
     } finally {
       item.busy = false
@@ -1069,7 +1103,7 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
   let drained = false
   const beatMs = (config.leaseSec * 1000) / 3
   shared.stop = signal
-  while (!shared.stopping && !((finished || drained) && !work.size)) {
+  while (!shared.stopping && !((finished || drained || fault !== undefined) && !work.size)) {
     const now = Date.now()
     for (const item of work.values()) if (!item.busy && now >= item.next) void step(item)
 
@@ -1102,7 +1136,7 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
       })()
     }
 
-    if (!claiming && !finished && !drained && now >= claimAt) {
+    if (!claiming && !finished && !drained && fault === undefined && now >= claimAt) {
       claiming = true
       const freed = frees
       void (async () => {
@@ -1165,7 +1199,7 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
     if (!signalled) {
       const due = Math.min(
         beating ? Infinity : beatAt + beatMs + 1,
-        claiming || finished || drained ? Infinity : claimAt,
+        claiming || finished || drained || fault !== undefined ? Infinity : claimAt,
         ...[...work.values()].filter((item) => !item.busy).map((item) => item.next),
       )
       await new Promise<void>((resolve) => {
@@ -1194,6 +1228,8 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
     )
   }
   log('runner ' + config.runner + ' left')
+  if (fault !== undefined && !shared.stopping)
+    throw new MachineError('the machine could not bring a slot up: ' + fault)
 }
 
 export async function detach(options: {

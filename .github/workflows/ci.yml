@@ -77,6 +77,12 @@ jobs:
           NANOEVAL_E2E_SCENARIO: lost
           NANOEVAL_E2E_SLOTS: '2'
           NANOEVAL_E2E_LEASE_SEC: '3'
+      - name: End to end, directory slots, a runner whose machine brings no slot up beside one that works
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: machine
+          NANOEVAL_E2E_SLOTS: '2'
       - name: End to end, directory slots, a runner restarted during the run
         run: npm run e2e
         env:
@@ -278,6 +284,11 @@ jobs:
           NANOEVAL_E2E_SCENARIO: lost
           NANOEVAL_E2E_SLOTS: '2'
           NANOEVAL_E2E_LEASE_SEC: '3'
+      - name: End to end, krun slots, a runner whose machine brings no slot up beside one that works, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: machine
+          NANOEVAL_E2E_SLOTS: '2'
       - name: End to end, krun slots, a runner restarted during the run, skipped where krun cannot run
         run: npm run e2e
         env:

@@ -444,6 +444,77 @@ test('a slot that cannot close its network refuses a task that asks for it', asy
   await provider.kill(created.handle)
 })
 
+test('a slot that its machine cannot bring up says so with the exit status of up', async () => {
+  const provider = Local.create({ token, url: server.url })
+  const created = await provider.create({ metadata: {}, template: undefined, timeoutSec: 60 })
+  const home = created.handle.home
+  const sandbox = provider.connect(created.handle)
+  const slots = Slot.create({ home })
+  const machine = 'exit:' + Slot.machineExit
+  const up = async (
+    slot: string,
+    input: { backend: Slot.Backend; disk?: string; env?: string },
+  ): Promise<[Slot.Phase, string]> => {
+    const called = await sandbox.exec(
+      (input.env ? input.env + ' ' : '') +
+        slots.up(slot, {
+          backend: input.backend,
+          cpus: 1,
+          ...(input.disk ? { disk: input.disk } : {}),
+          memoryMb: 256,
+          network: 'host',
+          storageMb: 1024,
+        }),
+    )
+    if (called.exitCode !== 0) return [`exit:${called.exitCode}`, called.stderr]
+    return [
+      await wait(
+        async () => Slot.parseStatus(await Sandbox.run(sandbox, slots.status())).slots[slot]!.up,
+      ),
+      await Sandbox.run(sandbox, slots.log(slot, 'up', 4096)),
+    ]
+  }
+  try {
+    await sandbox.write(slots.script, script)
+    await Sandbox.run(
+      sandbox,
+      'mkdir -p cache rt/krun slots/archive slots/blocked slots/disk slots/none slots/policy && ' +
+        'touch slots/blocked/work && printf x > slots/archive/tests.tar && ' +
+        "printf '#!/bin/sh\n' > rt/krun/nanoeval-krun && chmod +x rt/krun/nanoeval-krun",
+    )
+
+    const absent = await up('absent', { backend: 'dir' })
+    assert.equal(absent[0], machine, 'a slot directory that cannot be written is the machine')
+    assert.match(absent[1], /up\.status: No such file or directory/)
+
+    const blocked = await up('blocked', { backend: 'dir' })
+    assert.equal(blocked[0], machine, 'a workspace that cannot be made is the machine')
+    assert.match(blocked[1], /mkdir: cannot create directory .*work.: File exists/)
+
+    const policy = await up('policy', {
+      backend: 'ns',
+      disk: home + '/cache/disk',
+      env: 'NANOEVAL_SLOT_ENV=' + Sandbox.quote(home + '/missing.env'),
+    })
+    assert.equal(policy[0], machine, 'host policy that names no file is the machine')
+    assert.match(policy[1], /NANOEVAL_SLOT_ENV is not a file/)
+
+    const archive = await up('archive', { backend: 'dir' })
+    assert.equal(archive[0], 'exit:2', 'an archive of the task that does not unpack is the task')
+    assert.match(archive[1], /tar: /)
+
+    const disk = await up('disk', { backend: 'ns', disk: home + '/cache/disk' })
+    assert.equal(disk[0], 'exit:2', 'a disk of the task that is not in the cache is the task')
+    assert.match(disk[1], /the environment disk .* is not in the cache/)
+
+    const none = await up('none', { backend: 'krun' })
+    assert.equal(none[0], 'exit:2', 'a row without a disk for a slot that boots one is the row')
+    assert.match(none[1], /boots an environment disk and was given none/)
+  } finally {
+    await provider.kill(created.handle)
+  }
+})
+
 test('a finished setup runs again for another pin or another boot, and not for the same', async () => {
   const provider = Local.create({ token, url: server.url })
   const created = await provider.create({ metadata: {}, template: undefined, timeoutSec: 60 })
