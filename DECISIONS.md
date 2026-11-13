@@ -2574,3 +2574,67 @@ The entry of this day on a machine with KVM left a stall open: under load a stre
 - libkrun's integration tests, which need libkrun built and installed with its own guest programs.
 - Whether the slow `verifier cache` lane of the entry on the stall was this stall.
 - An import on the machine of a deployed run, and CI on GitHub, whose runner has to fetch the fork.
+
+## 2026-11-13: the harness moves to nanocode-ts `build-81eada9` and the hand to `nanocode-cli-3f97ab0`
+
+The entry of 2026-11-12 on the builds of that day left one check open: all 89 tasks with a model. That run was made, the rows it lost were read, what the builds had to do with them was changed in nanocode, and this entry pins the builds that hold the changes: nanocode-ts `build-81eada9` (nanocode c14de6c) and the hand `nanocode-cli-3f97ab0` (nanocode 3f97ab009). It changes `package.json`, `package-lock.json` and the release and checksum of `src/Slot.ts`, nothing else. The harness build needs the entry above on the model calls of a session, for the reason that entry gives and for a second one that this entry found.
+
+### All 89 tasks on the builds before
+
+`claude:claude-haiku-5-5` as a nanocode session on every task of `terminal-bench-2.1`, one attempt a row, on the second machine of the entry of 2026-11-12: 5 cores, no KVM, ns slots, three at a time. The hand was the pinned `nanocode-cli-1f10a22` and the harness nanocode-ts `build-3469bc7`, a build of the same day later than the pinned `build-061892c`. The machine restarted during the run, and the rows it had not finished ran in a second run: the two are read as one.
+
+65 passed, 22 failed and 2 ended as errors, with 26,260 s of agent time, 1,266 model calls, 42,173,418 input and 1,677,916 output tokens. The two errors are `qemu-alpine-ssh` and `qemu-startup`, which end the same way with `--oracle` on that machine. The arms of 2026-11-12 passed 61 as a nanocode session and 64 as Claude Code, in sandboxes with 8 vCPUs and with the builds of that day: another machine and one attempt a row, so the three totals are not a ranking. Row by row against the nanocode arm of that night, 14 tasks passed that had not (`bn-fit-modify`, `caffe-cifar-10`, `chess-best-move`, `compile-compcert`, `dna-assembly`, `feal-linear-cryptanalysis`, `install-windows-3.11`, `kv-store-grpc`, `mcmc-sampling-stan`, `path-tracing-reverse`, `protein-assembly`, `pypi-server`, `regex-chess`, `torch-pipeline-parallelism`) and 10 did not pass that had. The ten were read from their trajectories:
+
+- **A command's output arrived cut, and nothing said so** (`gcode-to-text`, `financial-document-processor`). The Bash tool keeps the first 131,072 bytes of what a command prints. The result did not say that it had been cut, and the model took the part for the whole.
+- **A command moved to the background printed "NaN"** (`adaptive-rejection-sampler`). The instructions of these builds tell the model that `tools.Bash` resolves to `{ stdout, stderr, exit_code }`, and a cell prints `r.stdout + r.stderr`. The result of a command that its timeout moved to the background had neither field. In the two runs 31 Bash calls in 14 attempts were moved after the default 120 s, and in 24 of them the cell printed "NaN" or "undefined" in place of the notice that names the job and its output file.
+- **A long command was never in the foreground, and the end of a background job was reported late and wrong** (`rstan-to-pystan`, 0 of 5 on the builds of 2026-11-12 against 1 of 1 on the ones before). The converted script samples for 350 to 520 s, and its first version is killed at the task's 8 GiB once sampling is done. With the earlier builds the model ran it in the foreground of one call and read "Killed" in that call's result. With the newer ones the call was moved to the background at 120 s in five attempts of five, the notice of the job's end came only with the result of the next cell that returned, read "completed (exit code 0)" for a job the kernel had killed, since that is the status of the `tail` that ended the command line, and carried no output. The agent then watched a dead job with `pgrep`, which the workers the job had left kept answering, for 550 to 780 s an attempt, more than the row has to spare.
+- **The other six were the model's** (`db-wal-recovery`, `largest-eigenval`, `make-mips-interpreter`, `model-extraction-relu-logits`, `torch-tensor-parallelism`, `tune-mjcf`): no tool result in them is wrong or missing. Five of the six passed when run again on the new hands, below.
+
+### What the new builds do
+
+All in nanocode, each with an entry in its DECISIONS.md:
+
+- A Bash result that was cut says so in its last line, with the number of bytes the command printed and the file that holds all of them (2c64cbe6a).
+- A Bash result has the same fields whether the command finished or was moved to the background: `stdout` is then the notice, and `exit_code` is null (f56debf46).
+- The notice of a background job's end says how it ended, with the signal's name for an exit code above 128 and "killed for memory" when the slot's limit killed a process of it, shows its last 1,024 bytes of output, and reaches a cell that is waiting within seconds (f351a1b60).
+- A Bash call from a cell that names no timeout waits for its command for the ten minutes a call may take, where it was moved to the background after 120 s (fe47ae763). A timeout above the ten minutes is still reduced to them, and the result now says so (9ba13af49).
+- `sleep N &` is not refused, and a command that begins with `sleep` is moved to the background at its timeout like any other, where it failed (3f97ab009).
+- psh's `time` prints the three times of a command (28ba47008).
+
+The first two and the last are in nanocode c14de6c, which `build-81eada9` is built from, and all of them are in the hand, which is where the Bash tool runs. One sentence of the harness's instructions that describes the ten minutes comes only with a later nanocode-ts build.
+
+### A Worker that stopped answering
+
+The Worker of the model runs below ran `build-81eada9` without the entry above, and stopped answering twice: workerd at 100 to 110 % of a core, 1.7 and 2.3 GB resident, no answer on any route, every session on it stalled until it was started again. Both times the provider had ended a response stream before its end, which the ledger of the model endpoint shows 7 times in 3,632 requests.
+
+The cause is in nanocode-ts, in the hub that serves a session's event stream, and it is the second consequence of what the entry above describes. Events that the log of this build does not store reach the hub with the sequence number 0. A model stream that fails after it streamed something leaves one batch of the flushed deltas, which are stored, and the notice of the retry, which is not. The hub appended that batch to the tail it keeps in memory and answered a reader that stood before it with the same page again and again, with a cursor that did not move. The reader is this repository's: `Harness.watch` holds a row's event stream open until its `result` arrives, in the same thread as the hub, and every read was answered at once, so nothing else ran: no timer, no request, and not the retry of the model call half a second later.
+
+Reproduced with the scripted model on the machine with KVM, on directory slots: the second response ends after three thinking deltas and seven text deltas, 4.5 KB. On the commit that pins `build-81eada9` without the entry above, the retry never arrives, `/health` does not answer 38 times of 38, and workerd grows from 185 MB to 2,556 MB in 149 s. A response of 484 KB behaves the same, and a response of 4 MB that ends as it should is carried into the next request in 0.8 s: size is not what matters. On the commit of the entry above the session object passes only stored events on to nanocode-ts, the hub never sees a 0, the model call is asked again 0.6 s after the early end and the session finishes. On `build-061892c` every event is numbered and the same input passes. nanocode-ts has the hub's own fix since its commit 1a597dd, which is in no release yet: its tail keeps stored events only and a stream never asks for a page it has sent.
+
+One expectation of the lanes does not hold for such a session: a response that was cut is charged by the endpoint and is not a model call of the session, so the two counts differ by it. The lanes' scripted model cuts nothing.
+
+### Checked
+
+On the second machine, with the hand's checksum verified in the slots, one attempt a row unless a rerun is named.
+
+- **The 89 solutions through the Bash tool of `nanocode-cli-3f97ab0`**: 80 passed where `--oracle` passes 84, as with the hand before. The four are the four whose solutions run longer than ten minutes. They were not run again through exec_command on this hand.
+- **Thirteen rows of the full run**, seven of its ten losses and six others, on the hand `nanocode-cli-2c64cbe`, which holds the first three changes: 11 passed. `gcode-to-text` read the flag right and wrote it with five lines of prose, and `kv-store-grpc` renamed the generated modules as the entry of 2026-11-12 describes. No cell of the 13 printed "NaN".
+- **The 21 tasks of the entry of 2026-11-12** on `nanocode-cli-3f97ab0`: 19 passed, where the hand of 1f10a22 passed 18 and the pins before it 17. `configure-git-webserver` left its own second test push in the repository and `model-extraction-relu-logits` recovered the wrong rows, as it had before.
+- **`rstan-to-pystan`** passed 3 of 3: once on 2c64cbe and twice on 3f97ab0. The slot's limit killed a process in each of the three, as it had in the attempts that failed.
+- **The rows with long commands** on 3f97ab0: `adaptive-rejection-sampler`, `caffe-cifar-10`, `chess-best-move`, `compile-compcert`, `crack-7z-hash`, `fix-ocaml-gc`, `make-mips-interpreter`, `mcmc-sampling-stan`, `regex-chess` and `schemelike-metacircular-eval` passed. `train-fasttext` (accuracy 0.563 where 0.62 is asked), `extract-moves-from-video` and `query-optimize` (out of time) failed, as in every arm before. A call is moved to the background after 600 s now. In the eight of these rows that were read call by call, the notices of the 34 moves all arrived, 5 to 8 s after the job ended where a cell was waiting, and name how it ended. A model asked for a timeout of 900,000 ms once and read that it had been given the maximum.
+- **New in this hand and not asked for**: a command that begins with `sleep N` and goes on with another command is refused at once, with a text that tells the model to start the command in the background. It happened three times in these rows, and the model waited another way each time.
+- **The commit with the session's model calls**, on a real model: `fix-git` passed with a usage of 6 model calls, 55,434 input and 2,784 output tokens, where the same row without it had 0 calls and 0 tokens. `path-tracing-reverse`, the row that was active both times the Worker stopped answering, passed on it in 573 s with 36 model calls, 3,265,961 input and 108,423 output tokens. The provider ended two of its response streams early, 26 and 30 s in, and the session asked again both times.
+- Every `run` step of `.github/workflows/ci.yml` from a fresh clone, on the machine with KVM, with `node_modules` copied from the tree that `npm ci` installed for the same lock on the second machine, since the first cannot reach the registry: 67 passed and `npm ci` was replaced, 60 end-to-end lanes and none skipped, on the commit of the entry above and again on the commit that pins libkrun.
+
+### What a cell that yields costs
+
+Not changed, measured for a later change. A cell yields after 10 s when the model names no yield, and the model then asks for it with `wait`. In the full run 193 cells yielded that way and cost 223 `wait` calls, about one model call in six of the 1,266, each with the whole conversation as its input. 104 of the 193 cells had ended within 60 s and 184 within 120 s. `nanocode hand --cell-yield-ms` sets that time for a host, and `slot.sh` still passes none: a longer one saves those calls and keeps the model from doing anything else meanwhile, and which of the two weighs more has not been run.
+
+### Not verified
+
+- All 89 tasks with a model on these pins, a second attempt of any row that passed, and an installed agent beside them on the same machine.
+- `codex` agents and `gpt-6-luna` on these builds, and a sandbox: no key had funds, so no row has run on a deployed Worker with these pins.
+- A session whose model stream ends early on a deployed Worker. The reproduction ran under local workerd.
+- Whether a model reads the file that a cut result names: no row of these runs did. In five cut results the command was `base64` of an image for the model to look at, and the image was then refused where it had been shown cut.
+- The four long solutions through exec_command on this hand, and nanoeval's own download of the hand on the second machine, where the binary was placed with its checksum checked.
+- CI on GitHub.
