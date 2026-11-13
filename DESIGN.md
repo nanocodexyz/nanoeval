@@ -262,7 +262,7 @@ There is no container backend: an environment is a disk, and a container engine 
 
 **Users.** A slot removes and copies `/tests` and `/solution` and creates `/logs/verifier` as root, and leaves that directory writable by anyone. The hand, the solution and the verifier run as the user of the image.
 
-The hand binary is a glibc build. `slot.sh setup` downloads the pinned release, checks its SHA-256, and copies the binary with its loader and libraries into one read-only directory. Each microVM mounts it and starts the hand through that loader, so the hand runs in musl images such as Alpine without a change to the task image.
+The hand binary is a glibc build. `slot.sh setup` downloads the pinned release, checks its SHA-256, and copies the binary with its loader and libraries into one read-only directory. Each microVM mounts it and starts the hand through that loader, so the hand runs in musl images such as Alpine without a change to the task image. A setup belongs to one boot of the machine and one request: `setup.for` in the home names the boot, the script, the arguments and the variables it was made for, and a runner that starts with anything else makes it again. A setup that follows one of an earlier boot first removes the slot directories of the home, whose processes ended with that boot.
 
 An E2B sandbox is itself a Firecracker microVM and exposes no KVM to its guest. It has root, so it runs ns slots. See [Sandbox providers](#sandbox-providers).
 

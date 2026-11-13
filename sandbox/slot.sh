@@ -12,6 +12,7 @@ agent_home=/var/lib/nanoeval-agent
 tools=/var/cache/nanoeval-verifier
 trust='CARGO_HTTP_CAINFO CURL_CA_BUNDLE GIT_SSL_CAINFO NODE_EXTRA_CA_CERTS PIP_CERT REQUESTS_CA_BUNDLE SSL_CERT_FILE'
 cgroups=/sys/fs/cgroup
+boot=/proc/sys/kernel/random/boot_id
 capabilities=-all,+audit_write,+chown,+dac_override,+fowner,+fsetid,+kill,+net_bind_service,+net_raw,+setfcap,+setgid,+setpcap,+setuid,+sys_chroot
 masked='acpi kcore keys latency_stats sched_debug scsi timer_list timer_stats'
 guarded='bus fs irq sys sysrq-trigger'
@@ -70,6 +71,11 @@ vm() {
   local dir=$1
   shift
   (cd "$dir" && exec "$krun/nanoeval-krun" "$@")
+}
+
+place() {
+  cp -L "$1" "$2.$$"
+  mv "$2.$$" "$2"
 }
 
 format() {
@@ -187,10 +193,17 @@ cmd_probe() {
     "$(uname -m)" "$(cat "$home/backend" 2>/dev/null || printf none)" "$bwrap" "$ca_bundle" "$cgroup" "$cpus" "$(uname -r)" "$microvm" "$kvm" "$memory" "$(cat "$home/network" 2>/dev/null || printf none)" "$ns" "$slot_env" "$slot_forward" "$userns"
 }
 
+asked() {
+  cat "$boot"
+  sha256sum "$self" | cut -d' ' -f1
+  printf '%s\n' "$*" "NANOEVAL_CA_BUNDLE=${NANOEVAL_CA_BUNDLE:-}" "NANOEVAL_KRUN=${NANOEVAL_KRUN:-}" "NANOEVAL_KRUN_SOURCE=${NANOEVAL_KRUN_SOURCE:-}" "NANOEVAL_NANOCODE=${NANOEVAL_NANOCODE:-}"
+}
+
 cmd_setup() {
   mkdir -p "$home/slots"
   case $(state "$home/setup.status") in
-    running | exit:0) return 0 ;;
+    running) return 0 ;;
+    exit:0) [ "$(cat "$home/setup.for" 2>/dev/null)" != "$(asked "$@")" ] || return 0 ;;
   esac
   spawn "$home/setup.status" "$home/setup.log" bash "$self" _setup "$@"
 }
@@ -293,21 +306,30 @@ setup_private() {
   forwards >/dev/null
   helper=$(built nanoeval-net "$(uname -m)-unknown-linux-musl")
   mkdir -p "$rt/net"
-  cp "$helper" "$net"
+  place "$helper" "$net"
   if [ "$backend" = krun ]; then
     has passt || die 'the private network of krun slots needs passt, which is not installed'
   fi
 }
 
 cmd__setup() {
-  local release=$1 sum=$2 backend=${3:-krun} network=${4:-host} target tmp
+  local release=$1 sum=$2 backend=${3:-krun} network=${4:-host} dir id target tmp
   case $backend-$network in
     dir-host | krun-host | krun-private | ns-host | ns-private) ;;
     *) die "the $backend backend has no $network network" ;;
   esac
+  id=$(cat "$boot")
+  if [ -f "$home/setup.for" ] && [ "$(head -n 1 "$home/setup.for")" != "$id" ]; then
+    for dir in "$home"/slots/*/; do
+      [ -d "$dir" ] || continue
+      rm -rf "${dir%/}"
+      printf 'nanoeval-slot: removed %s, a slot of an earlier boot of this machine\n' "${dir%/}" >&2
+    done
+  fi
   mkdir -p "$rt/lib"
   if [ -n "${NANOEVAL_NANOCODE:-}" ]; then
-    cp "$NANOEVAL_NANOCODE" "$rt/nanocode"
+    place "$NANOEVAL_NANOCODE" "$rt/nanocode"
+    rm -f "$rt/nanocode.sha256"
   elif [ ! -x "$rt/nanocode" ] || [ "$(cat "$rt/nanocode.sha256" 2>/dev/null)" != "$sum" ]; then
     case $(uname -m) in
       x86_64) target=x86_64-unknown-linux-gnu ;;
@@ -317,7 +339,8 @@ cmd__setup() {
     tmp=$(mktemp -d)
     curl -fsSL "$release/nanocode-$target.gz" -o "$tmp/nanocode.gz"
     [ "$(sha256sum "$tmp/nanocode.gz" | cut -d' ' -f1)" = "$sum" ] || die "checksum mismatch for nanocode-$target.gz"
-    gunzip -c "$tmp/nanocode.gz" >"$rt/nanocode"
+    gunzip -c "$tmp/nanocode.gz" >"$rt/nanocode.$$"
+    mv "$rt/nanocode.$$" "$rt/nanocode"
     printf '%s\n' "$sum" >"$rt/nanocode.sha256"
     rm -rf "$tmp"
   fi
@@ -325,19 +348,20 @@ cmd__setup() {
   local interpreter library bundle
   interpreter=$(ldd "$rt/nanocode" | awk '$1 ~ /^\/.*ld-linux/ {print $1}')
   if [ -n "$interpreter" ]; then
-    cp -L "$interpreter" "$rt/ld.so"
+    place "$interpreter" "$rt/ld.so"
     ldd "$rt/nanocode" | awk '$2 == "=>" && $3 ~ /^\// {print $3}' | while read -r library; do
-      cp -L "$library" "$rt/lib/"
+      place "$library" "$rt/lib/${library##*/}"
     done
   fi
   if [ -n "${NANOEVAL_CA_BUNDLE:-}" ]; then
     [ -f "$NANOEVAL_CA_BUNDLE" ] || die "NANOEVAL_CA_BUNDLE is not a file: $NANOEVAL_CA_BUNDLE"
-    cp -L "$NANOEVAL_CA_BUNDLE" "$rt/ca.pem"
+    place "$NANOEVAL_CA_BUNDLE" "$rt/ca.pem"
     : >"$rt/trust"
   else
+    rm -f "$rt/trust"
     for bundle in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/cert.pem; do
       if [ -f "$bundle" ]; then
-        cp -L "$bundle" "$rt/ca.pem"
+        place "$bundle" "$rt/ca.pem"
         break
       fi
     done
@@ -349,6 +373,8 @@ cmd__setup() {
   if [ "$network" = private ]; then setup_private "$backend"; fi
   printf '%s\n' "$backend" >"$home/backend"
   printf '%s\n' "$network" >"$home/network"
+  asked "$@" >"$home/setup.for.$$"
+  mv "$home/setup.for.$$" "$home/setup.for"
 }
 
 cmd_agents() {

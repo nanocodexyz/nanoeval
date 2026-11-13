@@ -444,6 +444,60 @@ test('a slot that cannot close its network refuses a task that asks for it', asy
   await provider.kill(created.handle)
 })
 
+test('a finished setup runs again for another pin or another boot, and not for the same', async () => {
+  const provider = Local.create({ token, url: server.url })
+  const created = await provider.create({ metadata: {}, template: undefined, timeoutSec: 60 })
+  const home = created.handle.home
+  const sandbox = provider.connect(created.handle)
+  const slots = Slot.create({ home })
+  const status = async () => Slot.parseStatus(await Sandbox.run(sandbox, slots.status()))
+  const setup = async (sha256: string) => {
+    await Sandbox.run(
+      sandbox,
+      'NANOEVAL_NANOCODE="$(command -v bash)" ' +
+        slots.setup({ backend: 'dir', network: 'host', runtime: { ...Slot.runtime, sha256 } }),
+    )
+    assert.equal(
+      await wait(async () => (await status()).setup),
+      'exit:0',
+      await Sandbox.run(sandbox, slots.log('-', 'setup', 4096)),
+    )
+    return Sandbox.run(sandbox, 'cat setup.status.pid')
+  }
+  let hand = ''
+  try {
+    await sandbox.write(slots.script, script)
+    const first = await setup(Slot.runtime.sha256)
+    assert.equal(await setup(Slot.runtime.sha256), first, 'the same setup does not run again')
+
+    await Sandbox.run(sandbox, 'mkdir slots/kept && mkfifo hold')
+    hand = (
+      await Sandbox.run(
+        sandbox,
+        'cd rt && { if [ -x ld.so ]; then exec ./ld.so --library-path lib ./nanocode -c "read <../hold"; ' +
+          'else exec ./nanocode -c "read <../hold"; fi; } >/dev/null 2>&1 </dev/null & echo $!',
+      )
+    ).trim()
+    const second = await setup('another')
+    assert.notEqual(second, first, 'a setup for another pin of the hand runs again')
+    await Sandbox.run(sandbox, 'kill -0 ' + hand)
+    assert.deepEqual(
+      Object.keys((await status()).slots),
+      ['kept'],
+      'a setup of the same boot keeps the slots of the sandbox',
+    )
+
+    await Sandbox.run(sandbox, "sed -i '1s/.*/earlier/' setup.for")
+    const third = await setup('another')
+    assert.notEqual(third, second, 'a setup made in an earlier boot runs again')
+    assert.deepEqual((await status()).slots, {}, 'and removes the slots that ended with that boot')
+    assert.equal(await setup('another'), third, 'and is not run again in this boot')
+  } finally {
+    if (hand) await sandbox.exec('kill ' + hand)
+    await provider.kill(created.handle)
+  }
+})
+
 test(
   'a krun slot runs the solution and the verifier in a microVM',
   { skip: Krun.missing() ?? false },
