@@ -1777,7 +1777,10 @@ export class Run extends DurableObject<Env> {
         continue
       }
       try {
-        const renewed = await provider.renew(JSON.parse(record.handle!) as Sandbox.Handle, seconds)
+        const renewed = await provider.renew(
+          { ...(JSON.parse(record.handle!) as Sandbox.Handle), paidUntil: record.paid_until },
+          seconds,
+        )
         const runner = this.runners().find((candidate) => candidate.id === record.runner)
         this.update('sandboxes', record.id, {
           error: null,
@@ -1966,9 +1969,14 @@ export class Run extends DurableObject<Env> {
     const meta = this.meta()!
     const config = this.config()
     const now = Date.now()
-    const idle = (unfit: boolean): Protocol.ClaimResponse => {
+    const idle = (unfit: boolean, takenMb = 0, taken = 0): Protocol.ClaimResponse => {
+      const offer = {
+        ...body.offer,
+        memoryMb: Math.max(0, body.offer.memoryMb - takenMb),
+        slots: Math.max(0, body.offer.slots - taken),
+      }
       this.update('runners', runner, {
-        report: JSON.stringify({ ...body.report, offer: body.offer, unfit }),
+        report: JSON.stringify({ ...body.report, offer, unfit }),
         seen_at: now,
       })
       return { finished: this.finished(), rows: [] }
@@ -1995,7 +2003,11 @@ export class Run extends DurableObject<Env> {
     for (const row of claimed)
       Timeline.add(this.sql, { at: now, attempt: row.id, name: 'attempt.claimed', runner })
     const waiting = this.rows().some((row) => row.phase === 'unclaimed')
-    const response = idle(!claimed.length && body.offer.slots > 0 && waiting)
+    const response = idle(
+      !claimed.length && body.offer.slots > 0 && waiting,
+      claimed.reduce((sum, row) => sum + this.task(row.task).resources.memoryMb, 0),
+      claimed.length,
+    )
     const ahead = waiting ? this.ahead() : []
     return {
       ...response,

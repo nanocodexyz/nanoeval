@@ -46,6 +46,16 @@ function gateway(
       assert.equal(new URL(input).origin, 'https://gateway.example')
       assert.equal(init?.method, 'POST')
       assert.equal(headers.get('gateway-app'), Gateway.app)
+      if (!headers.has('authorization') && prices[operation] === undefined)
+        return Response.json(
+          {
+            code: 'payment_failed',
+            detail:
+              'E2B prices this call only for the wallet that paid for the sandbox, and this caller has no API key of that wallet.',
+            status: 402,
+          },
+          { status: 402 },
+        )
       if (!headers.has('authorization'))
         return new Response('{"status":402}', {
           headers: { 'www-authenticate': challenge(operation, prices[operation]!) },
@@ -110,7 +120,11 @@ test('a gateway sandbox is asked its price, charged to the budget and then paid 
   })
   assert.deepEqual(created, {
     expiresAt: now + 3_600_000,
-    handle: { home: Gateway.home, id: 'sbx-1' },
+    handle: {
+      home: Gateway.home,
+      id: 'sbx-1',
+      lease: { amount: '42280', currency: 'first', realm: 'gateway.example', seconds: 300 },
+    },
     paidUntil: now + 300_000,
   })
   const sandbox = provider.connect(created.handle)
@@ -435,4 +449,53 @@ test('what a key was charged is read from its usage, through its channel and out
   assert.deepEqual(Gateway.charged(end, end), { channelUsd: 0, outsideUsd: 0, usd: 0 })
   await assert.rejects(read({ status: 401 }, 401), Gateway.RefusedError)
   await assert.rejects(read({ usage: { channel: { spent: '1' } } }), /without its amounts/)
+})
+
+test('a renewal the gateway prices only for its owner is paid at the rate its lease was bought at', async () => {
+  const now = Date.now()
+  const { charges, provider, seen } = gateway(
+    { create: '42280' },
+    {
+      create: () =>
+        Response.json({ expiresAt: now + 3_600_000, paidUntil: now + 300_000, sandboxId: 'sbx-1' }),
+      renew: () => Response.json({ paidUntil: now + 660_000, sandboxId: 'sbx-1' }),
+    },
+  )
+  const created = await provider.create({
+    leaseSec: 300,
+    metadata: {},
+    template: undefined,
+    timeoutSec: 3600,
+  })
+  const renewed = await provider.renew!({ ...created.handle, paidUntil: now + 60_000 }, 300)
+  assert.deepEqual(renewed, { paidUntil: now + 660_000 })
+  assert.deepEqual(
+    seen.map((entry) => [entry.path.slice('/v1/compute/'.length), entry.authorization]),
+    [
+      ['create', undefined],
+      ['create', 'Bearer sk-tempo-test'],
+      ['renew', undefined],
+      ['renew', 'Bearer sk-tempo-test'],
+    ],
+  )
+  const renewal = charges.at(-1)!
+  assert.equal(renewal.description, 'compute.renew estimated at the lease rate')
+  assert.ok(
+    renewal.amount === '50736' || renewal.amount === '50877',
+    'the 60 s left and the 300 s bought, at 42280 per 300 s: ' + renewal.amount,
+  )
+  assert.equal(
+    Gateway.leased({ amount: '42280', currency: 'c', realm: 'r', seconds: 300 }, 1).amount,
+    '1000',
+  )
+})
+
+test('a renewal priced only for its owner, of a sandbox without its lease rate, is refused unpaid', async () => {
+  const { charges, provider, seen } = gateway({}, {})
+  await assert.rejects(
+    provider.renew!({ home: Gateway.home, id: 'sbx-1' }, 300),
+    /answered 402 to an unpaid renew instead of its price: .*only for the wallet that paid/,
+  )
+  assert.equal(seen.length, 1)
+  assert.deepEqual(charges, [])
 })

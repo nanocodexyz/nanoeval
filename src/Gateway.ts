@@ -49,6 +49,8 @@ export type KeyUsage = {
 
 export type Charged = { channelUsd: number; outsideUsd: number; usd: number }
 
+export type Lease = { amount: string; currency: string; realm: string; seconds: number }
+
 export async function usage(options: {
   fetch?: Fetch
   key: string
@@ -123,11 +125,35 @@ export function quote(header: string | null): Payment.Charge {
   }
 }
 
+export function leased(lease: Lease, seconds: number): Payment.Charge {
+  const least = BigInt(1000)
+  const scaled =
+    (BigInt(lease.amount) * BigInt(seconds) + BigInt(lease.seconds - 1)) / BigInt(lease.seconds)
+  const amount = String(scaled > least ? scaled : least)
+  return {
+    amount,
+    currency: lease.currency,
+    description: 'compute.renew estimated at the lease rate',
+    intent: 'session',
+    method: 'tempo',
+    realm: lease.realm,
+    usd: Payment.usd(amount),
+  }
+}
+
+function ownerPriced(status: number, header: string | null, text: string): boolean {
+  return status === 402 && !header?.includes('Payment ') && code(text) === 'payment_failed'
+}
+
 export function create(options: create.Options): Sandbox.Provider {
   const send = options.fetch ?? ((input: string, init?: RequestInit) => fetch(input, init))
   const base = (options.url || origin).replace(/\/+$/, '') + '/v1/compute/'
 
-  const pay = async (operation: string, sent: Sent): Promise<Response> => {
+  const pay = async (
+    operation: string,
+    sent: Sent,
+    unquoted?: Payment.Charge,
+  ): Promise<{ charge: Payment.Charge; response: Response }> => {
     const init = (headers: Record<string, string>): RequestInit => ({
       ...(sent.body === undefined ? {} : { body: sent.body as string | Uint8Array<ArrayBuffer> }),
       headers: { 'gateway-app': app, ...sent.headers, ...headers },
@@ -136,17 +162,24 @@ export function create(options: create.Options): Sandbox.Provider {
     const askedAt = Date.now()
     const asked = await send(base + operation, init({}))
     options.onCall?.({ ms: Date.now() - askedAt, operation, paid: false })
-    if (asked.status !== 402)
+    const header = asked.headers.get('www-authenticate')
+    const unpaid = asked.status === 402 && header?.includes('Payment ') ? '' : await asked.text()
+    if (unpaid === '') await asked.body?.cancel()
+    const charge =
+      unpaid !== '' && unquoted && ownerPriced(asked.status, header, unpaid)
+        ? unquoted
+        : asked.status === 402 && unpaid === ''
+          ? quote(header)
+          : undefined
+    if (!charge)
       throw new UnpricedError(
         'the gateway answered ' +
           asked.status +
           ' to an unpaid ' +
           operation +
           ' instead of its price: ' +
-          (await asked.text()).slice(0, 500),
+          unpaid.slice(0, 500),
       )
-    await asked.body?.cancel()
-    const charge = quote(asked.headers.get('www-authenticate'))
     const budgeted = operation !== 'terminate'
     if (budgeted) options.budget.charge(charge.usd, 'compute.' + operation)
     await options.onCharge(charge)
@@ -174,7 +207,7 @@ export function create(options: create.Options): Sandbox.Provider {
         { cause: error },
       )
     }
-    if (response.ok) return response
+    if (response.ok) return { charge, response }
     if (response.status >= 500 && code(answer) === undefined) {
       await kept('answered ' + response.status + ' without a problem')
       throw new RequestError(
@@ -204,7 +237,7 @@ export function create(options: create.Options): Sandbox.Provider {
         body: JSON.stringify(body),
         headers: { 'content-type': 'application/json' },
       })
-    ).json()) as T
+    ).response.json()) as T
 
   return {
     name: 'gateway',
@@ -221,7 +254,7 @@ export function create(options: create.Options): Sandbox.Provider {
           return { exitCode: output.exitCode, stderr: output.stderr, stdout: output.stdout }
         },
         async write(path, data) {
-          const response = await pay('write', {
+          const { response } = await pay('write', {
             body: data,
             headers: {
               'content-type': 'application/octet-stream',
@@ -241,15 +274,21 @@ export function create(options: create.Options): Sandbox.Provider {
         input.timeoutSec > maxTimeoutSec
       )
         throw new RequestError('a gateway sandbox timeout is 1 to ' + maxTimeoutSec + ' seconds')
-      const created = await call<{ expiresAt?: number; paidUntil?: number; sandboxId?: string }>(
-        'create',
-        {
+      const lease = Math.min(input.leaseSec ?? leaseSec, input.timeoutSec)
+      const paid = await pay('create', {
+        body: JSON.stringify({
           image: input.template ?? template,
-          lease: Math.min(input.leaseSec ?? leaseSec, input.timeoutSec),
+          lease,
           provider: 'e2b',
           timeout: input.timeoutSec,
-        },
-      )
+        }),
+        headers: { 'content-type': 'application/json' },
+      })
+      const created = (await paid.response.json()) as {
+        expiresAt?: number
+        paidUntil?: number
+        sandboxId?: string
+      }
       if (
         typeof created.sandboxId !== 'string' ||
         typeof created.expiresAt !== 'number' ||
@@ -258,7 +297,16 @@ export function create(options: create.Options): Sandbox.Provider {
         throw new RequestError('the gateway returned no sandbox with a lease')
       return {
         expiresAt: created.expiresAt,
-        handle: { home, id: created.sandboxId },
+        handle: {
+          home,
+          id: created.sandboxId,
+          lease: {
+            amount: paid.charge.amount,
+            currency: paid.charge.currency,
+            realm: paid.charge.realm,
+            seconds: lease,
+          } satisfies Lease,
+        },
         paidUntil: created.paidUntil,
       }
     },
@@ -270,10 +318,18 @@ export function create(options: create.Options): Sandbox.Provider {
       }
     },
     async renew(handle, seconds) {
-      const renewed = await call<{ paidUntil?: number }>('renew', {
-        sandboxId: handle.id,
-        seconds,
-      })
+      const lease = handle['lease'] as Lease | undefined
+      const paidUntil = typeof handle['paidUntil'] === 'number' ? handle['paidUntil'] : Date.now()
+      const span = Math.max(0, Math.ceil((paidUntil - Date.now()) / 1000)) + seconds
+      const { response } = await pay(
+        'renew',
+        {
+          body: JSON.stringify({ sandboxId: handle.id, seconds }),
+          headers: { 'content-type': 'application/json' },
+        },
+        lease ? leased(lease, span) : undefined,
+      )
+      const renewed = (await response.json()) as { paidUntil?: number }
       if (typeof renewed.paidUntil !== 'number')
         throw new RequestError('the gateway renewed without a lease')
       return { paidUntil: renewed.paidUntil }

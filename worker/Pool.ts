@@ -319,7 +319,10 @@ export class Pool extends DurableObject<Env> {
         const provider = this.provider(due.member)
         if (!provider.renew) throw new Error('the provider renews no lease')
         const renewed = await provider.renew(
-          JSON.parse(due.member.handle!) as Sandbox.Handle,
+          {
+            ...(JSON.parse(due.member.handle!) as Sandbox.Handle),
+            paidUntil: due.member.paid_until,
+          },
           Members.renewal(due.member, Gateway.leaseSec),
         )
         Members.renewed(this.sql, { id: due.member.id, paidUntil: renewed.paidUntil })

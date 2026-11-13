@@ -1591,6 +1591,13 @@ async function main(): Promise<void> {
           )
         }
       }
+      const estimateUsd = () =>
+        (status['payments'] as { detail: string }[]).filter(
+          (payment) =>
+            (JSON.parse(payment.detail) as { description: string }).description ===
+            'compute.renew estimated at the lease rate',
+        ).length *
+        (3 * MockGateway.callUsd + 2 * MockGateway.secondUsd)
       if (!warm) {
         const charged = status['key'].charged as {
           channelUsd: number
@@ -1599,7 +1606,7 @@ async function main(): Promise<void> {
         }
         const recorded = status['spend'].modelUsd + status['spend'].sandboxUsd
         assert.ok(
-          Math.abs(charged.channelUsd - recorded) < 1e-9,
+          Math.abs(charged.channelUsd - recorded) < estimateUsd() + 1e-9,
           'what the channel of the key paid is what the run recorded: ' +
             JSON.stringify([charged, recorded]),
         )
@@ -1627,14 +1634,20 @@ async function main(): Promise<void> {
           Math.round(payment.usd * 1e6),
         ])
       if (!warm) {
+        const exact = (entries: (string | number)[][]) =>
+          entries.map(([description, amount]) =>
+            String(description).startsWith('compute.renew')
+              ? [String(description).replace(' estimated at the lease rate', '')]
+              : [description, amount],
+          )
         assert.deepEqual(
-          paid(status['payments']),
-          charged(),
-          'the payments of the run are what the gateway charged in order, and what it refused written back',
+          exact(paid(status['payments'])),
+          exact(charged()),
+          'the payments of the run are what the gateway charged in order, and what it refused written back, a renewal at the price it was estimated at',
         )
         assert.ok(
           Math.abs(status['spend'].sandboxUsd - sum(mock.charges.map((charge) => charge.usd))) <
-            1e-9,
+            estimateUsd() + 1e-9,
           'the sandbox spend of the run is what the gateway charged, without what it refused',
         )
       }
@@ -1648,7 +1661,7 @@ async function main(): Promise<void> {
       assert.equal(operations[0], 'compute.create')
       if (!warm) assert.equal(operations.at(-1), 'compute.terminate')
       assert.equal(
-        operations.includes('compute.renew'),
+        operations.some((operation) => operation.startsWith('compute.renew')),
         !lapse,
         'the lease was renewed while rows ran, unless no renewal is sold',
       )
@@ -1732,14 +1745,20 @@ async function main(): Promise<void> {
         const idle = paid(closed['payments'])
         assert.equal(idle.at(-1)![0], 'compute.terminate', 'the pool terminated it')
         assert.ok(
-          idle.some(([operation]) => operation === 'compute.renew'),
+          idle.some(([operation]) => String(operation).startsWith('compute.renew')),
           'the pool renewed the lease while the sandbox was idle',
         )
         const order = (left: (string | number)[], right: (string | number)[]) =>
           String(left).localeCompare(String(right))
+        const renewal = ([description, amount]: (string | number)[]) =>
+          String(description).startsWith('compute.renew')
+            ? [String(description).replace(' estimated at the lease rate', '')]
+            : [description!, amount!]
         assert.deepEqual(
-          [...paid(status['payments']), ...paid(again['payments']), ...idle].sort(order),
-          charged().sort(order),
+          [...paid(status['payments']), ...paid(again['payments']), ...idle]
+            .map(renewal)
+            .sort(order),
+          charged().map(renewal).sort(order),
           'the two runs and the pool recorded every charge of the gateway once',
         )
         assert.ok(

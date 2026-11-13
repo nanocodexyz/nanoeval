@@ -115,9 +115,10 @@ export async function start(options: Options): Promise<Mock> {
     status: number,
     detail: string,
     headers: Record<string, string> = {},
+    code?: string,
   ) => {
     response.writeHead(status, { 'content-type': 'application/problem+json', ...headers })
-    response.end(JSON.stringify({ detail, status }))
+    response.end(JSON.stringify({ ...(code ? { code } : {}), detail, status }))
   }
   const end = async (id: string, ended: NonNullable<Leased['ended']>) => {
     const leased = sandboxes.get(id)
@@ -184,6 +185,14 @@ export async function start(options: Options): Promise<Mock> {
       return
     }
     const authorization = request.headers['authorization']
+    if (authorization === undefined && operation === 'renew')
+      return problem(
+        response,
+        402,
+        'E2B prices this call only for the wallet that paid for the sandbox, and this caller has no API key of that wallet.',
+        {},
+        'payment_failed',
+      )
     if (authorization === undefined)
       return problem(response, 402, 'Payment is required (compute.' + operation + ').', {
         'www-authenticate': challenge(operation, usd),
