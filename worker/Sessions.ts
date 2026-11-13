@@ -1,3 +1,4 @@
+import { env as bound } from 'cloudflare:workers'
 import { App, Forward } from 'nanocode-ts/cloudflare'
 import type * as Atif from '../src/Atif.ts'
 import * as Proxy from '../src/Proxy.ts'
@@ -39,8 +40,11 @@ function refuse(message: string): Response {
   )
 }
 
+const cellYieldMs = (bound as Env).CELL_YIELD_MS
+
 export const nanocode = App.create<Env>({
   authenticate: async (request, env) => ((await authorized(request, env)) ? account : null),
+  ...(cellYieldMs ? { cellYieldMs: Number(cellYieldMs) } : {}),
   egress: (env) =>
     Forward.create({
       fetch: async (request, dispatch) => {

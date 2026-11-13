@@ -6,6 +6,7 @@ export type Env = App.Env & {
   ANTHROPIC_AUTH_TOKEN?: string
   ANTHROPIC_BASE_URL?: string
   BLOBS?: R2Bucket
+  CELL_YIELD_MS?: string
   CHATGPT_ACCESS_TOKEN?: string
   CHATGPT_ACCOUNT_ID?: string
   CHATGPT_RELAY_SECRET?: string

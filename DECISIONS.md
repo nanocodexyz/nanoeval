@@ -2688,3 +2688,64 @@ By hand, on directory slots, with changes to the lane that are not kept:
 - A runner from an earlier runtime archive with this Worker. Met once before the line of the runner was written, three claims and 60.8 s, and not with an archive.
 - A row that a runner holds idle when the run hands it the same row again, after a lease that ended while the runner lived: the newer claim takes the place of the older one, whose slot stays up until the runner ends. As before this change, and not reached by it, since a `forgotten` claim is met inside a call of its runner.
 - CI on GitHub.
+
+## 2026-11-13: a cell yields after two minutes, set by the brain
+
+The entry of this day on the builds ends its section on what a cell that yields costs with a change it left for later. A cell that names no yield goes back to the model after 10 s, and the model asks for it again with `wait`, a model call each time with the whole conversation as its input. This entry makes that time two minutes, sets it in the Worker and not on the hand, and moves the harness to nanocode-ts `build-2672c04`, the first pinned build that has the option. It changes `package.json`, `package-lock.json`, `wrangler.jsonc`, `worker/Env.ts`, `worker/Sessions.ts` and the plain lane of `test/e2e.ts`. `sandbox/slot.sh` and the pinned hand, `nanocode-cli-3f97ab0`, are unchanged.
+
+**The option.** `App.create` of nanocode-ts takes `cellYieldMs` since its commit f044971, on nanocode 439011f97. A session with it writes the time into every cell it sends to a hand that names no `yield_time_ms`, in the `// @exec:` line of the cell's source, and into the arguments of every `wait` that names none, so a hand released before the option follows it. The brain gives an operation of a hand up for lost after `REMOTE_TIMEOUT_MS` plus the yield that the operation names, here 30 s and 120 s. The descriptions of `exec` and `wait` that the model reads state the number, and a `yield_time_ms` that the model names itself wins, as before. The Worker takes the time from a variable of `wrangler.jsonc`, `CELL_YIELD_MS`, 120000. `App.create` is called when the module loads, where no request has brought the environment, so `worker/Sessions.ts` reads the variable from the `env` of `cloudflare:workers`. A variable that is empty or missing sets nothing, and a cell then yields after the 10 s of the protocol.
+
+**Why two minutes.** The numbers are those of the full run in the entry on the builds: 193 cells yielded at 10 s and cost 223 `wait` calls, about one model call in six of the 1,266. 104 of the 193 cells had ended within 60 s and 184 within 120 s. What a longer time costs: the model does nothing else while its cell runs, as the entry on the builds said, and a command that never ends, a server started in the foreground by mistake, holds its exec until the yield, which nanocode's entry on the option measured as 61.0 s with a yield of 60 s where it was 11.0 s.
+
+**Why not the hand's `--cell-yield-ms`.** `nanocode hand --cell-yield-ms` sets the same time on the hand, and the entry on the builds named it as the way. It was measured on `main` of this day, with the hand started with `--cell-yield-ms 120000` under nanocode-ts `build-81eada9`: every exec that named no yield and ran past 30 s failed in the brain after 29.9 s with "remote operation deadline elapsed; outcome unknown; cancellation requested; no retry", and its command was cancelled. It happened twice in one row of `compile-compcert`. The deadline of the brain is its operation timeout plus the yield that the call names, so a call that names none was given up after `REMOTE_TIMEOUT_MS` while the hand still held its cell. The time therefore has to be the brain's, which knows its own deadline, and `slot.sh` passes no flag. On `build-2672c04` the flag would do nothing for this Worker, see below.
+
+**What moves with the pin.** `build-2672c04` is 18 commits of nanocode-ts after `build-81eada9`, and its nanocode moves from c14de6c to 439011f97, 45 commits. Read in the DECISIONS.md of both, this is what matters here:
+
+- **A call that names no yield names 10 s** when its brain has an operation timeout, which this Worker has. The hand's own default then never applies to the cells of a Worker, with or without `--cell-yield-ms`, and without `CELL_YIELD_MS` the deadline for such a call is 10 s later than it was, 40 s.
+- **The event hub** (nanocode-ts 1a597dd) keeps only stored events in its tail, and a stream never asks for a page it has sent. That is the hub's own fix for the Worker that stopped answering in the entry on the builds. This repository had the remedy from its session object, which hands only stored events on to nanocode-ts, and still does: the hub is now guarded twice.
+- **A WebSocket watcher** (9e3ca5a) lost the stored events before a batch that began with an event numbered 0. nanoeval reads a session in pages and through the event stream, never through a WebSocket, and its session object passes on no batch with a 0 in it, so it was not reached.
+- **`published` is what it was.** The session object is still handed `published(scope, events, bytes)`, with the events that the log does not store numbered 0 among the stored ones, and `App.create` still declares no hook for it. Nothing of the telemetry in `worker/Sessions.ts` changed.
+- **The instructions say what the hand does.** The sentence that the entry on the builds missed comes with this build: the model is told to await a long command in its cell, that a nested Bash call without a timeout waits the ten minutes a call may take, and that the cell yields on its own clock meanwhile. It is in the WebAssembly module of `build-2672c04` and not in that of `build-81eada9`.
+- **Not used by this Worker**: Python in CPU slices, since the Worker has no workspace, `maxConcurrentSubagents` and `remoteSubagents`, the read of an MCP store when a turn is admitted, since no MCP server is configured, and the model requests that the timing of a turn's result now lists, which nothing here reads.
+
+**Measured with a model.** Two Workers side by side on the second machine of the entries above, 5 cores, no KVM, ns slots, alike in everything but the variable: `main` before this change with the option added, nanocode-ts built from f044971, two commits before `build-2672c04`, the hand `nanocode-cli-3f97ab0`. `claude:claude-haiku-5-5` as a nanocode session on 20 of the 21 tasks of the entry of 2026-11-12, without `schemelike-metacircular-eval` for its cost, two slots for each arm, both arms at the same time, one attempt a row.
+
+| | 10 s | 120 s |
+|---|---|---|
+| Passed | 16 of 20 | 17 of 20 |
+| Agent time | 6,663 s | 4,946 s |
+| Model calls | 219 | 174 |
+| Cells that yielded | 26 | 9 |
+| `wait` calls | 29 | 9 |
+| Model spend | $0.1305 | $0.1424 |
+
+No call ended on the brain's deadline in either arm. What the numbers carry, read row by row:
+
+- **The disk of the machine filled** 34 minutes in. Both Workers stopped and were started again five minutes later, with `compile-compcert` and `pytorch-model-cli` under way in both arms. At 10 s the turn of `compile-compcert` was replayed within its claim, 52 model calls; at 120 s both rows were claimed again. Without the two rows: 14 and 15 of 18 passed, 4,616 s and 3,231 s, 155 and 140 model calls, 24 and 5 `wait` calls.
+- **The spend did not fall.** One row holds the difference: `tune-mjcf` cost $0.0484 at 120 s, 37 model calls and more experiments until its 900 s ran out, and $0.0152 at 10 s, where it passed after 671 s. Its longest cell took 83 s. The other 19 rows cost $0.1153 at 10 s and $0.0940 at 120 s.
+- **The rows that differ are single attempts**, and reading their sessions gave none of them to the yield. `mcmc-sampling-stan` ran out of its 1,800 s at 10 s and passed after 602 s at 120 s, `model-extraction-relu-logits` failed at 10 s and passed at 120 s, `tune-mjcf` the other way. `kv-store-grpc` and `sanitize-git-repo` failed in both. `rstan-to-pystan` passed in both, in 1,712 s with 31 model calls and in 1,168 s with 17.
+- **A cell past the two minutes** came once: a `git grep` of `sanitize-git-repo` at 120 s ran 121 s, yielded, and one `wait` ended it.
+- **At 10 s the model names long yields itself** on its `wait` calls, 60 to 180 s. What the option saves is therefore about one model call for each long command, not one for every 10 s of it.
+
+So the claim is the smaller one: fewer cells go back to the model and fewer calls ask for them again, with nothing lost in what passed. Twenty single attempts do not show that more rows pass.
+
+On `build-2672c04` itself, with this change, four of the tasks passed in one attempt each on the same machine: `fix-git`, `hf-model-inference`, `pypi-server` and `pytorch-model-cli`.
+
+Not run: the 89 tasks, second attempts, a deployed Worker with a model, and a Codex session with a model.
+
+**Checked** on the 32-core machine with KVM of the entries above, beside other work that held its load average at 27 to 30 before these checks, with the hand `nanocode-cli-3f97ab0`.
+
+- **The plain lane on directory slots** holds a long cell. The scripted model answers the `write-greeting` row of the agent that passes with one cell whose Bash command writes the file and then sleeps 12 s, past the 10 s of the protocol. The lane asks that the second request of that session carries the result of a completed cell, so the cell ended in the exec that started it and no `wait` was needed, and that the description of `exec` in both requests names the number that `CELL_YIELD_MS` has in `wrangler.jsonc`. The command begins with the write: the hand refuses one that begins with `sleep N` and goes on. The lane takes 17 to 18 s where it took 6 s, the 12 s of the cell.
+- **Without the option**, the same lane with the variable empty: it failed after 16 s on the first of the two, the second request carried "Script running" where the lane asks for "Script completed". The six rows still ended as scripted, since the file was written before the sleep. With that assertion taken out it failed on the second: the description said "default 10000 ms".
+- **With it**: 4 runs of 4 passed, in 17 to 18 s. The `exec` description says "default 120000 ms".
+- `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test` passed, 147 tests and none skipped. The five tests of the model calls of a session, on events of `build-81eada9`, pass unchanged, and on the new build every lane with a session still finds the calls and the tokens of an attempt and one agent step for each call.
+- **The lanes `restart`, `forgotten` and `lapse`** on directory slots, each alone: passed.
+- Every `run` step of `.github/workflows/ci.yml` from a fresh clone of this change: 69 passed and `npm ci` was replaced, 62 end-to-end lanes and none skipped. The machine cannot reach the registry, so `node_modules` was copied from a tree made for this lock: the tree of the lock before, whose registry packages are the same since the two releases of nanocode-ts declare the same dependencies, with the `nanocode-ts` package replaced by the release archive as downloaded. It was compared with the tree that `npm ci` installed from this lock on a machine that reaches the registry: 27,852 files with the same SHA-256 each, and the same record of the installation.
+
+**Not verified.**
+
+- A deployed Worker. The variable is read from `cloudflare:workers` when the module loads under local workerd, and `wrangler deploy --dry-run` lists it among the bindings.
+- A cell that runs past two minutes in a lane. The measurement had one, and nanocode's entry measured the yield and a `wait` that names it with 60 s. No lane here waits that long.
+- A long cell in a Codex session and on krun and ns slots. The long cell is in a `claude` session of the directory lane. The option is in the Worker and no slot sees it, and the other lanes ran with it and with cells that end at once.
+- A model that names its own `yield_time_ms` on `exec` under the option, and a command that never ends in a cell.
+- CI on GitHub.

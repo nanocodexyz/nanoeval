@@ -95,6 +95,15 @@ const guestCpus = Number(process.env['NANOEVAL_E2E_GUEST_CPUS'] ?? '8')
 const guestMemoryMb = Number(process.env['NANOEVAL_E2E_GUEST_MEMORY_MB'] ?? '8192')
 const bundled = process.env['NANOEVAL_E2E_RUNTIME'] === '1'
 const guestNode = process.env['NANOEVAL_E2E_NODE']
+const longCell =
+  backend === 'dir' &&
+  model === 'scripted' &&
+  scenario === 'tasks' &&
+  storeKind === 'directory' &&
+  !gateway &&
+  taskNames.includes('write-greeting')
+const longCellSec = 12
+const cellYieldMs = /"CELL_YIELD_MS": "(\d+)"/.exec(Fs.readFileSync('wrangler.jsonc', 'utf8'))?.[1]
 
 const solutions: [marker: string, right: string, wrong: string][] = [
   [
@@ -127,6 +136,7 @@ function sse(events: [string, unknown][]): string {
     .join('')
 }
 
+const longCells: { exec: string | undefined; received: string }[] = []
 let scriptedCalls = 0
 let answered = 0
 let parked = false
@@ -245,7 +255,10 @@ function responses(body: { input?: unknown; model?: string }, cost: number): str
   ])
 }
 
-function scripted(body: { messages?: unknown; model?: string }, cost?: number): string {
+function scripted(
+  body: { messages?: unknown; model?: string; tools?: { description?: string; name: string }[] },
+  cost?: number,
+): string {
   const text = JSON.stringify(body.messages ?? [])
   const id = ++scriptedCalls
   const reply = text.includes('JUDGE-FIXTURE')
@@ -263,7 +276,17 @@ function scripted(body: { messages?: unknown; model?: string }, cost?: number): 
     throw new Error('the scripted model has no solution for this prompt')
 
   const command = body.model?.includes('sonnet') ? solution?.[2] : solution?.[1]
-  const code = 'await tools.exec_command({ cmd: ' + JSON.stringify(command) + ' }); text("done")'
+  const long = longCell && solution?.[0] === 'greeting.txt' && !body.model?.includes('sonnet')
+  const code = long
+    ? 'await tools.Bash({ command: ' +
+      JSON.stringify(command + '; sleep ' + longCellSec) +
+      ' }); text("done")'
+    : 'await tools.exec_command({ cmd: ' + JSON.stringify(command) + ' }); text("done")'
+  if (long)
+    longCells.push({
+      exec: body.tools?.find((tool) => tool.name === 'exec')?.description,
+      received: JSON.stringify(Array.isArray(body.messages) ? body.messages.at(-1) : null),
+    })
   const block = answered
     ? [
         { text: '', type: 'text' },
@@ -1128,6 +1151,23 @@ async function main(): Promise<void> {
           'the tokens of a session are those of the responses its model endpoint answered',
         )
       }
+    }
+    if (longCell) {
+      assert.deepEqual(
+        longCells.flatMap(
+          (request) => /Script (completed|running)/.exec(request.received)?.[1] ?? [],
+        ),
+        Array.from({ length: attempts }, () => 'completed'),
+        'a cell that runs ' +
+          longCellSec +
+          ' s ends in the exec that started it, and its model asks for no wait',
+      )
+      assert.ok(
+        longCells.every((request) => request.exec?.includes(' ' + cellYieldMs + ' ms')),
+        'the exec tool tells the model that a cell yields after the ' +
+          cellYieldMs +
+          ' ms of CELL_YIELD_MS',
+      )
     }
     const edges = details
       .filter((detail) => detail['result'].sandbox !== null)
