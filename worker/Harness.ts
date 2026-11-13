@@ -1,5 +1,6 @@
 import type * as Atif from '../src/Atif.ts'
 import * as Sse from '../src/Sse.ts'
+import * as Telemetry from '../src/Telemetry.ts'
 import { account, type Env } from './Env.ts'
 import { nanocode } from './Sessions.ts'
 
@@ -102,11 +103,15 @@ export async function events(env: Env, name: string): Promise<Atif.SessionEvent[
       events: Atif.SessionEvent[]
       has_more: boolean
       next_cursor: number
+      telemetry?: Telemetry.Row[]
     }>(
-      await call(env, session(name) + '/events?after=' + after + '&limit=' + env.EVENT_PAGE_SIZE),
+      await call(env, session(name) + '/events?after=' + after + '&limit=' + env.EVENT_PAGE_SIZE, {
+        headers: { [Telemetry.header]: '1' },
+      }),
       'reading events',
     )
-    all.push(...page.events)
+    if (!page.telemetry) throw new RequestError('reading events answered without their telemetry')
+    all.push(...Telemetry.merge(page.events, page.telemetry))
     if (!page.has_more || page.next_cursor <= after) return all
     after = page.next_cursor
   }

@@ -61,7 +61,7 @@ The table says what was run. "The first version" is the flow before the eval tab
 | `healthbench-professional` | 410 cases. 2 imported as an eval and run with their physician answers, judged by `gpt-6-luna`. 3 ran with `gpt-6-luna` on the first version only |
 | A task graded on the agent's final message, and a judge answered by the orchestrator | Implemented, tested end to end on krun and dir slots with the scripted model and with the fixtures' own answers, and with a `gpt-6-luna` judge on two HealthBench cases of an imported eval |
 | GraphWalks, MRCR, Arena-Hard, BrowseComp, GDPval, SWE-Atlas QnA, GeneBench Pro, ARC-AGI-3, Agents' Last Exam importers | Not ported. [Datasets](#datasets) says why |
-| Harbor job export and ATIF-v1.7 trajectories | Implemented. Exported jobs load with the models of Harbor 0.25.0 (`scripts/harbor-check.py`). The shapes Harbor enforces are unit tested |
+| Harbor job export and ATIF-v1.7 trajectories | Implemented. Exported jobs load with the models of Harbor 0.25.0 (`scripts/harbor-check.py`). The shapes Harbor enforces are unit tested. The tokens and steps of a session come from the model calls its object keeps beside its log, see [DESIGN.md](DESIGN.md#harness-outside-the-sandbox): unit tested on the events of nanocode-ts `build-81eada9`, and every end-to-end lane with a session checks that an attempt whose model endpoint answered has its calls and tokens and one agent step for each call |
 | Failure kinds `verifier`, `agent_timeout`, `environment` | Implemented, tested |
 | A verifier that scores without the test report it names is an error, not a zero | Implemented, tested |
 | Every file a verifier writes is kept, binary files included | Implemented, tested |
