@@ -209,6 +209,7 @@ export class Run extends DurableObject<Env> {
     if (!columns.some((column) => column['name'] === 'member'))
       this.sql.run('ALTER TABLE sandboxes ADD COLUMN member INTEGER')
     const added: [table: string, column: string, type: string][] = [
+      ['claims', 'error', 'TEXT'],
       ['model_requests', 'cost', 'REAL'],
       ['model_requests', 'refusal', 'TEXT'],
       ['model_requests', 'searches', 'INTEGER'],
@@ -298,6 +299,7 @@ export class Run extends DurableObject<Env> {
             claimedAt: claim.claimed_at,
             endedAt: claim.ended_at,
             ending: claim.ending,
+            ...(claim.error === null ? {} : { error: claim.error }),
             n: claim.n,
             phase: claim.phase,
             runner: claim.runner,
@@ -887,9 +889,7 @@ export class Run extends DurableObject<Env> {
               : {}),
           }
         : null,
-      lostClaims: Ledger.claims(this.sql).filter(
-        (claim) => claim.ending === 'expired' || claim.ending === 'released',
-      ).length,
+      lostClaims: Ledger.claims(this.sql).filter(Ledger.lost).length,
       name: config.name,
       payments: this.sql.all('SELECT at, usd, detail FROM payments ORDER BY id'),
       refused: meta.refused ?? null,
@@ -1148,9 +1148,36 @@ export class Run extends DurableObject<Env> {
       : []
   }
 
+  private async kept<T>(row: Ledger.Attempt, read: Promise<T>): Promise<T> {
+    try {
+      return await read
+    } catch (error) {
+      if (!(error instanceof Harness.LostError)) throw error
+      return this.forgotten(row, error.message)
+    }
+  }
+
+  private async forgotten(row: Ledger.Attempt, said: string): Promise<never> {
+    const gone = 'the attempt is not claimed by this runner any more'
+    if (!Ledger.held(this.sql, { claim: row.claim!, id: row.id })) throw new Refusal(410, gone)
+    Ledger.explain(this.sql, { claim: row.claim!, error: said })
+    Timeline.add(this.sql, { at: Date.now(), attempt: row.id, name: 'attempt.forgotten' })
+    await this.lose(
+      row,
+      'forgotten',
+      row.claims < this.config().limits.claims
+        ? undefined
+        : 'the attempt was claimed ' +
+            row.claims +
+            ' times, the limit of the run, and the session of its last claim no longer has its turn: ' +
+            said,
+    )
+    throw new Refusal(410, gone + ': ' + said)
+  }
+
   private async lose(
     row: Ledger.Attempt,
-    ending: 'expired' | 'released',
+    ending: 'expired' | 'forgotten' | 'released',
     final?: string,
   ): Promise<void> {
     const config = this.config()
@@ -1159,7 +1186,7 @@ export class Run extends DurableObject<Env> {
     if (row.session) {
       if (submitted && row.phase === 'run') await this.halt(row.session)
       if (submitted)
-        usage = await Harness.events(this.env, row.session).then(
+        usage = await Harness.events(this.env, row.session, requestId).then(
           (events) => {
             const requested = Timeline.modelRequest(events)
             if (requested !== undefined)
@@ -2229,7 +2256,7 @@ export class Run extends DurableObject<Env> {
       if (!current) throw new Refusal(410, 'the attempt is not claimed by this runner any more')
       const earlier = current.failure ? (JSON.parse(current.failure) as Result.Failure) : undefined
       if (earlier?.kind === 'agent_timeout') return { state: 'timeout' }
-      const report = await Harness.turn(this.env, session, requestId)
+      const report = await this.kept(current, Harness.turn(this.env, session, requestId))
       if (report.status === 'completed')
         return { message: report.ok?.message ?? '', state: 'completed' }
       if (report.status === 'failed' || report.status === 'cancelled')
@@ -2339,8 +2366,11 @@ export class Run extends DurableObject<Env> {
     if (row.phase !== 'judge')
       throw new Refusal(409, 'the attempt is in the ' + row.phase + ' phase')
     const requests = Judge.parse(this.textArtifact(row.id, judgeRequest)!)
-    const reports = await Promise.all(
-      this.judgeSessions(row).map((name) => Harness.turn(this.env, name, judgeRequestId)),
+    const reports = await this.kept(
+      row,
+      Promise.all(
+        this.judgeSessions(row).map((name) => Harness.turn(this.env, name, judgeRequestId)),
+      ),
     )
     const broken = reports.find(
       (report) => report.status === 'failed' || report.status === 'cancelled',
@@ -2444,7 +2474,7 @@ export class Run extends DurableObject<Env> {
     const judgeUsage: Atif.Usage[] = []
     for (const name of judges) {
       try {
-        judgeUsage.push(Atif.usage(await Harness.events(this.env, name)))
+        judgeUsage.push(Atif.usage(await Harness.events(this.env, name, judgeRequestId)))
       } catch (error) {
         this.putArtifact(row.id, 'verifier/judge-error.txt', message(error))
       }
@@ -2454,7 +2484,7 @@ export class Run extends DurableObject<Env> {
     let usage: Atif.Usage | null = null
     if (submitted) {
       try {
-        const events = await Harness.events(this.env, session)
+        const events = await Harness.events(this.env, session, requestId)
         usage = Atif.usage(events)
         const requested = Timeline.modelRequest(events)
         if (requested !== undefined)

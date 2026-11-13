@@ -155,6 +155,49 @@ test('a lost lease makes the row claimable again, a bounded number of times, and
   assert.deepEqual(Ledger.lostUsage(sql), [{ attempt: 'a00001', usage: '{"costUsd":0.5}' }])
 })
 
+test('a claim whose session lost its turn goes back with what the session answered, within the claims of its row', () => {
+  const sql = open([{ agent: 'agent', n: 1, task: 'small' }])
+  const said = 'the session answered 404 for the turn'
+  const [first] = claim(sql, { now: 0 })
+  Ledger.update(sql, 'a00001', { phase: 'run' })
+  Ledger.explain(sql, { claim: first!.claim!, error: said })
+  assert.equal(Ledger.claims(sql)[0]!.ended_at, null)
+  assert.equal(Ledger.requeue(sql, { ending: 'forgotten', id: 'a00001', limit: 2, now: 500 }), true)
+  assert.equal(Ledger.get(sql, 'a00001')!.phase, 'unclaimed')
+  assert.equal(Ledger.held(sql, { claim: first!.claim!, id: 'a00001' }), undefined)
+
+  const [second] = claim(sql, { now: 600 })
+  assert.equal(second!.session, '0123456789abcdef-a00001-2')
+  Ledger.explain(sql, { claim: second!.claim!, error: said })
+  assert.equal(
+    Ledger.requeue(sql, { ending: 'forgotten', id: 'a00001', limit: 2, now: 900 }),
+    false,
+  )
+  assert.equal(Ledger.get(sql, 'a00001')!.phase, 'claimed')
+  assert.equal(
+    Ledger.finish(sql, { id: 'a00001', now: 901, result: result('a00001', 'errored') }),
+    true,
+  )
+  const claims = Ledger.claims(sql)
+  assert.deepEqual(
+    claims.map((entry) => [entry.n, entry.ending, entry.phase, entry.ended_at, entry.error]),
+    [
+      [1, 'forgotten', 'run', 500, said],
+      [2, 'forgotten', 'claimed', 900, said],
+    ],
+  )
+  assert.deepEqual(claims.map(Ledger.lost), [true, true])
+  assert.deepEqual(Ledger.lostUsage(sql), [])
+
+  const other = open([{ agent: 'agent', n: 1, task: 'small' }])
+  claim(other)
+  Ledger.finish(other, { id: 'a00001', now: 1, result: result('a00001', 'passed') })
+  assert.deepEqual(
+    Ledger.claims(other).map((entry) => [entry.ending, entry.error, Ledger.lost(entry)]),
+    [['finished', null, false]],
+  )
+})
+
 test('a row is finished once, and a stale runner cannot finish or extend it', () => {
   const sql = open([{ agent: 'agent', n: 1, task: 'small' }])
   const [row] = claim(sql)

@@ -4,7 +4,7 @@ import type * as Sql from './Sql.ts'
 
 export type Phase = 'attach' | 'claimed' | 'done' | 'judge' | 'run' | 'unclaimed' | 'verify'
 
-export type Ending = 'cancelled' | 'expired' | 'finished' | 'released'
+export type Ending = 'cancelled' | 'expired' | 'finished' | 'forgotten' | 'released'
 
 export type Origin = { attempt: string; run: string }
 
@@ -34,6 +34,7 @@ export type Claim = {
   claimed_at: number
   ended_at: number | null
   ending: Ending | null
+  error: string | null
   id: number
   n: number
   phase: Phase | null
@@ -79,7 +80,8 @@ export const tables = [
     ended_at INTEGER,
     ending TEXT,
     phase TEXT,
-    usage TEXT
+    usage TEXT,
+    error TEXT
   )`,
 ]
 
@@ -272,7 +274,7 @@ export function requeue(sql: Sql.Sql, input: requeue.Input): boolean {
 
 export declare namespace requeue {
   type Input = {
-    ending: 'expired' | 'released'
+    ending: 'expired' | 'forgotten' | 'released'
     id: string
     limit: number
     now: number
@@ -308,6 +310,14 @@ export function claims(sql: Sql.Sql, attempt?: string): Claim[] {
   return (attempt === undefined
     ? sql.all('SELECT * FROM claims ORDER BY id')
     : sql.all('SELECT * FROM claims WHERE attempt = ? ORDER BY id', attempt)) as unknown as Claim[]
+}
+
+export function explain(sql: Sql.Sql, input: { claim: string; error: string }): void {
+  sql.run('UPDATE claims SET error = ? WHERE token = ?', input.error, input.claim)
+}
+
+export function lost(claim: Pick<Claim, 'ending'>): boolean {
+  return claim.ending === 'expired' || claim.ending === 'forgotten' || claim.ending === 'released'
 }
 
 export function lostUsage(sql: Sql.Sql): { attempt: string; usage: string }[] {

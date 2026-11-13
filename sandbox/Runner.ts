@@ -476,7 +476,7 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
     await output(slots.down(item.row.slot, marked ? 'remove' : 'keep'), env)
     if (marked) await forget(disk!.trim())
     item.watcher?.close()
-    work.delete(item.row.id)
+    if (work.get(item.row.id) === item) work.delete(item.row.id)
     claimAt = 0
     frees++
     signal()

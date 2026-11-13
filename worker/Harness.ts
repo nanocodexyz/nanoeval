@@ -4,6 +4,10 @@ import * as Telemetry from '../src/Telemetry.ts'
 import { account, type Env } from './Env.ts'
 import { nanocode } from './Sessions.ts'
 
+export class LostError extends Error {
+  override name = 'Harness.LostError'
+}
+
 export class RequestError extends Error {
   override name = 'Harness.RequestError'
 }
@@ -80,10 +84,17 @@ export async function submit(env: Env, name: string, turn: Turn): Promise<Report
 }
 
 export async function turn(env: Env, name: string, requestId: string): Promise<Report> {
-  return json<Report>(
-    await call(env, session(name) + '/turns/' + encodeURIComponent(requestId)),
-    'reading the turn',
-  )
+  const response = await call(env, session(name) + '/turns/' + encodeURIComponent(requestId))
+  if (response.status === 404)
+    throw new LostError(
+      'the session ' +
+        name +
+        ' answered 404 for the turn ' +
+        requestId +
+        ': ' +
+        (await response.text()).slice(0, 500),
+    )
+  return json<Report>(response, 'reading the turn')
 }
 
 export async function cancel(env: Env, name: string, requestId: string): Promise<void> {
@@ -95,7 +106,12 @@ export async function cancel(env: Env, name: string, requestId: string): Promise
   await response.body?.cancel()
 }
 
-export async function events(env: Env, name: string): Promise<Atif.SessionEvent[]> {
+export async function events(
+  env: Env,
+  name: string,
+  requestId: string,
+): Promise<Atif.SessionEvent[]> {
+  await turn(env, name, requestId)
   const all: Atif.SessionEvent[] = []
   let after = 0
   for (;;) {

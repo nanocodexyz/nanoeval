@@ -64,6 +64,11 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: dir
           NANOEVAL_E2E_SCENARIO: restart
+      - name: End to end, directory slots, a session that lost the turn of its row
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: forgotten
       - name: End to end, directory slots, two attached runners
         run: npm run e2e
         env:
@@ -244,6 +249,10 @@ jobs:
         run: npm run e2e
         env:
           NANOEVAL_E2E_SCENARIO: restart
+      - name: End to end, krun slots, a session that lost the turn of its row, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: forgotten
       - name: End to end, krun slots, slot networks, skipped where krun cannot run
         run: npm run e2e
         env:

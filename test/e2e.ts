@@ -61,6 +61,7 @@ const alone = scenario === 'alone'
 const refusedPassing = scenario === 'refused'
 const spent = scenario === 'spent'
 const fleet = scenario === 'fleet'
+const turnLost = scenario === 'forgotten'
 const lapse = scenario === 'lapse'
 const machine = scenario === 'machine'
 const sandboxLeaseSec = Number(process.env['NANOEVAL_E2E_SANDBOX_LEASE_SEC'] ?? leaseSec)
@@ -127,6 +128,12 @@ function sse(events: [string, unknown][]): string {
 }
 
 let scriptedCalls = 0
+let answered = 0
+let parked = false
+let release = () => {}
+const released = new Promise<void>((resolve) => {
+  release = resolve
+})
 
 function fake(
   path: string,
@@ -330,7 +337,21 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
           throw new Error(
             'the request of the installed agent did not carry the credential of the run',
           )
-        const reply = body.fake_cli ? fake(request.url!, body) : scripted(body)
+        const reply = body.fake_cli
+          ? fake(request.url!, body)
+          : scripted(body, turnLost ? MockGateway.modelUsd['/v1/messages'] : undefined)
+        if (
+          turnLost &&
+          !parked &&
+          !body.model?.includes('sonnet') &&
+          JSON.stringify(body.messages ?? []).includes('"tool_result"')
+        ) {
+          parked = true
+          await released
+          response.destroy()
+          return
+        }
+        answered++
         response.writeHead(200, { 'content-type': 'text/event-stream' }).end(reply)
       } catch (error) {
         response.writeHead(400, { 'content-type': 'application/json' })
@@ -946,6 +967,8 @@ async function main(): Promise<void> {
     let restarted = false
     let forgotten = 0
     let activeAt: number | undefined
+    let lostAt: number | undefined
+    let backAt: number | undefined
     for (;;) {
       status = await api.status(created.id)
       if (status['state'] === 'finished') break
@@ -1016,15 +1039,48 @@ async function main(): Promise<void> {
           await mock!.die([...mock!.sandboxes.keys()][0]!)
         }
       }
+      if (
+        turnLost &&
+        !restarted &&
+        parked &&
+        status['counts'].active === 1 &&
+        status['counts'].unclaimed === 0
+      ) {
+        restarted = true
+        const objects = Path.join(out, 'state', 'v3', 'do', 'nanoeval-AgentSession')
+        await stop(worker, 'SIGKILL')
+        assert.ok(
+          Fs.readdirSync(objects).some((name) => name.endsWith('.sqlite')),
+          'the Worker keeps its session objects where this lane removes them',
+        )
+        Fs.rmSync(objects, { recursive: true })
+        worker = await start()
+        lostAt = Date.now()
+        release()
+      }
+      if (lostAt !== undefined && status['lostClaims'] > 0) backAt ??= Date.now()
       if (Date.now() - started > 20 * 60_000)
         throw new Error('the run did not finish:\n' + summary(status))
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
-    if (['fleet', 'lost', 'restart', 'resume'].includes(scenario))
+    if (['fleet', 'forgotten', 'lost', 'restart', 'resume'].includes(scenario))
       assert.ok(restarted, 'the ' + scenario + ' happened during the run')
     const wallMs = Date.now() - started
     console.log(summary(status))
     Fs.writeFileSync(Path.join(out, 'status.json'), JSON.stringify(status, null, 2) + '\n')
+    if (turnLost) {
+      const after = (at: number | undefined) => (at === undefined ? 'never' : at - lostAt! + ' ms')
+      console.log(
+        'forgotten: the row went back ' +
+          after(backAt) +
+          ' after the Worker answered again, and the run finished after ' +
+          after(Date.now()),
+      )
+      assert.ok(
+        Date.now() - lostAt! < leaseSec * 1000,
+        'a row whose session lost its turn does not wait for a lease to end',
+      )
+    }
     const { files } = await exportJob(api, { out: Path.join(out, 'harbor'), run: created.id })
     const details: Record<string, any>[] = []
     for (const attempt of status['attempts'] as { id: string }[])
@@ -1512,7 +1568,7 @@ async function main(): Promise<void> {
 
     assert.equal(status['counts'].errored, 0, 'no attempt may end in an infrastructure error')
     assert.equal(status['counts'].passed + status['counts'].failed, total)
-    if (!attached && !fleet && !lapse)
+    if (!attached && !fleet && !turnLost && !lapse)
       assert.equal(peak, Math.min(slots, total), 'the sandbox fills every slot')
     if (cached) {
       if (!disk) throw new Error('the cache scenario runs on krun or ns slots')
@@ -1580,6 +1636,56 @@ async function main(): Promise<void> {
       assert.equal(status['counts'].passed, total, 'every solution passes its verifier')
     } else {
       assert.ok(status['counts'].passed > 0, 'the model solves at least one task')
+    }
+
+    if (turnLost) {
+      const cost = MockGateway.modelUsd['/v1/messages']
+      const again = details.filter((detail) => detail['attempt'].claims === 2)
+      assert.equal(again.length, 1, 'the row whose session lost its turn was claimed again')
+      assert.equal(status['lostClaims'], 1)
+      const row = again[0]!
+      const [first, second] = row['claims'] as Record<string, any>[]
+      assert.deepEqual(
+        [first!['ending'], first!['phase'], second!['ending']],
+        ['forgotten', 'run', 'finished'],
+        'the claim whose session lost the turn says so, and the next claim finished the row',
+      )
+      assert.equal(
+        first!['error'],
+        'the session ' +
+          first!['session'] +
+          ' answered 404 for the turn attempt: {"error":"request not found"}',
+      )
+      assert.ok(
+        (await api.timeline(created.id)).marks.some(
+          (mark) => mark.name === 'attempt.forgotten' && mark.attempt === row['attempt'].id,
+        ),
+        'the timeline of the run says when the session had lost the turn',
+      )
+      const requests = (
+        await api.artifact(created.id, row['attempt'].id, 'agent/model-requests.jsonl')
+      )
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line))
+      assert.deepEqual(
+        requests.map((entry) => [entry.claim, entry.status, entry.usage?.costUsd]),
+        [
+          [1, 200, cost],
+          [2, 200, cost],
+          [2, 200, cost],
+        ],
+        'the response that the lost session was answered stays in the requests of its row',
+      )
+      assert.ok(
+        Math.abs(row['result'].usage.costUsd - 2 * cost) < 1e-9,
+        'the attempt has the cost of the session that finished it',
+      )
+      assert.equal(answered, 2 * total + 1)
+      assert.ok(
+        Math.abs(status['spend'].modelUsd - answered * cost) < 1e-9,
+        'the model spend of the run keeps the response of the session that lost its turn',
+      )
     }
 
     const phases: Record<string, number[]> = {}
