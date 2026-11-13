@@ -1,7 +1,11 @@
 import { App, Forward } from 'nanocode-ts/cloudflare'
+import type * as Atif from '../src/Atif.ts'
 import * as Proxy from '../src/Proxy.ts'
+import * as Sql from '../src/Sql.ts'
+import * as Telemetry from '../src/Telemetry.ts'
 import { account, type Env } from './Env.ts'
 import * as Meter from './Meter.ts'
+import * as Storage from './Storage.ts'
 
 export async function authorized(request: Request, env: Env): Promise<boolean> {
   const header = request.headers.get('authorization') ?? ''
@@ -111,4 +115,52 @@ export const nanocode = App.create<Env>({
   workspace: false,
 })
 
-export const { AgentSession } = nanocode
+type Published = (scope: string, events: Atif.SessionEvent[], bytes: number[]) => void
+
+const hosted = nanocode.AgentSession
+
+function inherited(): Published {
+  const { published } = hosted.prototype as unknown as { published?: Published }
+  if (typeof published !== 'function')
+    throw new Error('this nanocode-ts build does not hand the events of a session to its object')
+  return published
+}
+
+const publish = inherited()
+
+export class AgentSession extends hosted {
+  private open = true
+  private readonly sql: Sql.Sql
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env)
+    this.sql = Storage.sql(ctx)
+    Sql.setup(this.sql, Telemetry.tables)
+  }
+
+  published(scope: string, events: Atif.SessionEvent[], bytes: number[]): void {
+    if (scope === Telemetry.scope)
+      this.open = Telemetry.record(this.sql, { events, open: this.open })
+    const logged = events.flatMap((event, index) => (Telemetry.live(event) ? [] : [index]))
+    publish.call(
+      this,
+      scope,
+      logged.map((index) => events[index]!),
+      logged.map((index) => bytes[index]!),
+    )
+  }
+
+  override async fetch(request: Request): Promise<Response> {
+    const response = await super.fetch(request)
+    if (!request.headers.has(Telemetry.header) || !response.ok) return response
+    const page = await response.json<{ has_more: boolean; next_cursor: number }>()
+    return Storage.json({
+      ...page,
+      telemetry: Telemetry.read(this.sql, {
+        after: Number(new URL(request.url).searchParams.get('after') ?? '0'),
+        last: !page.has_more,
+        through: page.next_cursor,
+      }),
+    })
+  }
+}

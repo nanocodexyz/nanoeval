@@ -1,0 +1,663 @@
+{
+  "published": [
+    {
+      "seq": 16385,
+      "request_id": "attempt",
+      "created_at": 1794000000000,
+      "event": {
+        "type": "queued",
+        "request_id": "attempt"
+      }
+    },
+    {
+      "seq": 16386,
+      "request_id": "attempt",
+      "created_at": 1794000000076,
+      "event": {
+        "type": "running",
+        "request_id": "attempt"
+      }
+    },
+    {
+      "seq": 16387,
+      "request_id": "attempt",
+      "created_at": 1794000000095,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 1,
+          "type": "input.accepted",
+          "payload": {
+            "session_id": "session",
+            "turn_id": "attempt",
+            "item_id": "attempt:prompt",
+            "kind": "prompt",
+            "request_id": "attempt",
+            "input": "Write the greeting."
+          }
+        }
+      }
+    },
+    {
+      "seq": 16388,
+      "request_id": "attempt",
+      "created_at": 1794000000123,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 2,
+          "type": "run.started",
+          "payload": {
+            "mode": "claude",
+            "model": "claude-haiku-5-5",
+            "reasoning_mode": "model_default",
+            "effort": "medium",
+            "transport": "messages_sse",
+            "orchestration": "claude",
+            "websocket_url": "",
+            "workspace": "/",
+            "instruction_bytes": 19,
+            "turn_id": "attempt"
+          }
+        }
+      }
+    },
+    {
+      "seq": 16389,
+      "request_id": "attempt",
+      "created_at": 1794000002569,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 4,
+          "type": "reasoning.summary.delta",
+          "payload": {
+            "item_id": "msg_1:thinking:0",
+            "model_call_index": 1,
+            "model_elapsed_ns": 2054999828,
+            "offset": 0,
+            "text": "Looking at the files first.",
+            "turn_id": "attempt"
+          }
+        }
+      }
+    },
+    {
+      "seq": 0,
+      "request_id": "attempt",
+      "created_at": 1794000002569,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 5,
+          "type": "model.call.completed",
+          "payload": {
+            "call_index": 1,
+            "model": "claude-haiku-5-5",
+            "response_id": "msg_1",
+            "attempt": 1,
+            "connection_generation": 0,
+            "status": "tool_use",
+            "duration_ns": 1773000002,
+            "time_to_first_event_ns": 591000000,
+            "time_to_first_output_ns": 886500001,
+            "time_to_dispatch_ns": 0,
+            "tool_calls": 1,
+            "usage": {
+              "input_tokens": 7367,
+              "input_tokens_details": {
+                "cached_tokens": 6283,
+                "cache_write_tokens": 1080
+              },
+              "output_tokens": 164,
+              "total_tokens": 7531
+            },
+            "timing": {
+              "replayed": false,
+              "total_ns": 1773000002
+            },
+            "turn_id": "attempt"
+          }
+        },
+        "sdk_timing": {
+          "emitted_ns": 1773000002,
+          "received_ns": 1773000002,
+          "queue_ns": 0,
+          "source_received_ns": null
+        },
+        "host_timing": {
+          "received_ms": 2569,
+          "runtime_id": "runtime"
+        }
+      }
+    },
+    {
+      "seq": 16390,
+      "request_id": "attempt",
+      "created_at": 1794000002569,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 9,
+          "type": "assistant.message",
+          "payload": {
+            "model_call_index": 1,
+            "item_id": "msg_1",
+            "phase": null,
+            "text": "The files are listed.",
+            "citations": [],
+            "turn_id": "attempt"
+          }
+        }
+      }
+    },
+    {
+      "seq": 16391,
+      "request_id": "attempt",
+      "created_at": 1794000002569,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 10,
+          "type": "tool.call",
+          "payload": {
+            "call_id": "toolu_1",
+            "tool": "exec",
+            "arguments": {
+              "code": "text(await tools.Bash({ command: \"ls\" }))"
+            },
+            "model_call_index": 0,
+            "turn_id": "attempt"
+          }
+        }
+      }
+    },
+    {
+      "seq": 16392,
+      "request_id": "attempt",
+      "created_at": 1794000002569,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 11,
+          "type": "tool.call",
+          "payload": {
+            "call_id": "toolu_1/code-1",
+            "tool": "Bash",
+            "arguments": {
+              "command": "ls"
+            },
+            "model_call_index": 0,
+            "parent_call_id": "toolu_1",
+            "turn_id": "attempt"
+          }
+        }
+      }
+    },
+    {
+      "seq": 16393,
+      "request_id": "attempt",
+      "created_at": 1794000002658,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 12,
+          "type": "tool.result",
+          "payload": {
+            "result": {
+              "text": "greeting.txt\n"
+            },
+            "structured_result": {
+              "background": false,
+              "exit_code": 0,
+              "interrupted": false,
+              "message": null,
+              "output_bytes": null,
+              "output_file": null,
+              "status": "completed",
+              "stderr": "",
+              "stdout": "greeting.txt\n",
+              "task_id": null,
+              "truncated": false
+            },
+            "metadata": null,
+            "call_id": "toolu_1/code-1",
+            "tool": "Bash",
+            "status": "completed",
+            "duration_ns": 147598677,
+            "started_after_ns": 5052718,
+            "parent_call_id": "toolu_1",
+            "turn_id": "attempt"
+          }
+        }
+      }
+    },
+    {
+      "seq": 16394,
+      "request_id": "attempt",
+      "created_at": 1794000002664,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 13,
+          "type": "tool.result",
+          "payload": {
+            "result": {
+              "content_blocks": [
+                {
+                  "text": "Script completed\nOutput:\n",
+                  "type": "text"
+                },
+                {
+                  "text": "greeting.txt\n",
+                  "type": "text"
+                }
+              ]
+            },
+            "structured_result": null,
+            "metadata": {
+              "_nanocode_code": {
+                "origin_call_id": "toolu_1",
+                "nested_call_count": 1,
+                "running": false
+              }
+            },
+            "call_id": "toolu_1",
+            "tool": "exec",
+            "status": "completed",
+            "duration_ns": 184999942,
+            "started_after_ns": null,
+            "turn_id": "attempt"
+          }
+        }
+      }
+    },
+    {
+      "seq": 16395,
+      "request_id": "attempt",
+      "created_at": 1794000005013,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 15,
+          "type": "reasoning.summary.delta",
+          "payload": {
+            "item_id": "msg_2:thinking:0",
+            "model_call_index": 2,
+            "model_elapsed_ns": 2246999979,
+            "offset": 0,
+            "text": "Looking at the files first.",
+            "turn_id": "attempt"
+          }
+        }
+      }
+    },
+    {
+      "seq": 0,
+      "request_id": "attempt",
+      "created_at": 1794000005013,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 16,
+          "type": "model.call.completed",
+          "payload": {
+            "call_index": 2,
+            "model": "claude-haiku-5-5",
+            "response_id": "msg_2",
+            "attempt": 1,
+            "connection_generation": 0,
+            "status": "tool_use",
+            "duration_ns": 2773999930,
+            "time_to_first_event_ns": 924666643,
+            "time_to_first_output_ns": 1386999965,
+            "time_to_dispatch_ns": 0,
+            "tool_calls": 1,
+            "usage": {
+              "input_tokens": 7882,
+              "input_tokens_details": {
+                "cached_tokens": 7363,
+                "cache_write_tokens": 517
+              },
+              "output_tokens": 518,
+              "total_tokens": 8400
+            },
+            "timing": {
+              "replayed": false,
+              "total_ns": 2773999930
+            },
+            "turn_id": "attempt"
+          }
+        },
+        "sdk_timing": {
+          "emitted_ns": 2773999930,
+          "received_ns": 2773999930,
+          "queue_ns": 0,
+          "source_received_ns": null
+        },
+        "host_timing": {
+          "received_ms": 5013,
+          "runtime_id": "runtime"
+        }
+      }
+    },
+    {
+      "seq": 16396,
+      "request_id": "attempt",
+      "created_at": 1794000005013,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 21,
+          "type": "assistant.message",
+          "payload": {
+            "model_call_index": 2,
+            "item_id": "msg_2",
+            "phase": null,
+            "text": "The files are listed.",
+            "citations": [],
+            "turn_id": "attempt"
+          }
+        }
+      }
+    },
+    {
+      "seq": 16397,
+      "request_id": "attempt",
+      "created_at": 1794000005013,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 22,
+          "type": "tool.call",
+          "payload": {
+            "call_id": "toolu_2",
+            "tool": "exec",
+            "arguments": {
+              "code": "text(await tools.Bash({ command: \"ls\" }))"
+            },
+            "model_call_index": 1,
+            "turn_id": "attempt"
+          }
+        }
+      }
+    },
+    {
+      "seq": 16398,
+      "request_id": "attempt",
+      "created_at": 1794000005013,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 23,
+          "type": "tool.call",
+          "payload": {
+            "call_id": "toolu_2/code-1",
+            "tool": "Bash",
+            "arguments": {
+              "command": "ls"
+            },
+            "model_call_index": 1,
+            "parent_call_id": "toolu_2",
+            "turn_id": "attempt"
+          }
+        }
+      }
+    },
+    {
+      "seq": 16399,
+      "request_id": "attempt",
+      "created_at": 1794000005013,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 24,
+          "type": "tool.result",
+          "payload": {
+            "result": {
+              "text": "greeting.txt\n"
+            },
+            "structured_result": {
+              "background": false,
+              "exit_code": 0,
+              "interrupted": false,
+              "message": null,
+              "output_bytes": null,
+              "output_file": null,
+              "status": "completed",
+              "stderr": "",
+              "stdout": "greeting.txt\n",
+              "task_id": null,
+              "truncated": false
+            },
+            "metadata": null,
+            "call_id": "toolu_2/code-1",
+            "tool": "Bash",
+            "status": "completed",
+            "duration_ns": 11772452,
+            "started_after_ns": 244628,
+            "parent_call_id": "toolu_2",
+            "turn_id": "attempt"
+          }
+        }
+      }
+    },
+    {
+      "seq": 16400,
+      "request_id": "attempt",
+      "created_at": 1794000005013,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 25,
+          "type": "tool.result",
+          "payload": {
+            "result": {
+              "content_blocks": [
+                {
+                  "text": "Script completed\nOutput:\n",
+                  "type": "text"
+                },
+                {
+                  "text": "greeting.txt\n",
+                  "type": "text"
+                }
+              ]
+            },
+            "structured_result": null,
+            "metadata": {
+              "_nanocode_code": {
+                "origin_call_id": "toolu_2",
+                "nested_call_count": 1,
+                "running": false
+              }
+            },
+            "call_id": "toolu_2",
+            "tool": "exec",
+            "status": "completed",
+            "duration_ns": 51999807,
+            "started_after_ns": null,
+            "turn_id": "attempt"
+          }
+        }
+      }
+    },
+    {
+      "seq": 16401,
+      "request_id": "attempt",
+      "created_at": 1794000017207,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 97,
+          "type": "reasoning.summary.delta",
+          "payload": {
+            "item_id": "msg_3:thinking:0",
+            "model_call_index": 3,
+            "model_elapsed_ns": 2266000032,
+            "offset": 0,
+            "text": "Looking at the files first.",
+            "turn_id": "attempt"
+          }
+        }
+      }
+    },
+    {
+      "seq": 0,
+      "request_id": "attempt",
+      "created_at": 1794000017207,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 98,
+          "type": "model.call.completed",
+          "payload": {
+            "call_index": 3,
+            "model": "claude-haiku-5-5",
+            "response_id": "msg_3",
+            "attempt": 1,
+            "connection_generation": 0,
+            "status": "end_turn",
+            "duration_ns": 11868000030,
+            "time_to_first_event_ns": 3956000010,
+            "time_to_first_output_ns": 5934000015,
+            "time_to_dispatch_ns": 0,
+            "tool_calls": 0,
+            "usage": {
+              "input_tokens": 8769,
+              "input_tokens_details": {
+                "cached_tokens": 7880,
+                "cache_write_tokens": 887
+              },
+              "output_tokens": 2521,
+              "total_tokens": 11290
+            },
+            "timing": {
+              "replayed": false,
+              "total_ns": 11868000030
+            },
+            "turn_id": "attempt"
+          }
+        },
+        "sdk_timing": {
+          "emitted_ns": 11868000030,
+          "received_ns": 11868000030,
+          "queue_ns": 0,
+          "source_received_ns": null
+        },
+        "host_timing": {
+          "received_ms": 17207,
+          "runtime_id": "runtime"
+        }
+      }
+    },
+    {
+      "seq": 16402,
+      "request_id": "attempt",
+      "created_at": 1794000017207,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 113,
+          "type": "assistant.message",
+          "payload": {
+            "model_call_index": 3,
+            "item_id": "msg_3",
+            "phase": null,
+            "text": "The greeting is written.",
+            "citations": [],
+            "turn_id": "attempt"
+          }
+        }
+      }
+    },
+    {
+      "seq": 16403,
+      "request_id": "attempt",
+      "created_at": 1794000017207,
+      "event": {
+        "source": "agent",
+        "event": {
+          "protocol_version": 1,
+          "request_id": "session",
+          "seq": 114,
+          "type": "run.completed",
+          "payload": {
+            "status": "completed",
+            "model": "claude-haiku-5-5",
+            "reasoning_mode": "model_default",
+            "effort": "medium",
+            "transport": "messages_sse",
+            "orchestration": "claude",
+            "duration_ms": 17111,
+            "duration_ns": 17111000061,
+            "estimated_cost": {
+              "usd": "0.0036082",
+              "input_usd": "0",
+              "cached_input_usd": "0",
+              "cache_write_input_usd": "0",
+              "output_usd": "0.0036082",
+              "service_tier": "standard"
+            },
+            "cost_usd": 0.0036082,
+            "cost_status": "reported_by_provider",
+            "turn_id": "attempt"
+          }
+        }
+      }
+    },
+    {
+      "seq": 16404,
+      "request_id": "attempt",
+      "created_at": 1794000017210,
+      "event": {
+        "type": "result",
+        "request_id": "attempt",
+        "status": "completed",
+        "ok": {
+          "message": "The greeting is written.",
+          "model": "claude-haiku-5-5",
+          "session_id": "session"
+        }
+      }
+    }
+  ]
+}

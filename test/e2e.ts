@@ -1029,6 +1029,50 @@ async function main(): Promise<void> {
     const details: Record<string, any>[] = []
     for (const attempt of status['attempts'] as { id: string }[])
       details.push(await api.attempt(created.id, attempt.id))
+    for (const detail of details) {
+      const artifacts = detail['artifacts'] as string[]
+      if (
+        !['claude', 'codex'].includes(detail['result']?.agent.provider) ||
+        !artifacts.includes('agent/model-requests.jsonl')
+      )
+        continue
+      const read = (name: string) => api.artifact(created.id, detail['attempt'].id, name)
+      const answered = (await read('agent/model-requests.jsonl'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line))
+        .filter(
+          (entry) =>
+            entry.claim === detail['attempt'].claims &&
+            entry.status === 200 &&
+            entry.usage &&
+            !entry.path.startsWith('judge/'),
+        )
+      if (!answered.length) continue
+      const usage = detail['result'].usage
+      assert.ok(
+        usage?.modelCalls >= 1 && usage.inputTokens > 0,
+        'an attempt whose session called a model has its calls and tokens: ' +
+          JSON.stringify(usage),
+      )
+      const trajectory = JSON.parse(await read('agent/trajectory.json'))
+      const steps = trajectory.steps.filter((step: { source: string }) => step.source === 'agent')
+      assert.equal(steps.length, usage.modelCalls, 'one agent step for each model call')
+      assert.ok(
+        steps.every((step: { metrics?: object }) => step.metrics),
+        'every agent step has the tokens of its model call',
+      )
+      assert.equal(trajectory.final_metrics.extra.model_calls, usage.modelCalls)
+      if (scenario === 'tasks') {
+        const sum = (field: string) =>
+          answered.reduce((all: number, entry) => all + entry.usage[field], 0)
+        assert.deepEqual(
+          [usage.modelCalls, usage.inputTokens, usage.outputTokens, usage.cachedTokens],
+          [answered.length, sum('inputTokens'), sum('outputTokens'), sum('cachedTokens')],
+          'the tokens of a session are those of the responses its model endpoint answered',
+        )
+      }
+    }
     const edges = details
       .filter((detail) => detail['result'].sandbox !== null)
       .flatMap((detail) => [
@@ -1545,6 +1589,12 @@ async function main(): Promise<void> {
       if (judged) {
         const graded = detail['attempt'].task === 'fixtures/judged-answer'
         assert.equal(detail['result'].judge?.requests, graded ? 1 : undefined)
+        if (graded)
+          assert.ok(
+            detail['result'].judge.usage.modelCalls >= 1 &&
+              detail['result'].judge.usage.inputTokens > 0,
+            'a judge has the calls and the tokens of its session',
+          )
         assert.equal(detail['result'].timing.judge !== undefined, graded)
         for (const name of ['verifier/judge-request.json', 'verifier/judge-response.json'])
           assert.equal(detail['artifacts'].includes(name), graded)
