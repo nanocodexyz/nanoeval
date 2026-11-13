@@ -2469,3 +2469,13 @@ By hand, with changes to the lane that are not kept:
 - Installed agents on a broken machine: the lane runs sessions.
 - A runner that a supervisor starts again on a machine that stays broken: each start costs up to `--slots` claims, as argued above, and was not run.
 - The krun and ns lanes of `ci.yml` and the checks of `krun/`, and CI on GitHub.
+
+## 2026-11-13: a renewal answered after its lease ended failed the sandbox
+
+**The defect.** A sandbox that is sold no renewal is used to the end of its lease and then closed, and the run opens another. The run asks for the renewal at every tick of the last `--lease-sec` of a lease, and `renew` in `worker/Run.ts` kept a sandbox whose renewal was not sold only while the lease still had time when the answer arrived. The answer to a request sent just before the end of a lease arrives after it, and the sandbox was then failed like one the gateway no longer knows: it counted as a failed sandbox, of which a run tolerates two in a row, its rows waited for their own leases instead of going back at once, and the pool was told of a failure. The lane `lapse` met it some of the time, as the entry on setups records: a sandbox ended `failed` where the lane expects `closed`.
+
+**The rule.** A renewal that is not sold never fails a sandbox, whenever its answer arrives. The error is recorded, the sandbox is marked as ending unless the refusal passes, and the lease decides the rest: `lapse`, which runs after `renew` in the same tick, closes a sandbox whose lease is over, puts its rows back and tells the pool why. A renewal that fails for another reason, such as a sandbox the gateway no longer knows, fails the sandbox as before.
+
+**Checked** on the machine of the entry above, with the hand from a file as before. The lane `lapse` without this change passed 3 times of 4, and the run that failed had one sandbox of 25 `failed` with the gateway's answer to an unpaid renewal as its error. With the scripted gateway made to answer an unpaid renewal 700 ms late, by hand and not kept, and two attempts a task: without this change 2 of 8 sandboxes ended `failed`, which are two in a row, and the 12 rows ended as errors; with it the 12 sandboxes that were leased ended `closed` and the 12 rows got their verdicts. With this change the lane as it is passed 4 times of 4. The other lanes are in the entry above.
+
+**Not verified.** The real gateway. A renewal that the budget of the run refuses after the lease ended: it now ends `closed` too, and the run then ends its rows when the next create is refused, read from the code.

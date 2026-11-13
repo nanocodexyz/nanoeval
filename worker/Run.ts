@@ -1805,7 +1805,7 @@ export class Run extends DurableObject<Env> {
           error instanceof Gateway.UnpricedError
         const passing =
           error instanceof Gateway.RefusedError && (error.status === 429 || error.status >= 500)
-        if (unsold && record.paid_until > Date.now())
+        if (unsold)
           this.update('sandboxes', record.id, {
             error: message(error),
             ...(passing ? {} : { state: 'ending' }),
