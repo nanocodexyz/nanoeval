@@ -2339,6 +2339,30 @@ On the 32-core Linux x86_64 machine with `/dev/kvm` of the entries above, from a
 
 A scripted Claude-harness session also ran the solutions of four fixture tasks through the hand's Bash tool on krun slots (extract-todos, uppercase-message, write-greeting, cached-verifier): all four passed, as under `--oracle`, 2 model calls and 5 tool calls a row.
 
-### What was not run
+### What ran on the hand of 1f10a22
 
-No Terminal-Bench task and no model ran on the hand of 1f10a22: what ran on the hand of 5f8b457 is above, and the three defects it found were reproduced and checked fixed command by command, not by the tasks. Before this entry is on main: the 89 solutions through the hand beside `--oracle` again, where the solutions the oracle passes and the hand does not must be only those over the Bash tool's ten minutes (`caffe-cifar-10`, `compile-compcert`, `crack-7z-hash`, `rstan-to-pystan`, which pass through exec_command), and a model arm with the earlier pins and with these, paired by task, in which `compile-compcert` is not lost to a missing git.
+The checks that the first form of this entry asked for ran before it went to main, on the second machine: Linux x86_64, 5 cores, 14 GB, root and no KVM, so ns slots, three at a time at most. `terminal-bench-2.1` was imported there: the 89 packages have the checksums of the entries above, and the version digest differs, since a conversion is not reproducible byte for byte. That machine has no KVM for the builder microVM of an import, so its import applied the image layers with the launcher's guest in a namespace, and it reaches the network through a proxy, through which the TCP connections of its slots were tunnelled. Both were done outside this repository. The hand in the slots was the pinned one, checked by its checksum. One attempt a row, unless a rerun is named.
+
+**The 89 solutions.** `--oracle` passes 84 there, the 84 of the sandboxes above: 82 in one run, and `custom-memory-heap-crash` and `query-optimize` when rerun alone (valgrind refused the machine's limit of open files until the runner was started with a lower one, and a timing threshold of 5 % was missed under load). An oracle run does not go through the hand; it was made with the hand of 5f8b457 pinned. Through the Bash tool of the hand of 1f10a22, where a scripted Claude-harness session copies each solution into its slot and runs `bash solve.sh`: 80 of 89. The four that the oracle passes and the hand does not are the four whose solutions run longer than the Bash tool's ten minutes, `caffe-cifar-10`, `compile-compcert`, `crack-7z-hash` and `rstan-to-pystan`, and all four pass when the same session runs them through exec_command. `password-recovery` and `sanitize-git-repo` pass. The other five are the five that fail with the oracle too.
+
+**A model on 21 tasks, with three sets of pins.** `claude:claude-haiku-5-5` as a nanocode session, two slots, on the five tasks whose rows the background defect had cost or slowed (`kv-store-grpc`, `pypi-server`, `compile-compcert`, `mcmc-sampling-stan`, `hf-model-inference`), the six that only nanocode had passed in the arms above, and ten that both haiku arms had passed.
+
+| Pins | Passed | Failed | Errored | Agent time, summed | Model calls | Spend at list prices |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| nanocode-ts `build-751e03a`, the hand of 2026-11-06 | 17 | 4 | 0 | 7,430 s | 312 | $0.69 |
+| `build-061892c`, hand `nanocode-cli-5f8b457` | 18 | 3 | 0 | 5,331 s | 253 | $0.35 |
+| `build-061892c`, hand `nanocode-cli-1f10a22`, the pins of this entry | 18 | 2 | 1 | 8,053 s | 298 | $0.70 |
+
+- `pypi-server` fails with the earlier pins, where the server the agent had started was gone when the verifier asked it, and passes with both newer hands. The server of `kv-store-grpc` answers the verifier with all three.
+- `compile-compcert` passes on 1f10a22 in 1,261 s: the agent found no git, installed it and built. On 5f8b457 it gave up in two attempts of two.
+- `schemelike-metacircular-eval` fails at its 2,400 s with the earlier pins and passes with both newer hands, and `sanitize-git-repo` passes on 1f10a22 only: one attempt each, so this may be chance.
+- The three rows that did not pass on 1f10a22 did not pass when rerun there either. `kv-store-grpc`: twice the agent renamed the generated modules to `KVStore_pb2.py`, as it read "{class name}_pb2.py" in the instruction, and the verifier imports `kv_store_pb2`; its test of the running server passed both times. `model-extraction-relu-logits`: the verifier ran the agent's script for its whole 900 s, a verifier error, and the rerun recovered the wrong rows; the earlier pins failed this row too. `rstan-to-pystan`: the agent's first Stan program keeps two 200 by 200 matrices for every draw and is killed at the task's 8 GiB once sampling is done, with every set of pins. With the earlier pins the agent slimmed the program and finished inside its 1,800 s. With the newer hands it did not pass in four attempts of four: three ran out of time after that first run was killed or hung, and one finished with two posterior means just outside the verifier's ranges. In one of the three, the first run was also ended by the ten minutes that a command may stay in the background after its Bash call has timed out.
+- No trajectory of the 1f10a22 rows holds a message of the shell standing in for a missing program.
+
+### Not verified
+
+- `codex` agents and `gpt-6-luna` on these builds: the only login for them was on a machine whose verifiers could not install packages that day.
+- All 89 tasks with a model on these builds, a second attempt of the rows that passed, and an installed agent beside them.
+- A sandbox. The rows above ran in ns slots on a 5-core machine of the operator's, where heavy rows run slower than on the 8 vCPUs of the sandboxes above.
+- Whether `rstan-to-pystan` is lost to the newer builds or to chance: 0 of 4 against 1 of 1.
+- CI on GitHub. The commit that records these results changes Markdown only. Every `run` step of `ci.yml` ran again from a fresh clone of it before it was pushed: `npm ci` on the second machine, which reaches the registry, and the other 65 steps on the machine with KVM, with `node_modules` copied as described above.
