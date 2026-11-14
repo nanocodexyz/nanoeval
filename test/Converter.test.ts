@@ -72,3 +72,30 @@ test('a conversion that stalls twice fails, and one that failed otherwise runs o
   )
   assert.equal(runs, 1)
 })
+
+test('the host policy of a conversion is read from the environment', () => {
+  assert.deepEqual(Converter.policy({}), {})
+  assert.deepEqual(
+    Converter.policy({
+      NANOEVAL_CA_BUNDLE: '/ca.pem',
+      NANOEVAL_PULL_WAIT_SEC: '90',
+      NANOEVAL_SLOT_ENV: '/slot.env',
+      NANOEVAL_SLOT_FORWARD: '127.0.0.1:1 127.0.0.1:2',
+    }),
+    {
+      caBundle: '/ca.pem',
+      envFile: '/slot.env',
+      forwards: ['127.0.0.1:1', '127.0.0.1:2'],
+      pullWaitSec: 90,
+    },
+  )
+  assert.deepEqual(Converter.policy({ NANOEVAL_PULL_WAIT_SEC: '0' }), { pullWaitSec: 0 })
+})
+
+test('a wait for a registry that is not a whole number of seconds is refused', () => {
+  for (const wait of ['', '-1', '1.5', 'soon'])
+    assert.throws(
+      () => Converter.policy({ NANOEVAL_PULL_WAIT_SEC: wait }),
+      /NANOEVAL_PULL_WAIT_SEC is a whole number of seconds, not /,
+    )
+})

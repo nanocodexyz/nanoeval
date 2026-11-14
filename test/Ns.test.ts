@@ -4,6 +4,7 @@ import * as Path from 'node:path'
 import { test } from 'node:test'
 import { loadTask } from '../cli/nanoeval.ts'
 import * as Converter from '../sandbox/Converter.ts'
+import * as Store from '../sandbox/Store.ts'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
 import * as Bytes from '../src/internal/Bytes.ts'
 import * as Local from '../src/Local.ts'
@@ -96,7 +97,7 @@ test(
       const staged = Path.join(out, 'disk')
       const meta = await Converter.create({
         home: Path.join(out, 'converter'),
-        layers: Converter.defaultLayers(out),
+        layers: Converter.defaultLayers(Store.defaultCache()),
       }).convert(
         { context: 'tasks/extract-todos/environment', storageMb: task.environment.storageMb },
         staged + '.ext4',

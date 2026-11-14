@@ -16,7 +16,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
     thread,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use flate2::read::MultiGzDecoder;
@@ -63,7 +63,7 @@ const TRUST_VARIABLES: [&str; 7] = [
     "REQUESTS_CA_BUNDLE",
     "SSL_CERT_FILE",
 ];
-const USAGE: &str = "usage: nanoeval-krun image build (--ref REF | --dockerfile DIR) --size-mb N --out DISK.ext4 --meta META.json [--cache DIR] [--platform OS/ARCH] [--network private|host] [--ca-bundle FILE] [--env-file FILE]... [--forward ADDRESS:PORT]... [--boot DIR] [--cpus N] [--memory-mib N]";
+const USAGE: &str = "usage: nanoeval-krun image build (--ref REF | --dockerfile DIR) --size-mb N --out DISK.ext4 --meta META.json [--cache DIR] [--pull-wait SECONDS] [--platform OS/ARCH] [--network private|host] [--ca-bundle FILE] [--env-file FILE]... [--forward ADDRESS:PORT]... [--boot DIR] [--cpus N] [--memory-mib N]";
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Network {
@@ -1129,6 +1129,7 @@ pub(crate) fn command(arguments: impl Iterator<Item = OsString>) -> Result<u8, S
         "network",
         "out",
         "platform",
+        "pull-wait",
         "ref",
         "size-mb",
     ];
@@ -1176,7 +1177,10 @@ pub(crate) fn command(arguments: impl Iterator<Item = OsString>) -> Result<u8, S
         network,
         platform,
         policy: Policy::parse(&arguments)?,
-        registry: Registry::new()?,
+        registry: Registry::new(match arguments.maybe("pull-wait") {
+            Some(_) => Duration::from_secs(arguments.number("pull-wait")?),
+            None => Duration::ZERO,
+        })?,
         resolver: resolver(network)?,
         size_mb,
         store: Store::open(&cache(&arguments)?)?,

@@ -4,6 +4,7 @@ import * as Fs from 'node:fs'
 import * as Path from 'node:path'
 import { loadTask } from '../cli/nanoeval.ts'
 import * as Converter from '../sandbox/Converter.ts'
+import * as Store from '../sandbox/Store.ts'
 import * as Host from '../sandbox/Host.ts'
 import type * as Config from '../src/Config.ts'
 import * as Local from '../src/Local.ts'
@@ -77,7 +78,7 @@ export async function isolation(options: isolation.Options): Promise<void> {
     const staged = options.stage ? Path.join(options.stage.directory, 'network-disk') : disk
     const meta = await Converter.create({
       home: Path.dirname(staged) + '/converter',
-      layers: Converter.defaultLayers(Path.dirname(staged)),
+      layers: Converter.defaultLayers(Store.defaultCache()),
     }).convert(
       { context: fixture + '/environment', storageMb: task.environment.storageMb },
       staged + '.ext4',

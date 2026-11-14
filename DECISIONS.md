@@ -4047,3 +4047,27 @@ On the 32-core machine at a load average of 60 to 90, with the change: the three
 - A real gateway and a deployed Worker, as in the entry on a lease renewed while a runner starts.
 - The other waits of a tick: a row that is taken away halts its session and reads its events before the tick goes on, and the pool is asked about a sandbox that is kept. Neither was seen to take long, and neither is attended.
 - A runner or a standing member that a busy machine keeps silent for longer than a lease is lost, as the protocol says, and the lanes with leases of 3 s then fail for the machine and not for the code. No lease was made longer to hide it.
+
+## 2026-11-14: a registry that limits pulls is an error, and the lanes read images through the machine's layer cache
+
+**The defect.** Two things met when the steps of the workflow ran more than once in an hour on one machine.
+
+- Every lane on krun and ns slots converted its fixture images with a layer cache of its own, under the directory of the lane. So each lane asked Docker Hub for the same images again, `alpine:3.21`, `python:3.12-alpine` and the base of the guest: about 40 pulls for one run of the steps. Docker Hub gives an address without a login 100 an hour, counted in a window that starts with the hour.
+- A registry that answered `429` was waited for. The launcher asked again every minute, for as long as the window the registry names, which is six hours for Docker Hub, and said so on its standard error, which the converter shows only when a build fails. A lane then stood still without a word: on a 48-thread machine one took 310 s where it takes 10, and later lanes waited for the hour to turn.
+
+**The rule.**
+
+- A `429` fails the build at once, with the registry, the request, the limit the registry names in `ratelimit-limit` and the option that waits. `nanoeval-krun image build --pull-wait SECONDS` waits that long for the registry first and asks again after `Retry-After`, or every minute. `nanoeval import --pull-wait SEC` and `NANOEVAL_PULL_WAIT_SEC` pass it on. Without it nothing waits: how long an import may stand still is for the operator to say, and the six hours were nobody's choice. What was read stays in the layer cache and a conversion that ended is recorded, so an import that is started again asks only for what is missing.
+- The lanes and the unit tests that convert an image read through the layer cache of the machine, the one an import uses: `NANOEVAL_LAYERS`, or `oci` under `~/.cache/nanoeval`. The guest of the ns lanes already did. The cache keeps layers, configs and manifests by digest with one lock and one download for each, so lanes and runs of the steps side by side share it. On a machine that holds the images a conversion asks the registry only which digest a tag names, a `HEAD` request, which Docker Hub says it does not count.
+
+**Checked.**
+
+- `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings` and `cargo test --locked` in `krun/` on the 32-core machine with KVM: all passed, with a test of what a refused pull says, and the two tests of the launcher that build an image in a microVM.
+- A unit test of the policy: `NANOEVAL_PULL_WAIT_SEC` is passed on as whole seconds, and anything else is refused.
+- `npm test` on a machine without KVM: 254 tests, 250 passed and the 4 that need KVM skipped.
+
+**Not verified.**
+
+- A `429` from a registry, with and without `--pull-wait`. The wait it replaces ran for the first time in the lanes of this day. The error has not been met.
+- The lanes on krun and ns slots and the four unit tests that convert an image, with the layer cache of the machine: the machines with KVM were out of reach when the change was finished. The change in each is one expression, the one the guest of the ns lanes had.
+- How many requests a second run of the steps makes on one machine, and that Docker Hub does not count a `HEAD`: the first follows from the cache, the second is what Docker Hub documents, and neither was counted here.

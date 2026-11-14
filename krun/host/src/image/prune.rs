@@ -373,7 +373,7 @@ mod tests {
         let written = fs::metadata(&layer).unwrap().modified().unwrap();
         {
             let store = Store::open(&lab.0).unwrap();
-            let registry = Registry::new().unwrap();
+            let registry = Registry::new(Duration::ZERO).unwrap();
             let reference = Reference::parse("alpine:3.21").unwrap();
             let descriptor = Descriptor {
                 digest: format!("sha256:{}", digest(1)),

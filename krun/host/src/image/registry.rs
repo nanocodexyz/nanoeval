@@ -31,7 +31,6 @@ const CA_VARIABLE: &str = "SSL_CERT_FILE";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const DOCUMENT_LIMIT: u64 = 4 * 1024 * 1024;
 const RATE_LIMIT_POLL: Duration = Duration::from_mins(1);
-const RATE_LIMIT_WINDOW: Duration = Duration::from_hours(6);
 const RETRIES: u32 = 6;
 const RETRY_DELAY: Duration = Duration::from_secs(1);
 const STALL_TIMEOUT: Duration = Duration::from_mins(1);
@@ -45,6 +44,7 @@ enum Method {
 pub(crate) struct Registry {
     agent: Agent,
     tokens: Mutex<BTreeMap<String, String>>,
+    wait: Duration,
 }
 
 fn header<'a>(response: &'a Response<Body>, name: &str) -> Option<&'a str> {
@@ -80,15 +80,16 @@ fn encode(text: &str) -> String {
         .collect()
 }
 
-fn window(response: &Response<Body>) -> Duration {
-    header(response, "ratelimit-limit")
-        .and_then(|limit| limit.split(';').find_map(|part| part.strip_prefix("w=")))
-        .and_then(|seconds| seconds.parse().ok())
-        .map_or(RATE_LIMIT_WINDOW, Duration::from_secs)
+fn refused(registry: &str, url: &str, limit: Option<&str>, waited: Duration) -> String {
+    let limit = limit.map_or_else(String::new, |limit| format!(" (ratelimit-limit: {limit})"));
+    format!(
+        "{registry} limits anonymous pulls{limit} and answered {url} with 429 after {} s of waiting: build again when it answers, the layer cache keeps what was read, or pass --pull-wait SECONDS to wait here for that long",
+        waited.as_secs()
+    )
 }
 
 impl Registry {
-    pub(crate) fn new() -> Result<Self, String> {
+    pub(crate) fn new(wait: Duration) -> Result<Self, String> {
         let bundle = env::var_os(CA_VARIABLE)
             .map(PathBuf::from)
             .or_else(|| {
@@ -123,6 +124,7 @@ impl Registry {
         Ok(Self {
             agent,
             tokens: Mutex::new(BTreeMap::new()),
+            wait,
         })
     }
 
@@ -221,22 +223,23 @@ impl Registry {
                         continue;
                     }
                     429 => {
-                        let window = window(&response);
-                        if limited >= window {
-                            return Err(format!(
-                                "{} still limits anonymous pulls after {} s",
-                                reference.registry,
-                                limited.as_secs()
+                        if limited >= self.wait {
+                            return Err(refused(
+                                &reference.registry,
+                                url,
+                                header(&response, "ratelimit-limit"),
+                                limited,
                             ));
                         }
                         let pause = header(&response, "retry-after")
                             .and_then(|seconds| seconds.parse().ok())
-                            .map_or(RATE_LIMIT_POLL, Duration::from_secs);
+                            .map_or(RATE_LIMIT_POLL, Duration::from_secs)
+                            .min(self.wait.saturating_sub(limited));
                         eprintln!(
                             "nanoeval-krun: {} limits anonymous pulls, waiting {} s of at most {} s",
                             reference.registry,
                             pause.as_secs(),
-                            window.as_secs()
+                            self.wait.as_secs()
                         );
                         thread::sleep(pause);
                         limited += pause;
@@ -368,6 +371,28 @@ mod tests {
         assert_eq!(fields["realm"], "https://auth.docker.io/token");
         assert_eq!(fields["service"], "registry.docker.io");
         assert_eq!(fields["scope"], "repository:library/alpine:pull,push");
+    }
+
+    #[test]
+    fn a_refused_pull_names_the_limit_the_wait_and_the_option() {
+        assert_eq!(
+            refused(
+                "registry-1.docker.io",
+                "https://registry-1.docker.io/v2/library/alpine/manifests/3.21",
+                Some("100;w=21600"),
+                Duration::ZERO,
+            ),
+            "registry-1.docker.io limits anonymous pulls (ratelimit-limit: 100;w=21600) and answered https://registry-1.docker.io/v2/library/alpine/manifests/3.21 with 429 after 0 s of waiting: build again when it answers, the layer cache keeps what was read, or pass --pull-wait SECONDS to wait here for that long"
+        );
+        assert!(
+            refused(
+                "ghcr.io",
+                "https://ghcr.io/v2/a/b/blobs/c",
+                None,
+                Duration::from_mins(2)
+            )
+            .starts_with("ghcr.io limits anonymous pulls and answered ")
+        );
     }
 
     #[test]

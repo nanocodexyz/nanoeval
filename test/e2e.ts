@@ -1107,7 +1107,7 @@ async function main(): Promise<void> {
       cache,
       converter: Converter.create({
         home: Path.join(cache, 'converter'),
-        layers: Converter.defaultLayers(cache),
+        layers: Converter.defaultLayers(Store.defaultCache()),
       }),
       format: disk ? 'disk' : 'dir',
       store,

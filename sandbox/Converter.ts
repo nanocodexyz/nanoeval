@@ -30,6 +30,7 @@ export type Policy = {
   caBundle?: string
   envFile?: string
   forwards?: readonly string[]
+  pullWaitSec?: number
 }
 
 export type Built = {
@@ -59,10 +60,14 @@ export function defaultLayers(
 
 export function policy(env: Record<string, string | undefined> = process.env): Policy {
   const forwards = (env['NANOEVAL_SLOT_FORWARD'] ?? '').split(' ').filter(Boolean)
+  const wait = env['NANOEVAL_PULL_WAIT_SEC']
+  if (wait !== undefined && !/^\d+$/.test(wait))
+    throw new ConvertError('NANOEVAL_PULL_WAIT_SEC is a whole number of seconds, not ' + wait)
   return {
     ...(env['NANOEVAL_CA_BUNDLE'] ? { caBundle: env['NANOEVAL_CA_BUNDLE'] } : {}),
     ...(env['NANOEVAL_SLOT_ENV'] ? { envFile: env['NANOEVAL_SLOT_ENV'] } : {}),
     ...(forwards.length ? { forwards } : {}),
+    ...(wait === undefined ? {} : { pullWaitSec: Number(wait) }),
   }
 }
 
@@ -148,6 +153,9 @@ export function create(options: {
                 ...(options.policy?.forwards ?? []).flatMap((forward) => ['--forward', forward]),
               ]
             : ['--ref', environment.image]),
+          ...(options.policy?.pullWaitSec === undefined
+            ? []
+            : ['--pull-wait', String(options.policy.pullWaitSec)]),
           '--size-mb',
           String(environment.storageMb),
           '--out',

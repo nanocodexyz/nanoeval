@@ -88,7 +88,7 @@ const usage = `nanoeval <command>
             was run end to end.
   import    --url URL --token T (DATASET | --task DIR...) [--eval NAME] [--only ID]... [--limit N]
             [--backend krun|ns|dir] [--store DIR|r2] [--cache DIR] [--layers DIR] [--sources DIR]
-            [--report FILE] [--keep-going]
+            [--report FILE] [--keep-going] [--pull-wait SEC]
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
             Import a dataset, or local task directories, as a version of a durable eval:
             the adapter writes each task, its instruction, tests and solution become blobs
@@ -104,7 +104,9 @@ const usage = `nanoeval <command>
             of their ids, which is the order run --limit counts in. The RUN steps of a
             task's Dockerfile get the host policy that slots get, from --ca-bundle,
             --slot-env and --slot-forward or from NANOEVAL_CA_BUNDLE, NANOEVAL_SLOT_ENV and
-            NANOEVAL_SLOT_FORWARD, and the disk keeps none of it.
+            NANOEVAL_SLOT_FORWARD, and the disk keeps none of it. A registry that limits
+            pulls (429) fails the conversion with what it said. --pull-wait SEC, or
+            NANOEVAL_PULL_WAIT_SEC, waits that long for it first.
   import    DATASET --out DIR [--only ID]... [--limit N] [--sources DIR]
             Write the dataset's tasks as Harbor task directories instead, with dataset.json.
   evals     --url URL --token T
@@ -1277,6 +1279,7 @@ async function main(lab?: Revision.Lab): Promise<void> {
       port: { type: 'string' },
       provider: { default: 'local', type: 'string' },
       'public-url': { type: 'string' },
+      'pull-wait': { type: 'string' },
       'relay-url-file': { type: 'string' },
       publish: { default: false, type: 'boolean' },
       pushed: { type: 'string' },
@@ -1825,7 +1828,11 @@ async function main(lab?: Revision.Lab): Promise<void> {
     return
   }
 
-  const policy = Converter.policy({ ...process.env, ...hostPolicy })
+  const policy = Converter.policy({
+    ...process.env,
+    ...hostPolicy,
+    ...(values['pull-wait'] ? { NANOEVAL_PULL_WAIT_SEC: values['pull-wait'] } : {}),
+  })
   const refusals: { error: string; id: string }[] = []
   const imported = async (
     source: AsyncIterable<Dataset.Case>,
