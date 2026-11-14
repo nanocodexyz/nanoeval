@@ -1,9 +1,18 @@
+export type AgentEvent = { payload: Record<string, any>; type: string }
+
 export type SessionEvent = {
   created_at: number
   event: {
-    event?: { payload: Record<string, any>; type: string }
+    event?: AgentEvent
     source?: string
     type?: string
+    update?: {
+      agent?: { id?: number; parent?: number | null; role?: string; session_id?: string }
+      event?: AgentEvent
+      id?: number
+      parent?: number | null
+      type?: string
+    }
   }
   request_id: string
   seq: number
@@ -12,8 +21,10 @@ export type SessionEvent = {
 export type Trajectory = {
   schema_version: 'ATIF-v1.7'
   session_id: string
+  trajectory_id?: string
   agent: { name: string; version: string; model_name: string; extra: Record<string, unknown> }
   steps: Step[]
+  notes?: string
   final_metrics: {
     total_prompt_tokens: number
     total_completion_tokens: number
@@ -24,9 +35,11 @@ export type Trajectory = {
       cache_write_input_tokens: number
       model_calls: number
       reasoning_tokens?: number
+      subagents?: number
       tool_calls: number
     }
   }
+  subagent_trajectories?: Trajectory[]
 }
 
 export type Step = {
@@ -56,6 +69,7 @@ export type ToolCall = {
 export type Observation = {
   source_call_id: string
   content: string
+  subagent_trajectory_ref?: { trajectory_id: string }[]
   extra: { duration_ns: number | null; exit_code?: number; status: string }
 }
 
@@ -71,140 +85,34 @@ export type Usage = {
   toolsUsd?: number
 }
 
+type Thread = {
+  accepted: Set<string>
+  calls: Map<string, Step>
+  current: Step | undefined
+  extra: Record<string, unknown>
+  held: Map<number, string>
+  id: number | undefined
+  index: number | undefined
+  model: string | undefined
+  parent: number | undefined
+  role: string | undefined
+  session: string
+  spawned: Map<number, Observation>
+  steps: Step[]
+  unpriced: number
+  usage: Usage
+}
+
+type Threads = { agents: Map<number, Thread>; root: Thread }
+
+const spawn = 'spawn_agent'
+
 export function fromEvents(
   events: readonly SessionEvent[],
   options: fromEvents.Options,
 ): Trajectory {
-  const steps: Step[] = []
-  const totals = usage(events)
-  let model = options.model
-  let session = ''
-  let extra: Record<string, unknown> = {}
-  let current: Step | undefined
-  const accepted = new Set<string>()
-  const called = new Set<string>()
-
-  const agentStep = (at: number): Step => {
-    if (!current) {
-      current = { step_id: steps.length + 1, timestamp: iso(at), source: 'agent', message: '' }
-      steps.push(current)
-    }
-    return current
-  }
-
-  for (const entry of events) {
-    const event = entry.event.event
-    if (entry.event.source !== 'agent' || !event) continue
-    const payload = event.payload
-
-    switch (event.type) {
-      case 'input.accepted': {
-        const item =
-          payload['kind'] === 'prompt' && typeof payload['request_id'] === 'string'
-            ? payload['request_id'] + ':prompt'
-            : payload['item_id']
-        if (typeof item === 'string') {
-          if (accepted.has(item)) break
-          accepted.add(item)
-        }
-        session = String(payload['session_id'] ?? session)
-        steps.push({
-          step_id: steps.length + 1,
-          timestamp: iso(entry.created_at),
-          source: 'user',
-          message: String(payload['input'] ?? ''),
-        })
-        current = undefined
-        break
-      }
-      case 'run.started':
-        model = String(payload['model'] ?? model)
-        extra = { orchestration: payload['orchestration'], transport: payload['transport'] }
-        break
-      case 'model.call.completed': {
-        if (replayed(payload)) break
-        current = undefined
-        const step = agentStep(entry.created_at)
-        const used = payload['usage'] ?? {}
-        const details = used['input_tokens_details'] ?? {}
-        step.model_name = String(payload['model'] ?? model)
-        step.metrics = {
-          prompt_tokens: count(used['input_tokens']),
-          completion_tokens: count(used['output_tokens']),
-          cached_tokens: count(details['cached_tokens']),
-          extra: {
-            attempt: payload['attempt'],
-            cache_write_input_tokens: count(details['cache_write_tokens']),
-            call_index: payload['call_index'],
-            duration_ns: payload['duration_ns'],
-            ...(typeof used['output_tokens_details']?.['reasoning_tokens'] === 'number'
-              ? { reasoning_tokens: used['output_tokens_details']['reasoning_tokens'] }
-              : {}),
-            status: payload['status'],
-            time_to_first_event_ns: payload['time_to_first_event_ns'],
-            time_to_first_output_ns: payload['time_to_first_output_ns'],
-          },
-        }
-        break
-      }
-      case 'assistant.message': {
-        const step = agentStep(entry.created_at)
-        const text = String(payload['text'] ?? '')
-        step.message = step.message ? step.message + '\n' + text : text
-        break
-      }
-      case 'tool.call': {
-        if (called.has(String(payload['call_id']))) break
-        called.add(String(payload['call_id']))
-        const step = agentStep(entry.created_at)
-        step.tool_calls ??= []
-        step.tool_calls.push({
-          tool_call_id: String(payload['call_id']),
-          function_name: String(payload['tool']),
-          arguments: argumentsOf(payload['arguments']),
-          ...(payload['parent_call_id']
-            ? { extra: { parent_call_id: String(payload['parent_call_id']) } }
-            : {}),
-        })
-        break
-      }
-      case 'tool.result': {
-        const step = agentStep(entry.created_at)
-        step.observation ??= { results: [] }
-        step.observation.results.push({
-          source_call_id: String(payload['call_id']),
-          content: content(payload['result']),
-          extra: {
-            duration_ns: typeof payload['duration_ns'] === 'number' ? payload['duration_ns'] : null,
-            status: String(payload['status'] ?? ''),
-          },
-        })
-        break
-      }
-    }
-  }
-
-  return {
-    schema_version: 'ATIF-v1.7',
-    session_id: session || options.session,
-    agent: { name: options.name, version: options.version, model_name: model, extra },
-    steps,
-    final_metrics: {
-      total_prompt_tokens: totals.inputTokens,
-      total_completion_tokens: totals.outputTokens,
-      total_cached_tokens: totals.cachedTokens,
-      ...(totals.costUsd === undefined ? {} : { total_cost_usd: totals.costUsd }),
-      total_steps: steps.length,
-      extra: {
-        cache_write_input_tokens: totals.cacheWriteTokens,
-        model_calls: totals.modelCalls,
-        ...(totals.reasoningTokens === undefined
-          ? {}
-          : { reasoning_tokens: totals.reasoningTokens }),
-        tool_calls: totals.toolCalls,
-      },
-    },
-  }
+  const threads = read(events)
+  return project(threads.root, { options, threads })
 }
 
 export declare namespace fromEvents {
@@ -217,15 +125,7 @@ export declare namespace fromEvents {
 }
 
 export function sum(usages: readonly Usage[]): Usage {
-  const total: Usage = {
-    cacheWriteTokens: 0,
-    cachedTokens: 0,
-    costUsd: undefined,
-    inputTokens: 0,
-    modelCalls: 0,
-    outputTokens: 0,
-    toolCalls: 0,
-  }
+  const total = none()
   for (const usage of usages) {
     total.cacheWriteTokens += usage.cacheWriteTokens
     total.cachedTokens += usage.cachedTokens
@@ -241,7 +141,12 @@ export function sum(usages: readonly Usage[]): Usage {
 }
 
 export function usage(events: readonly SessionEvent[]): Usage {
-  const totals: Usage = {
+  const threads = read(events)
+  return whole(threads.root, threads)
+}
+
+function none(): Usage {
+  return {
     cacheWriteTokens: 0,
     cachedTokens: 0,
     costUsd: undefined,
@@ -250,35 +155,284 @@ export function usage(events: readonly SessionEvent[]): Usage {
     outputTokens: 0,
     toolCalls: 0,
   }
-  const called = new Set<string>()
-  for (const entry of events) {
-    const event = entry.event.event
-    if (entry.event.source !== 'agent' || !event) continue
-    const payload = event.payload
+}
 
-    if (event.type === 'model.call.completed' && !replayed(payload)) {
+function thread(id: number | undefined): Thread {
+  return {
+    accepted: new Set(),
+    calls: new Map(),
+    current: undefined,
+    extra: {},
+    held: new Map(),
+    id,
+    index: undefined,
+    model: undefined,
+    parent: undefined,
+    role: undefined,
+    session: '',
+    spawned: new Map(),
+    steps: [],
+    unpriced: 0,
+    usage: none(),
+  }
+}
+
+function read(events: readonly SessionEvent[]): Threads {
+  const root = thread(undefined)
+  const agents = new Map<number, Thread>()
+  const agent = (id: number): Thread => {
+    const found = agents.get(id) ?? thread(id)
+    agents.set(id, found)
+    return found
+  }
+  for (const entry of events) {
+    const { event, source, update } = entry.event
+    if (source === 'agent' && event) apply(root, { at: entry.created_at, event })
+    if (source !== 'subagent' || !update) continue
+    if (update.type === 'added' && typeof update.agent?.id === 'number') {
+      const added = agent(update.agent.id)
+      added.parent = update.agent.parent ?? undefined
+      added.role = update.agent.role
+      added.session ||= update.agent.session_id ?? ''
+    }
+    if (update.type === 'event' && typeof update.id === 'number' && update.event) {
+      const child = agent(update.id)
+      child.parent = update.parent ?? undefined
+      apply(child, { at: entry.created_at, event: update.event })
+    }
+  }
+  const last = events.at(-1)?.created_at ?? 0
+  for (const open of [root, ...agents.values()]) flush(open, last)
+  return { agents, root }
+}
+
+function agentStep(thread: Thread, at: number): Step {
+  if (!thread.current) {
+    thread.current = {
+      step_id: thread.steps.length + 1,
+      timestamp: iso(at),
+      source: 'agent',
+      message: '',
+    }
+    thread.steps.push(thread.current)
+  }
+  return thread.current
+}
+
+function say(step: Step, text: string): void {
+  step.message = step.message ? step.message + '\n' + text : text
+}
+
+function flush(thread: Thread, at: number): void {
+  for (const text of thread.held.values()) say(agentStep(thread, at), text)
+  thread.held.clear()
+}
+
+function apply(thread: Thread, entry: { at: number; event: AgentEvent }): void {
+  const { at, event } = entry
+  const payload = event.payload
+
+  switch (event.type) {
+    case 'input.accepted': {
+      flush(thread, at)
+      const item =
+        payload['kind'] === 'prompt' && typeof payload['request_id'] === 'string'
+          ? payload['request_id'] + ':prompt'
+          : payload['item_id']
+      if (typeof item === 'string') {
+        if (thread.accepted.has(item)) break
+        thread.accepted.add(item)
+      }
+      thread.session = String(payload['session_id'] ?? thread.session)
+      thread.steps.push({
+        step_id: thread.steps.length + 1,
+        timestamp: iso(at),
+        source: 'user',
+        message: String(payload['input'] ?? ''),
+      })
+      thread.current = undefined
+      break
+    }
+    case 'run.started':
+      flush(thread, at)
+      thread.index = undefined
+      thread.model = String(payload['model'] ?? thread.model)
+      thread.extra = { orchestration: payload['orchestration'], transport: payload['transport'] }
+      break
+    case 'model.call.completed': {
+      if (typeof payload['call_index'] === 'number') thread.index = payload['call_index']
+      if (payload['timing']?.replayed === true) break
       const used = payload['usage'] ?? {}
       const details = used['input_tokens_details'] ?? {}
+      const reasoning = used['output_tokens_details']?.['reasoning_tokens']
+      const totals = thread.usage
       totals.modelCalls++
       totals.inputTokens += count(used['input_tokens'])
       totals.outputTokens += count(used['output_tokens'])
       totals.cachedTokens += count(details['cached_tokens'])
       totals.cacheWriteTokens += count(details['cache_write_tokens'])
-      const reasoning = used['output_tokens_details']?.['reasoning_tokens']
       if (typeof reasoning === 'number')
         totals.reasoningTokens = (totals.reasoningTokens ?? 0) + count(reasoning)
+      thread.unpriced++
+      thread.current = undefined
+      const step = agentStep(thread, at)
+      step.message = thread.held.get(payload['call_index']) ?? ''
+      thread.held.delete(payload['call_index'])
+      step.model_name = String(payload['model'] ?? thread.model)
+      step.metrics = {
+        prompt_tokens: count(used['input_tokens']),
+        completion_tokens: count(used['output_tokens']),
+        cached_tokens: count(details['cached_tokens']),
+        extra: {
+          attempt: payload['attempt'],
+          cache_write_input_tokens: count(details['cache_write_tokens']),
+          call_index: payload['call_index'],
+          duration_ns: payload['duration_ns'],
+          ...(typeof reasoning === 'number' ? { reasoning_tokens: reasoning } : {}),
+          status: payload['status'],
+          time_to_first_event_ns: payload['time_to_first_event_ns'],
+          time_to_first_output_ns: payload['time_to_first_output_ns'],
+        },
+      }
+      break
     }
-    if (event.type === 'tool.call' && !called.has(String(payload['call_id']))) {
-      called.add(String(payload['call_id']))
-      totals.toolCalls++
+    case 'assistant.message': {
+      const text = String(payload['text'] ?? '')
+      const index = payload['model_call_index']
+      if (typeof index === 'number' && (thread.index === undefined || index > thread.index)) {
+        const held = thread.held.get(index)
+        thread.held.set(index, held === undefined ? text : held + '\n' + text)
+        break
+      }
+      say(agentStep(thread, at), text)
+      break
     }
-    if (
-      (event.type === 'run.completed' || event.type === 'run.failed') &&
-      typeof payload['cost_usd'] === 'number'
-    )
-      totals.costUsd = (totals.costUsd ?? 0) + payload['cost_usd']
+    case 'tool.call': {
+      if (thread.calls.has(String(payload['call_id']))) break
+      const step = agentStep(thread, at)
+      thread.calls.set(String(payload['call_id']), step)
+      thread.usage.toolCalls++
+      step.tool_calls ??= []
+      step.tool_calls.push({
+        tool_call_id: String(payload['call_id']),
+        function_name: String(payload['tool']),
+        arguments: argumentsOf(payload['arguments']),
+        ...(payload['parent_call_id']
+          ? { extra: { parent_call_id: String(payload['parent_call_id']) } }
+          : {}),
+      })
+      break
+    }
+    case 'tool.result': {
+      const step = thread.calls.get(String(payload['call_id'])) ?? agentStep(thread, at)
+      const result: Observation = {
+        source_call_id: String(payload['call_id']),
+        content: content(payload['result']),
+        extra: {
+          duration_ns: typeof payload['duration_ns'] === 'number' ? payload['duration_ns'] : null,
+          status: String(payload['status'] ?? ''),
+        },
+      }
+      step.observation ??= { results: [] }
+      step.observation.results.push(result)
+      const spawned = payload['tool'] === spawn ? started(payload, result.content) : undefined
+      if (spawned !== undefined) thread.spawned.set(spawned, result)
+      break
+    }
+    case 'run.completed':
+    case 'run.failed':
+      flush(thread, at)
+      if (typeof payload['cost_usd'] !== 'number') break
+      thread.usage.costUsd = (thread.usage.costUsd ?? 0) + payload['cost_usd']
+      thread.unpriced = 0
+      break
   }
-  return totals
+}
+
+function started(payload: Record<string, any>, text: string): number | undefined {
+  const structured = payload['structured_result']?.['agent_id']
+  if (typeof structured === 'number') return structured
+  const found = /"agent_id":\s*(\d+)/.exec(text)?.[1]
+  return found === undefined ? undefined : Number(found)
+}
+
+function under(thread: Thread, threads: Threads): Thread[] {
+  return [...threads.agents.values()].filter(
+    (agent) =>
+      (agent.parent !== undefined && agent.parent < agent.id! && threads.agents.has(agent.parent)
+        ? agent.parent
+        : undefined) === thread.id,
+  )
+}
+
+function whole(thread: Thread, threads: Threads): Usage {
+  const parts = [thread, ...under(thread, threads)].map((part) =>
+    part === thread
+      ? { unpriced: thread.unpriced > 0, usage: thread.usage }
+      : { unpriced: false, usage: whole(part, threads) },
+  )
+  const total = sum(parts.map((part) => part.usage))
+  const unknown = parts.some(
+    (part) => part.unpriced || (part.usage.modelCalls > 0 && part.usage.costUsd === undefined),
+  )
+  return unknown ? { ...total, costUsd: undefined } : total
+}
+
+function project(
+  thread: Thread,
+  input: { options: fromEvents.Options; threads: Threads },
+): Trajectory {
+  const { options, threads } = input
+  const children = under(thread, threads).filter((child) => child.steps.length > 0)
+  const totals = whole(thread, threads)
+  for (const child of children) {
+    const result = thread.spawned.get(child.id!)
+    if (result) result.subagent_trajectory_ref = [{ trajectory_id: name(child) }]
+  }
+  return {
+    schema_version: 'ATIF-v1.7',
+    session_id: thread.session || options.session,
+    ...(thread.id === undefined ? {} : { trajectory_id: name(thread) }),
+    agent: {
+      name: options.name,
+      version: options.version,
+      model_name: thread.model ?? options.model,
+      extra:
+        thread.id === undefined
+          ? thread.extra
+          : { ...thread.extra, agent_id: thread.id, role: thread.role },
+    },
+    steps: thread.steps,
+    ...(children.length
+      ? {
+          notes:
+            'final_metrics counts the model calls, tokens, tool calls and cost of this agent and of the subagents under it, whose steps are in subagent_trajectories. total_steps counts the steps of this agent.',
+        }
+      : {}),
+    final_metrics: {
+      total_prompt_tokens: totals.inputTokens,
+      total_completion_tokens: totals.outputTokens,
+      total_cached_tokens: totals.cachedTokens,
+      ...(totals.costUsd === undefined ? {} : { total_cost_usd: totals.costUsd }),
+      total_steps: thread.steps.length,
+      extra: {
+        cache_write_input_tokens: totals.cacheWriteTokens,
+        model_calls: totals.modelCalls,
+        ...(totals.reasoningTokens === undefined
+          ? {}
+          : { reasoning_tokens: totals.reasoningTokens }),
+        ...(children.length ? { subagents: children.length } : {}),
+        tool_calls: totals.toolCalls,
+      },
+    },
+    ...(children.length
+      ? { subagent_trajectories: children.map((child) => project(child, input)) }
+      : {}),
+  }
+}
+
+function name(thread: Thread): string {
+  return 'agent-' + thread.id
 }
 
 function content(result: unknown): string {
@@ -298,10 +452,6 @@ function count(value: unknown): number {
 
 function iso(milliseconds: number): string {
   return new Date(milliseconds).toISOString()
-}
-
-function replayed(payload: Record<string, any>): boolean {
-  return payload['timing']?.replayed === true
 }
 
 function argumentsOf(value: unknown): Record<string, unknown> {
