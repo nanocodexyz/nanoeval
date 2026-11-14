@@ -3515,8 +3515,9 @@ async function main(): Promise<void> {
       const largest = Math.max(...costs)
       const searches = budgetLog.filter((entry) => entry.search).length
       const passed = details.filter((detail) => detail['result'].outcome === 'passed')
+      const answered = details.filter((detail) => detail['result'].usage)
       const estimated = searching
-        ? passed.reduce((all, detail) => all + detail['result'].usage.costUsd - largest, 0)
+        ? answered.reduce((all, detail) => all + detail['result'].usage.costUsd - largest, 0)
         : 0
       console.log(
         scenario +
@@ -3615,11 +3616,17 @@ async function main(): Promise<void> {
           'the searches of three rows, at their list price, spend the budget',
         )
         assert.equal(passed.length, 2)
-        for (const detail of passed) {
+        assert.equal(
+          answered.length,
+          3,
+          'the row that was refused a request had a response before it',
+        )
+        for (const detail of answered) {
           assert.equal(detail['result'].usage.toolsUsd, largest)
           assert.ok(detail['result'].usage.costUsd > largest, 'tokens and searches are one cost')
         }
         assert.ok(estimated > 0, 'the sessions estimate their tokens')
+        assert.equal(status['spend'].uncostedAttempts, 0)
         assert.equal(status['spend'].webSearches, 4 * searches)
         assert.equal(status['spend'].unpricedTools, searches)
         assert.ok(Math.abs(status['spend'].toolsUsd - searches * largest) < 1e-9)
