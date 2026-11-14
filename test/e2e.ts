@@ -242,7 +242,7 @@ const budgetLog: { cost: number; search: boolean }[] = []
 let budgetFlying = 0
 let budgetPeak = 0
 const midturnRequests: { decision: string; digest: string; last: string; read: string }[] = []
-const directRequests: { output: string; tools: readonly string[] }[] = []
+const directRequests: { cells: readonly string[]; output: string; tools: readonly string[] }[] = []
 const subagentRequests: { child: boolean; decision: string }[] = []
 let killDue: number | undefined
 let scriptedCalls = 0
@@ -339,7 +339,11 @@ function cellTools(input: unknown): string[] | undefined {
 }
 
 function responses(
-  body: { input?: unknown; model?: string; tools?: { name?: string }[] },
+  body: {
+    input?: unknown
+    model?: string
+    tools?: { description?: string; name?: string }[]
+  },
   cost?: number,
 ): string {
   const input = (Array.isArray(body.input) ? body.input : []) as Record<string, any>[]
@@ -363,6 +367,11 @@ function responses(
   if (text.includes('"custom_tool_call_output"')) codexCells.push(cellTools(body.input))
   if (direct)
     directRequests.push({
+      cells: (body.tools ?? []).flatMap((tool) =>
+        tool.name === 'exec'
+          ? [...(tool.description ?? '').matchAll(/^### `([^`]+)`$/gm)].map((match) => match[1]!)
+          : [],
+      ),
       output:
         typeof output === 'string'
           ? output
@@ -3758,8 +3767,15 @@ async function main(): Promise<void> {
         'no session is given both exec and the tools of the hand',
       )
       assert.ok(
-        directRequests.every((request) => !request.tools.includes('spawn_agent')),
-        'a codex session is given no tool that starts a subagent',
+        names('exec').every((request) => request.cells.includes('exec_command')),
+        'a session in Code Mode is told with exec which tools its cells call',
+      )
+      assert.ok(
+        directRequests.every(
+          (request) =>
+            !request.tools.includes('spawn_agent') && !request.cells.includes('spawn_agent'),
+        ),
+        'a codex session is given no tool that starts a subagent, as a tool of its own or of its cells',
       )
       assert.deepEqual(
         directRequests.flatMap((request) =>
