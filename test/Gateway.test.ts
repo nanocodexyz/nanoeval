@@ -185,9 +185,9 @@ test('a lease is never longer than the lifetime, and the default template is nam
   })
   await assert.rejects(
     provider.create({ metadata: {}, template: undefined, timeoutSec: Gateway.maxTimeoutSec + 1 }),
-    /1 to 86400 seconds/,
+    /1 to 3600 seconds/,
   )
-  assert.equal(seen.length, 2, 'a lifetime the gateway does not sell is refused before asking')
+  assert.equal(seen.length, 2, 'a lifetime the provider does not give is refused before asking')
 })
 
 test('a create refused for a cap keeps what the provider took, and says when to ask again', async () => {

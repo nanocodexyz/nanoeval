@@ -1639,7 +1639,8 @@ export class Run extends DurableObject<Env> {
   private async open(provider: Sandbox.Provider): Promise<void> {
     const meta = this.meta()!
     const config = this.config()
-    this.sql.run('INSERT INTO sandboxes (state, created_at) VALUES (?, ?)', 'creating', Date.now())
+    const asked = Date.now()
+    this.sql.run('INSERT INTO sandboxes (state, created_at) VALUES (?, ?)', 'creating', asked)
     const id = this.sql.all('SELECT MAX(id) AS id FROM sandboxes')[0]!['id'] as number
     this.creating.add(id)
     const timed = async <T>(name: string, work: () => Promise<T>): Promise<T> => {
@@ -1660,9 +1661,13 @@ export class Run extends DurableObject<Env> {
         }),
       )
       const handle = created.handle
+      const expiresAt =
+        created.expiresAt === null
+          ? null
+          : Math.min(created.expiresAt, asked + config.sandbox.timeoutSec! * 1000)
       const runner = this.register(id)
       this.update('sandboxes', id, {
-        expires_at: created.expiresAt,
+        expires_at: expiresAt,
         handle: JSON.stringify(handle),
         paid_until: created.paidUntil ?? null,
         runner,
@@ -1671,7 +1676,7 @@ export class Run extends DurableObject<Env> {
         ? await PoolObject.call<Protocol.Standing>(this.env, {
             action: 'enroll',
             body: {
-              expiresAt: created.expiresAt,
+              expiresAt,
               handle,
               idleSec: config.sandbox.warm.idleSec,
               ...(config.sandbox.leaseSec === undefined

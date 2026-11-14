@@ -43,7 +43,7 @@ export const home = '/root/.nanoeval'
 
 export const leaseSec = 300
 
-export const maxTimeoutSec = 86_400
+export const maxTimeoutSec = 3_600
 
 export const origin = 'https://gateway.tempo-dev.workers.dev'
 
