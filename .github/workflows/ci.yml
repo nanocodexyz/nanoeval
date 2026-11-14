@@ -337,7 +337,7 @@ jobs:
           NANOEVAL_E2E_SANDBOX_LEASE_SEC: '6'
           NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
           NANOEVAL_E2E_SLOTS: '1'
-          NANOEVAL_E2E_ATTEMPTS: '8'
+          NANOEVAL_E2E_ATTEMPTS: '4'
       - name: End to end, directory slots, a runner whose sandbox ends before the rows could
         run: npm run e2e
         env:

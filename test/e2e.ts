@@ -247,6 +247,7 @@ const subagentRequests: { child: boolean; decision: string }[] = []
 let killDue: number | undefined
 let scriptedCalls = 0
 let answered = 0
+let lapseAnswers = 0
 let parked = false
 let hungUp = false
 let release = () => {}
@@ -1243,6 +1244,7 @@ async function main(): Promise<void> {
             parked = true
             return undefined
           }
+          if (lapse && ++lapseAnswers === 4) return undefined
           return body['fake_cli']
             ? fake(path, body, cost)
             : path === '/v1/responses'
@@ -1773,6 +1775,63 @@ async function main(): Promise<void> {
       Fs.rmSync(Path.join(cache, 'blobs', blobOf(task).digest))
     }
 
+    const first =
+      scenario === 'disk' || ending || lapse
+        ? await (async () => {
+            const probe = await api.create({
+              agents: [oracle],
+              attempts: 1,
+              budget: { modelUsd: 1, sandboxUsd: 0 },
+              eval: { name: evalName, version: version.digest },
+              limits: { attachSec: 60, claims: 3, leaseSec: 60, setupSec: 600, stepRetries: 3 },
+              name: 'e2e-' + label + '-probe',
+              sandbox: {
+                backend,
+                disks: 'remove',
+                max: 0,
+                network,
+                pollMs,
+                provider: 'local',
+                slots,
+                timeoutSec: 3600,
+              },
+            })
+            const runner = attach(probe.id, 'probe')
+            const ended = await waitFor(
+              'the run that measures a runner of this machine',
+              async () => {
+                const current = await api.status(probe.id)
+                return current['state'] === 'finished' ? current : undefined
+              },
+            )
+            if (runner.child.exitCode === null && runner.child.signalCode === null)
+              await new Promise((resolve) => runner.child.once('exit', resolve))
+            runners.splice(runners.indexOf(runner), 1)
+            assert.equal(
+              ended['counts'].passed,
+              directories.length,
+              'the solutions of the tasks pass on the runner that is measured: ' + summary(ended),
+            )
+            const marks = (await api.timeline(probe.id)).marks
+            const at = (name: string) =>
+              Math.min(...marks.filter((mark) => mark.name === name).map((mark) => mark.at))
+            const measured = {
+              rowSec: (at('attempt.verdict') - ended['createdAt']) / 1000,
+              runnerSec: (at('runner.hello') - ended['createdAt']) / 1000,
+            }
+            console.log(
+              scenario +
+                ': a runner of this machine says hello ' +
+                measured.runnerSec +
+                ' s after its run is created and ends a first row after ' +
+                measured.rowSec +
+                ' s',
+            )
+            return measured
+          })()
+        : undefined
+    const patienceSec = first ? (ending ? 4 : 5) + Math.ceil(3 * first.runnerSec) : undefined
+    const lapseLeaseSec = first ? sandboxLeaseSec + Math.ceil(3 * first.rowSec) : undefined
     const config: Config.Config = {
       agents,
       attempts:
@@ -1799,7 +1858,15 @@ async function main(): Promise<void> {
         claims: 3,
         leaseSec,
         setupSec:
-          scenario === 'disk' || stopped ? 5 : ending ? 4 : spent ? 15 : taken ? 3 * leaseSec : 600,
+          scenario === 'disk' || ending
+            ? patienceSec!
+            : stopped
+              ? 5
+              : spent
+                ? 15
+                : taken
+                  ? 3 * leaseSec
+                  : 600,
         stepRetries: failures ? 1 : 3,
       },
       name: 'e2e-' + label,
@@ -1807,7 +1874,7 @@ async function main(): Promise<void> {
         backend,
         disks: scenario === 'disks' || scenario === 'disk' ? 'remove' : 'keep',
         ...(scenario === 'disk' ? { freeDiskMb: 2 ** 40 } : {}),
-        ...(gateway ? { leaseSec: sandboxLeaseSec } : {}),
+        ...(gateway ? { leaseSec: lapse ? lapseLeaseSec! : sandboxLeaseSec } : {}),
         max: attached ? 0 : capped || fleet ? 2 : 1,
         ...(packing ? { memoryMb: 768 } : {}),
         network,
@@ -1827,6 +1894,8 @@ async function main(): Promise<void> {
         ...(warm ? { warm: { idleSec: 8, usd: 1 } } : {}),
       },
     }
+    const shortSec =
+      Math.min(...imported.tasks.map((task) => Config.rowSec(config.limits, task))) - 1
     if (closed && !(backend === 'krun' && network === 'private')) {
       await assert.rejects(
         api.create(config),
@@ -1958,10 +2027,16 @@ async function main(): Promise<void> {
       Fs.mkdirSync(home, { recursive: true })
       Fs.writeFileSync(
         Path.join(home, 'runner.json'),
-        JSON.stringify(await api.attach(created.id, { leftSec: 60 })),
+        JSON.stringify(await api.attach(created.id, { leftSec: shortSec })),
         { mode: 0o600 },
       )
-      await new Promise((resolve) => setTimeout(resolve, (config.limits.setupSec + 1) * 1000))
+      await waitFor('the run to give up the runner that did not report', async () =>
+        (
+          (await api.status(created.id))['runners'] as { error: string | null; state: string }[]
+        ).some((runner) => runner.state === 'lost' && runner.error === 'the runner never reported')
+          ? true
+          : undefined,
+      )
       attach(created.id, 'late')
     } else if (machine) {
       if (disk) attach(created.id, 'a', ['--slot-env', Path.join(out, 'missing.env')])
@@ -2663,8 +2738,28 @@ async function main(): Promise<void> {
             )
       }
     } else if (lapse) {
-      const rows = (status['sandboxes'] as { error: string | null; state: string }[]).slice(1)
+      const rows = (
+        status['sandboxes'] as { error: string | null; runner: number | null; state: string }[]
+      ).slice(1)
       assert.ok(rows.length >= 2, 'a sandbox whose lease ended was replaced by another')
+      const worked = rows.filter((row) =>
+        (status['attempts'] as { runner: number | null }[]).some(
+          (attempt) => attempt.runner !== null && attempt.runner === row.runner,
+        ),
+      )
+      console.log(
+        'lapse: ' +
+          worked.length +
+          ' of ' +
+          rows.length +
+          ' sandboxes finished rows, on leases of ' +
+          config.sandbox.leaseSec +
+          ' s',
+      )
+      assert.ok(
+        worked.length >= 2,
+        'the rows that a sandbox left when its lease ended were finished on another',
+      )
       for (const row of rows) assert.equal(row.state, 'closed')
       for (const row of rows.slice(0, -1))
         assert.match(
@@ -3219,7 +3314,12 @@ async function main(): Promise<void> {
       for (const row of rows) {
         assert.equal(row['outcome'], 'errored')
         assert.equal(row['failure'].kind, 'environment')
-        assert.match(row['failure'].message, /^no runner of the run could take the row for 4 s: /)
+        assert.ok(
+          row['failure'].message.startsWith(
+            'no runner of the run could take the row for ' + config.limits.setupSec + ' s: ',
+          ),
+          row['failure'].message,
+        )
         assert.equal(
           row['claims'],
           0,
@@ -3244,7 +3344,7 @@ async function main(): Promise<void> {
         /claims no more rows: its sandbox ends in /,
       )
       const second = await api.create({ ...config, name: config.name + '-new' })
-      attach(second.id, 'new', ['--ends-in-sec', '120'])
+      attach(second.id, 'new', ['--ends-in-sec', String(shortSec)])
       const again = await waitFor('the run of a runner whose sandbox is new', async () => {
         const current = await api.status(second.id)
         return current['state'] === 'finished' ? current : undefined
@@ -3253,7 +3353,16 @@ async function main(): Promise<void> {
       assert.equal(again['counts'].errored, 0, 'a new sandbox takes rows that none covers')
       assert.equal(again['counts'].passed + again['counts'].failed, total)
       assert.equal(again['lostClaims'], 0)
-      assert.ok(again['runners'][0].endsAt - again['createdAt'] <= 121_000)
+      const hello = (await api.timeline(second.id)).marks.find(
+        (mark) => mark.name === 'runner.hello',
+      )!
+      assert.ok(
+        again['runners'][0].endsAt >= again['createdAt'] + shortSec * 1000 &&
+          again['runners'][0].endsAt <= hello.at + shortSec * 1000,
+        'the sandbox of the runner ends ' +
+          shortSec +
+          ' s after the runner came to the run, before its hello',
+      )
       await pass()
       return
     }
