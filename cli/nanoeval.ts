@@ -299,13 +299,17 @@ export const oracle: Config.Agent = { id: 'oracle', model: 'solution', provider:
 
 export function parseAgent(text: string): Config.Agent {
   const match = new RegExp(
-    '^([^=]+)=(' + ['claude', 'codex', ...Installed.kinds].join('|') + '):([^:]+)(?::([a-z]+))?$',
+    '^([^=]+)=(' +
+      ['claude', 'codex-direct', 'codex', ...Installed.kinds].join('|') +
+      '):([^:]+)(?::([a-z]+))?$',
   ).exec(text)
   if (!match) throw new Error('an agent is ID=HARNESS:MODEL[:THINKING], not ' + text)
+  const direct = match[2] === 'codex-direct'
   return {
     id: match[1]!,
     model: match[3]!,
-    provider: match[2] as Config.Agent['provider'],
+    ...(direct ? { orchestration: 'direct' as const } : {}),
+    provider: direct ? 'codex' : (match[2] as Config.Agent['provider']),
     ...(match[4] ? { thinking: match[4] } : {}),
   }
 }

@@ -37,6 +37,13 @@ test('an agent names a session harness or an installed command', () => {
     model: 'claude-haiku-4-5',
     provider: 'claude',
   })
+  assert.deepEqual(parseAgent('nanoxd=codex-direct:gpt-6-luna:high'), {
+    id: 'nanoxd',
+    model: 'gpt-6-luna',
+    orchestration: 'direct',
+    provider: 'codex',
+    thinking: 'high',
+  })
   assert.throws(() => parseAgent('other=cursor:some-model'), /ID=HARNESS:MODEL/)
   assert.throws(() => parseAgent('codex-cli:gpt-6.1-sol'), /ID=HARNESS:MODEL/)
 
@@ -72,6 +79,33 @@ test('an agent names a session harness or an installed command', () => {
   assert.throws(
     () => Config.parse({ ...config, judge: { model: 'gpt-6.1-sol', provider: 'codex-cli' } }),
     /judge.provider must be one of claude, codex/,
+  )
+  const arms = Config.parse({
+    ...config,
+    agents: [parseAgent('nanox=codex:gpt-6-luna:high'), parseAgent('nanoxd=codex-direct:gpt-6-luna:high')],
+  }).agents
+  assert.deepEqual(
+    arms.map((agent) => [agent.id, agent.provider, agent.orchestration]),
+    [
+      ['nanox', 'codex', undefined],
+      ['nanoxd', 'codex', 'direct'],
+    ],
+  )
+  assert.throws(
+    () =>
+      Config.parse({
+        ...config,
+        agents: [{ id: 'x', model: 'm', orchestration: 'direct', provider: 'claude' }],
+      }),
+    /x has an orchestration, which only codex takes/,
+  )
+  assert.throws(
+    () =>
+      Config.parse({
+        ...config,
+        agents: [{ id: 'x', model: 'm', orchestration: 'cells', provider: 'codex' }],
+      }),
+    /orchestration must be one of direct/,
   )
 })
 

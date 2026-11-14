@@ -2408,6 +2408,7 @@ export class Run extends DurableObject<Env> {
           await Harness.submit(this.env, session, {
             hand: Protocol.handName,
             model: agent.model,
+            ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
             payer: this.payer(agent.provider),
             prompt: body.instruction!,
             provider: agent.provider,

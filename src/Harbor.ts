@@ -49,6 +49,7 @@ export function trialConfig(
       kwargs: {
         id: attempt.agent.id,
         provider: attempt.agent.provider,
+        ...(attempt.agent.orchestration ? { orchestration: attempt.agent.orchestration } : {}),
         ...(attempt.agent.thinking ? { reasoning_effort: attempt.agent.thinking } : {}),
       },
     },

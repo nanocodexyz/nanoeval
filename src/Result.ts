@@ -23,6 +23,7 @@ export type Attempt = {
   agent: {
     id: string
     model: string
+    orchestration?: 'direct'
     provider: 'claude' | 'codex' | 'oracle' | Installed.Kind
     thinking?: string
   }

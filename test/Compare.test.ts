@@ -91,3 +91,27 @@ test('a comparison has one row per agent across runs, and says what is not known
   assert.match(table, /^\| one \| passed 1 min 0 s \| failed 1 min 0 s \|$/m)
   assert.match(table, /^\| two \| errored \(agent\) 1 min 0 s \| passed 1 min 0 s \|$/m)
 })
+
+test('a direct-tools codex agent is its own arm beside the code-mode one', () => {
+  const nanox = { id: 'nanox', model: 'gpt-6-luna', provider: 'codex' as const, thinking: 'high' }
+  const nanoxd = { ...nanox, id: 'nanoxd', orchestration: 'direct' as const }
+  const runs: Compare.Run[] = [
+    {
+      attempts: [
+        attempt(nanox, { n: 1, outcome: 'passed', task: 'one', usage }),
+        attempt(nanoxd, { n: 2, outcome: 'failed', task: 'one', usage }),
+      ],
+      eval: { name: 'bench', version: '0123456789abcdef' },
+      id: 'run-1',
+      name: 'arms',
+      state: 'finished',
+    },
+  ]
+  assert.deepEqual(
+    Compare.arms(runs).map((arm) => [arm.agent, arm.harness, arm.model, arm.passed, arm.failed]),
+    [
+      ['nanox', 'nanocode', 'codex:gpt-6-luna:high', 1, 0],
+      ['nanoxd', 'nanocode', 'codex-direct:gpt-6-luna:high', 0, 1],
+    ],
+  )
+})

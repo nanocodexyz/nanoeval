@@ -18,11 +18,14 @@ export type Backend = Slot.Backend | 'auto'
 export type Agent = {
   id: string
   model: string
+  orchestration?: Orchestration
   provider: 'claude' | 'codex' | 'oracle' | Installed.Kind
   thinking?: string
 }
 
 export type Harness = 'installed' | 'oracle' | 'session'
+
+export type Orchestration = 'direct'
 
 export type Judge = {
   model: string
@@ -188,15 +191,21 @@ export function parse(value: unknown): Config {
       fail('an agent id is letters, digits, dots, dashes and underscores')
     if (typeof agent.model !== 'string' || !agent.model) fail(agent.id + ' names no model')
     if (agent.thinking !== undefined) choice(agent.thinking, 'thinking', thinking)
+    const provider = choice(agent.provider, 'provider', [
+      'claude',
+      'codex',
+      'oracle',
+      ...Installed.kinds,
+    ])
+    if (agent.orchestration !== undefined) {
+      choice(agent.orchestration, 'orchestration', ['direct'])
+      if (provider !== 'codex') fail(agent.id + ' has an orchestration, which only codex takes')
+    }
     return {
       id: agent.id,
       model: agent.model,
-      provider: choice(agent.provider, 'provider', [
-        'claude',
-        'codex',
-        'oracle',
-        ...Installed.kinds,
-      ]),
+      ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
+      provider,
       ...(agent.thinking ? { thinking: agent.thinking } : {}),
     }
   })

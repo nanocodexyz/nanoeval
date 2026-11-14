@@ -24,6 +24,7 @@ export type Report = {
 export type Turn = {
   hand?: string
   model: string
+  orchestration?: 'direct'
   payer?: Config.Payer
   prompt: string
   provider: 'claude' | 'codex'
@@ -74,6 +75,7 @@ export async function submit(env: Env, name: string, turn: Turn): Promise<Report
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         ...(turn.hand ? { hand: turn.hand } : {}),
+        ...(turn.orchestration ? { codex_orchestration: turn.orchestration } : {}),
         model: turn.model,
         ...(turn.payer ? { payer: turn.payer } : {}),
         prompt: turn.prompt,

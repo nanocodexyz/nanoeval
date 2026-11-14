@@ -166,6 +166,13 @@ node cli/nanoeval.ts compare RUN
 
 The first such run on a machine downloads the pinned release of the command into the cache and checks it against its SHA-256: an archive of 200 MB for Codex CLI, 517 MB unpacked, and 632 MB for the two builds of Claude Code. The task image is not changed, and the credential stays in the Worker: the command gets an address and a token that are good for that attempt only. Prompts and tools are each harness's own, see [DESIGN.md](DESIGN.md#installed-agents) for what such a comparison holds equal. A `codex-cli` agent has token counts and no cost estimate of its own, so `--model-budget-usd` bounds it only when the endpoint reports what it charged, as the gateway does.
 
+An agent whose harness is `codex-direct` is a nanocode `codex` session whose model calls the hand's tools itself (`exec_command`, `apply_patch`, `write_stdin` and the rest), as Codex CLI does, instead of from JavaScript cells through `exec` and `wait`. The turn asks nanocode-ts for it with `codex_orchestration: "direct"`, which the session keeps, so one run carries both arms and `nanoeval compare` shows them apart, the direct one as `codex-direct:MODEL`. In a run configuration it is `{ "provider": "codex", "orchestration": "direct" }`:
+
+```sh
+node cli/nanoeval.ts run --eval terminal-bench-2.1 \
+  --agent nanox=codex:gpt-6-luna:high --agent nanoxd=codex-direct:gpt-6-luna:high --wait
+```
+
 To check task environments and verifiers without a model, `nanoeval run --oracle --eval NAME --wait` runs each task's `solution/solve.sh` in the slot in place of the agent. A solution is a blob of its own, and only an oracle run is told its digest.
 
 A long run on a machine with little disk takes two more options. `--disks remove`, the default with `--provider e2b` and `gateway`, makes a runner delete each packed disk once it is unpacked, and each disk it unpacked once no row of the run needs it, and never a disk its cache already had. `--free-disk-mb N` makes a runner claim only while its machine has N MB free. `nanoeval prune` removes what earlier runs left in the cache: the disks that no microVM holds, the blobs and the verifier caches (`--dry-run` lists them).

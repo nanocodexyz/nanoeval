@@ -41,12 +41,18 @@ export function model(agent: Result.Attempt['agent']): string {
   if (agent.provider === 'oracle') return 'the task solution'
   const provider = Installed.is(agent.provider)
     ? Installed.releases[agent.provider].provider
-    : agent.provider
+    : agent.provider + (agent.orchestration ? '-' + agent.orchestration : '')
   return provider + ':' + agent.model + (agent.thinking ? ':' + agent.thinking : '')
 }
 
 function key(agent: Result.Attempt['agent']): string {
-  return [agent.id, agent.provider, agent.model, agent.thinking ?? ''].join(' ')
+  return [
+    agent.id,
+    agent.provider,
+    agent.model,
+    agent.thinking ?? '',
+    agent.orchestration ?? '',
+  ].join(' ')
 }
 
 function seconds(phase: Result.Phase | undefined): number {
