@@ -3265,3 +3265,24 @@ The entry above costs the start of a runner nothing that this machine can measur
 - A deployed Worker, where the wait between two renewals is a timer inside the tick of an object.
 - A renewal that is refused while a runner starts. The lane where no renewal is sold has leases of 6 s and a command that is not held back, so its first renewal is asked after the runner started. The two branches for it were read, not run.
 - CI on GitHub.
+
+## 2026-11-14: an attempt that errored is no trial of pass@k
+
+An attempt ends as `passed`, `failed` or `errored`, so that an infrastructure failure never becomes a score of zero. The summary of a run did not keep to that: `Result.summarize` took every ended attempt of a task as a trial of pass@k, and an attempt that ended without a verdict, as a `verifier`, `agent`, `environment`, `budget` or `cancelled` error, lowered pass@k exactly as a failed one. Nothing in the line said so.
+
+**Found** on directory slots under local workerd, with a scripted model whose answer to each attempt was planned: one `claude` agent, 8 small tasks, 3 attempts each, one slot.
+
+- A run cancelled after 10 of its 24 rows had ended. `status` printed `finished` and `passed 3/24, errored 17, mean reward 0.429, pass@1 25.0%, pass@2 25.0%, pass@3 25.0%`. By hand: 6 tasks have a first attempt with a verdict and 2 of them passed, 33.3 %. One task has two attempts with a verdict, and both passed. No task has three. The 14 rows that never ran were counted as three attempts that did not pass.
+- The same run left to finish, where the plan made the verifier of one task write no reward, the model endpoint refuse every request of a second and one request of a third: `passed 7/24, errored 7, pass@1 25.0%, pass@2 37.5%, pass@3 50.0%`, over 8 tasks of which 2 never had a verdict.
+
+**The rule.** The trials of a task are its scored attempts, the ones that passed or failed, in the order of their attempt numbers. An agent timeout keeps its verifier reward and stays a trial. pass@k is over the tasks that have at least k scored attempts, for every k that some task has, and `AgentSummary.rated` holds how many tasks each pass@k rates. The CLI writes that count behind a pass@k that rates fewer tasks than the run has, `pass@2 100.0% of 1 task`, and nothing where it rates them all, so a run without errors reads as before. `pass_at_k` of an exported job follows, and its `metrics.mean` stays Harbor's, which counts a trial without a reward as 0.
+
+**Why not keep the count over all tasks.** A task whose three attempts errored is not known to be unsolved, and `run --rerun RUN --errored` exists to find out. Counting it as unsolved made the pass@k of a run depend on the health of the machine, and made a cancelled run print the pass@3 of attempts it never made.
+
+**Checked.**
+
+- Unit tests in `test/Result.test.ts` and `test/Summary.test.ts`: a run cut short, a task whose attempts all errored, an errored attempt before a passed one, and the line the CLI prints.
+- The two runs above read again from the same Worker state with the change: the cancelled one prints `pass@1 33.3% of 6 tasks, pass@2 100.0% of 1 task`, and the finished one `pass@1 33.3% of 6 tasks, pass@2 50.0% of 6 tasks, pass@3 60.0% of 5 tasks`, each equal to the figure by hand. A run of 3 tasks and 2 attempts with no error prints `pass@1 33.3%, pass@2 66.7%` before and after.
+- `npm run lint`, `npm run check:types`, `npm test`, and the plain lane on directory slots.
+
+**Not verified.** krun and ns slots, a real model, a deployed Worker: the change is in the summary, which no slot sees. A CLI of this commit against a Worker of the one before prints pass@k without the count of tasks.

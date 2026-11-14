@@ -292,8 +292,19 @@ export function changes(baseline: Run, run: Run): Change[] {
 }
 
 export function against(baseline: Run, run: Run): string {
-  const percent = (value: number | undefined) =>
-    value === undefined ? 'not run' : (value * 100).toFixed(1) + '%'
+  const rate = (summary: Result.AgentSummary | undefined, k: string) => {
+    const value = summary?.passAtK[k]
+    if (summary === undefined) return 'not run'
+    if (value === undefined) return 'not rated'
+    const rated = summary.rated[k]
+    return (
+      (value * 100).toFixed(1) +
+      '%' +
+      (rated === undefined || rated === summary.tasks
+        ? ''
+        : ' of ' + rated + (rated === 1 ? ' task' : ' tasks'))
+    )
+  }
   const tokens = (summary: Result.AgentSummary | undefined) =>
     summary ? number(summary.inputTokens) + ' (' + number(summary.cachedTokens) + ')' : 'not run'
   return (
@@ -331,7 +342,7 @@ export function against(baseline: Run, run: Run): string {
             count('passed'),
             count('failed'),
             count('errored'),
-            ...ks.map((k) => ['pass@' + k, percent(before?.passAtK[k]), percent(after.passAtK[k])]),
+            ...ks.map((k) => ['pass@' + k, rate(before, k), rate(after, k)]),
             ['Input tokens (cached)', tokens(before), tokens(after)],
             [
               'Output tokens',

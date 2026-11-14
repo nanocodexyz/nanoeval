@@ -74,6 +74,7 @@ export type AgentSummary = {
   outputTokens: number
   passAtK: Record<string, number>
   passed: number
+  rated: Record<string, number>
   tasks: number
 }
 
@@ -98,6 +99,7 @@ export function summarize(attempts: readonly Attempt[]): Record<string, AgentSum
       outputTokens: 0,
       passAtK: {},
       passed: 0,
+      rated: {},
       tasks: 0,
     })
     summary.attempts++
@@ -121,15 +123,19 @@ export function summarize(attempts: readonly Attempt[]): Record<string, AgentSum
     if (rewards.length)
       summary.meanReward = rewards.reduce((total, reward) => total + reward, 0) / rewards.length
     summary.tasks = groups.length
-    const trials = Math.min(...groups.map((group) => group.length))
+    const scored = groups.map((group) =>
+      group
+        .filter((attempt) => attempt.outcome !== 'errored')
+        .sort((left, right) => left.index - right.index),
+    )
+    const trials = Math.max(...scored.map((group) => group.length))
     for (let k = 1; k <= trials; k++) {
-      const solved = groups.filter((group) =>
-        [...group]
-          .sort((left, right) => left.index - right.index)
-          .slice(0, k)
-          .some((attempt) => attempt.outcome === 'passed'),
+      const rated = scored.filter((group) => group.length >= k)
+      const solved = rated.filter((group) =>
+        group.slice(0, k).some((attempt) => attempt.outcome === 'passed'),
       ).length
-      summary.passAtK[String(k)] = solved / groups.length
+      summary.passAtK[String(k)] = solved / rated.length
+      summary.rated[String(k)] = rated.length
     }
   }
   return agents

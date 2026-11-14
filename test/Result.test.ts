@@ -177,12 +177,48 @@ test('pass@k counts a task solved when any of its first k attempts passed', () =
   ]
   const summary = Result.summarize(attempts)['haiku']!
   assert.deepEqual(summary.passAtK, { '1': 0.5, '2': 1 })
+  assert.deepEqual(summary.rated, { '1': 2, '2': 1 })
   assert.equal(summary.passed, 2)
   assert.equal(summary.failed, 1)
   assert.equal(summary.errored, 1)
   assert.equal(summary.tasks, 2)
   assert.ok(Math.abs(summary.meanReward! - 2 / 3) < 1e-9)
   assert.ok(Math.abs(summary.costUsd! - 0.0306) < 1e-9)
+})
+
+test('an attempt that errored is no trial of pass@k, and each pass@k says how many tasks it rates', () => {
+  const row = (task: string, index: number, outcome: Result.Attempt['outcome']) =>
+    attempt({
+      ...(outcome === 'errored'
+        ? { failure: { at: 1, kind: 'cancelled' as const, message: 'the run was cancelled' } }
+        : {}),
+      id: task + index,
+      index,
+      outcome,
+      reward: outcome === 'errored' ? null : outcome === 'passed' ? 1 : 0,
+      task: { checksum: 'sha256:' + task, name: 'suite/' + task },
+    })
+  const cut = Result.summarize([
+    row('one', 1, 'passed'),
+    row('one', 2, 'passed'),
+    row('one', 3, 'errored'),
+    row('two', 1, 'failed'),
+    row('two', 2, 'errored'),
+    row('two', 3, 'errored'),
+    row('three', 1, 'errored'),
+    row('three', 2, 'errored'),
+    row('three', 3, 'errored'),
+  ])['haiku']!
+  assert.equal(cut.tasks, 3)
+  assert.deepEqual(cut.passAtK, { '1': 0.5, '2': 1 })
+  assert.deepEqual(cut.rated, { '1': 2, '2': 1 })
+
+  const retried = Result.summarize([row('one', 1, 'errored'), row('one', 2, 'passed')])['haiku']!
+  assert.deepEqual(retried.passAtK, { '1': 1 })
+
+  const none = Result.summarize([row('one', 1, 'errored')])['haiku']!
+  assert.deepEqual(none.passAtK, {})
+  assert.deepEqual(none.rated, {})
 })
 
 test('a run exports as a Harbor job directory', () => {
@@ -285,7 +321,7 @@ test('a run exports as a Harbor job directory', () => {
   assert.match(job.started_at, stamp)
   assert.equal(job.n_total_trials, 2)
   assert.equal(job.stats.n_errored_trials, 1)
-  assert.deepEqual(job.stats.evals['haiku__example'].pass_at_k, { '1': 1, '2': 1 })
+  assert.deepEqual(job.stats.evals['haiku__example'].pass_at_k, { '1': 1 })
   assert.deepEqual(job.stats.evals['haiku__example'].exception_stats, {
     EnvironmentError: ['one__haiku__2'],
   })

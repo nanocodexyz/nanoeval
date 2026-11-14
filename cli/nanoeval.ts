@@ -619,7 +619,19 @@ export function summary(status: Record<string, any>): string {
           : ', mean reward ' + Number(row.meanReward).toFixed(3)) +
         ', ' +
         Object.entries(row.passAtK as Record<string, number>)
-          .map(([k, value]) => 'pass@' + k + ' ' + (value * 100).toFixed(1) + '%')
+          .map(([k, value]) => {
+            const rated = row.rated?.[k] as number | undefined
+            return (
+              'pass@' +
+              k +
+              ' ' +
+              (value * 100).toFixed(1) +
+              '%' +
+              (rated === undefined || rated === row.tasks
+                ? ''
+                : ' of ' + rated + (rated === 1 ? ' task' : ' tasks'))
+            )
+          })
           .join(', '),
     )
   const start = Timeline.summary((status['start'] ?? {}) as Timeline.Start)
