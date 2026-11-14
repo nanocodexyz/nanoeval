@@ -75,6 +75,7 @@ export function fromEvents(
   let extra: Record<string, unknown> = {}
   let current: Step | undefined
   const accepted = new Set<string>()
+  const called = new Set<string>()
 
   const agentStep = (at: number): Step => {
     if (!current) {
@@ -90,10 +91,14 @@ export function fromEvents(
     const payload = event.payload
 
     switch (event.type) {
-      case 'input.accepted':
-        if (typeof payload['item_id'] === 'string') {
-          if (accepted.has(payload['item_id'])) break
-          accepted.add(payload['item_id'])
+      case 'input.accepted': {
+        const item =
+          payload['kind'] === 'prompt' && typeof payload['request_id'] === 'string'
+            ? payload['request_id'] + ':prompt'
+            : payload['item_id']
+        if (typeof item === 'string') {
+          if (accepted.has(item)) break
+          accepted.add(item)
         }
         session = String(payload['session_id'] ?? session)
         steps.push({
@@ -104,6 +109,7 @@ export function fromEvents(
         })
         current = undefined
         break
+      }
       case 'run.started':
         model = String(payload['model'] ?? model)
         extra = { orchestration: payload['orchestration'], transport: payload['transport'] }
@@ -138,6 +144,8 @@ export function fromEvents(
         break
       }
       case 'tool.call': {
+        if (called.has(String(payload['call_id']))) break
+        called.add(String(payload['call_id']))
         const step = agentStep(entry.created_at)
         step.tool_calls ??= []
         step.tool_calls.push({
@@ -227,6 +235,7 @@ export function usage(events: readonly SessionEvent[]): Usage {
     outputTokens: 0,
     toolCalls: 0,
   }
+  const called = new Set<string>()
   for (const entry of events) {
     const event = entry.event.event
     if (entry.event.source !== 'agent' || !event) continue
@@ -241,7 +250,10 @@ export function usage(events: readonly SessionEvent[]): Usage {
       totals.cachedTokens += count(details['cached_tokens'])
       totals.cacheWriteTokens += count(details['cache_write_tokens'])
     }
-    if (event.type === 'tool.call') totals.toolCalls++
+    if (event.type === 'tool.call' && !called.has(String(payload['call_id']))) {
+      called.add(String(payload['call_id']))
+      totals.toolCalls++
+    }
     if (
       (event.type === 'run.completed' || event.type === 'run.failed') &&
       typeof payload['cost_usd'] === 'number'

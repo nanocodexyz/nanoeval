@@ -177,3 +177,63 @@ test('a session that goes on after its host was lost has each input and each mod
   const options = { model: '', name: '', session: '', version: '' }
   assert.deepEqual(Atif.fromEvents(recovered, options), Atif.fromEvents(published, options))
 })
+
+test('a tool call that a session publishes again when it goes on is one tool call', () => {
+  const cut =
+    published.findIndex((event) => event.event.event?.payload['call_id'] === 'toolu_2/code-1') + 1
+  const again = (event: Atif.SessionEvent): Atif.SessionEvent => {
+    const inner = event.event.event!
+    const payload =
+      inner.type === 'model.call.completed'
+        ? { ...inner.payload, attempt: 0, timing: { ...inner.payload['timing'], replayed: true } }
+        : inner.payload
+    return {
+      ...event,
+      event: { ...event.event, event: { ...inner, payload } },
+      seq: event.seq && event.seq + 16384,
+    }
+  }
+  const call = published.findLastIndex(
+    (event, index) => index < cut && type(event) === 'model.call.completed',
+  )
+  const recovered = [
+    ...published.slice(0, cut),
+    ...[
+      published[2]!,
+      published[3]!,
+      published[call]!,
+      published[cut - 2]!,
+      published[cut - 1]!,
+    ].map(again),
+    ...published.slice(cut),
+  ]
+  assert.deepEqual(
+    recovered
+      .filter((event) => type(event) === 'tool.call')
+      .map((event) => event.event.event!.payload['call_id']),
+    ['toolu_1', 'toolu_1/code-1', 'toolu_2', 'toolu_2/code-1', 'toolu_2', 'toolu_2/code-1'],
+  )
+  assert.deepEqual(Atif.usage(recovered), Atif.usage(published))
+  const options = { model: '', name: '', session: '', version: '' }
+  assert.deepEqual(Atif.fromEvents(recovered, options), Atif.fromEvents(published, options))
+  const renamed = recovered.map((event, index) =>
+    index === cut
+      ? {
+          ...event,
+          event: {
+            ...event.event,
+            event: {
+              ...event.event.event!,
+              payload: {
+                ...event.event.event!.payload,
+                item_id: 'another:prompt',
+                turn_id: 'another',
+              },
+            },
+          },
+        }
+      : event,
+  )
+  assert.equal(typeof published[2]!.event.event!.payload['request_id'], 'string')
+  assert.deepEqual(Atif.fromEvents(renamed, options), Atif.fromEvents(published, options))
+})

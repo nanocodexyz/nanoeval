@@ -4092,3 +4092,35 @@ The workflow has never run on GitHub: Actions is disabled for the repository, `G
 **Checked.** `actionlint` 1.7.12 reports nothing for the workflow and its action. The `run` steps of the five jobs were run in order from a fresh clone on machines at hand, without the `uses` steps: which, where and with what result is in the entry on the proof of this day's changes, at the end of this file.
 
 **Not verified.** A run on GitHub. So nothing here says that `scripts/ci-machine.sh` does on a hosted runner what it does on a machine at hand, that the two caches are restored and saved, that the limits of the jobs with KVM hold there, or that the logs of a failed lane are uploaded.
+## 2026-11-14: a tool call and an instruction that a session publishes again are counted once
+
+The entry of this day on a turn that goes on after its Worker was killed made the usage and the trajectory of such a session those of the responses it was given: a model call that nanocode reads back from its log carries `timing.replayed` and is not a call, and an instruction accepted again under the same `item_id` is one step. Two more things are published again that it did not cover. This entry changes `src/Atif.ts` and `test/Telemetry.test.ts` only.
+
+**What was measured.** A separate harness around nanocode-ts `build-7968b53` (a minimal Worker on `nanocode-ts/cloudflare` under local workerd, the hand `nanocode-cli-3f97ab0`, a scripted model endpoint for the Messages and the Responses shape) recorded every event handed to `published` while the Worker was killed in a turn of six cells, and `Atif.usage` and `Atif.fromEvents` were run over those events before and after this change. One run of each:
+
+| Session and kill | Before: tool calls, steps | After | Without a kill |
+|---|---|---|---|
+| `claude`, killed in the fourth cell | 15, 9 | 13, 9 | 13, 9 |
+| `claude`, killed while the `wait` is out | 15, 9 | 13, 9 | 13, 9 |
+| `claude`, killed in the fourth cell and again while the `wait` is out | 16, 9 | 13, 9 | 13, 9 |
+| `codex` on `gpt-right`, killed in the fourth cell | 14, 11 | 13, 9 | 13, 9 |
+
+- **A tool call in flight is published a second time.** When the session goes on, nanocode publishes `tool.call` again for the call of the step that was in flight, with the same `call_id` and no mark, and again for a nested call whose result arrives under a later `wait`. `tool.result` comes once. `Atif.usage` counted every `tool.call`, and `Atif.fromEvents` listed the call twice in its step. Both now keep the first `tool.call` of a `call_id`.
+- **A `codex` session accepts its instruction under a new `item_id`.** A `claude` session names the item after the request (`<request>:prompt`), so the rule of that entry held. A `codex` session names it after its own turn id, which is new after a recovery, so the instruction was a second user step and the tool result that followed opened a second agent step: 11 steps for a turn of 9. An accepted prompt is now one step for each `request_id`, which both kinds of session carry. An input of another kind keeps its `item_id`.
+
+Model calls and tokens were already right in all four: 8 calls for 8 responses.
+
+**What the same harness found in nanocode-ts, which this repository cannot fix.** On `build-7968b53`, five runs of each lane unless a count is given:
+
+- A `codex` session killed in a cell, while the model is asked and while a `wait` is out goes on as a `claude` session does, for `gpt-6-luna` and for a model nanocode does not know: 8, 9 and 8 requests, and 8 when it is killed twice. A session on a ChatGPT plan uses the Responses WebSocket for `gpt-6-luna` and sends the whole input again after the Worker is back: 8, 9, 8 and 8 there as well.
+- A `claude` session runs the tool calls of one reply one after the other, and every lane with two cells or a cell and a `wait` in one reply passes. A `codex` session on a model nanocode does not know runs them together, and a cell that had finished while another was still running came back as "outcome unknown" in 5 of 5 runs (the command did not run twice). The reply of the finished cell is recorded without the nested calls that its updates carried, and nanocode-ts cannot read it back. A TypeScript change to nanocode-ts that keeps them makes the lane pass 5 of 5 times on the same hand and WebAssembly module; it is not in a release, so the pin here does not have it.
+- A turn that spawned a subagent does not go on cleanly: the cell of the parent that waits in `wait_agent` fails, and the cell of the child that was running is reported with an unknown outcome while it keeps running on the hand (0 of 5 runs passed for each of three kills, and 5 of 5 without a kill). Both are in nanocode.
+- A Worker killed within a few milliseconds of a model answer: at 0 ms the answer is lost, the request is sent again, and the lost response is in no usage count (9 answered, 8 counted, 5 of 5 runs); at 3 ms the same happened in 13 of 15 runs, and in 2 the row of the cell was written and the frame had not reached the hand, and the model read "outcome unknown" for a command that never ran.
+- The usage of a subagent is not in `Atif.usage`: it reads the events of the session's own agent, and a child's model calls arrive as `subagent` events. Seen without any kill (4 calls counted for 9 answered). Not changed here.
+
+**Checked.**
+
+- `test/Telemetry.test.ts`: the events of `build-81eada9` with the instruction, `run.started`, the model call as replayed and the two `tool.call` events of the second cell published a second time give the usage and the trajectory of the events without them, and so do the same events with the instruction under another `item_id`. Without the change to `Atif` the test fails on 6 tool calls for 4.
+- `npm run lint`, `npm run check:types` and `npm test`: 149 tests, 145 passed and 4 skipped on a machine without KVM.
+
+**Not verified.** The end-to-end lanes of this repository were not run with the change, and no lane here kills a `codex` session: the numbers above are from the separate harness. A second `tool.result` for one `call_id`, which a recovered cell can publish, is still two results in a step. A deployed Worker and a real model, as in the entry before this.
