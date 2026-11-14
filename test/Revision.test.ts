@@ -515,3 +515,19 @@ test('a served lab answers reads from the Worker of the evaluation that runs, an
   assert.deepEqual(lines, [])
   assert.equal(Fs.readFileSync(Path.join(lab, 'token'), 'utf8').trim().length, 64)
 })
+
+test('a build whose command is not on the PATH says so, and what a unit takes its PATH from', () => {
+  const command = ['cargo', 'build', '--locked']
+  assert.equal(
+    Revision.ended(command, { code: 101, cwd: '/lab/source/nanocode' }),
+    'cargo build --locked in /lab/source/nanocode exited with 101',
+  )
+  assert.equal(
+    Revision.ended(command, { code: 'SIGKILL', cwd: '/lab/source/nanocode' }),
+    'cargo build --locked in /lab/source/nanocode ended with SIGKILL',
+  )
+  assert.equal(
+    Revision.ended(command, { code: 'spawn cargo ENOENT', cwd: '/lab/source/nanocode' }),
+    'cargo is not on the PATH of this command, which ran cargo build --locked in /lab/source/nanocode: install it, or start the command with a PATH that holds it. A systemd unit takes its PATH from its EnvironmentFile and not from the profile of a shell',
+  )
+})

@@ -341,14 +341,26 @@ async function run(
   await log?.close()
   if (code !== 0)
     throw new BuildError(
-      [command, ...args].join(' ') +
-        ' in ' +
-        options.cwd +
-        (typeof code === 'number' ? ' exited with ' + code : ' ended with ' + code) +
+      ended([command, ...args], { code, cwd: options.cwd }) +
         ':\n' +
         (options.log ? await tail(options.log) : Buffer.concat(errors).toString().slice(-logTail)),
     )
   return Buffer.concat(chunks).toString()
+}
+
+export function ended(
+  command: readonly string[],
+  input: { code: number | string; cwd: string },
+): string {
+  const ran = command.join(' ') + ' in ' + input.cwd
+  if (typeof input.code === 'number') return ran + ' exited with ' + input.code
+  if (!input.code.endsWith('ENOENT')) return ran + ' ended with ' + input.code
+  return (
+    command[0] +
+    ' is not on the PATH of this command, which ran ' +
+    ran +
+    ': install it, or start the command with a PATH that holds it. A systemd unit takes its PATH from its EnvironmentFile and not from the profile of a shell'
+  )
 }
 
 async function flock(file: string, wait: boolean): Promise<ChildProcess | undefined> {
