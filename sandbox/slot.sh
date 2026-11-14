@@ -279,6 +279,7 @@ table ip nanoeval {
   chain input {
     type filter hook input priority filter; policy accept;
     iifname "nev*" drop
+    meta l4proto tcp ct state invalid drop
   }
   chain postrouting {
     type nat hook postrouting priority srcnat; policy accept;
@@ -299,7 +300,7 @@ setup_ns() {
     awk '$1 == "nameserver" && $2 !~ /^127\./ && $2 != "::1"' /etc/resolv.conf >"$krun/resolv.conf"
     [ -s "$krun/resolv.conf" ] || die 'the private network of ns slots needs a nameserver that is not on the loopback of the machine'
     printf '1\n' >/proc/sys/net/ipv4/ip_forward
-    if ! nft list table ip nanoeval >/dev/null 2>&1; then firewall; fi
+    if ! nft list chain ip nanoeval input 2>/dev/null | grep -q 'ct state invalid drop'; then firewall; fi
   else
     awk '$1 == "nameserver"' /etc/resolv.conf >"$krun/resolv.conf"
     [ -s "$krun/resolv.conf" ] || die 'the ns backend found no nameserver in /etc/resolv.conf'

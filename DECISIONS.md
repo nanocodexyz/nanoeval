@@ -3941,3 +3941,37 @@ A port that `bind(0)` returned and released is not what is taken again: with 6,0
 
 - Other versions of wrangler. The flag is read from `wrangler dev --help` of 4.151.1.
 - A deployed Worker, which has no inspector.
+
+## 2026-11-14: an invalid segment from the uplink no longer resets the connection of an ns slot
+
+**The defect.** The lane on ns slots that asks what a private slot reaches (`NANOEVAL_E2E_BACKEND=ns NANOEVAL_E2E_SCENARIO=network`) passed on the machine of the earlier entries and failed on a second one, every time: `wget -q -T 20 -O /dev/null https://example.com/` in the slot ended with "download timed out". In that slot a name resolved, and no TCP connection got an answer to its first request, to any address, over HTTP or HTTPS. The guest that carries the slots reached the same addresses from its own sockets.
+
+Read from a capture in the guest (`tcpdump -ni any -vv`, one HTTP request from the slot):
+
+1. The slot's SYN leaves the guest masqueraded, and the uplink, passt on that machine, answers SYN-ACK. The slot acknowledges and sends its request, 89 bytes.
+2. passt sends a segment with no flag at all: a sequence number, a window, no ACK.
+3. Connection tracking calls a TCP segment without flags invalid. An invalid packet is not translated back, so it does not go to the slot. It is delivered to the guest itself, on the port the masquerade had chosen, where no socket listens.
+4. The guest answers with a reset. passt ends the connection.
+5. The slot sends its request again, five times in three seconds in the capture, and nothing answers.
+
+A socket of the guest itself is not hurt by the same segment: TCP discards a segment that has none of ACK, RST and SYN. UDP is not concerned, which is why the name resolved. krun slots are not concerned either: nothing stands between their own stack and passt.
+
+So the fault that shows is the reset, and it is ours: a machine that masquerades for its slots answered, in a slot's place, a packet that it could not attribute to the slot.
+
+**The rule.** The `input` chain of the `nanoeval` table drops TCP that connection tracking calls invalid, `meta l4proto tcp ct state invalid drop`, after the rule that drops what comes from a slot. The machine then says nothing to such a segment, the uplink goes on, and its next segment carries the ACK. `setup` writes the table again when that rule is missing, so a machine that holds the table of an earlier `slot.sh` gets the rule the next time a runner sets it up. The table is replaced in one transaction, and the translations of connections that are open stay with connection tracking.
+
+The rule is on the machine's own input, not only on what answers a slot: a packet that is invalid cannot be told apart by where it was going. What it drops there is what the machine would have answered with a reset or dropped itself.
+
+**Measured** on the second machine: Linux with 24 cores and 48 threads, kernel 7.0, libkrunfw 5.5.0, passt `0.0~git20240220.1e6f92b-1` as its distribution packages it, the lane run by a user who is not root, so its ns slots are in a guest.
+
+| | The lane |
+| --- | --- |
+| Before, in runs of every step of the workflow at three commits of this day, and run again alone | failed 4 times of 4, each after 33 s, at "a slot resolves a name and reaches it over HTTPS" |
+| With the rule, the lane alone | passed 3 times of 3 |
+
+**Every step.** Every `run` step of `.github/workflows/ci.yml` ran from a fresh clone of this change together with the one on the inspector port above, on the machine of this entry, by a user who is not root, beside one other run of the steps each time, three times. On `9c869c3` and on `614bbac`, with the change on a slot whose process is still ending, which went to main on its own: 79 steps each, all passed at once. On `2fd69f5`: 79 steps, 78 passed at once, and the lane on directory slots with two leased sandboxes of which one dies failed once and passed twice when run again alone, as it does on that machine without these changes, where it failed 2 times of 4 at `614bbac`. The 25 lanes on krun slots and the 11 on ns slots ran each time and none was skipped. The `check` job took 15.5 to 16.1 minutes of its 20 and `krun` 22 s. Beside the second run, the same steps of `614bbac` without these changes failed this lane and no other. The commit that holds this paragraph differs from the one that ran last in Markdown only.
+
+**Not verified.**
+
+- Why passt sent that segment there and not on the machine of the earlier entries: its version, the kernel of the machine, 7.0 there against 6.8, and the speed of the connection may all differ, and none was varied.
+- A machine that is the root of its ns slots without a guest, and a leased sandbox: the rule is the same table there, and no such machine had the fault to show.
