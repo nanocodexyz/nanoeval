@@ -320,6 +320,53 @@ test('a subagent that takes up its cell after a kill publishes its calls again, 
   assert.deepEqual(trajectory.final_metrics, whole.final_metrics)
 })
 
+test('a call that is first published after the notice of a restart is in the step of its model call', () => {
+  const events = recorded('claude-killed-before-cell-call')
+  const inner = events.flatMap((event) =>
+    event.event.source === 'subagent' && event.event.update?.event
+      ? [event.event.update.event]
+      : [],
+  )
+  assert.deepEqual(
+    inner
+      .filter((event) => event.type === 'tool.call' || event.type === 'input.accepted')
+      .map((event) => event.payload['call_id'] ?? event.payload['kind']),
+    [
+      'prompt',
+      'toolu_2',
+      'prompt',
+      'steer',
+      'toolu_2',
+      'toolu_2/code-1',
+      'toolu_4',
+      'toolu_4/code-1',
+    ],
+    'the stream has the command inside the cell only after the Worker was back and the notice was accepted',
+  )
+  assert.deepEqual(Atif.usage(events), Atif.usage(recorded('claude')))
+  const trajectory = Atif.fromEvents(events, options)
+  assert.deepEqual(
+    trajectory.subagent_trajectories![0]!.steps.map((step) => [
+      step.source,
+      step.metrics?.extra['call_index'],
+      (step.tool_calls ?? []).map((call) => call.function_name).join(' '),
+      (step.observation?.results ?? []).length,
+    ]),
+    [
+      ['user', undefined, '', 0],
+      ['agent', 1, 'exec exec_command', 2],
+      ['user', undefined, '', 0],
+      ['agent', 2, 'exec submit_result', 2],
+      ['agent', 3, '', 0],
+    ],
+  )
+  assert.equal(
+    every(trajectory).filter((step) => step.source === 'agent' && !step.metrics).length,
+    0,
+    'no agent step is without its model call',
+  )
+})
+
 test('a turn that a session is given when its subagent ends is counted with the session', () => {
   const events = recorded('direct-killed-after-subagent')
   const turns = events.flatMap((event) =>

@@ -93,6 +93,7 @@ type Thread = {
   held: Map<number, string>
   id: number | undefined
   index: number | undefined
+  latest: Step | undefined
   model: string | undefined
   parent: number | undefined
   role: string | undefined
@@ -166,6 +167,7 @@ function thread(id: number | undefined): Thread {
     held: new Map(),
     id,
     index: undefined,
+    latest: undefined,
     model: undefined,
     parent: undefined,
     role: undefined,
@@ -207,6 +209,7 @@ function read(events: readonly SessionEvent[]): Threads {
 }
 
 function agentStep(thread: Thread, at: number): Step {
+  thread.current ??= thread.latest
   if (!thread.current) {
     thread.current = {
       step_id: thread.steps.length + 1,
@@ -275,7 +278,9 @@ function apply(thread: Thread, entry: { at: number; event: AgentEvent }): void {
         totals.reasoningTokens = (totals.reasoningTokens ?? 0) + count(reasoning)
       thread.unpriced++
       thread.current = undefined
+      thread.latest = undefined
       const step = agentStep(thread, at)
+      thread.latest = step
       step.message = thread.held.get(payload['call_index']) ?? ''
       thread.held.delete(payload['call_index'])
       step.model_name = String(payload['model'] ?? thread.model)
