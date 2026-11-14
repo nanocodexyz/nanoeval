@@ -1,0 +1,46 @@
+{
+  "terminal-bench-2.1": [
+    {
+      "task": "build-cython-ext",
+      "checksum": "sha256:35dc561790e73f13e59837828ac0863c0893edc6b71d42cf7d58656c843adf12",
+      "reason": "its solution installs pyknotid's dependency planarity without a version, and planarity 1.0.0 names the node attribute vertex_position where pyknotid 0.5.3 reads pos, so the repository test test_reconstructed_space_curve that the verifier runs ends in KeyError: 'pos'.",
+      "upstream": "https://github.com/harbor-framework/terminal-bench-2-1/issues/240"
+    },
+    {
+      "task": "crack-7z-hash",
+      "checksum": "sha256:99cbb2269f6bd112d3387fd01cb6900118fe4aded3f75a8d656580a8296a1ae5",
+      "reason": "its solution runs john with no mode, whose single mode tries 9,782 candidates before the wordlist that holds the password and computes them one at a time when john sees one core, so on a slot that shows exactly the one CPU the task grants it runs out of its 1,800 s unless the core is fast, and it passes where john sees several cores under the same CPU time, as under Docker.",
+      "upstream": "https://github.com/harbor-framework/terminal-bench-2/pull/28"
+    },
+    {
+      "task": "mcmc-sampling-stan",
+      "checksum": "sha256:443cd2b94ed797944793e97a56527a5dc0f8ad40f78ed418fe1b2e367cf22546",
+      "reason": "its solution installs rstan 2.32.7 through remotes, which takes the newest release of every dependency whatever the lines before it pinned: RcppParallel 6 needs cmake, which the image does not have, so rstan is never installed, and with RcppParallel held back StanHeaders 2.39 rejects the array syntax of the solution's model.",
+      "upstream": "https://github.com/harbor-framework/terminal-bench-2/issues/74"
+    },
+    {
+      "task": "protein-assembly",
+      "checksum": "sha256:c491d45acce234e1aa1d44dcc6778c55fcf875e9eb254b8dd3ae5ef58119621b",
+      "reason": "its solution reads the residues of a chromophore from a feature of type modified_monomer, which the RCSB data API names non_standard_monomer since September 2026, so an X stays in two sequences and DnaChisel ends in NoSolutionError.",
+      "upstream": "https://github.com/harbor-framework/terminal-bench-2-1/pull/247"
+    },
+    {
+      "task": "qemu-alpine-ssh",
+      "checksum": "sha256:60b7050b0e0aa51641208cf65766743d340e59575db2c4d2f8628240846c2a28",
+      "reason": "its verifier installs curl with apt, and since the support of Debian 11 ended the packages that the index of bullseye-security lists answer 404 on deb.debian.org, so no test runs.",
+      "upstream": "https://github.com/harbor-framework/terminal-bench-2-1/issues/233"
+    },
+    {
+      "task": "qemu-startup",
+      "checksum": "sha256:8e58263747da7dc688ad470688fb72825c4ba2c1c40443fa0f52963645bbd999",
+      "reason": "its verifier installs curl with apt, and since the support of Debian 11 ended the packages that the index of bullseye-security lists answer 404 on deb.debian.org, so no test runs.",
+      "upstream": "https://github.com/harbor-framework/terminal-bench-2-1/issues/233"
+    },
+    {
+      "task": "torch-tensor-parallelism",
+      "checksum": "sha256:f32ce74a5aeb6638480247ab799fe46127bbee631acdd0921b0f394ec49b3684",
+      "reason": "its verifier pins torch 2.7.0, where destroying a Gloo process group can deadlock on the interpreter lock (fixed in torch 2.8.0), so the verifier now and then hangs until its timeout.",
+      "upstream": "https://github.com/pytorch/pytorch/pull/154976"
+    }
+  ]
+}

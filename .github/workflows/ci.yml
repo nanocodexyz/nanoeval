@@ -76,6 +76,14 @@ jobs:
           NANOEVAL_E2E_MODEL: oracle
           NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
           NANOEVAL_E2E_ATTEMPTS: '1'
+      - name: End to end, directory slots, oracle, a solution that fails and the check of the sound tasks
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_MODEL: oracle
+          NANOEVAL_E2E_SCENARIO: unsound
+          NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
+          NANOEVAL_E2E_ATTEMPTS: '1'
       - name: End to end, directory slots, blobs in R2 through the Worker
         run: npm run e2e
         env:

@@ -1225,10 +1225,13 @@ async function main(): Promise<void> {
     const closed = scenario === 'closed'
     const isolated = scenario === 'network'
     const judged = scenario === 'judge'
+    const unsound = scenario === 'unsound'
+    if (unsound && model !== 'oracle')
+      throw new Error('the unsound scenario runs the solutions: NANOEVAL_E2E_MODEL=oracle')
     if (
       scenario !== 'tasks' &&
       model !== 'scripted' &&
-      !((judged || underAgent || warm) && model === 'oracle') &&
+      !((judged || underAgent || unsound || warm) && model === 'oracle') &&
       !(underAgent && installed) &&
       !(
         installed &&
@@ -1290,7 +1293,10 @@ async function main(): Promise<void> {
                   ? [Path.join('test/fixtures', 'cached-verifier')]
                   : slotGone
                     ? [Path.join('test/fixtures', underAgent ? 'slow-solution' : 'slow-verifier')]
-                    : taskNames.map((name) => Path.join('tasks', name))
+                    : [
+                        ...taskNames.map((name) => Path.join('tasks', name)),
+                        ...(unsound ? [Path.join('test/fixtures', 'stale-solution')] : []),
+                      ]
     const agents: Config.Agent[] =
       model === 'oracle'
         ? [oracle]
@@ -3390,6 +3396,9 @@ async function main(): Promise<void> {
       assert.equal(status['agents'].wrong.failed, total / 2)
       if (!interrupted) assert.equal(status['agents'].right.passAtK['1'], 1)
       assert.equal(status['agents'].wrong.passAtK['1'], 0)
+    } else if (unsound) {
+      assert.equal(status['counts'].passed, total - 1, 'every solution but the stale one passes')
+      assert.equal(status['counts'].failed, 1, 'the stale solution fails its verifier')
     } else if (model === 'oracle') {
       assert.equal(status['counts'].passed, total, 'every solution passes its verifier')
     } else {
@@ -3974,6 +3983,68 @@ async function main(): Promise<void> {
       runner.child.kill('SIGTERM')
       assert.equal(await exited, 0, 'a standing runner that is stopped exits 0')
       assert.deepEqual(await members(), [], 'a runner that is stopped leaves the pool')
+    }
+
+    if (unsound) {
+      const stale = (await api.results(created.id)).attempts.find(
+        (attempt) => attempt.task.name === 'fixtures/stale-solution',
+      )!
+      assert.equal(stale.outcome, 'failed')
+      const sound = total - 1
+      const tasks = (count: number) => count + (count === 1 ? ' sound task' : ' sound tasks')
+      const checked = await cli(['oracle', created.id])
+      assert.equal(checked.code, 4, 'the check fails while a sound task does not pass')
+      assert.equal(
+        checked.text,
+        'oracle: the solution passes on ' +
+          sound +
+          ' of ' +
+          tasks(total) +
+          ', and not on:\n  stale-solution failed\n',
+      )
+      assert.doesNotMatch((await cli(['status', created.id])).text, /^unsound, set apart/m)
+      const list = Path.join(out, 'unsound.json')
+      const entry = {
+        checksum: stale.task.checksum,
+        reason: 'its solution writes another word than its test reads.',
+        task: 'stale-solution',
+        upstream: 'https://example.com/stale-solution',
+      }
+      Fs.writeFileSync(list, JSON.stringify({ fixtures: [entry] }) + '\n')
+      const apart = await cli(['oracle', created.id, '--unsound', list])
+      assert.equal(apart.code, 0, 'the check passes once the task is listed as unsound')
+      assert.equal(
+        apart.text,
+        'oracle: the solution passes on ' +
+          sound +
+          ' of ' +
+          tasks(sound) +
+          '\nunsound, set apart: 1 of ' +
+          total +
+          ' tasks:\n  stale-solution failed: ' +
+          entry.reason +
+          ' ' +
+          entry.upstream +
+          '\n',
+      )
+      const lines =
+        'oracle on its ' +
+        tasks(sound) +
+        ': passed ' +
+        sound +
+        '/' +
+        sound +
+        ', errored 0, pass@1 100.0%\nunsound, set apart: 1 of ' +
+        total +
+        ' tasks, whose own solution does not pass its verifier (nanoeval oracle says why): stale-solution\n'
+      for (const command of ['status', 'compare']) {
+        const shown = await cli([command, created.id, '--unsound', list])
+        assert.equal(shown.code, 0)
+        assert.ok(shown.text.includes('\n' + lines), command + ' rates the sound tasks alone')
+      }
+      const other = await cli(['oracle', created.id, '--unsound', Path.join(out, 'none.json')])
+      assert.equal(other.code, 1, 'a list that is named and missing is refused')
+      console.log('unsound: the oracle check exits 4, and 0 once the stale task is set apart')
     }
 
     const job = JSON.parse(files['result.json']!)

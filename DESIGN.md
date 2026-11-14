@@ -745,6 +745,26 @@ The Terminal-Bench source is the registry and not the Git repository, although t
 
 A small task shared by thousands of cases needs no new format: every GPQA and HealthBench task names the same image, so the import converts it once, every row names the same disk digest, and the slots of a machine share one unpacked disk under their own overlays.
 
+## Unsound tasks
+
+A task is sound when its own solution passes its own verifier in the environment it ships. An oracle run measures that, and it changes while the task does not: a solution installs a dependency without a version, a verifier installs from an archive that is emptied, a service renames a field. A rate over tasks of which some cannot pass, or pass for a reason the task never meant, is not the rate the benchmark was published to give, so the tasks shown to be unsound are listed, and every summary rates an agent over the sound tasks beside all of them.
+
+```
+ unsound.json   {"DATASET": [{"task", "checksum", "reason", "upstream"}, ...]}
+   src/Unsound.ts       parse, and the three readings of it
+   status, run --wait   AGENT on its N sound tasks: passed, errored, pass@k    under the line of the agent
+   compare              the same per side under a comparison, or under the table without a baseline
+   oracle RUN...        the solution of every sound task passes, or exit 4
+```
+
+- **An entry names a package, not a name.** `checksum` is the package checksum of the task version that was shown to fail, the one a row and an attempt carry. A newer version of the task that upstream publishes is another package: it counts as sound without an edit of the list, and `nanoeval oracle` says that the list names an earlier one. An entry also carries what fails and why, and the report where the dataset lives.
+- **Only the command line reads it.** The Worker, the runners and the import know nothing of it, and a run records nothing: an eval is imported once and soundness is a fact about the day a run was made. The same run read with a later list is rated by that list, so a list is changed with the evidence in DECISIONS.md.
+- **It changes no row.** An unsound task is claimed, run and scored like any other, and the rate over all tasks is printed unchanged. The sound rate is `Result.summarize` over the attempts whose task is not listed.
+- **The check.** `nanoeval oracle` reads oracle runs as they stand after their reruns, as `compare` does. A sound task passes when every attempt of it that stands passed, so a solution that passes two of three is named. A row that errored for a cause of the machine is rerun (`run --rerun RUN --errored`) and the check is asked again with both runs: a download that timed out is not a reason to list a task.
+- **What is not listed.** A task whose solution fails only on some machine, such as a registry that holds back new releases or a timing threshold missed under load. The list is for causes that hold wherever the task runs.
+
+Rejected: leaving the tasks out of the eval, since the rate over all of them has to stay comparable with what others publish; changing a solution or a verifier at import, which is the benchmark's to change; matching by task name, which would keep a fixed version set apart; and running a failed solution again by itself, which hides a solution that fails now and then.
+
 ## Final messages and judges
 
 Two things the Harbor layout cannot say are added under `[metadata.nanoeval]` in `task.toml`. Harbor keeps `[metadata]` free-form, so these tasks still load there, and a task without the table behaves as before.

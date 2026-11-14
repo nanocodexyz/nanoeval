@@ -92,6 +92,7 @@ The table says what was run. "The first version" is the flow before the eval tab
 | Released `nanocode hand` in a slot, including Alpine images | Implemented, tested. The pinned hand, `nanocode-cli-3f97ab0`, ran the 89 solutions of Terminal-Bench 2.1 through its Bash tool on ns slots beside `--oracle`: 80 passed against 84, and the four it does not pass run longer than that tool's ten minutes. `claude-haiku-5-5` passed 65 of the 89 tasks with the pins before, and on 21 of the tasks 19 with this hand and the harness build before this one, `build-81eada9`, 18 and 17 with the two sets before them, one attempt a row, on a 5-core machine without KVM. **Not run on these builds**: `codex` agents, `gpt-6-luna`, all 89 tasks with a model, a sandbox. See [DECISIONS.md](DECISIONS.md#2026-11-13-the-harness-moves-to-nanocode-ts-build-81eada9-and-the-hand-to-nanocode-cli-3f97ab0) |
 | Real model run | Tested with `gpt-6-luna` on a ChatGPT plan login: 3 Terminal-Bench tasks of the imported eval, 2 passed and 1 ended as a `verifier` error that its rerun passed, and the end-to-end lane before the eval table. `claude-haiku-4-5` through the Anthropic API ran on the first version only. Through the gateway, from a deployed Worker: `gpt-6-luna` and `claude-haiku-5-5` each passed 4 of 4 Terminal-Bench 2.1 tasks, and `gpt-6.1-sol` and `claude-opus-5-5` one task at high effort, see [Deploy it](#deploy-it) |
 | Oracle run (`nanoeval run --oracle`): each task's own solution instead of a model | Implemented, tested |
+| Tasks whose own solution does not pass (`unsound.json`, `nanoeval oracle`): a list by dataset with the cause and the upstream report of each, a rate over the sound tasks beside the rate over all of them in `status`, `run --wait` and `compare`, and a check that fails when the solution of a sound task does not pass | Implemented, tested: unit tests, and an end-to-end lane on directory slots where the solution of a fixture fails, the check exits 4, and exits 0 once the fixture is listed. Terminal-Bench 2.1 lists seven of its 89 tasks: each was run with its own solution in its image under Docker, its cause read to the line, and the fix its report proposes run the same way. The check ran on an oracle run of all 89 tasks on krun slots: 82 of 82 sound tasks pass, exit 0. See [Unsound tasks](#unsound-tasks) |
 | Dataset adapters (`nanoeval import`, `datasets`) | Implemented, tested: unit tests import from recorded fixtures with no network |
 | `terminal-bench-2.1`, imported from the Harbor registry by digest | Verified: the 89 packages match the ones Harbor downloads byte for byte. Imported as an eval and run with the tasks' own solutions, see above |
 | `terminal-bench-2.0` | 89 tasks imported and checked against their digests with the first version. 2 imported as an eval and run with their own solutions on krun slots: both passed |
@@ -193,7 +194,7 @@ node cli/nanoeval.ts run --rerun RUN --wait
 | 1 | An attempt errored or was cancelled (`run --wait` and `revision`, with or without `--fail-on`), or the command was refused. A gate that cannot be judged is refused: no baseline, or no task that both sides scored |
 | 2 | An unknown command |
 | 3 | `--fail-on regression`: the verdict against the baseline is a regression. `--fail-on lost`: that, or a single task is lost |
-| 4 | `--fail-on any-failure`: an attempt failed or errored |
+| 4 | `--fail-on any-failure`: an attempt failed or errored. `nanoeval oracle`: the solution of a sound task did not pass |
 
 3 goes before 4 and 4 before 1, and the option may be repeated or given as a list, `--fail-on regression,any-failure`. `run --wait --baseline RUN` prints the comparison of `compare --baseline` under the summary, so one command runs a selection and gates on it:
 
@@ -516,6 +517,31 @@ What to know before reading a score:
 - **GPQA and HealthBench are closed-book, and their tasks do not say so yet.** A task that sets `allow_internet = false` or Harbor's `network_mode = "no-network"` runs on a krun slot without a network (`--backend krun`), but these two importers still write tasks that leave it open, so an agent could search.
 - **SWE-bench needs the network in the verifier**, which installs `uv` and `swebench`, and each instance image becomes a disk of its own in the store. A machine whose network holds back fresh packages needs `sandboxd --slot-env` with `UV_EXCLUDE_NEWER`, and one whose registries sit behind a proxy on its loopback needs `--slot-forward`.
 - **Instance images are named by tag**, as the official harness names them. Only the dataset is pinned by digest.
+- **Seven tasks of Terminal-Bench 2.1 do not pass with their own solution**, see [Unsound tasks](#unsound-tasks): a summary rates an agent over the other 82 beside all 89.
+
+### Unsound tasks
+
+A task is sound when its own solution passes its own verifier. That stops being true while the task stays the same: a solution installs a dependency without a version, a verifier installs from an archive that is emptied, a service renames a field. `unsound.json` lists the tasks for which it was shown, by dataset, each by the checksum of its package, with what fails and the report upstream.
+
+```sh
+node cli/nanoeval.ts run --eval terminal-bench-2.1 --oracle --wait    # prints the id of the run
+node cli/nanoeval.ts oracle RUN                # exits 4 when the solution of a sound task did not pass
+node cli/nanoeval.ts run --rerun RUN --errored --wait   # a row that a download or the machine failed
+node cli/nanoeval.ts oracle RUN --with-reruns
+```
+
+`status`, `run --wait` and `compare` print a second line for an agent whose run holds listed tasks, such as `haiku on its 82 sound tasks: passed 60/82, errored 1, pass@1 74.1% of 81 tasks`, and name the tasks set apart. Nothing else changes: the tasks are run and scored, and the rate over all of them is printed as before. An entry names one version of a task, so a version that upstream fixes counts as sound the day it is imported. `--unsound FILE`, or `NANOEVAL_UNSOUND`, reads another list.
+
+| Task of Terminal-Bench 2.1 | What does not pass, on 2026-11-14 | Where the cause is | Report |
+| --- | --- | --- | --- |
+| `build-cython-ext` | 10 of 11 tests. The solution installs `planarity` without a version, 1.0.0 names the node attribute `vertex_position` where pyknotid 0.5.3 reads `pos`, and the repository test `test_reconstructed_space_curve` ends in `KeyError: 'pos'`. With `planarity==0.6` the solution passes | The solution | [terminal-bench-2-1#240](https://github.com/harbor-framework/terminal-bench-2-1/issues/240) |
+| `crack-7z-hash` | On a slot that shows the task exactly the one CPU it grants, the solution runs out of its 1,800 s unless the core is fast: john, run with no mode, tries 9,782 single-mode candidates before the wordlist that holds the password, and with one core in sight it computes them one at a time. Where john sees several cores under the same CPU time, as under Docker, the solution passes: 1,107 s on 5 cores under a quota of one, and 897 s on a slot of four vCPUs held to the CPU time of one, which slots do not do yet | The solution, and how many cores a slot shows | [terminal-bench-2#28](https://github.com/harbor-framework/terminal-bench-2/pull/28) |
+| `mcmc-sampling-stan` | 2 of 6 tests. The solution installs `rstan` 2.32.7 with `remotes::install_version`, which takes the newest release of every dependency, whatever the lines before it pinned. `RcppParallel` 6 needs cmake, which the image lacks, so `rstan` is never installed. With `RcppParallel` pinned, as the report proposes, `rstan` installs, `StanHeaders` goes from the pinned 2.32.10 to 2.39.1.1, and the solution's model is refused for its array syntax (3 of 6 tests). With `upgrade = 'never'` on its installs as well the solution passes | The solution | [terminal-bench-2#74](https://github.com/harbor-framework/terminal-bench-2/issues/74) |
+| `protein-assembly` | The solution ends in DnaChisel's `NoSolutionError`. It reads the residues of a chromophore from a feature of type `modified_monomer`, which the RCSB data API names `non_standard_monomer` since September 2026. With both names accepted the solution passes | The solution | [terminal-bench-2-1#247](https://github.com/harbor-framework/terminal-bench-2-1/pull/247) |
+| `qemu-alpine-ssh`, `qemu-startup` | No test runs: the verifier's `apt-get install curl` gets 404 for three packages of `bullseye-security`, whose files left deb.debian.org when the support of Debian 11 ended. The same index is served with its files by archive.debian.org | The environment | [terminal-bench-2-1#233](https://github.com/harbor-framework/terminal-bench-2-1/issues/233) |
+| `torch-tensor-parallelism` | The verifier now and then hangs until its 900 s. It pins torch 2.7.0, where destroying a Gloo process group can deadlock on the interpreter lock, which 2.8.0 fixed | The verifier | [pytorch#154976](https://github.com/pytorch/pytorch/pull/154976) |
+
+Upstream has changed none of the seven: the registry's latest version of the dataset is the pinned one, and the task directories of `harbor-framework/terminal-bench-2-1` at `12b7565` are the imported ones. [DECISIONS.md](DECISIONS.md#2026-11-14-tasks-whose-own-solution-does-not-pass-are-set-apart) has each reproduction.
 
 Not ported from the earlier adapters, with the reason, in the order they would come back:
 
@@ -872,6 +898,7 @@ npm run dry-run       # bundle the Worker
 npm run e2e           # local workerd + sandboxd + a runner + krun slots + the scripted model, skipped where krun cannot run
 NANOEVAL_E2E_BACKEND=dir npm run e2e       # the same on directory slots, anywhere
 NANOEVAL_E2E_MODEL=oracle npm run e2e      # the task solutions in place of a model
+NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_MODEL=oracle NANOEVAL_E2E_SCENARIO=unsound npm run e2e  # a solution that fails: nanoeval oracle exits 4, and 0 once the task is listed as unsound
 NANOEVAL_E2E_MODEL=installed npm run e2e   # installed agents, with a scripted command in place of the vendor's
 NANOEVAL_E2E_STORE=r2 npm run e2e          # blobs in R2 through the Worker
 NANOEVAL_E2E_SCENARIO=judge npm run e2e    # final messages and a judge, with the scripted model

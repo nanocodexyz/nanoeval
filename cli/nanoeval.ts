@@ -32,6 +32,7 @@ import * as Slot from '../src/Slot.ts'
 import * as Subset from '../src/Subset.ts'
 import * as Task from '../src/Task.ts'
 import * as Timeline from '../src/Timeline.ts'
+import * as Unsound from '../src/Unsound.ts'
 import * as Import from './Import.ts'
 import * as Plan from './Plan.ts'
 import * as Revision from './Revision.ts'
@@ -282,13 +283,16 @@ const usage = `nanoeval <command>
             List the runs of the deployment, the newest first: id, state, counts, when it
             was created, its eval and its name. A run made by a Worker of a commit before
             this list existed is not in it.
-  status    --url URL --token T RUN [--rows | --tasks]
+  status    --url URL --token T RUN [--rows | --tasks] [--unsound FILE]
             Print the summary of a run: its eval and builds, who paid for the model of each
             agent and how its sessions reached it, the reruns it has, its counts and spend,
             one line an agent with outcomes, mean reward, pass@k, tokens and cost, a
             line for the judge where attempts were judged, and one line an attempt. On a
             terminal too short for that, one line a task with its pass counts instead:
-            --rows lists every attempt, --tasks prints one line a task anywhere.
+            --rows lists every attempt, --tasks prints one line a task anywhere. Where the
+            run holds tasks that the list of unsound tasks names (see oracle), each agent
+            has a second line with its counts and pass@k over the sound tasks alone, and
+            one line names the tasks set apart. run --wait and compare print the same.
   timeline  --url URL --token T RUN
             Print where the time of a run went: every mark the run and its runners recorded,
             by its offset from the creation of the run, with the span it measured.
@@ -329,6 +333,18 @@ const usage = `nanoeval <command>
             --fail-on makes the exit status a gate, as for run: 3 for a regression (or, with
             lost, a lost task) of any of the runs, 4 with any-failure when an attempt of the
             runs that stands failed or errored, 0 otherwise.
+  oracle    --url URL --token T RUN... [--with-reruns] [--unsound FILE]
+            Check runs made with --oracle: the solution of every sound task has to pass its
+            own verifier. A task is unsound when unsound.json of this checkout (--unsound
+            FILE or NANOEVAL_UNSOUND for another file) lists the checksum of its version:
+            {"DATASET": [{"task": ID, "checksum": "sha256:...", "reason": TEXT,
+            "upstream": URL}, ...]}, one entry for each task whose own solution was shown not
+            to pass, with the cause and the report filed where the dataset lives. Every
+            other task is sound, a newer version of a listed task too. The runs named, or
+            with --with-reruns every rerun they have as well, are read as they stand after
+            their reruns. It prints how many sound tasks pass and each that does not, then
+            the unsound ones with their outcome, reason and report, and exits 4 when the
+            solution of a sound task failed or errored, and 0 otherwise.
   revision  [--nanocode REV|DIR|pinned] [--nanocode-ts REV|DIR|pinned] [--sdk REV|DIR|pinned]
             [--sdk-fallback pinned] [--lab DIR] [--hand-profile release]
             [--nanocode-repository URL|DIR] [--nanocode-ts-repository URL|DIR] [--build-only]
@@ -480,6 +496,16 @@ function subsetsFile(named: string | undefined): string {
       process.env['NANOEVAL_SUBSETS'] ??
       Path.join(import.meta.dirname, '..', 'subsets.json'),
   )
+}
+
+export async function unsoundList(named: string | undefined): Promise<Unsound.List> {
+  const chosen = named ?? process.env['NANOEVAL_UNSOUND']
+  const file = Path.resolve(chosen ?? Path.join(import.meta.dirname, '..', 'unsound.json'))
+  const text = await Fs.readFile(file, 'utf8').catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT' && chosen === undefined) return undefined
+    throw new Error('the list of unsound tasks ' + file + ' cannot be read: ' + error.message)
+  })
+  return text === undefined ? {} : Unsound.parse(text, file)
 }
 
 type Api = ReturnType<typeof client>
@@ -881,18 +907,22 @@ function used(
 
 export function shown(
   status: Record<string, any>,
-  input: { height?: number; rows: boolean; tasks: boolean },
+  input: { height?: number; rows: boolean; tasks: boolean; unsound?: readonly string[] },
 ): string {
-  const full = summary(status)
+  const unsound = input.unsound ?? []
+  const full = summary(status, { unsound })
   if (input.rows) return full
-  if (input.tasks) return summary(status, { tasks: true })
+  if (input.tasks) return summary(status, { tasks: true, unsound })
   return input.height !== undefined && full.split('\n').length > input.height
-    ? summary(status, { tasks: true }) +
+    ? summary(status, { tasks: true, unsound }) +
         '\n(one line a task so that it fits the screen: --rows lists every attempt)'
     : full
 }
 
-export function summary(status: Record<string, any>, options: { tasks?: boolean } = {}): string {
+export function summary(
+  status: Record<string, any>,
+  options: { tasks?: boolean; unsound?: readonly string[] } = {},
+): string {
   const cancelled = (status['attempts'] as Record<string, any>[]).filter(
     (attempt) => attempt['failure']?.kind === 'cancelled',
   ).length
@@ -1060,6 +1090,7 @@ export function summary(status: Record<string, any>, options: { tasks?: boolean 
           .map((part) => ', ' + part)
           .join(''),
     )
+  lines.push(...(options.unsound ?? []))
   const judges = Object.values(status['agents'] as Record<string, any>).flatMap((row) =>
     row.judge?.attempts ? [row.judge] : [],
   )
@@ -1506,6 +1537,7 @@ async function main(
       template: { type: 'string' },
       'tick-ms': { default: '500', type: 'string' },
       token: { default: process.env['NANOEVAL_TOKEN'], type: 'string' },
+      unsound: { type: 'string' },
       url: { default: process.env['NANOEVAL_URL'], type: 'string' },
       'verifier-cache': { default: false, type: 'boolean' },
       wait: { default: false, type: 'boolean' },
@@ -2019,6 +2051,7 @@ async function main(
       'evals',
       'export',
       'import',
+      'oracle',
       'plans',
       'pool',
       'run',
@@ -2388,6 +2421,7 @@ async function main(
   if (command === 'run') {
     if (values.oracle && values.agent?.length)
       throw new Error('--oracle runs no model: leave out --agent')
+    const unsound = await unsoundList(values.unsound)
     const on = gates(values['fail-on'])
     if ((values.baseline?.length || on.size) && !values.wait)
       throw new Error('--baseline and --fail-on read a run that ended: add --wait')
@@ -2640,17 +2674,22 @@ async function main(
       lab?.progress.rows(status['counts'])
       if (status['state'] === 'finished') {
         lab?.progress.settle()
-        console.log(shown(status, screen))
-        const ended = baseline.length ? await results(api, created.id) : undefined
-        const changes = ended ? Compare.changes(baseline, ended) : []
+        const ended = await results(api, created.id)
+        console.log(shown(status, { ...screen, unsound: Unsound.summary(ended.attempts, unsound) }))
+        const compared = baseline.length ? ended : undefined
+        const changes = compared ? Compare.changes(baseline, compared) : []
         const refusal = values.unlike
           ? undefined
           : Compare.unlike(changes.map((change) => change.pair))
-        if (ended) {
+        if (compared) {
           process.stdout.write(
             '\n' +
-              Compare.table([...baseline, ended]) +
-              (refusal ? '' : '\n' + Compare.against(baseline, ended)),
+              Compare.table([...baseline, compared]) +
+              (refusal
+                ? ''
+                : '\n' +
+                  Compare.against(baseline, compared) +
+                  Unsound.against({ baseline, list: unsound, run: [compared] })),
           )
         }
         if (lab) {
@@ -2732,9 +2771,26 @@ async function main(
     const sides = baseline.length ? Compare.lineages(runs) : []
     const changes = sides.flatMap((side) => Compare.changes(baseline, side))
     const refusal = values.unlike ? undefined : Compare.unlike(changes.map((change) => change.pair))
+    const unsound = await unsoundList(values.unsound)
     process.stdout.write(
       Compare.table([...baseline, ...runs]) +
-        (refusal ? '' : sides.map((side) => '\n' + Compare.against(baseline, side)).join('')),
+        (refusal
+          ? ''
+          : sides.length
+            ? sides
+                .map(
+                  (side) =>
+                    '\n' +
+                    Compare.against(baseline, side) +
+                    Unsound.against({ baseline, list: unsound, run: side }),
+                )
+                .join('')
+            : Unsound.summary(
+                Compare.standing(runs).flatMap((result) => result.attempts),
+                unsound,
+              )
+                .map((line) => line + '\n')
+                .join('')),
     )
     if (refusal) throw new Error(refusal)
     judged(changes, on)
@@ -2750,7 +2806,22 @@ async function main(
     })
     return
   }
-  if (command === 'status') console.log(shown(await api.status(run), screen))
+  if (command === 'oracle') {
+    const found = Unsound.check(
+      await Promise.all(
+        (values['with-reruns'] ? await withReruns(api, rest) : rest).map((id) => api.results(id)),
+      ),
+      await unsoundList(values.unsound),
+    )
+    process.stdout.write(Unsound.report(found))
+    if (Unsound.failed(found)) process.exitCode = 4
+    return
+  }
+  if (command === 'status') {
+    const status = await api.status(run)
+    const [results, unsound] = await Promise.all([api.results(run), unsoundList(values.unsound)])
+    console.log(shown(status, { ...screen, unsound: Unsound.summary(results.attempts, unsound) }))
+  }
   if (command === 'timeline') {
     const timeline = await api.timeline(run)
     console.log(Timeline.table(timeline.marks, timeline.createdAt))
