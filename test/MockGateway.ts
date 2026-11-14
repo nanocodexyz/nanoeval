@@ -28,6 +28,7 @@ export type Mock = {
   readonly early: readonly Charge[]
   readonly funding: readonly unknown[]
   hold(after: number): void
+  keep(): void
   readonly key: string
   lifetime(seconds: number | undefined): void
   readonly log: readonly Entry[]
@@ -43,7 +44,7 @@ export type Mock = {
 }
 
 export type Options = {
-  bootstrapMs?: number
+  bootstrapMs?: () => number
   cap?: number
   key: string
   lifetimeSec?: number
@@ -124,6 +125,7 @@ export async function start(options: Options): Promise<Mock> {
   let told = false
   const held = new Set<string>()
   let holdAfter: number | undefined
+  let keeps = false
   let release = () => {}
   const released = new Promise<void>((resolve) => {
     release = resolve
@@ -161,7 +163,7 @@ export async function start(options: Options): Promise<Mock> {
   }
   const lapse = setInterval(() => {
     for (const [id, leased] of sandboxes)
-      if (!leased.ended && Date.now() > Math.min(leased.paidUntil, leased.expiresAt))
+      if (!leased.ended && !keeps && Date.now() > Math.min(leased.paidUntil, leased.expiresAt))
         void end(id, 'lapsed')
       else if (!leased.ended && Date.now() > leased.endsAt) void end(id, 'died')
   }, 100)
@@ -362,7 +364,7 @@ export async function start(options: Options): Promise<Mock> {
     if (command.length !== 3 || command[0] !== 'bash' || command[1] !== '-lc')
       return problem(response, 400, 'the mock runs bash -lc commands only')
     if (options.bootstrapMs)
-      await new Promise((resolve) => setTimeout(resolve, options.bootstrapMs))
+      await new Promise((resolve) => setTimeout(resolve, options.bootstrapMs!()))
     if (held.has(id)) await released
     const output = leased!.ended
       ? undefined
@@ -480,6 +482,9 @@ export async function start(options: Options): Promise<Mock> {
     funding,
     hold(after) {
       holdAfter = after
+    },
+    keep() {
+      keeps = true
     },
     key: options.key,
     lifetime(seconds) {

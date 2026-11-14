@@ -114,7 +114,6 @@ const midturnSleepSec = 20
 const midturnYieldMs = 10_000
 const sandboxLeaseSec = Number(process.env['NANOEVAL_E2E_SANDBOX_LEASE_SEC'] ?? leaseSec)
 const slowStart = gateway && (scenario === 'tasks' || scenario === 'warm')
-const slowStartMs = sandboxLeaseSec * 1000 + 1000
 const cappedLifeSec = 1800
 const soonerLifeSec = 6 * sandboxLeaseSec + 1
 const seededDisk = 'e'.repeat(64)
@@ -1245,7 +1244,7 @@ async function main(): Promise<void> {
   })
   const mock = gateway
     ? await MockGateway.start({
-        ...(slowStart ? { bootstrapMs: slowStartMs } : {}),
+        ...(slowStart ? { bootstrapMs: () => noticeSec * 1000 + 1000 } : {}),
         ...(capped ? { cap: 1, lifetimeSec: cappedLifeSec } : {}),
         ...(sooner ? { lifetimeSec: soonerLifeSec } : {}),
         key: 'sk-tempo-' + Crypto.randomBytes(16).toString('hex'),
@@ -1330,7 +1329,9 @@ async function main(): Promise<void> {
   Fs.writeFileSync(Path.join(secrets, 'vars.env'), Plan.envFile(vars), { mode: 0o600 })
   const log = Fs.createWriteStream(Path.join(out, 'wrangler.log'))
   let logged = Promise.resolve()
+  let workerSec: number | undefined
   const start = async () => {
+    const asked = Date.now()
     const child = spawn(
       Path.resolve('node_modules/.bin/wrangler'),
       [
@@ -1362,7 +1363,10 @@ async function main(): Promise<void> {
         (response) => response.ok,
         () => false,
       )
-      if (healthy) return child
+      if (healthy) {
+        workerSec ??= (Date.now() - asked) / 1000
+        return child
+      }
       if (tries > 240 || child.exitCode !== null)
         throw new Error('wrangler dev did not start; see ' + Path.join(out, 'wrangler.log'))
       await new Promise((resolve) => setTimeout(resolve, 250))
@@ -1377,6 +1381,15 @@ async function main(): Promise<void> {
     await exited
   }
   let worker = await start()
+  const noticeSec = leaseSec + (slowStart ? Math.ceil(3 * workerSec!) : 0)
+  if (slowStart)
+    console.log(
+      'gateway: the Worker of this machine answered ' +
+        workerSec +
+        ' s after it was started, and the run leases its sandbox for ' +
+        noticeSec +
+        ' s and renews a lease that long before it ends',
+    )
   const pass = async () => {
     await stop(worker, 'SIGTERM')
     await logged
@@ -1480,7 +1493,7 @@ async function main(): Promise<void> {
           member['state'] === 'idle' &&
           member['holding'] &&
           (member['paidUntil'] === null ||
-            member['paidUntil'] - Date.now() > leaseSec * 1000 + 500),
+            member['paidUntil'] - Date.now() > noticeSec * 1000 + 500),
       ),
     )
   const runnerId = (home: string | undefined): number | undefined => {
@@ -1866,7 +1879,7 @@ async function main(): Promise<void> {
       limits: {
         attachSec: 60,
         claims: 3,
-        leaseSec,
+        leaseSec: noticeSec,
         setupSec:
           scenario === 'disk' || ending
             ? patienceSec!
@@ -1884,7 +1897,9 @@ async function main(): Promise<void> {
         backend,
         disks: scenario === 'disks' || scenario === 'disk' ? 'remove' : 'keep',
         ...(scenario === 'disk' ? { freeDiskMb: 2 ** 40 } : {}),
-        ...(gateway ? { leaseSec: lapse ? lapseLeaseSec! : sandboxLeaseSec } : {}),
+        ...(gateway
+          ? { leaseSec: lapse ? lapseLeaseSec! : slowStart ? noticeSec : sandboxLeaseSec }
+          : {}),
         max: attached ? 0 : capped || fleet ? 2 : 1,
         ...(packing ? { memoryMb: 768 } : {}),
         network,
@@ -1901,7 +1916,7 @@ async function main(): Promise<void> {
         slots,
         timeoutSec: 3600,
         ...(cached ? { verifierCache: true as const } : {}),
-        ...(warm ? { warm: { idleSec: 8, usd: 1 } } : {}),
+        ...(warm ? { warm: { idleSec: 2 * noticeSec + 2, usd: 1 } } : {}),
       },
     }
     const shortSec =
@@ -2951,7 +2966,8 @@ async function main(): Promise<void> {
       if (slowStart)
         assert.ok(
           (await api.timeline(created.id)).marks.some(
-            (mark) => mark.name === 'sandbox.exec' && (mark.ms ?? 0) >= slowStartMs,
+            (mark) =>
+              mark.name === 'sandbox.exec' && (mark.ms ?? 0) >= config.sandbox.leaseSec! * 1000,
           ),
           'its runner took longer to start than a lease lasts, and the lease was renewed meanwhile',
         )
@@ -4640,6 +4656,22 @@ async function main(): Promise<void> {
           )
           assert.deepEqual(await fetched(second.id), [], 'the kept sandbox fetched no disk again')
         }
+        await waitFor('the pool to pay the kept sandbox to the end of its idle time', async () =>
+          (
+            (await api.pool())['members'] as {
+              idleUntil: number
+              paidUntil: number
+              state: string
+            }[]
+          ).every(
+            (member) =>
+              member.state === 'closed' ||
+              (member.state === 'idle' && member.paidUntil >= member.idleUntil),
+          )
+            ? true
+            : undefined,
+        )
+        mock.keep()
         const closed = await waitFor('the pool to terminate the kept sandbox', async () => {
           const pool = await api.pool()
           return (pool['members'] as { state: string }[]).every(
