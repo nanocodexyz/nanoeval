@@ -7,7 +7,7 @@ import type * as Sandbox from '../src/Sandbox.ts'
 
 export type Charge = { operation: string; usd: number }
 
-export type Entry = Charge & { kept?: number; refused?: number }
+export type Entry = Charge & { kept?: number; late?: true; refused?: number }
 
 export type Leased = {
   ended?: 'died' | 'lapsed' | 'terminated'
@@ -260,7 +260,8 @@ export async function start(options: Options): Promise<Mock> {
       return
     }
     if (operation === 'create') capKnown = false
-    charges.push({ operation, usd })
+    const charge = { operation, usd }
+    charges.push(charge)
     log.push({ operation, usd })
     const answer = (value: unknown) => {
       response.writeHead(200, { 'content-type': 'application/json' })
@@ -311,7 +312,17 @@ export async function start(options: Options): Promise<Mock> {
     if (options.bootstrapMs)
       await new Promise((resolve) => setTimeout(resolve, options.bootstrapMs))
     if (held.has(id)) await released
-    const output = await sandbox.exec(there(command[2]!))
+    const output = leased!.ended
+      ? undefined
+      : await sandbox.exec(there(command[2]!)).catch((error: unknown) => {
+          if (!leased!.ended) throw error
+          return undefined
+        })
+    if (!output) {
+      charges.splice(charges.indexOf(charge), 1)
+      log.push({ late: true, operation, refused: 404, usd })
+      return problem(response, 404, 'Sandbox ' + id + ' ended.')
+    }
     return answer({ ...output, timedOut: false, truncated: false })
   }
 

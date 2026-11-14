@@ -181,6 +181,10 @@ function detail(text: string): string {
   return (typeof found === 'string' && found ? found : text).slice(0, 500)
 }
 
+function over(row: Pick<SandboxRow, 'expires_at' | 'paid_until'>): boolean {
+  return Math.min(row.paid_until ?? Infinity, row.expires_at ?? Infinity) <= Date.now()
+}
+
 function secret(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(24)), (byte) =>
     byte.toString(16).padStart(2, '0'),
@@ -1722,7 +1726,9 @@ export class Run extends DurableObject<Env> {
         this.update('sandboxes', id, { state: 'starting' })
     } catch (error) {
       const row = this.sandboxes().find((candidate) => candidate.id === id)!
-      if (row.state !== 'failed') {
+      if (['creating', 'ending', 'starting'].includes(row.state) && over(row))
+        await this.expire(provider, row)
+      else if (row.state !== 'failed') {
         const retryAfterSec = Opening.retryAfterSec(error)
         await this.failSandbox(provider, row, message(error), {
           passing: row.handle === null && Opening.passing(error),
@@ -2128,24 +2134,28 @@ export class Run extends DurableObject<Env> {
     for (const { id } of this.sandboxes()) {
       const record = this.sandboxes().find((candidate) => candidate.id === id)!
       if (!['ending', 'ready', 'starting'].includes(record.state)) continue
-      const paid = record.paid_until ?? Infinity
-      const lifetime = record.expires_at ?? Infinity
-      if (Math.min(paid, lifetime) > Date.now()) continue
-      const reason = paid <= lifetime ? 'the lease of its sandbox ended' : 'its sandbox ended'
-      for (const row of this.rows())
-        if (Ledger.active(row) && row.runner === record.runner) await this.lose(row, 'expired')
-      this.update('sandboxes', record.id, {
-        error: record.error ?? (paid <= lifetime ? 'its lease ended' : 'its lifetime ended'),
-        state: 'closed',
-      })
-      if (record.runner !== null)
-        this.update('runners', record.runner, { error: reason, state: 'left' })
-      if (record.handle) {
-        const handle = JSON.parse(record.handle) as Sandbox.Handle
-        await this.renewing(provider, () => provider.kill(handle).catch(() => {}))
-      }
-      await this.forget(record, reason)
+      if (!over(record)) continue
+      await this.expire(provider, record)
     }
+  }
+
+  private async expire(provider: Sandbox.Provider, record: SandboxRow): Promise<void> {
+    const paid = record.paid_until ?? Infinity
+    const lifetime = record.expires_at ?? Infinity
+    const reason = paid <= lifetime ? 'the lease of its sandbox ended' : 'its sandbox ended'
+    for (const row of this.rows())
+      if (Ledger.active(row) && row.runner === record.runner) await this.lose(row, 'expired')
+    this.update('sandboxes', record.id, {
+      error: record.error ?? (paid <= lifetime ? 'its lease ended' : 'its lifetime ended'),
+      state: 'closed',
+    })
+    if (record.runner !== null)
+      this.update('runners', record.runner, { error: reason, state: 'left' })
+    if (record.handle) {
+      const handle = JSON.parse(record.handle) as Sandbox.Handle
+      await this.renewing(provider, () => provider.kill(handle).catch(() => {}))
+    }
+    await this.forget(record, reason)
   }
 
   private async runner(request: Request, parts: readonly string[]): Promise<Response> {

@@ -883,6 +883,7 @@ async function main(): Promise<void> {
         sandboxd: { token: sandboxToken, url: sandboxd.url },
       })
     : undefined
+  if (lapse) mock?.hold(0)
   const upstream = mock ?? (await modelEndpoint())
   const plan =
     model === 'codex-plan'
@@ -1671,6 +1672,10 @@ async function main(): Promise<void> {
           mock!.release()
         }
       }
+      if (lapse && !restarted && [...mock!.sandboxes.values()][0]?.ended) {
+        restarted = true
+        mock!.release()
+      }
       if (fleet && !restarted) {
         const first = (status['sandboxes'] as { runner: number; state: string }[]).find(
           (sandbox) => sandbox.state === 'ready',
@@ -1802,6 +1807,7 @@ async function main(): Promise<void> {
         'fleet',
         'forgotten',
         'gone',
+        'lapse',
         'lost',
         'midturn',
         'restart',
@@ -3145,7 +3151,7 @@ async function main(): Promise<void> {
       const micro = (charge: MockGateway.Charge) => Math.round(charge.usd * 1e6)
       const charged = () =>
         mock.log.flatMap((entry) => [
-          ['compute.' + entry.operation, micro(entry)],
+          ...(entry.late ? [] : [['compute.' + entry.operation, micro(entry)]]),
           ...(entry.refused === undefined
             ? []
             : [
