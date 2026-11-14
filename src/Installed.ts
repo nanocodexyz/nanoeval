@@ -1,7 +1,14 @@
 import type * as Atif from './Atif.ts'
+import * as CodexFallback from './CodexFallback.ts'
 import * as Slot from './Slot.ts'
 
-export type Kind = 'claude-code' | 'codex-cli' | 'nanocode-claude' | 'nanocode-codex'
+export type Kind =
+  | 'claude-code'
+  | 'codex-cli'
+  | 'nanocode-claude'
+  | 'nanocode-codex'
+  | 'stock-claude'
+  | 'stock-codex'
 
 export type Agent = { kind: Kind; model: string; thinking?: string }
 
@@ -28,6 +35,8 @@ export const kinds: readonly Kind[] = [
   'codex-cli',
   'nanocode-claude',
   'nanocode-codex',
+  'stock-claude',
+  'stock-codex',
 ]
 
 export const events = 'agent/events.jsonl'
@@ -37,6 +46,11 @@ export const tokenVariable = 'NANOEVAL_AGENT_TOKEN'
 const claude =
   'https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.318'
 const codex = 'https://github.com/openai/codex/releases/download/rust-v0.166.0'
+const leaderboardClaude =
+  'https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.300'
+const leaderboardCodex = 'https://github.com/openai/codex/releases/download/rust-v0.162.1'
+
+export const leaderboard = { contextWindow: 1_048_576, replyLimit: 65_536 } as const
 
 export const releases: Record<Kind, Release> = {
   'claude-code': {
@@ -103,6 +117,64 @@ export const releases: Record<Kind, Release> = {
     source: 'runtime',
     version: 'runtime-' + Slot.runtime.sha256.slice(0, 12),
   },
+  'stock-claude': {
+    binaries: [
+      {
+        arch: 'aarch64',
+        libc: 'gnu',
+        sha256: 'ae2295ae2da156936bf5831ab01971ce924d0c9a0af174e28d96fffa8d5fa0a6',
+        url: leaderboardClaude + '/linux-arm64/claude',
+      },
+      {
+        arch: 'aarch64',
+        libc: 'musl',
+        sha256: '267fecafb9df3dc1ef93f01ea936742455151d38b9bceebc4c12b531df827a2c',
+        url: leaderboardClaude + '/linux-arm64-musl/claude',
+      },
+      {
+        arch: 'x86_64',
+        libc: 'gnu',
+        sha256: '674deba0bba9aee479f4503c438b49303b6fdd304b9a471b14977aaec5215453',
+        url: leaderboardClaude + '/linux-x64/claude',
+      },
+      {
+        arch: 'x86_64',
+        libc: 'musl',
+        sha256: '426e7b0a3726d656babc943a92392eb3653377587658a240ab442d19e4eef3c9',
+        url: leaderboardClaude + '/linux-x64-musl/claude',
+      },
+    ],
+    entry: 'claude',
+    format: 'file',
+    provider: 'claude',
+    source: 'release',
+    version: '2.1.300',
+  },
+  'stock-codex': {
+    binaries: [
+      {
+        arch: 'aarch64',
+        libc: 'any',
+        sha256: '53a9ce0b94beb27a63fdeb2f7704d95199e17b3898aa33b60461a1a93ac0d88b',
+        url: leaderboardCodex + '/codex-package-aarch64-unknown-linux-musl.tar.gz',
+      },
+      {
+        arch: 'x86_64',
+        libc: 'any',
+        sha256: 'a676f5722aae0d86cbe3764332f08eab1fdd89dc0a300b3ad4ffbf48611fa3e3',
+        url: leaderboardCodex + '/codex-package-x86_64-unknown-linux-musl.tar.gz',
+      },
+    ],
+    entry: 'bin/codex',
+    format: 'tar.gz',
+    provider: 'codex',
+    source: 'release',
+    version: '0.162.1',
+  },
+}
+
+function codexEvents(kind: Kind): boolean {
+  return kind === 'codex-cli' || kind === 'stock-codex'
 }
 
 export const anthropicMessagesUrl = 'NANOCODE_ANTHROPIC_MESSAGES_URL'
@@ -117,6 +189,112 @@ function quote(value: string): string {
 }
 
 const preamble = ['set -eu', 'mkdir -p "$NANOEVAL_AGENT_HOME"']
+
+const prompt = ['prompt=$(cat; printf x)', 'prompt=${prompt%x}']
+
+function stockCodex(agent: Agent, url: string): string {
+  const root = '"$NANOEVAL_AGENT_RT"/agents/stock-codex/any'
+  const catalog = '/tmp/hlb-codex-model-catalog.json'
+  const entry = {
+    ...CodexFallback.model,
+    input_modalities: ['text', 'image'],
+    slug: agent.model,
+    display_name: agent.model,
+    context_window: leaderboard.contextWindow,
+    max_context_window: leaderboard.contextWindow,
+    model_messages: { instructions_template: CodexFallback.instructions },
+  }
+  const config = [
+    'model_provider = "hill-proxy"',
+    'model_context_window = ' + leaderboard.contextWindow,
+    'model_catalog_json = "' + catalog + '"',
+    '',
+    '[model_providers.hill-proxy]',
+    'name = "hill proxy"',
+    'base_url = ' + JSON.stringify(url),
+    'env_key = "OPENAI_API_KEY"',
+    'wire_api = "responses"',
+    '',
+    '[features]',
+    'multi_agent = false',
+    '',
+    '[model_providers.hill-proxy.capabilities]',
+    'remote_compaction = "unsupported"',
+  ]
+  return (
+    [
+      ...preamble,
+      'ln -sf ' + root + '/bin/codex /usr/local/bin/codex 2>/dev/null || true',
+      'ln -sf ' + root + '/codex-path/rg /usr/local/bin/rg 2>/dev/null || true',
+      'export CODEX_HOME=/tmp/codex-home',
+      'export OPENAI_API_KEY="$' + tokenVariable + '"',
+      'mkdir -p "$CODEX_HOME" /tmp/codex-secrets',
+      'cat >/tmp/codex-secrets/auth.json <<EOF',
+      '{',
+      '  "OPENAI_API_KEY": "${OPENAI_API_KEY}"',
+      '}',
+      'EOF',
+      'ln -sf /tmp/codex-secrets/auth.json "$CODEX_HOME/auth.json"',
+      'cat >"$CODEX_HOME/config.toml" <<\'NANOEVAL_CODEX_CONFIG\'',
+      ...config,
+      'NANOEVAL_CODEX_CONFIG',
+      'cat >' + catalog + " <<'NANOEVAL_CODEX_CATALOG'",
+      JSON.stringify({ models: [entry] }, null, 2),
+      'NANOEVAL_CODEX_CATALOG',
+      ...prompt,
+      'if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi',
+      [
+        'exec ' + root + '/bin/codex exec',
+        '--dangerously-bypass-approvals-and-sandbox',
+        '--skip-git-repo-check',
+        '--model ' + quote(agent.model),
+        '--json',
+        '--enable unified_exec',
+        ...(agent.thinking ? ['-c model_reasoning_effort=' + quote(agent.thinking)] : []),
+        '-c web_search=disabled',
+        '-- "$prompt" 2>&1 </dev/null',
+      ].join(' '),
+    ].join('\n') + '\n'
+  )
+}
+
+function stockClaude(agent: Agent, url: string): string {
+  const root = '"$NANOEVAL_AGENT_RT"/agents/stock-claude'
+  const model = quote(agent.model)
+  return (
+    [
+      ...preamble,
+      'if [ -f /etc/alpine-release ] || (ldd --version 2>&1 | grep -qi musl); then cli=' +
+        root +
+        '/musl/claude; else cli=' +
+        root +
+        '/gnu/claude; fi',
+      'ln -sf "$cli" /usr/local/bin/claude 2>/dev/null || true',
+      'export ANTHROPIC_AUTH_TOKEN="$' + tokenVariable + '"',
+      'export ANTHROPIC_BASE_URL=' + quote(url),
+      'export ANTHROPIC_MODEL=' + model,
+      'export ANTHROPIC_DEFAULT_SONNET_MODEL=' + model,
+      'export ANTHROPIC_DEFAULT_OPUS_MODEL=' + model,
+      'export ANTHROPIC_DEFAULT_HAIKU_MODEL=' + model,
+      'export CLAUDE_CODE_SUBAGENT_MODEL=' + model,
+      'export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 IS_SANDBOX=1',
+      'export CLAUDE_CODE_MAX_CONTEXT_TOKENS=' + leaderboard.contextWindow,
+      'export CLAUDE_CODE_MAX_OUTPUT_TOKENS=' + leaderboard.replyLimit,
+      'export CLAUDE_CONFIG_DIR=/logs/agent/sessions',
+      'mkdir -p $CLAUDE_CONFIG_DIR/debug $CLAUDE_CONFIG_DIR/projects/-app $CLAUDE_CONFIG_DIR/shell-snapshots $CLAUDE_CONFIG_DIR/statsig $CLAUDE_CONFIG_DIR/todos $CLAUDE_CONFIG_DIR/skills',
+      'export PATH="${HOME:-/root}/.local/bin:$PATH"',
+      ...prompt,
+      [
+        'printf "%s" "$prompt" | "$cli"',
+        '--verbose',
+        '--output-format=stream-json',
+        ...(agent.thinking ? ['--effort ' + quote(agent.thinking)] : []),
+        '--permission-mode=bypassPermissions',
+        '--print 2>&1',
+      ].join(' '),
+    ].join('\n') + '\n'
+  )
+}
 
 export function script(agent: Agent, options: { url: string }): string {
   if (!/^https?:\/\/[A-Za-z0-9.:[\]_/-]+$/.test(options.url))
@@ -134,31 +312,34 @@ export function script(agent: Agent, options: { url: string }): string {
         '  set -- "$NANOEVAL_AGENT_RT/nanocode"',
         'fi',
         'export NANOCODE_HOME="$NANOEVAL_AGENT_HOME"',
-        ...(harness === 'codex'
+        'export NANOCODE_OPENAI_BASE_URL=' + quote(options.url),
+        'export NANOCODE_OPENAI_API_KEY="$' + tokenVariable + '"',
+        'export NO_COLOR=1',
+        ...(harness === 'claude'
           ? [
-              'export NANOCODE_OPENAI_BASE_URL=' + quote(options.url),
-              'export NANOCODE_OPENAI_API_KEY="$' + tokenVariable + '"',
-            ]
-          : [
               'export ' + anthropicMessagesUrl + '=' + quote(options.url + '/v1/messages'),
+              'export NANOCODE_ANTHROPIC_BASE_URL=' + quote(options.url + '/v1'),
               'export ' + anthropicApiKey + '="$' + tokenVariable + '"',
               'export NANOCODE_MODELS_URL=' + quote(options.url + '/models'),
-              'export NANOCODE_OPENAI_API_KEY="$' + tokenVariable + '"',
-            ]),
-        'prompt=$(cat)',
+            ]
+          : []),
+        ...prompt,
         [
           'exec "$@" exec',
-          '--ephemeral',
-          '--no-subagents',
-          '--no-tempo-tools',
+          '--model ' + quote(agent.model),
           '--harness ' + harness,
-          '-m ' + quote(agent.model),
-          ...(agent.thinking ? ['-t ' + quote(agent.thinking)] : []),
-          '-- "$prompt"',
+          ...(agent.thinking ? ['--thinking ' + quote(agent.thinking)] : []),
+          '--ephemeral',
+          '--no-tempo-tools',
+          '--context-window ' + leaderboard.contextWindow,
+          ...(harness === 'claude' ? ['--max-output-tokens ' + leaderboard.replyLimit] : []),
+          '"$prompt" </dev/null',
         ].join(' '),
       ].join('\n') + '\n'
     )
   }
+  if (agent.kind === 'stock-codex') return stockCodex(agent, options.url)
+  if (agent.kind === 'stock-claude') return stockClaude(agent, options.url)
   if (agent.kind === 'codex-cli') {
     const provider =
       'model_providers.nanoeval={name="nanoeval", base_url="' +
@@ -259,7 +440,7 @@ export function summarize(kind: Kind, stream: string): Summary {
     return summary
   }
   for (const line of lines(stream)) {
-    if (kind === 'codex-cli') {
+    if (codexEvents(kind)) {
       const item = line['item']
       if (line['type'] === 'item.completed' && item?.type === 'agent_message')
         summary.message = text(item.text)
@@ -309,7 +490,7 @@ export function trajectory(
   if (runtime && input.stream.trim()) step('agent', input.stream.trim()).model_name = model
 
   for (const line of runtime ? [] : lines(input.stream)) {
-    if (kind === 'codex-cli') {
+    if (codexEvents(kind)) {
       const item = line['item'] as Line | undefined
       if (line['type'] === 'thread.started') session = text(line['thread_id']) || session
       if (line['type'] === 'turn.failed')

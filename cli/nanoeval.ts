@@ -1729,6 +1729,7 @@ async function main(
       'ANTHROPIC_API_KEY',
       'ANTHROPIC_AUTH_TOKEN',
       'ANTHROPIC_BASE_URL',
+      'NANOEVAL_REPLY_LIMIT',
       'OPENAI_API_KEY',
       'OPENAI_BASE_URL',
       'TEMPO_GATEWAY_URL',

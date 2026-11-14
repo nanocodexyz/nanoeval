@@ -277,16 +277,16 @@ test('the command of nanocode is the runtime of the slot and reads the endpoint 
   assert.match(codex, /^loader:--library-path .*rt-nanocode-loader\/lib$/m)
   assert.deepEqual(args(codex), [
     'exec',
-    '--ephemeral',
-    '--no-subagents',
-    '--no-tempo-tools',
+    '--model',
+    'boundless/z-ai/glm-5.3-flash',
     '--harness',
     'codex',
-    '-m',
-    'boundless/z-ai/glm-5.3-flash',
-    '-t',
+    '--thinking',
     'high',
-    '--',
+    '--ephemeral',
+    '--no-tempo-tools',
+    '--context-window',
+    String(Installed.leaderboard.contextWindow),
     "Write it's done.",
   ])
   assert.match(
@@ -302,15 +302,20 @@ test('the command of nanocode is the runtime of the slot and reads the endpoint 
     runtime(false),
   )
   assert.doesNotMatch(claude, /^loader:/m)
-  assert.deepEqual(args(claude).slice(0, 6), [
+  assert.deepEqual(args(claude), [
     'exec',
-    '--ephemeral',
-    '--no-subagents',
-    '--no-tempo-tools',
+    '--model',
+    'boundless/z-ai/glm-5.3-flash',
     '--harness',
     'claude',
+    '--ephemeral',
+    '--no-tempo-tools',
+    '--context-window',
+    String(Installed.leaderboard.contextWindow),
+    '--max-output-tokens',
+    String(Installed.leaderboard.replyLimit),
+    "Write it's done.",
   ])
-  assert.ok(!args(claude).includes('-t'))
   assert.match(
     claude,
     /^NANOCODE_ANTHROPIC_MESSAGES_URL=http:\/\/127\.0\.0\.1:8787\/v1\/runs\/r\/model\/a00001\/v1\/messages$/m,
@@ -320,7 +325,6 @@ test('the command of nanocode is the runtime of the slot and reads the endpoint 
     claude,
     /^NANOCODE_MODELS_URL=http:\/\/127\.0\.0\.1:8787\/v1\/runs\/r\/model\/a00001\/models$/m,
   )
-  assert.doesNotMatch(claude, /NANOCODE_OPENAI_BASE_URL/)
   assert.equal(Config.harness({ provider: 'nanocode-codex' }), 'installed')
   assert.deepEqual(parseAgent('nc=nanocode-codex:boundless/z-ai/glm-5.3-flash:high'), {
     id: 'nc',

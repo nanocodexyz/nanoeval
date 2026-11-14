@@ -1566,6 +1566,36 @@ export class Run extends DurableObject<Env> {
         message: 'the run forwards POST requests only',
         status: 405,
       })
+    let forwarded = request
+    if (Proxy.generates(provider, path)) {
+      let body = await request.text()
+      let value: Record<string, unknown> | undefined
+      try {
+        const parsed = JSON.parse(body) as unknown
+        if (typeof parsed === 'object' && parsed !== null) value = parsed as Record<string, unknown>
+      } catch {}
+      const model = this.agentOf(row).model
+      if (value && value['model'] !== model)
+        return Response.json(
+          {
+            error: {
+              message: 'model ' + String(value['model']) + ' is not served in this run',
+              type: 'invalid_request_error',
+            },
+          },
+          { status: 400 },
+        )
+      const limit = Number(this.env.NANOEVAL_REPLY_LIMIT ?? 0)
+      if (value && path === 'responses' && limit > 0 && !value['max_output_tokens']) {
+        value['max_output_tokens'] = limit
+        body = JSON.stringify(value)
+      }
+      forwarded = new Request(request.url, {
+        body,
+        headers: request.headers,
+        method: request.method,
+      })
+    }
     return Model.forward(this.env, {
       hooks: {
         admit: async (waitedMs) => this.admit({ attempt: row.id, claim: row.claims, waitedMs }),
@@ -1583,7 +1613,7 @@ export class Run extends DurableObject<Env> {
       },
       path,
       provider,
-      request,
+      request: forwarded,
       search,
     })
   }

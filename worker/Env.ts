@@ -24,6 +24,7 @@ export type Env = App.Env & {
   LOCAL_SANDBOX_URL?: string
   LOGIN_SECRET?: string
   NANOCODE_TS_REVISION?: string
+  NANOEVAL_REPLY_LIMIT?: string
   OPENAI_API_KEY?: string
   OPENAI_BASE_URL?: string
   PLAN_SECRET?: string
