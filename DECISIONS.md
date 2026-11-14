@@ -5457,10 +5457,10 @@ Stopping a Worker or a runner sent one SIGTERM to its process group and then wai
 
 | Lane | Passed | A run took | Load average |
 | --- | --- | --- | --- |
-| free disk floor | 9 of 9 | 42 to 70 s | 3.2 to 8.0 |
-| a runner whose sandbox ends before the rows could | 9 of 9 | 90 to 138 s | 3.6 to 8.9 |
+| free disk floor | 10 of 10 | 42 to 70 s | 3.2 to 8.0 |
+| a runner whose sandbox ends before the rows could | 10 of 10 | 90 to 138 s | 3.6 to 8.9 |
 | two attached runners | 10 of 10 | 25 to 34 s | 3.9 to 8.8 |
-| a gateway that sells no renewal, 4 attempts | 2 of 2 | 154 to 189 s | 4.4 to 6.5 |
+| a gateway that sells no renewal, 4 attempts | 10 of 10 | 146 to 204 s | 4.4 to 8.4 |
 
 Pinned as well: `npm test` 1 of 1, "a standing runner stopped during a run and another started", which keeps its 5 s, 3 of 3. Not pinned: `npm test` 1 of 1 (373 tests, 369 passed and the 4 that need KVM skipped), and the two lanes of `e2e-revision` 1 of 1 and 1 of 1.
 
