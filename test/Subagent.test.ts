@@ -277,6 +277,49 @@ test('a subagent that goes on after its Worker was killed has each model call, i
   }
 })
 
+test('a subagent that takes up its cell after a kill publishes its calls again, and each is counted once', () => {
+  const events = recorded('claude-resumed-in-subagent')
+  const inner = events.flatMap((event) =>
+    event.event.source === 'subagent' && event.event.update?.event
+      ? [event.event.update.event]
+      : [],
+  )
+  assert.deepEqual(
+    inner.filter((event) => event.type === 'tool.call').map((event) => event.payload['call_id']),
+    ['toolu_2', 'toolu_2/code-1', 'toolu_2', 'toolu_2/code-1', 'toolu_4', 'toolu_4/code-1'],
+    'the stream has the cell of the subagent and the call inside it twice',
+  )
+  assert.deepEqual(
+    inner
+      .filter((event) => event.type === 'model.call.completed')
+      .map((event) => event.payload['timing'].replayed),
+    [false, true, false, false],
+  )
+  assert.deepEqual(Atif.usage(events), Atif.usage(recorded('claude')))
+  const trajectory = Atif.fromEvents(events, options)
+  const whole = Atif.fromEvents(recorded('claude'), options)
+  assert.deepEqual(
+    (shape(trajectory) as { steps: unknown }).steps,
+    (shape(whole) as { steps: unknown }).steps,
+  )
+  assert.deepEqual(
+    trajectory.subagent_trajectories![0]!.steps.map((step) => [
+      step.source,
+      (step.tool_calls ?? []).length,
+      (step.observation?.results ?? []).length,
+    ]),
+    [
+      ['user', 0, 0],
+      ['agent', 2, 2],
+      ['user', 0, 0],
+      ['agent', 2, 2],
+      ['agent', 0, 0],
+    ],
+    'the notice of the restart is a step of the subagent, and nothing else is there twice',
+  )
+  assert.deepEqual(trajectory.final_metrics, whole.final_metrics)
+})
+
 test('a turn that a session is given when its subagent ends is counted with the session', () => {
   const events = recorded('direct-killed-after-subagent')
   const turns = events.flatMap((event) =>

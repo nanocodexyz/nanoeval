@@ -3712,42 +3712,45 @@ async function main(): Promise<void> {
         cost(child)! > 0 && cost(trajectory)! > cost(child)!,
         'the cost of a session is its own and that of its subagent',
       )
+      assert.deepEqual(
+        [asked(false), asked(true)],
+        [
+          ['spawn_agent', 'wait_agent', 'exec_command', 'final'],
+          ['exec_command', 'submit_result', 'final'],
+        ],
+        'the model of the session and the model of its subagent are asked each request once',
+      )
+      assert.deepEqual(
+        [
+          usage.modelCalls,
+          usage.inputTokens,
+          usage.cachedTokens,
+          usage.outputTokens,
+          usage.toolCalls,
+        ],
+        [4 + 3, 4 * 8 + 3 * 42, 3 * 12, 4 * 4 + 3 * 6, 6 + 4],
+        'the usage of the session is its four model calls and the three of its subagent',
+      )
+      assert.deepEqual(
+        [trajectory, child].map((part) => [
+          part.steps.filter((step) => step.source === 'agent').length,
+          part.final_metrics.extra.model_calls,
+          part.final_metrics.extra.tool_calls,
+        ]),
+        [
+          [4, 7, 10],
+          [3, 3, 4],
+        ],
+        'the steps of the subagent are under its own trajectory, and the totals of the session count them',
+      )
       if (subagentKill) {
         assert.ok(restarted, 'the Worker was killed during the run')
         assert.equal(status['lostClaims'], 0, 'the claim of the row outlives the Worker')
-      } else {
+      } else
         assert.deepEqual(
-          [asked(false), asked(true)],
-          [
-            ['spawn_agent', 'wait_agent', 'exec_command', 'final'],
-            ['exec_command', 'submit_result', 'final'],
-          ],
+          [trajectory, child].map((part) => part.steps.map((step) => step.source).join(' ')),
+          ['user agent agent agent agent', 'user agent agent agent'],
         )
-        assert.deepEqual(
-          [
-            usage.modelCalls,
-            usage.inputTokens,
-            usage.cachedTokens,
-            usage.outputTokens,
-            usage.toolCalls,
-          ],
-          [4 + 3, 4 * 8 + 3 * 42, 3 * 12, 4 * 4 + 3 * 6, 6 + 4],
-          'the usage of the session is its four model calls and the three of its subagent',
-        )
-        assert.deepEqual(
-          [trajectory, child].map((part) => [
-            part.steps.map((step) => step.source).join(' '),
-            part.final_metrics.extra.model_calls,
-            part.final_metrics.extra.tool_calls,
-            part.final_metrics.total_steps,
-          ]),
-          [
-            ['user agent agent agent agent', 7, 10, 5],
-            ['user agent agent agent', 3, 4, 4],
-          ],
-          'the steps of the subagent are under its own trajectory, and the totals of the session count them',
-        )
-      }
       await pass()
       return
     }

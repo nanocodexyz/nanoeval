@@ -171,6 +171,18 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: dir
           NANOEVAL_E2E_SCENARIO: subagent
+      - name: End to end, directory slots, the Worker killed while the cell of a subagent runs
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: subagent
+          NANOEVAL_E2E_KILL: child
+      - name: End to end, directory slots, the Worker killed after a subagent ended, in the turn that started it
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: subagent
+          NANOEVAL_E2E_KILL: parent
       - name: End to end, directory slots, two attached runners
         run: npm run e2e
         env:
