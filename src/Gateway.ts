@@ -8,10 +8,12 @@ export class RequestError extends Error {
 
 export class UnpricedError extends RequestError {
   override name = 'Gateway.UnpricedError'
+  readonly expiresAt: number | undefined
   readonly retryAfterSec: number | undefined
   readonly status: number
-  constructor(status: number, text: string, retryAfterSec?: number) {
+  constructor(status: number, text: string, retryAfterSec?: number, expiresAt?: number) {
     super(text)
+    this.expiresAt = expiresAt
     this.retryAfterSec = retryAfterSec
     this.status = status
   }
@@ -19,10 +21,12 @@ export class UnpricedError extends RequestError {
 
 export class RefusedError extends RequestError {
   override name = 'Gateway.RefusedError'
+  readonly expiresAt: number | undefined
   readonly retryAfterSec: number | undefined
   readonly status: number
-  constructor(status: number, text: string, retryAfterSec?: number) {
+  constructor(status: number, text: string, retryAfterSec?: number, expiresAt?: number) {
     super(text)
+    this.expiresAt = expiresAt
     this.retryAfterSec = retryAfterSec
     this.status = status
   }
@@ -157,6 +161,12 @@ export function quote(header: string | null): Payment.Charge {
   }
 }
 
+export function endsAt(error: unknown): number | undefined {
+  return error instanceof RefusedError || error instanceof UnpricedError
+    ? error.expiresAt
+    : undefined
+}
+
 export function leased(lease: Lease, seconds: number): Payment.Charge {
   const least = BigInt(1000)
   const scaled =
@@ -213,6 +223,7 @@ export function create(options: create.Options): Sandbox.Provider {
           ' instead of its price: ' +
           unpaid.slice(0, 500),
         retryAfter(asked.headers.get('retry-after')),
+        providerEnd(unpaid),
       )
     const budgeted = operation !== 'terminate'
     if (budgeted) options.budget.charge(charge.usd, 'compute.' + operation)
@@ -278,6 +289,7 @@ export function create(options: create.Options): Sandbox.Provider {
       response.status,
       'the gateway refused ' + operation + ' with ' + response.status + ': ' + answer.slice(0, 500),
       retryAfter(response.headers.get('retry-after')),
+      providerEnd(answer),
     )
   }
   const call = async <T>(operation: string, body: unknown): Promise<T> =>
@@ -402,6 +414,16 @@ function providerKept(answer: string): number | undefined {
     const problem = JSON.parse(answer) as { meta?: { kept?: unknown } } | null
     const held = problem?.meta?.kept
     return typeof held === 'number' && Number.isFinite(held) && held >= 0 ? held : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function providerEnd(answer: string): number | undefined {
+  try {
+    const problem = JSON.parse(answer) as { meta?: { expiresAt?: unknown } } | null
+    const end = problem?.meta?.expiresAt
+    return typeof end === 'number' && Number.isFinite(end) && end > 0 ? end : undefined
   } catch {
     return undefined
   }

@@ -78,6 +78,7 @@ const unreachedSeen = new Set<string>()
 const fleet = scenario === 'fleet'
 const turnLost = scenario === 'forgotten'
 const lapse = scenario === 'lapse'
+const sooner = scenario === 'sooner'
 const machine = scenario === 'machine'
 const midturn = scenario === 'midturn'
 const midturnKills: Record<string, { after: string; marks?: readonly string[]; ms: number }> = {
@@ -92,6 +93,8 @@ const midturnYieldMs = 10_000
 const sandboxLeaseSec = Number(process.env['NANOEVAL_E2E_SANDBOX_LEASE_SEC'] ?? leaseSec)
 const slowStart = gateway && (scenario === 'tasks' || scenario === 'warm')
 const slowStartMs = sandboxLeaseSec * 1000 + 1000
+const cappedLifeSec = 1800
+const soonerLifeSec = 6 * sandboxLeaseSec + 1
 const seededDisk = 'e'.repeat(64)
 const slotGone = scenario === 'gone'
 const underAgent = slotGone && killAt === 'agent'
@@ -859,10 +862,11 @@ async function main(): Promise<void> {
   const mock = gateway
     ? await MockGateway.start({
         ...(slowStart ? { bootstrapMs: slowStartMs } : {}),
-        ...(capped ? { cap: 1 } : {}),
+        ...(capped ? { cap: 1, lifetimeSec: cappedLifeSec } : {}),
+        ...(sooner ? { lifetimeSec: soonerLifeSec } : {}),
         key: 'sk-tempo-' + Crypto.randomBytes(16).toString('hex'),
         model: (path, body, cost) => {
-          if (fleet && !parked) {
+          if ((capped || fleet) && !parked) {
             parked = true
             return undefined
           }
@@ -883,7 +887,7 @@ async function main(): Promise<void> {
         sandboxd: { token: sandboxToken, url: sandboxd.url },
       })
     : undefined
-  if (lapse) mock?.hold(0)
+  if (lapse || sooner) mock?.hold(0)
   const upstream = mock ?? (await modelEndpoint())
   const plan =
     model === 'codex-plan'
@@ -1490,7 +1494,7 @@ async function main(): Promise<void> {
           created.id +
           ' other.ext4 other.run-other',
       )
-    if ((capped || fleet || lapse) && !mock)
+    if ((capped || fleet || lapse || sooner) && !mock)
       throw new Error('the ' + scenario + ' scenario runs through the scripted gateway')
     assert.deepEqual(created.eval, { name: evalName, version: version.digest })
     if (ending) {
@@ -1563,7 +1567,6 @@ async function main(): Promise<void> {
     let cappedAt: number | undefined
     const cappedLines: string[] = []
     let cappedRefusals = 0
-    let cappedRow: string | undefined
     let besideStatus: Record<string, any> | undefined
     let besidePool: Record<string, any>[] | undefined
     const members = async () => (await api.pool())['members'] as Record<string, any>[]
@@ -1641,10 +1644,14 @@ async function main(): Promise<void> {
             attempt.runner === serving.runner &&
             !['claimed', 'done', 'unclaimed'].includes(attempt.phase),
         )?.id
-        const began = busy !== undefined && busy !== cappedRow
-        cappedRow = busy
         const idle = status['counts'].active === 0 && status['counts'].unclaimed === 0
-        if (cappedAt === undefined && began && mock!.capped.length >= 3 && status['opening']) {
+        if (
+          cappedAt === undefined &&
+          busy !== undefined &&
+          parked &&
+          mock!.capped.length >= 3 &&
+          status['opening']
+        ) {
           cappedAt = Date.now()
           cappedLines.push(
             summary(status)
@@ -1652,12 +1659,14 @@ async function main(): Promise<void> {
               .find((line) => line.startsWith('sandboxes: '))!,
           )
           mock!.cap(0)
+          mock!.tell(true)
+          mock!.crowd(2 * MockGateway.waitSec)
           cappedRefusals = mock!.capped.length
           await mock!.die([...mock!.sandboxes.keys()][0]!)
         } else if (
           cappedAt !== undefined &&
           cappedLines.length === 1 &&
-          mock!.capped.length > cappedRefusals &&
+          mock!.capped.length >= cappedRefusals + 2 &&
           status['opening']?.endsAt
         ) {
           cappedLines.push(
@@ -1672,9 +1681,16 @@ async function main(): Promise<void> {
           mock!.release()
         }
       }
-      if (lapse && !restarted && [...mock!.sandboxes.values()][0]?.ended) {
-        restarted = true
-        mock!.release()
+      if ((lapse || sooner) && !restarted) {
+        const first = [...mock!.sandboxes.values()][0]
+        if (sooner && first) {
+          mock!.tell(true)
+          mock!.lifetime(undefined)
+        }
+        if (first?.ended) {
+          restarted = true
+          mock!.release()
+        }
       }
       if (fleet && !restarted) {
         const first = (status['sandboxes'] as { runner: number; state: string }[]).find(
@@ -1813,6 +1829,7 @@ async function main(): Promise<void> {
         'restart',
         'resume',
         'shared',
+        'sooner',
         'stopped',
       ].includes(scenario)
     )
@@ -2066,9 +2083,40 @@ async function main(): Promise<void> {
           /the gateway answered 502 to an unpaid renew instead of its price: /,
           'a sandbox that is sold no renewal says so, and is used until its lease ends',
         )
+    } else if (sooner) {
+      const rows = status['sandboxes'] as {
+        error: string | null
+        expiresAt: number
+        handle: string
+        paidUntil: number
+        state: string
+      }[]
+      assert.equal(status['counts'].errored, 0, 'no row ended as an error: ' + summary(status))
+      const first = rows[1]!
+      const leased = mock!.sandboxes.get(first.handle)!
+      assert.equal(
+        mock!.log.filter((entry) => entry.refused === 409).length,
+        1,
+        'the renewal that would pass the end of the sandbox was asked once, not with every tick',
+      )
+      assert.equal(first.expiresAt, leased.endsAt, 'the run takes the end that the refusal names')
+      assert.ok(
+        leased.endsAt - first.paidUntil < 1000 && leased.paidUntil === first.paidUntil,
+        'and renews the lease up to it',
+      )
+      assert.equal(first.state, 'closed', 'the sandbox is kept to its end, not failed')
+      assert.equal(first.error, 'its lease runs to the end of the lifetime it was created with')
+      assert.deepEqual(
+        rows.map((row) => row.state),
+        ['failed', 'closed', 'closed'],
+        'the sandbox that ended while its runner started is no sandbox that failed, and one more worked the run',
+      )
+      assert.equal(status['lostClaims'], 0)
     } else if (capped) {
       const rows = status['sandboxes'] as {
         error: string | null
+        expiresAt: number
+        handle: string
         id: number
         runner: number | null
         state: string
@@ -2079,12 +2127,18 @@ async function main(): Promise<void> {
       assert.match(rows[1]!.error!, /the runner stopped answering|refused renew with 404: /)
       const refusals = rows.filter((row) => /refused create with 429: /.test(row.error ?? ''))
       assert.ok(refusals.length >= 4, 'creates were refused for the cap before and after')
-      assert.equal(refusals.length, mock!.capped.length)
-      const kept = mock!.log.filter((entry) => entry.kept)
-      assert.ok(
-        kept.length >= 2 && kept.length < refusals.length,
-        'the provider kept the price of the first create it refused for its cap, each time, and of no other',
+      const unpriced = rows.filter((row) =>
+        /answered 429 to an unpaid create instead of its price: /.test(row.error ?? ''),
       )
+      assert.equal(unpriced.length, 1, 'one create was refused before it was priced')
+      assert.equal(refusals.length + unpriced.length, mock!.capped.length)
+      const kept = mock!.log.filter((entry) => entry.kept)
+      assert.equal(
+        kept.length,
+        refusals.length,
+        'the provider kept the price of every create it was paid for and refused, whether the gateway said so or not',
+      )
+      assert.deepEqual(mock!.early, [], 'no create was asked sooner than the gateway said')
       assert.equal(
         (status['payments'] as { detail: string; usd: number }[]).filter(
           (payment) =>
@@ -2105,6 +2159,29 @@ async function main(): Promise<void> {
       )
       const earlier = refusals.filter((row) => openedAt.get(row.id)! < cappedAt!)
       assert.ok(earlier.length >= 3)
+      const later = refusals.find((row) => row.id > unpriced[0]!.id)!
+      const named = Number(/asks it again in (\d+) s/.exec(unpriced[0]!.error!)![1])
+      assert.ok(
+        named > leaseSec,
+        'the pause the gateway named is longer than the notice of the run',
+      )
+      assert.ok(
+        openedAt.get(later.id)! - openedAt.get(unpriced[0]!.id)! >= named * 1000,
+        'a refusal that says when to ask again is asked again no sooner, with no sandbox left too',
+      )
+      assert.ok(
+        rows[1]!.expiresAt <= mock!.sandboxes.get(rows[1]!.handle)!.expiresAt,
+        'a sandbox ends no later than the gateway answered',
+      )
+      for (const row of opened) {
+        const leased = mock!.sandboxes.get(row.handle)!
+        assert.equal(
+          row.expiresAt,
+          leased.expiresAt,
+          'a sandbox ends when the gateway answers, where that is sooner than the run asked',
+        )
+        assert.ok(leased.expiresAt < openedAt.get(row.id)! + config.sandbox.timeoutSec! * 1000)
+      }
       assert.ok(
         openedAt.get(earlier[1]!.id)! - openedAt.get(earlier[0]!.id)! < leaseSec * 1000,
         'the first refusal is asked again at once',
@@ -2120,7 +2197,7 @@ async function main(): Promise<void> {
       )
       assert.match(
         cappedLines[1]!,
-        /^sandboxes: none open; one could not be opened \d+ times since \+\d+ s, and is asked for again at \+\d+ s; the rows that wait end as errors at \+\d+ s unless one starts: Gateway\.RefusedError: the gateway refused create with 429: /,
+        /^sandboxes: none open; one could not be opened \d+ times since \+\d+ s, and is asked for again at \+\d+ s; the rows that wait end as errors at \+\d+ s unless one starts: Gateway\.(RefusedError: the gateway refused create with 429|UnpricedError: the gateway answered 429 to an unpaid create instead of its price): /,
         'with no sandbox left, the status says until when the rows wait',
       )
       assert.equal(status['opening'], null)
@@ -3214,7 +3291,11 @@ async function main(): Promise<void> {
       } else if (!warm) {
         assert.deepEqual(
           leased.map((sandbox) => sandbox.ended),
-          capped || fleet ? ['died', ...leased.slice(1).map(() => 'terminated')] : ['terminated'],
+          capped || fleet
+            ? ['died', ...leased.slice(1).map(() => 'terminated')]
+            : sooner
+              ? ['lapsed', 'terminated']
+              : ['terminated'],
           'every sandbox was terminated, not left to lapse, the one whose renewal was refused in passing too',
         )
       }

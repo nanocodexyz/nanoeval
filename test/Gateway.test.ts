@@ -567,6 +567,71 @@ test('a renewal the gateway prices only for its owner is paid at the rate its le
   )
 })
 
+test('a renewal refused for the end of the sandbox names that end, and a create is answered its end', async () => {
+  const now = Date.now()
+  const end = now + 200_000
+  const conflict = (meta?: Record<string, number>) => () =>
+    new Response(
+      JSON.stringify({
+        code: 'conflict',
+        detail: 'E2B ends it at expiresAt, which no renewal moves. Nothing was charged.',
+        ...(meta ? { meta } : {}),
+        status: 409,
+      }),
+      { headers: { 'content-type': 'application/problem+json' }, status: 409 },
+    )
+  const told = gateway(
+    { create: '42280' },
+    {
+      create: () => Response.json({ expiresAt: end, paidUntil: end, sandboxId: 'sbx-1' }),
+      renew: conflict({ expiresAt: end, renewable: 140 }),
+    },
+  )
+  const created = await told.provider.create({
+    leaseSec: 300,
+    metadata: {},
+    template: undefined,
+    timeoutSec: 3600,
+  })
+  assert.deepEqual(
+    [created.expiresAt, created.paidUntil],
+    [end, end],
+    'the end and the lease are the ones the gateway answers, sooner than they were asked',
+  )
+  const before = told.spent()
+  await assert.rejects(
+    told.provider.renew!({ ...created.handle, paidUntil: now + 60_000 }, 300),
+    (error: unknown) =>
+      error instanceof Gateway.RefusedError &&
+      error.status === 409 &&
+      Gateway.endsAt(error) === end,
+  )
+  assert.equal(told.spent(), before, 'a renewal that is refused for the end leaves the spend')
+
+  const silent = gateway({ renew: '50000' }, { renew: conflict() })
+  await assert.rejects(
+    silent.provider.renew!({ home: Gateway.home, id: 'sbx-9' }, 300),
+    (error: unknown) =>
+      error instanceof Gateway.RefusedError &&
+      error.status === 409 &&
+      Gateway.endsAt(error) === undefined,
+    'a refusal that names no end carries none',
+  )
+
+  const unpriced = Gateway.create({
+    budget: Budget.create({ limitUsd: 1 }),
+    fetch: async () => conflict({ expiresAt: end, renewable: 0 })(),
+    key: 'sk-tempo-test',
+    onCharge: () => assert.fail('nothing was quoted'),
+  })
+  await assert.rejects(
+    unpriced.renew!({ home: Gateway.home, id: 'sbx-9' }, 300),
+    (error: unknown) => error instanceof Gateway.UnpricedError && Gateway.endsAt(error) === end,
+    'a refusal before the price carries the end too',
+  )
+  assert.equal(Gateway.endsAt(new Error('another failure')), undefined)
+})
+
 test('a renewal priced only for its owner, of a sandbox without its lease rate, is refused unpaid', async () => {
   const { charges, provider, seen } = gateway({}, {})
   await assert.rejects(

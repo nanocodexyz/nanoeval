@@ -11,6 +11,7 @@ export type Entry = Charge & { kept?: number; late?: true; refused?: number }
 
 export type Leased = {
   ended?: 'died' | 'lapsed' | 'terminated'
+  endsAt: number
   expiresAt: number
   handle: Sandbox.Handle
   paidUntil: number
@@ -22,10 +23,13 @@ export type Mock = {
   readonly capped: readonly Charge[]
   readonly charges: readonly Charge[]
   close(): void
+  crowd(seconds: number): void
   die(id: string): Promise<void>
+  readonly early: readonly Charge[]
   readonly funding: readonly unknown[]
   hold(after: number): void
   readonly key: string
+  lifetime(seconds: number | undefined): void
   readonly log: readonly Entry[]
   readonly modelCosts: readonly number[]
   readonly outside: readonly number[]
@@ -33,6 +37,7 @@ export type Mock = {
   readonly refused: readonly string[]
   release(): void
   readonly sandboxes: ReadonlyMap<string, Leased>
+  tell(on: boolean): void
   readonly unavailable: readonly Charge[]
   readonly url: string
 }
@@ -41,10 +46,12 @@ export type Options = {
   bootstrapMs?: number
   cap?: number
   key: string
+  lifetimeSec?: number
   model(path: string, body: Record<string, any>, cost: number): string | undefined
   refusals?: { passing?: number; spentAfter?: number; spentTimes?: number }
   renewals?: boolean
   sandboxd: { token: string; url: string }
+  tells?: boolean
 }
 
 export const limitUsd = 100
@@ -79,6 +86,7 @@ export const modelUsd = { '/v1/messages': 0.000456, '/v1/responses': 0.000123 }
 export const prices: Record<string, number> = { exec: 0.0001, terminate: 0.0001, write: 0.001 }
 export const secondUsd = 0.00014
 export const templates = ['base', 'code-interpreter-v1', 'desktop']
+export const waitSec = 5
 
 const currencies = ['0x' + '0a'.repeat(20), '0x' + '0b'.repeat(20)]
 
@@ -107,9 +115,13 @@ async function read(request: Http.IncomingMessage): Promise<Buffer> {
 
 export async function start(options: Options): Promise<Mock> {
   let cap = options.cap
-  let capKnown = false
   const capped: Charge[] = []
   const charges: Charge[] = []
+  let crowdedUntil = 0
+  const early: Charge[] = []
+  let lifetimeSec = options.lifetimeSec
+  let tells = options.tells ?? false
+  let told = false
   const held = new Set<string>()
   let holdAfter: number | undefined
   let release = () => {}
@@ -134,9 +146,12 @@ export async function start(options: Options): Promise<Mock> {
     detail: string,
     headers: Record<string, string> = {},
     code?: string,
+    meta?: Record<string, number>,
   ) => {
     response.writeHead(status, { 'content-type': 'application/problem+json', ...headers })
-    response.end(JSON.stringify({ ...(code ? { code } : {}), detail, status }))
+    response.end(
+      JSON.stringify({ ...(code ? { code } : {}), detail, ...(meta ? { meta } : {}), status }),
+    )
   }
   const end = async (id: string, ended: NonNullable<Leased['ended']>) => {
     const leased = sandboxes.get(id)
@@ -148,6 +163,7 @@ export async function start(options: Options): Promise<Mock> {
     for (const [id, leased] of sandboxes)
       if (!leased.ended && Date.now() > Math.min(leased.paidUntil, leased.expiresAt))
         void end(id, 'lapsed')
+      else if (!leased.ended && Date.now() > leased.endsAt) void end(id, 'died')
   }, 100)
   const view = (id: string, leased: Leased) => ({
     expiresAt: leased.expiresAt,
@@ -202,6 +218,23 @@ export async function start(options: Options): Promise<Mock> {
       )
       return
     }
+    if (operation === 'create' && tells && now < crowdedUntil) {
+      const left = Math.ceil((crowdedUntil - now) / 1000)
+      capped.push({ operation, usd })
+      if (told) early.push({ operation, usd })
+      told = true
+      if (authorized) log.push({ operation, refused: 429, usd })
+      return problem(
+        response,
+        429,
+        'E2B refused a sandbox for its cap a moment ago. The gateway asks it again in ' +
+          left +
+          ' s and until then refuses a new sandbox before anything is paid. Nothing was charged.',
+        { 'retry-after': String(left) },
+        'rate_limited',
+        { kept: 0 },
+      )
+    }
     const authorization = request.headers['authorization']
     if (authorization === undefined && operation === 'renew')
       return problem(
@@ -239,27 +272,45 @@ export async function start(options: Options): Promise<Mock> {
     }
     const open = [...sandboxes.values()].filter((sandbox) => !sandbox.ended).length
     if (operation === 'create' && cap !== undefined && open >= cap) {
-      const kept = capKnown ? 0 : usd
-      capKnown = true
       capped.push({ operation, usd })
-      if (kept) charges.push({ operation, usd })
-      log.push({ operation, refused: 429, usd, ...(kept ? { kept } : {}) })
-      response.writeHead(429, { 'content-type': 'application/problem+json', 'retry-after': '1' })
-      response.end(
-        JSON.stringify({
-          code: 'rate_limited',
-          detail:
-            'you have reached the maximum number of concurrent E2B sandboxes (' +
-            cap +
-            '). ' +
-            (kept ? 'E2B took ' + kept + ' and returns nothing.' : 'Nothing was charged.'),
-          meta: { kept },
-          status: 429,
-        }),
+      charges.push({ operation, usd })
+      log.push({ kept: usd, operation, refused: 429, usd })
+      const detail =
+        'you have reached the maximum number of concurrent E2B sandboxes (' + cap + ').'
+      if (!tells) return problem(response, 429, detail, {}, 'rate_limited')
+      crowdedUntil = now + waitSec * 1000
+      told = true
+      return problem(
+        response,
+        429,
+        detail + ' E2B took ' + usd + ' before it refused, and returns nothing.',
+        { 'retry-after': String(waitSec) },
+        'rate_limited',
+        { kept: usd },
       )
-      return
     }
-    if (operation === 'create') capKnown = false
+    if (operation === 'renew') {
+      if (tells) leased!.expiresAt = leased!.endsAt
+      if (until > leased!.expiresAt) {
+        log.push({ operation, refused: 409, usd })
+        return tells
+          ? problem(
+              response,
+              409,
+              'E2B ends it at expiresAt, which no renewal moves. Nothing was charged.',
+              {},
+              'conflict',
+              {
+                expiresAt: leased!.expiresAt,
+                renewable: Math.max(
+                  0,
+                  Math.floor((leased!.expiresAt - Math.max(leased!.paidUntil, now)) / 1000),
+                ),
+              },
+            )
+          : problem(response, 409, 'the timeout it was created with ends it first', {}, 'conflict')
+      }
+    }
     const charge = { operation, usd }
     charges.push(charge)
     log.push({ operation, usd })
@@ -271,10 +322,13 @@ export async function start(options: Options): Promise<Mock> {
     if (operation === 'create') {
       const created = await provider.create({ metadata: {}, template: undefined, timeoutSec: 0 })
       const id = 'sbx' + created.handle.id
+      const endsAt = now + Math.min(body['timeout'], lifetimeSec ?? Infinity) * 1000
+      const expiresAt = tells ? endsAt : now + body['timeout'] * 1000
       const fresh = {
-        expiresAt: now + body['timeout'] * 1000,
+        endsAt,
+        expiresAt,
         handle: created.handle,
-        paidUntil: now + body['lease'] * 1000,
+        paidUntil: Math.min(now + body['lease'] * 1000, expiresAt),
         renewals: 0,
       }
       sandboxes.set(id, fresh)
@@ -286,8 +340,6 @@ export async function start(options: Options): Promise<Mock> {
     const sandbox = provider.connect(leased!.handle)
     const there = (text: string) => text.replaceAll(GatewayProvider.home, leased!.handle.home)
     if (operation === 'renew') {
-      if (until > leased!.expiresAt)
-        return problem(response, 409, 'the timeout it was created with ends it first')
       leased!.paidUntil = until
       leased!.renewals++
       return answer(view(id, leased!))
@@ -411,7 +463,6 @@ export async function start(options: Options): Promise<Mock> {
   return {
     cap(limit) {
       cap = limit
-      capKnown = false
     },
     capped,
     charges,
@@ -420,12 +471,20 @@ export async function start(options: Options): Promise<Mock> {
       for (const response of unanswered) response.destroy()
       server.close()
     },
+    crowd(seconds) {
+      crowdedUntil = Date.now() + seconds * 1000
+      told = false
+    },
     die: (id) => end(id, 'died'),
+    early,
     funding,
     hold(after) {
       holdAfter = after
     },
     key: options.key,
+    lifetime(seconds) {
+      lifetimeSec = seconds
+    },
     log,
     modelCosts,
     outside,
@@ -433,6 +492,9 @@ export async function start(options: Options): Promise<Mock> {
     refused,
     release: () => release(),
     sandboxes,
+    tell(on) {
+      tells = on
+    },
     unavailable,
     url: 'http://127.0.0.1:' + (server.address() as AddressInfo).port,
   }

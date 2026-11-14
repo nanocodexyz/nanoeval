@@ -2104,6 +2104,11 @@ export class Run extends DurableObject<Env> {
       } catch (error) {
         const current = leased(id)
         if (!current) continue
+        const ends = Gateway.endsAt(error)
+        if (ends !== undefined && ends < current.expires_at!) {
+          this.update('sandboxes', id, { expires_at: ends })
+          continue
+        }
         const unsold =
           error instanceof Budget.ExceededError ||
           (error instanceof Gateway.RefusedError && error.status !== 404) ||
