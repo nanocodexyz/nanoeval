@@ -376,7 +376,7 @@ const usage = `nanoeval <command>
             [--sdk-fallback pinned] [--lab DIR] [--hand-profile release]
             [--nanocode-repository URL|DIR] [--nanocode-ts-repository URL|DIR] [--build-only]
             [--baseline RUN|latest|previous|REV|DIR|pinned]... [--claude-login FILE]
-            [--codex-login FILE] [--quiet]
+            [--codex-login FILE] [--quiet] [--stop-sec 30]
             (--serve [--port N] | --quick | --eval NAME [--only ID]... [--limit N] | --task DIR...)
             (--agent ID=HARNESS:MODEL[:THINKING]... | --oracle) and the other options of run
             Evaluate a revision of nanocode on this machine without a release: build the hand
@@ -409,7 +409,8 @@ const usage = `nanoeval <command>
             NANOEVAL_CLAUDE_LOGIN and NANOEVAL_CODEX_LOGIN. --limit counts in the tasks the
             lab holds. Standard error gets one line a phase with the time since the command
             began, and the count of rows that ended while the run goes on: --quiet leaves
-            both out.
+            both out. The Worker and the runner of an evaluation are stopped with SIGTERM
+            when it ends, and killed when they have not stopped --stop-sec seconds later.
             --quick is "did this change break anything": the subset quick of
             terminal-bench-2.1 in subsets.json (or --eval, --subset, --only), 3 attempts a
             task, the agents, model budget and slots of the latest quick run on the pinned
@@ -1574,6 +1575,7 @@ async function main(
       sources: { type: 'string' },
       state: { type: 'string' },
       'step-retries': { default: '3', type: 'string' },
+      'stop-sec': { default: '30', type: 'string' },
       store: { type: 'string' },
       subset: { multiple: true, type: 'string' },
       subsets: { type: 'string' },
@@ -1796,6 +1798,7 @@ async function main(
     })
     const log = progress.line
     const pollMs = Number(values['poll-ms'] ?? '250')
+    const stopSec = seconds(values['stop-sec'], 'stop-sec')
     if (values['sdk-fallback'] !== undefined && values['sdk-fallback'] !== Revision.pinned)
       throw new Error(
         '--sdk-fallback takes pinned, the nanocode that the nanocode-ts revision names itself, not ' +
@@ -1808,6 +1811,7 @@ async function main(
         logins,
         pollMs,
         ...(values.port ? { port: Number(values.port) } : {}),
+        stopSec,
       })
       for (const signal of ['SIGINT', 'SIGTERM'] as const)
         process.once(signal, () => void served.close().then(() => process.exit(1)))
@@ -1968,7 +1972,14 @@ async function main(
         console.log(Revision.environment(builds))
         return
       }
-      opened = await Revision.open({ builds, lab: directory, logins, pollMs, progress })
+      opened = await Revision.open({
+        builds,
+        lab: directory,
+        logins,
+        pollMs,
+        progress,
+        stopSec,
+      })
       await main(opened, {
         hand: async (revision) =>
           revision === Revision.pinned

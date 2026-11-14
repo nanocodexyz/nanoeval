@@ -842,13 +842,34 @@ export async function port(): Promise<{ port: number; release(): void }> {
   }
 }
 
-async function stop(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return
+export async function stop(
+  child: ChildProcess,
+  input: { log(line: string): void; stopSec: number; what: string },
+): Promise<void> {
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return
+  const group = -child.pid
   const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()))
-  try {
-    process.kill(-child.pid!, 'SIGTERM')
-  } catch {}
+  const signal = (name: NodeJS.Signals) => {
+    try {
+      process.kill(group, name)
+    } catch {}
+  }
+  signal('SIGTERM')
+  const limit = setTimeout(() => {
+    input.log(
+      input.what + ' did not stop within ' + input.stopSec + ' s of SIGTERM, and was killed',
+    )
+    signal('SIGKILL')
+  }, input.stopSec * 1000)
   await exited
+  clearTimeout(limit)
+  signal('SIGKILL')
+}
+
+async function note(file: string, value: unknown): Promise<void> {
+  const partial = file + '.' + process.pid
+  await Fs.writeFile(partial, JSON.stringify(value) + '\n')
+  await Fs.rename(partial, file)
 }
 
 async function secret(lab: string): Promise<string> {
@@ -868,19 +889,25 @@ function alive(pid: number): boolean {
 }
 
 async function noted(file: string): Promise<{ pid: number; url?: string } | undefined> {
-  const said = await Fs.readFile(file, 'utf8').then(
-    (text) => JSON.parse(text) as { pid: number; url?: string },
-    () => undefined,
-  )
-  return said && alive(said.pid) ? said : undefined
+  const text = await Fs.readFile(file, 'utf8').catch(() => undefined)
+  if (text === undefined) return undefined
+  let said: { pid: number; url?: string }
+  try {
+    said = JSON.parse(text)
+  } catch (error) {
+    throw new Error(file + ' holds no JSON: ' + (error as Error).message)
+  }
+  return alive(said.pid) ? said : undefined
 }
 
 async function worker(options: {
   builds: Builds
   lab: string
+  log(line: string): void
   logins: { claude?: string; codex?: string }
   pollMs: number
   state: ChildProcess
+  stopSec: number
   token: string
   unwanted?(): Promise<boolean>
 }): Promise<{ log: string; stop(): Promise<void>; url: string } | undefined> {
@@ -916,31 +943,37 @@ async function worker(options: {
     },
   )
   await output.close()
-  const note = Path.join(lab, 'worker.json')
+  const said = Path.join(lab, 'worker.json')
   const end = async () => {
-    await stop(child)
+    await stop(child, { log: options.log, stopSec: options.stopSec, what: 'the Worker' })
     kept.release()
-    await Fs.rm(note, { force: true })
+    await Fs.rm(said, { force: true })
     await free(options.state)
   }
-  for (;;) {
-    const healthy = await fetch(url + '/health').then(
-      (response) => response.ok,
-      () => false,
-    )
-    if (healthy) break
-    if (child.exitCode !== null || child.signalCode !== null) {
-      await end()
-      throw new BuildError('the Worker did not start:\n' + (await tail(log)))
+  const answers = async () => {
+    for (;;) {
+      const healthy = await fetch(url + '/health').then(
+        (response) => response.ok,
+        () => false,
+      )
+      if (healthy) return true
+      if (child.exitCode !== null || child.signalCode !== null)
+        throw new BuildError('the Worker did not start:\n' + (await tail(log)))
+      if (await options.unwanted?.()) return false
+      await new Promise((resolve) => setTimeout(resolve, options.pollMs))
     }
-    if (await options.unwanted?.()) {
-      await end()
-      return undefined
-    }
-    await new Promise((resolve) => setTimeout(resolve, options.pollMs))
   }
-  await Fs.writeFile(note, JSON.stringify({ pid: process.pid, url }) + '\n')
-  return { log, stop: end, url }
+  try {
+    if (await answers()) {
+      await note(said, { pid: process.pid, url })
+      return { log, stop: end, url }
+    }
+  } catch (error) {
+    await end()
+    throw error
+  }
+  await end()
+  return undefined
 }
 
 export async function open(options: open.Options): Promise<Lab> {
@@ -949,14 +982,16 @@ export async function open(options: open.Options): Promise<Lab> {
   const token = await secret(lab)
   const logs = Path.join(lab, 'logs')
   const wanted = Path.join(lab, 'worker.wanted')
-  await Fs.writeFile(wanted, JSON.stringify({ pid: process.pid }) + '\n')
+  await note(wanted, { pid: process.pid })
   log('worker: starting under local workerd on the state in ' + Path.join(lab, 'worker'))
   const served = (await worker({
     builds,
     lab,
+    log,
     logins: options.logins,
     pollMs: options.pollMs,
     state: (await flock(Path.join(lab, 'worker.lock'), true))!,
+    stopSec: options.stopSec,
     token,
   }).catch(async (error: unknown) => {
     await Fs.rm(wanted, { force: true })
@@ -977,7 +1012,7 @@ export async function open(options: open.Options): Promise<Lab> {
   const close = async () => {
     progress.settle()
     for (const runner of runners) {
-      await stop(runner)
+      await stop(runner, { log, stopSec: options.stopSec, what: 'the runner' })
       await sweep()
     }
     await served.stop()
@@ -1042,19 +1077,22 @@ export async function serve(options: serve.Options): Promise<Served> {
     if (own || (await wanted())) return
     const state = await flock(Path.join(lab, 'worker.lock'), false)
     if (!state) return
-    if (closed || (await wanted())) {
-      await free(state)
-      return
+    try {
+      if (!closed && !(await wanted()))
+        own = await worker({
+          builds: {},
+          lab,
+          log,
+          logins: options.logins,
+          pollMs: options.pollMs,
+          state,
+          stopSec: options.stopSec,
+          token,
+          unwanted: async () => closed || (await wanted()),
+        })
+    } finally {
+      if (!own) await free(state)
     }
-    own = await worker({
-      builds: {},
-      lab,
-      logins: options.logins,
-      pollMs: options.pollMs,
-      state,
-      token,
-      unwanted: async () => closed || (await wanted()),
-    })
     if (own) log('no evaluation runs in the lab: a Worker of its own answers, ' + own.url)
   }
   const refuse = (response: Http.ServerResponse, status: number, error: string) =>
@@ -1135,6 +1173,7 @@ export declare namespace open {
     logins: { claude?: string; codex?: string }
     pollMs: number
     progress: Progress
+    stopSec: number
   }
 }
 
@@ -1145,5 +1184,6 @@ export declare namespace serve {
     logins: { claude?: string; codex?: string }
     pollMs: number
     port?: number
+    stopSec: number
   }
 }

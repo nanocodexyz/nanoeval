@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import * as Fs from 'node:fs'
 import * as Http from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -485,6 +485,7 @@ test('a served lab answers reads from the Worker of the evaluation that runs, an
     log: (line) => void lines.push(line),
     logins: {},
     pollMs: 10,
+    stopSec: 30,
   })
   const ask = (path: string, init: RequestInit = {}) =>
     fetch(served.url + path, { ...init, headers: { authorization: 'Bearer t' } })
@@ -514,6 +515,72 @@ test('a served lab answers reads from the Worker of the evaluation that runs, an
   await new Promise<void>((resolve) => worker.close(() => resolve()))
   assert.deepEqual(lines, [])
   assert.equal(Fs.readFileSync(Path.join(lab, 'token'), 'utf8').trim().length, 64)
+})
+
+test('a served lab that cannot read what an evaluation wrote stops the Worker it was starting and gives up its lock', async () => {
+  const lab = Path.join(directory, 'lab-unread')
+  Fs.mkdirSync(lab, { recursive: true })
+  const wanted = Path.join(lab, 'worker.wanted')
+  const held = () =>
+    spawnSync('flock', ['--nonblock', Path.join(lab, 'worker.lock'), 'true']).status === 1
+  const until = async (what: string, met: () => boolean) => {
+    for (const since = Date.now(); !met(); ) {
+      if (Date.now() - since > 120_000) assert.fail('timed out waiting for ' + what)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+  }
+  const lines: string[] = []
+  const served = await Revision.serve({
+    lab,
+    log: (line) => void lines.push(line),
+    logins: {},
+    pollMs: 10,
+    stopSec: 30,
+  })
+  await until('the served lab to hold the lock for a Worker of its own', held)
+  Fs.writeFileSync(wanted, '')
+  await until('the served lab to give up the lock', () => !held())
+  assert.equal(
+    spawnSync('pgrep', ['-f', '--', '--state ' + Path.join(lab, 'worker') + '( |$)']).status,
+    1,
+    'the Worker that the served lab was starting is gone',
+  )
+  await served.close()
+  assert.ok(lines.length > 0)
+  for (const line of lines)
+    assert.match(line, /^the lab has no Worker of its own: \S+worker\.wanted holds no JSON: /)
+  assert.equal(held(), false)
+})
+
+test('a process that does not stop when it is asked to is killed once its time to stop is over', async () => {
+  const lines: string[] = []
+  const log = (line: string) => void lines.push(line)
+  const deaf = spawn('sh', ['-c', 'trap "" TERM; echo deaf; while :; do sleep 1; done'], {
+    detached: true,
+    stdio: ['ignore', 'pipe', 'inherit'],
+  })
+  await new Promise((resolve) => deaf.stdout.once('data', resolve))
+  await Revision.stop(deaf, { log, stopSec: 0.2, what: 'the child' })
+  assert.equal(deaf.signalCode, 'SIGKILL')
+  assert.deepEqual(lines, ['the child did not stop within 0.2 s of SIGTERM, and was killed'])
+  const willing = spawn('sh', ['-c', 'sh -c \'trap "" TERM; echo $$; exec sleep 600\' & wait'], {
+    detached: true,
+    stdio: ['ignore', 'pipe', 'inherit'],
+  })
+  const left = Number(await new Promise((resolve) => willing.stdout.once('data', resolve)))
+  await Revision.stop(willing, { log, stopSec: 60, what: 'the child' })
+  assert.equal(willing.signalCode, 'SIGTERM')
+  assert.equal(lines.length, 1)
+  for (const since = Date.now(); ; ) {
+    try {
+      process.kill(left, 0)
+    } catch {
+      break
+    }
+    if (Date.now() - since > 60_000)
+      assert.fail('what a stopped process left in its group is killed with it')
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
 })
 
 test('a port that is kept is one a server listens on, again after it stopped, while it is kept', async () => {
