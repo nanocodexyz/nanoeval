@@ -2664,13 +2664,15 @@ export class Run extends DurableObject<Env> {
         row.claims,
       )
       .map((request) => request['status'] as number)
-    const stall = end.failure
-      ? Retry.stalled({
-          failure: end.failure,
-          statuses,
-          ...(end.oomKills === undefined ? {} : { oomKills: end.oomKills }),
-        })
-      : undefined
+    const stall =
+      (end.failure
+        ? Retry.stalled({
+            failure: end.failure,
+            statuses,
+            ...(end.oomKills === undefined ? {} : { oomKills: end.oomKills }),
+          })
+        : undefined) ??
+      Retry.unanswered({ at: now, statuses, ...(end.failure ? { failure: end.failure } : {}) })
     if (stall) end = { ...end, failure: stall, reward: null }
     const cause =
       end.failure && end.reward === null

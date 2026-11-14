@@ -104,3 +104,45 @@ test('an agent that never started counts as an error of its slot and is retried'
     'the agent never started',
   )
 })
+
+test('an attempt whose every model request the relay failed is an error of the way to the model and is retried', () => {
+  const timeout = {
+    at: 5,
+    kind: 'agent_timeout' as const,
+    message: 'the agent did not finish within 900 s',
+  }
+  const relay = Retry.unanswered({ at: 9, failure: timeout, statuses: [530, 530, 502] })
+  assert.deepEqual(relay, {
+    at: 5,
+    kind: 'environment',
+    message:
+      'the model endpoint never answered the agent: its 3 model requests were answered 530, 502: the agent did not finish within 900 s',
+  })
+  assert.equal(
+    Retry.infrastructure({ failure: relay!, statuses: [530, 530, 502] }),
+    'the model endpoint was not reached',
+  )
+  assert.deepEqual(Retry.unanswered({ at: 9, statuses: [530] }), {
+    at: 9,
+    kind: 'environment',
+    message: 'the model endpoint never answered the agent: its 1 model requests were answered 530',
+  })
+  assert.equal(Retry.unanswered({ at: 9, failure: timeout, statuses: [530, 200] }), undefined)
+  assert.equal(Retry.unanswered({ at: 9, failure: timeout, statuses: [530, 500] }), undefined)
+  assert.equal(Retry.unanswered({ at: 9, failure: timeout, statuses: [] }), undefined)
+  for (const kind of ['budget', 'cancelled'] as const)
+    assert.equal(
+      Retry.unanswered({ at: 9, failure: { ...timeout, kind }, statuses: [530] }),
+      undefined,
+    )
+  assert.equal(
+    Retry.infrastructure({
+      failure: {
+        kind: 'agent',
+        message: 'codex-cli exited with 1: unexpected status 530: error code: 1016',
+      },
+      statuses: [],
+    }),
+    'the model endpoint was not reached',
+  )
+})
