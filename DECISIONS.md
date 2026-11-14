@@ -3917,3 +3917,27 @@ The guest sees one CPU with AVX2, AVX-512 and FMA, and tesseract reports AVX512B
 **Checked** on dev-georgios (one run each, load average about 50): `forward::tests::a_guest_that_writes_before_it_reads_is_echoed_in_full` writes 64 MiB through `serve` to an echo server before it reads any of it, as the VMM does; with the old relay it does not finish in 60 s, with this one it passes in about a second. End to end, krun slots of `bin-base` (the launcher of `8ce363e`), 2 vCPUs, the guest sending 300 MiB in 1 MiB writes while reading the echo: with this relay 4 of 4 slots echoed all 300 MiB in 1.9 to 2.9 s and answered `exec` after; with the deployed relay 3 of 3 stalled until killed at 100 s, and none answered `exec` again. The script is `trial.sh` of the scratch directory, not committed: `vmup.sh` boots the slot, a Python client sends and reads through the forward. `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings` and `cargo test --locked` in `krun/` pass. The passt path was stressed too, 4 slots with 8 parallel 2 GiB downloads each, from a server on the machine and through a network namespace with 60 ms of round trip, also with the guest's vCPUs kept busy: no download stopped for more than 200 ms, with the launcher of `8ce363e`.
 
 **Release.** `nanoeval-net` is part of the launcher's directory: a machine takes it when its `NANOEVAL_KRUN` binaries are rebuilt from this commit, and a slot when its relay starts. dev-georgios runs `~/nc-live/krunfull`, built on libkrun `df85b8b` (lane 3's entry above), which lacks `8ce363e`'s fix of a credit request that never raised the guest's interrupt, the other vsock stall of these slots; rebuilding it from this commit takes both. The retry of 3fc0515 stays for downloads that fail upstream.
+## 2026-11-14: two local Workers that start at the same moment
+
+**The defect.** An end-to-end lane sometimes ended within a few seconds with `wrangler dev did not start`, and its `wrangler.log` said `Address already in use. Please check that you are not already running a server on this address or specify a different port with --port.` Earlier entries met it and took it for the port of the Worker: the entry on the credit request counts 6 of 120 and 4 of 80 runs that ended "on the port", "because two copies had taken the same port for their Workers". The port of the Worker was not the one. `wrangler dev` 4.151.1 also opens an inspector for workerd, on the first port from 9229 upwards that it finds free, and it looks before workerd binds. Two that start in the same moment find the same port free, and the second workerd cannot bind it. Read from the listening sockets of three Workers on one machine: each had one port from the kernel for the Worker, and they had 9229, 9230 and 9231.
+
+So it takes two Workers that start together on one machine: two lanes of two checkouts, two runs of the workflow's steps side by side, two installations of `scripts/install-linux.sh` that systemd starts at login, or two `nanoeval worker` of a script. A hosted CI job runs one lane at a time and does not meet it.
+
+**The rule.** `nanoeval worker` and the end-to-end test start `wrangler dev` with `--inspector-port 0`. wrangler passes the 0 on, workerd binds port 0, and the kernel hands each a port of its own. Nothing here reads the inspector, and whoever wants it finds the port among the listening sockets of the workerd process.
+
+**Measured** on a Linux machine with 24 cores and 48 threads (kernel 7.0, Node 24.22.2, wrangler 4.151.1), beside an oracle run of Terminal-Bench 2.1 on 12 krun slots and two runs of the workflow's steps, at a load average between 13 and 25. One run of each line, at `da2a0d4` and at `da2a0d4` with this change.
+
+| | Lost a Worker |
+| --- | ---: |
+| Two `wrangler dev` of this checkout started together on free ports, 20 rounds | 17 of 20 rounds, each with `Address already in use` |
+| The same, each with an inspector port of its own that was free a moment before | 0 of 20 rounds |
+| The same, each with `--inspector-port 0` | 0 of 20 rounds |
+| Two oracle lanes on directory slots started together in one checkout under two labels, 10 rounds, before the change | 10 of 20 lanes, each with `Address already in use` in its `wrangler.log` |
+| The same with the change | 0 of 20 lanes |
+
+A port that `bind(0)` returned and released is not what is taken again: with 6,000 loopback connections opened in the second after its release, it could be bound again in 40 of 40 trials. So the lanes' way of choosing the Worker's port stays as it is.
+
+**Not verified.**
+
+- Other versions of wrangler. The flag is read from `wrangler dev --help` of 4.151.1.
+- A deployed Worker, which has no inspector.

@@ -788,6 +788,8 @@ async function main(): Promise<void> {
         '127.0.0.1',
         '--port',
         String(port),
+        '--inspector-port',
+        '0',
         '--persist-to',
         Path.join(out, 'state'),
         '--env-file',

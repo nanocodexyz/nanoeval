@@ -1476,6 +1476,8 @@ async function main(lab?: Revision.Lab): Promise<void> {
         values.host,
         '--port',
         values.port ?? '8787',
+        '--inspector-port',
+        '0',
         '--persist-to',
         state,
         '--env-file',
