@@ -306,6 +306,10 @@ setup_ns() {
     [ -s "$krun/resolv.conf" ] || die 'the ns backend found no nameserver in /etc/resolv.conf'
   fi
   rm -f "$home/limits"
+  if [ -e "$(dirname "$self")/no-limits" ]; then
+    printf 'nanoeval-slot: no-limits beside slot.sh, so ns slots run without CPU and memory limits\n' >&2
+    return 0
+  fi
   if grep -qw memory "$cgroups/cgroup.controllers" 2>/dev/null; then
     mkdir -p "$cgroups/nanoeval"
     if printf '+cpu +memory\n' >"$cgroups/cgroup.subtree_control" && printf '+cpu +memory\n' >"$cgroups/nanoeval/cgroup.subtree_control"; then

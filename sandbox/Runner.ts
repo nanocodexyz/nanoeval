@@ -227,6 +227,15 @@ async function setup(input: {
   await Fs.mkdir(Path.join(home, 'slots'), { recursive: true })
   await Fs.mkdir(Path.join(input.cache, 'blobs'), { recursive: true })
   await Fs.copyFile(script, slots.script)
+  const unlimited = Path.join(Path.dirname(slots.script), 'no-limits')
+  if (
+    await Fs.stat(Path.join(import.meta.dirname, 'no-limits')).then(
+      () => true,
+      () => false,
+    )
+  )
+    await Fs.writeFile(unlimited, '')
+  else await Fs.rm(unlimited, { force: true })
   const backend = Config.backend(
     input.backend,
     JSON.parse(await shell(slots.probe())) as Sandbox.Capabilities,
