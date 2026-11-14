@@ -124,6 +124,7 @@ export class Pool extends DurableObject<Env> {
 
   private status() {
     return {
+      commit: this.env.COMMIT || null,
       members: Members.all(this.sql).map((member) => ({
         createdAt: member.created_at,
         error: member.error,

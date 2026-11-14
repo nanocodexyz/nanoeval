@@ -1084,6 +1084,11 @@ async function main(): Promise<void> {
       commit: 'the-commit-of-the-lane',
       protocol: Protocol.version,
     })
+    assert.equal(
+      (await client({ token, url }).pool())['commit'],
+      'the-commit-of-the-lane',
+      'the pool says the commit its object runs',
+    )
     if (scenario === 'tasks' && backend === 'dir') {
       const home = Path.join(out, 'runner-other-protocol')
       Fs.mkdirSync(home, { recursive: true })

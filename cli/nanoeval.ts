@@ -1194,7 +1194,11 @@ export function poolSummary(status: Record<string, any>): string {
       ' idle, ' +
       members.filter((member) => member['state'] === 'assigned').length +
       ' with a run, spend $' +
-      Number(status['spendUsd']).toFixed(4),
+      Number(status['spendUsd']).toFixed(4) +
+      ', commit ' +
+      (status['commit'] === undefined
+        ? 'not said: its object runs the code of a commit before the pool said one'
+        : (status['commit'] ?? 'not named: deploy it with --var COMMIT:$(git rev-parse HEAD)')),
     ...members.map(
       (member) =>
         '  ' +

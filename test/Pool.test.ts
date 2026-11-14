@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import * as Fs from 'node:fs'
 import { test } from 'node:test'
 import * as Pool from '../src/Pool.ts'
 import type * as Sandbox from '../src/Sandbox.ts'
@@ -369,6 +370,14 @@ test('the members of a pool made before machines were named stay, and one with a
     Pool.all(sql).map((member) => member.id),
     [2],
     'the runners that left before are no members either',
+  )
+})
+
+test('a deploy starts the pool on the new code at once, so that its first alarm closes such members one notice after', () => {
+  assert.match(
+    Fs.readFileSync('wrangler.jsonc', 'utf8'),
+    /"code_update_strategy": \{ "mode": "immediate" \}/,
+    'an object that holds requests keeps the code before a deploy for as long as the deferred default allows',
   )
 })
 

@@ -4230,3 +4230,39 @@ The plain way is that `codex_orchestration` lands on both masters and the pin go
 **Checked.** The unit test of the provider refuses 3,601 s before any request. The lane `capped` ends a sandbox by its provider under a paid lease. The lanes through the scripted gateway name 3,600 s and passed.
 
 **Not verified.** Nothing was paid for this change: a run of more than an hour on the real gateway with this rule was not made. A gateway that answers a sooner `expiresAt` than asked is taken by the same line that takes a later one, which no lane exercises. A renewal that the gateway refuses with `409` because it would pass the end still marks the sandbox as ending, as before.
+
+## 2026-11-14: a deploy restarts the pool at once, and the pool says which commit it runs
+
+**What was promised.** The entry on a standing runner with several runs says, under "State of an existing deployment": "Members 'with a run' whose runners are gone are closed and removed one notice after the deploy, at the first alarm." The notice of a standing runner is 60 s.
+
+**What the deployment did.** The Worker was deployed from the commit before that change to `2244c58`. Its pool held five members "with a run" of standing runners that had been stopped hours before, some closed members, and one member of a runner that stood by. The runner was started again from the new commit half a minute after the deploy. The five members and the closed ones were still listed 3 min 20 s after the deploy and were gone 7 min 48 s after it: between 3 min 20 s and 7 min 48 s, not one notice.
+
+**The cause is not in the table.** With the change, such a member is due at once: `wakeAt` answers a time hours in the past for it, `schedule` sets the alarm to now with every request that ends, and nothing a live runner does keeps a member of no machine. The pool did not run the change. Cloudflare lets a Durable Object that is active keep the code before a deploy until it hibernates, for up to 300 s by default ([Durable Objects code updates](https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/): "By default, Durable Objects defer code updates for up to 300 seconds (5 minutes) to give in-flight requests time to finish. An active object can keep running its current code until it hibernates or reaches this delay."). A standing runner holds a request for a third of its lease and asks again when it ends, so the pool never hibernates, and `wrangler.jsonc` named no strategy. 300 s after the deploy lies inside what was seen. Until then the pool was one without the change, which is the case "Order of a deploy" of that entry warns of: the runner of the new commit enrolled in it.
+
+**Measured** under local workerd on 2026-11-14, on a Linux machine with 5 cores, kernel 6.18, at a load average of 9 to 20, once each. `wrangler dev --persist-to` at `da2a0d4`, the commit before the change, with `HOLD_MS` 50000: eight members enrolled over HTTP with a notice of 60 s, two of them left, one held by a script that asks as a runner does, for 20 s at a time. The Worker was stopped, five members were made "with a run" and last seen 3 h before in the pool's SQLite file, and a Worker was started on the same directory.
+
+| What ran on that state | When the five members and the closed ones were gone |
+| --- | --- |
+| `438f2a9`, the runner still asking | 20.2 s after the Worker started, when its first held request ended |
+| `438f2a9`, the runner leaving 23 s after the start | 20.6 s |
+| `438f2a9`, nobody asking | 31.7 s, at the alarm the code before had set |
+| `da2a0d4` again for 200 s, with the runner stopped and one of the new commit enrolled, as on the deployment | never: listed at every one of 20 readings 10 s apart, and the member of the runner that left was listed as closed |
+| `438f2a9` after those 200 s | 20.6 s after it started |
+
+Local workerd defers no update: the Worker that is started is the code that runs. So the minutes appear only while the object runs the code before, and there the listing is the one the deployment showed.
+
+**The rule now.**
+
+- `wrangler.jsonc` asks for `"code_update_strategy": { "mode": "immediate" }`: a deploy restarts every object of the Worker, the runs and sessions as well as the pool. A restart ends the requests an object holds and nothing it has written. A runner asks again, and a run whose Worker restarts under its attempts finishes, which the lanes that kill the Worker ask. A test in `test/Pool.test.ts` reads the setting, since no test of the table can fail for it.
+- The pool says the commit its object runs: `commit` of `GET /v1/pool`, and the first line of `nanoeval pool`. `GET /v1/version` cannot say it, the Worker answers that without an object. A pool of a commit before this one says none, and the command prints that.
+- The promise, corrected: members "with a run" whose runners are gone are closed and removed at the first alarm after the pool object starts on the change, which is due at once: 20 s later while a runner stands by, when its held request ends, and 32 s later with none. Without `immediate` an active pool starts on it up to 300 s after the deploy.
+- The order of a deploy stays "the Worker first", and now ends when the pool names the deployed commit: `node cli/nanoeval.ts pool` after `wrangler deploy --var COMMIT:$(git rev-parse HEAD)`. The README says so.
+
+**Checked.** `node --test test/Pool.test.ts` with the test and the `wrangler.jsonc` before: 7 passed, 1 failed. With the setting: 8 passed. `npm run dry-run` with wrangler 4.151.1 takes the setting. `nanoeval pool` against a Worker at `da2a0d4` printed "commit not said: its object runs the code of a commit before the pool said one". Every end-to-end lane now reads the commit of the lane from the pool, and the lane `standing` passed with it on directory slots.
+
+**Not verified.**
+
+- What `immediate` does on a deployed Worker: not deployed. That an object which still runs the code before also answers with the commit before is how Cloudflare describes a version, code and variables together, and was not seen either.
+- That the pool of the deployment ran the code before for those minutes was not read from it. It follows from Cloudflare's default, from the missing setting, from the times, and from the same listing under the code before.
+- The five members were made in the file of the pool, not by a run whose runner was stopped.
+- Runs in flight at a deploy on Cloudflare: each of their objects is now restarted at the deploy where it was restarted within 300 s before.

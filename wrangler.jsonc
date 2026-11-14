@@ -11,6 +11,7 @@
       { "name": "RUNS", "class_name": "Run" },
       { "name": "SESSIONS", "class_name": "AgentSession" },
     ],
+    "code_update_strategy": { "mode": "immediate" },
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["AgentSession", "Run"] },
