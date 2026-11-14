@@ -678,3 +678,47 @@ test('the funding of a key is changed with its own bearer, and a refusal says wh
       /refused to change the funding of the key with 400/.test(error.message),
   )
 })
+
+test('sandboxes renewed at once are paid only as far as the one budget goes', async () => {
+  const charges: Payment.Charge[] = []
+  const paid: string[] = []
+  const budget = Budget.create({ limitUsd: 0.1, spentUsd: 0.04 })
+  const price = '25000'
+  const provider = Gateway.create({
+    budget,
+    fetch: async (input, init) => {
+      const headers = new Headers(init?.headers)
+      const body = JSON.parse(String(init?.body)) as { sandboxId: string }
+      await new Promise((resolve) => setTimeout(resolve, 5 * (body.sandboxId.length % 3)))
+      if (!headers.has('authorization'))
+        return new Response('{"status":402}', {
+          headers: {
+            'www-authenticate':
+              'Payment id="renew", realm="gateway.example", method="tempo", intent="session", request="' +
+              Buffer.from(JSON.stringify({ amount: price, currency: 'first' })).toString(
+                'base64url',
+              ) +
+              '", description="compute.renew"',
+          },
+          status: 402,
+        })
+      paid.push(body.sandboxId)
+      return Response.json({ paidUntil: Date.now() + 300_000, sandboxId: body.sandboxId })
+    },
+    key: 'sk-tempo-test',
+    onCharge: (charge) => void charges.push(charge),
+    url: 'https://gateway.example/',
+  })
+  const ids = ['a', 'bb', 'ccc', 'dddd', 'eeeee', 'ffffff', 'ggggggg', 'hhhhhhhh']
+  const renewed = await Promise.allSettled(
+    ids.map((id) => provider.renew!({ home: Gateway.home, id }, 300)),
+  )
+  assert.equal(renewed.filter((result) => result.status === 'fulfilled').length, 2)
+  for (const result of renewed)
+    if (result.status === 'rejected')
+      assert.equal((result.reason as Error).name, 'Budget.ExceededError')
+  assert.equal(paid.length, 2, 'a renewal over the budget never carries the key')
+  assert.equal(charges.length, 2)
+  assert.ok(Math.abs(budget.spentUsd - 0.09) < 1e-9)
+  assert.ok(budget.spentUsd <= budget.limitUsd)
+})
