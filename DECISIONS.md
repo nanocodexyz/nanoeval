@@ -5639,3 +5639,14 @@ Check: `output/empty-reward/check.ts` (ignored) writes each case into a slot's v
 | reward 0 | scored 0 | scored 0 |
 
 Retried: 0 of 4 before, 2 of 4 after. `node --test test/Retry.test.ts` with the new test: 4 pass, 1 fail on `src/Verdict.ts` and `src/Retry.ts` of the parent commit, 5 pass with the change.
+
+## 2026-11-14: the local ports of b222d89, 4ea4f94, eb1fe6b and aa79a6e are not landed
+
+Two commits of this series were dropped when it was rebased onto `3451d08`: "pay a sandbox operation again when the gateway refuses it for payment or rate, and back a run off it" (the ports of `b222d89`, `4ea4f94` and `eb1fe6b`) and "count only a sandbox that never became ready toward the failures that stop a run growing" (the port of `aa79a6e`). `b9fd913` ("a sandbox that could not be opened is asked for again") already makes both decisions in `src/Opening.ts`:
+
+- Only a sandbox that never started counts as a failure to open. A sandbox that ended after it started gives its rows back and counts nothing, which is what `aa79a6e` did.
+- A create refused with `402`, `408`, `429` or a `5xx` with a problem passes. The run asks again after pauses from `--lease-sec` to `--setup-sec` and does not end the rows for it, which is the run side of `b222d89`.
+
+The retry inside `pay` (after 1, 2, 4, 8, 16 and 30 s) is not kept. The entry of `b9fd913` records that a provider keeps the price of a create it refuses with `429`, so a fast retry pays for each refusal, and it weighs that against the pauses of the run.
+
+Commands, on the hosted Hand, one run each: `npm run lint`, `npm run check:types`, and `npm test` (399 tests, 394 passed, 5 skipped) on the rebased series.
