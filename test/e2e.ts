@@ -78,6 +78,7 @@ const midturnSleepSec = 20
 const midturnYieldMs = 10_000
 const sandboxLeaseSec = Number(process.env['NANOEVAL_E2E_SANDBOX_LEASE_SEC'] ?? leaseSec)
 const seededDisk = 'e'.repeat(64)
+const slotGone = scenario === 'gone'
 const shared = scenario === 'shared'
 const standing = scenario === 'standing'
 const planned = scenario === 'plan'
@@ -906,6 +907,7 @@ async function main(): Promise<void> {
       throw new Error(
         'the midturn scenario runs on directory slots, with NANOEVAL_E2E_KILL cell, model or wait',
       )
+    if (slotGone && backend !== 'krun') throw new Error('the gone scenario runs on krun slots')
     if (isolated) {
       if (backend === 'dir') throw new Error('the network scenario runs on krun or ns slots')
       await Network.isolation({
@@ -947,7 +949,9 @@ async function main(): Promise<void> {
                   )
                 : cached
                   ? [Path.join('test/fixtures', 'cached-verifier')]
-                  : taskNames.map((name) => Path.join('tasks', name))
+                  : slotGone
+                    ? [Path.join('test/fixtures', 'slow-verifier')]
+                    : taskNames.map((name) => Path.join('tasks', name))
     const agents: Config.Agent[] =
       model === 'oracle'
         ? [oracle]
@@ -981,11 +985,19 @@ async function main(): Promise<void> {
                 isolated ||
                 midturn ||
                 packing ||
+                slotGone ||
                 model !== 'scripted'
               ? [
                   {
                     id:
-                      alone || cached || closed || failures || isolated || midturn || packing
+                      alone ||
+                      cached ||
+                      closed ||
+                      failures ||
+                      isolated ||
+                      midturn ||
+                      packing ||
+                      slotGone
                         ? 'right'
                         : 'nanocode',
                     model: realModel,
@@ -1077,7 +1089,7 @@ async function main(): Promise<void> {
     const config: Config.Config = {
       agents,
       attempts:
-        alone || cached || closed || failures || midturn || packing
+        alone || cached || closed || failures || midturn || packing || slotGone
           ? 1
           : isolated
             ? slots
@@ -1254,6 +1266,7 @@ async function main(): Promise<void> {
     let lostAt: number | undefined
     let backAt: number | undefined
     let stoppedAt: number | undefined
+    let verifyAt: number | undefined
     let beside: { id: string } | undefined
     let besideStatus: Record<string, any> | undefined
     let besidePool: Record<string, any>[] | undefined
@@ -1399,6 +1412,27 @@ async function main(): Promise<void> {
         stand('b')
         release()
       }
+      if (
+        slotGone &&
+        !restarted &&
+        (status['attempts'] as { phase: string }[]).some((attempt) => attempt.phase === 'verify')
+      ) {
+        verifyAt ??= Date.now()
+        const found = spawnSync('ps', ['-eo', 'pid=,args='])
+          .stdout.toString()
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(
+            (line) =>
+              line.includes(' ' + sandboxes + Path.sep) &&
+              line.includes('/rt/krun/nanoeval-krun vm '),
+          )
+          .map((line) => Number(line.split(' ')[0]))
+        if (Date.now() - verifyAt > 2000 && found.length) {
+          restarted = true
+          for (const pid of found) process.kill(pid, 'SIGKILL')
+        }
+      }
       if (shared && parked && !beside)
         beside = await api.create({ ...config, name: config.name + '-beside' })
       if (shared && beside && !restarted) {
@@ -1420,9 +1454,17 @@ async function main(): Promise<void> {
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
     if (
-      ['fleet', 'forgotten', 'lost', 'midturn', 'restart', 'resume', 'shared', 'stopped'].includes(
-        scenario,
-      )
+      [
+        'fleet',
+        'forgotten',
+        'gone',
+        'lost',
+        'midturn',
+        'restart',
+        'resume',
+        'shared',
+        'stopped',
+      ].includes(scenario)
     )
       assert.ok(restarted, 'the ' + scenario + ' happened during the run')
     const wallMs = Date.now() - started
@@ -2118,7 +2160,7 @@ async function main(): Promise<void> {
       const plain = { ...config, sandbox: { ...config.sandbox, verifierCache: undefined } }
       assert.deepEqual(await verified((await api.create(plain)).id), ['miss', 'unset'])
       assert.equal(await kept(), 1)
-    } else if (closed || isolated) {
+    } else if (closed || isolated || slotGone) {
       for (const attempt of status['attempts'] as { id: string; outcome: string }[])
         assert.equal(
           attempt.outcome,
@@ -2218,6 +2260,29 @@ async function main(): Promise<void> {
       assert.ok(status['counts'].passed > 0, 'the model solves at least one task')
     }
 
+    if (slotGone) {
+      const row = details[0]!
+      const claims = row['claims'] as Record<string, any>[]
+      assert.deepEqual(
+        claims.map((claim) => [claim['ending'], claim['phase']]),
+        [
+          ['released', 'verify'],
+          ['finished', 'verify'],
+        ],
+        'a row whose slot ended under its verifier went back to the run and was verified again',
+      )
+      assert.match(
+        claims[0]!['error'],
+        /^the krun slot \S+ is not running any more: its process \d+ is gone$/,
+      )
+      assert.equal(status['lostClaims'], 1)
+      assert.ok(
+        (await api.timeline(created.id)).marks.some(
+          (mark) => mark.name === 'attempt.gone' && mark.attempt === row['attempt'].id,
+        ),
+        'the timeline of the run says when the slot was found gone',
+      )
+    }
     if (shared) {
       const other = besideStatus!
       assert.deepEqual(

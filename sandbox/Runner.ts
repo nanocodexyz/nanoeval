@@ -748,6 +748,23 @@ async function attend(
     await down(item, false)
   }
 
+  const gone = async (item: Work): Promise<boolean> => {
+    if (shared.ready?.backend === 'dir') return false
+    const said = (await shell(slots.gone(item.row.slot))).trim()
+    if (!said) return false
+    log(
+      'the slot of ' +
+        item.row.id +
+        ' ended under it in ' +
+        item.stage +
+        ', so the row goes back to the run: ' +
+        said,
+    )
+    await rowCall(item, 'gone', { message: said } satisfies Protocol.Fault)
+    await down(item, false)
+    return true
+  }
+
   const ensureDisk = async (environment: Protocol.Ahead, marks: Mark[]) => {
     const prefix = Path.join(cache, 'disks', environment.disk.digest)
     let pending = unpacking.get(prefix)
@@ -1085,6 +1102,7 @@ async function attend(
         if (state.state !== 'waiting') return move(item, 'agent')
         const code = Slot.exit(await phase(Path.join(target, 'hand.status')))
         if (code !== undefined || elapsed > config.limits.attachSec * 1000) {
+          if (await gone(item)) return
           const handLog = await slotLog(item, 'hand', Protocol.logBytes)
           await upload(item, 'hand.log', handLog)
           return fail(
@@ -1112,6 +1130,7 @@ async function attend(
           state.detached &&
           Slot.exit(await phase(Path.join(target, 'hand.status'))) !== undefined
         ) {
+          if (await gone(item)) return
           const handLog = await slotLog(item, 'hand', Protocol.logBytes)
           await upload(item, 'hand.log', handLog)
           return fail(item, 'environment', 'the hand left during the turn: ' + handLog.slice(-2000))
@@ -1125,6 +1144,7 @@ async function attend(
             return fail(item, 'environment', 'the agent did not report within its deadline')
           return pending(item)
         }
+        if (code !== 0 && (await gone(item))) return
         return endCli(item, { cli: item.row.agent.cli!, code })
       }
       case 'solve': {
@@ -1134,6 +1154,7 @@ async function attend(
             return fail(item, 'environment', 'the solution did not report within its deadline')
           return pending(item)
         }
+        if (code !== 0 && (await gone(item))) return
         await upload(
           item,
           'agent/oracle.txt',
@@ -1152,6 +1173,7 @@ async function attend(
             return fail(item, 'verifier_timeout', 'the verifier did not report within its deadline')
           return pending(item)
         }
+        if (code !== 0 && (await gone(item))) return
         item.marks.push({ at: item.at, ms: now - item.at, name: 'attempt.verifier' })
         return timed(item, 'attempt.collect', () => collect(item, code))
       }
@@ -1193,6 +1215,7 @@ async function attend(
         await giveBack(item, error.message).catch(dropped)
         return
       }
+      if (await gone(item).catch(() => false)) return
       const reason = error instanceof Error ? error.name + ': ' + error.message : String(error)
       item.errors++
       item.marks.push({ at: Date.now(), name: 'attempt.retry' })

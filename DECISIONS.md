@@ -2962,3 +2962,28 @@ Three of the defects of the day are one change, in the pool (`src/Pool.ts`, `wor
 - A Worker that does not answer for longer than the notice while the runner serves: the pool then closes its members, the runs keep their runner, and the runner enrols again. Argued from the code.
 - A runner without this change beside a Worker with it, for a run longer than its notice: its member is then closed while it serves, and it exits when that run is done. The entry on the protocol has what ran, two short runs.
 - CI on GitHub.
+
+## 2026-11-14: a row whose slot ends under it goes back to the run
+
+**The defect.** A microVM that is killed under a row, by the machine's kernel when the machine runs out of memory or by anyone with a signal, ended the row as a score of the task's infrastructure in the wrong place. Killed while the verifier ran, the launcher's `exec` lost its connection to the guest and exited with 125, the runner read that as the exit code of the verifier, found no reward, and the row ended as a `verifier` error: "the verifier exited with 125 and wrote no reward: … the guest connection ended". Nothing of that is the task's or the verifier's. The row was not claimed again, although every other lost slot is. Met on the machine of the standing runner: the kernel killed a microVM of 7 GB twice in five minutes while other work filled the machine's memory, and a microVM that was killed with a signal on purpose while its verifier ran ended its row this way.
+
+**What a runner can tell apart.** Not the exit code: the launcher answers 125 for a connection that ended and passes on the 125 of a verifier that exits with it, and `krun/` was not changed for this. The process is what differs. A slot that is up has the process of its machine in `vm.pid`, the microVM of a krun slot and the namespaces' first process of an ns slot, and that process outlives every phase of the row. `slot.sh gone SLOT` prints a line when a slot came up and that process no longer exists, and nothing otherwise. A verifier that exits non-zero in a slot that still runs is the verifier's, as before, and so is a guest that stops answering while its microVM lives: those two cannot be told apart from outside, and the first is by far the usual one.
+
+**The rule.** A slot that ends under its row is a lost claim, not a result. The runner asks `gone` where a phase of a slot ended badly: a verifier, a solution or an installed agent that exited non-zero, a hand that exited before or during its turn, and any step that failed and would be tried again. When the slot is gone it tells the run (`POST …/rows/ROW/gone` with what `slot.sh` printed) and takes down what is left. The run writes the text on the claim, adds an `attempt.gone` mark to the timeline and ends the claim as `released`: the row is `unclaimed` again and starts from nothing on its next claim, here or on another runner. It counts against `--claims`, and a row that is out of claims ends as an `environment` error that names the phase and the text. Unlike a machine that cannot bring a slot up, the runner goes on claiming: one microVM that was killed says nothing about the next.
+
+**What a kill costs now.** With a service that keeps running when the kernel kills one process of it (`OOMPolicy=continue` in systemd), one killed microVM costs its row one claim and the time it had run, and no row ends as an error for it until the same row has lost `--claims` slots.
+
+**Checked** on the 32-core machine with KVM of the entries above.
+
+- **The lane `gone`**, new in `ci.yml` on krun slots, where it is skipped without KVM: one row of a new fixture, `test/fixtures/slow-verifier`, whose verifier sleeps 8 s. Two seconds after the row is in its `verify` phase the lane kills its microVM with SIGKILL. It asks that the row passes on its second claim, that the first ended `released` in the `verify` phase with "the krun slot … is not running any more: its process … is gone" as its error, that the run lost one claim and that the timeline has the mark.
+- **Without the change**, the lane on the commit of the entry before: it failed after 42 s. The row ended as a `verifier` error, "the verifier exited with 125 and wrote no reward: nanoeval-krun: the guest connection ended: failed to fill whole buffer".
+- **With it**: the lane passed 2 of 2 times, in 29 and 63 s, the row verified again by the same runner.
+
+**Not verified.**
+
+- A kill by the kernel for memory: the lane sends the signal itself, which is what the kernel sends.
+- ns slots, where `vm.pid` is the first process of the namespaces: read, not run. A directory slot has no machine and is never gone.
+- A slot that ends during the turn of a session, under an installed agent or under a solution. The same question is asked there, and only the verifier's phase has a lane.
+- A guest that stops answering in a microVM that lives, which stays a `verifier` error when it happens under the verifier.
+- A runner from before this change with a Worker that has it, which behaves as before, and the other way round, which the entry after this one refuses.
+- CI on GitHub, where the lane is skipped.

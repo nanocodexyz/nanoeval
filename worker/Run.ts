@@ -1966,6 +1966,7 @@ export class Run extends DurableObject<Env> {
       if (action === 'session') return json(await this.handSession(row))
       if (action === 'endpoint') return json(await this.endpoint(row))
       if (action === 'fault') return json(await this.fault(row, body as Protocol.Fault))
+      if (action === 'gone') return json(await this.gone(row, body as Protocol.Fault))
       if (action === 'agent') return json(await this.agent(row, body as Protocol.Ask))
       if (action === 'verify') return json(this.verify(row, body as { solve?: { code: number } }))
       if (action === 'judge') return json(await this.judge(row, body as { request?: string }))
@@ -2059,6 +2060,31 @@ export class Run extends DurableObject<Env> {
             ' times, the limit of the run, and the machine of runner ' +
             row.runner +
             ' could not bring its slot up: ' +
+            body.message,
+    )
+    return { released: true }
+  }
+
+  private async gone(row: Ledger.Attempt, body: Protocol.Fault): Promise<{ released: true }> {
+    if (typeof body.message !== 'string')
+      throw new Refusal(400, 'message is what the machine said of the slot that ended')
+    Ledger.explain(this.sql, { claim: row.claim!, error: body.message })
+    Timeline.add(this.sql, {
+      at: Date.now(),
+      attempt: row.id,
+      name: 'attempt.gone',
+      ...(row.runner === null ? {} : { runner: row.runner }),
+    })
+    await this.lose(
+      row,
+      'released',
+      row.claims < this.config().limits.claims
+        ? undefined
+        : 'the attempt was claimed ' +
+            row.claims +
+            ' times, the limit of the run, and the slot of its last claim ended under it in the ' +
+            row.phase +
+            ' phase: ' +
             body.message,
     )
     return { released: true }

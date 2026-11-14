@@ -976,6 +976,15 @@ free_disk() {
   df --output=avail -BM "${paths[@]}" 2>/dev/null | awk 'NR > 1 { free = $1 + 0; if (least == "" || free < least) least = free } END { print least == "" ? 0 : least }'
 }
 
+cmd_gone() {
+  local slot=$1 pid
+  valid "$slot"
+  local dir=$home/slots/$slot
+  [ "$(state "$dir/up.status")" = exit:0 ] || return 0
+  pid=$(cat "$dir/vm.pid" 2>/dev/null) || return 0
+  if ! kill -0 "$pid" 2>/dev/null; then printf 'the %s slot %s is not running any more: its process %s is gone\n' "$(cat "$dir/backend")" "$slot" "$pid"; fi
+}
+
 cmd_status() {
   local first=1 dir slot
   printf '{"disk_mb":%s,"setup":"%s","slots":{' "$(free_disk)" "$(state "$home/setup.status")"
@@ -1034,10 +1043,10 @@ cmd_file() {
 }
 
 command=${1:-}
-[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|tools|agents|up|hand|agent|solve|verify|down|drop|destroy|prune|status|log|files|file> ...'
+[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|tools|agents|up|hand|agent|solve|verify|gone|down|drop|destroy|prune|status|log|files|file> ...'
 shift
 case $command in
-  probe | setup | _setup | tools | agents | up | _up | _ns | drop | _drop | hand | _hand | agent | _agent | solve | _solve | verify | _verify | down | destroy | prune | status | log | files | file)
+  probe | setup | _setup | tools | agents | up | _up | _ns | drop | _drop | hand | _hand | agent | _agent | solve | _solve | verify | _verify | gone | down | destroy | prune | status | log | files | file)
     "cmd_$command" "$@"
     ;;
   *) die "unknown command: $command" ;;
