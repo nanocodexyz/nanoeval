@@ -229,3 +229,52 @@ test('runs of one agent on different nanocode revisions are separate rows, and a
   }
   assert.match(Compare.against(baseline, other), /^\| Attempts \| not run \| 1 \|$/m)
 })
+
+test('a row that a rerun retried counts once, as its retry, and a run named twice counts once', () => {
+  const nano = { id: 'nano', model: 'gpt-6.1-sol', provider: 'codex' as const }
+  const first: Compare.Run = {
+    attempts: [
+      attempt(nano, { n: 1, outcome: 'failed', task: 'one', usage }),
+      attempt(nano, { n: 2, outcome: 'errored', task: 'two', usage: null }),
+      attempt(nano, { n: 3, outcome: 'passed', task: 'three', usage }),
+    ],
+    eval: { name: 'bench', version: '0123456789abcdef' },
+    id: 'run-1',
+    name: 'first',
+    state: 'finished',
+  }
+  const rerun: Compare.Run = {
+    attempts: [
+      {
+        ...attempt(nano, { n: 1, outcome: 'passed', task: 'one', usage }),
+        retryOf: { attempt: 'a00001', run: 'run-1' },
+      },
+      {
+        ...attempt(nano, { n: 2, outcome: 'errored', task: 'two', usage: null }),
+        retryOf: { attempt: 'a00002', run: 'run-1' },
+      },
+    ],
+    eval: { name: 'bench', version: '0123456789abcdef' },
+    id: 'run-2',
+    name: 'again',
+    state: 'finished',
+  }
+  const counts = (runs: readonly Compare.Run[]) => {
+    const [arm] = Compare.arms(runs)
+    return [arm!.attempts, arm!.passed, arm!.failed, arm!.errored, arm!.inputTokens]
+  }
+  assert.deepEqual(counts([first]), [3, 1, 1, 1, 600])
+  assert.deepEqual(counts([first, rerun]), [3, 2, 0, 1, 600])
+  assert.deepEqual(counts([rerun, first, first]), [3, 2, 0, 1, 600])
+  assert.deepEqual(counts([rerun]), [2, 1, 0, 1, 300])
+
+  const table = Compare.table([first, rerun, first])
+  assert.equal(table.split('\n').filter((line) => line.startsWith('run ')).length, 2)
+  assert.match(
+    table,
+    /run run-1 \(first\): finished, bench@0123456789ab, 3 attempts ended, 2 of them retried by a run of this table and left out/,
+  )
+  assert.match(table, /run run-2 \(again\): finished, bench@0123456789ab, 2 attempts ended\n/)
+  assert.match(table, /\| one \| passed 1 min 0 s \|/)
+  assert.match(table, /\| two \| errored \(agent\) 1 min 0 s \|/)
+})

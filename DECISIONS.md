@@ -3305,3 +3305,19 @@ pass@k came from gakonst/nanoeval as "any of the first k attempts passed". With 
 - `npm run lint`, `npm run check:types`, `npm test`, and the plain lane on directory slots, whose two agents pass every attempt or none and read 100 % and 0 % as before.
 
 **Not verified.** A run with a real model, where attempts of one task are not independent draws when a cache or a seed ties them. An interval around the figure: the summary prints a point estimate, and with a few attempts on a few tasks two runs of one agent can differ by more than a change between them.
+
+## 2026-11-14: compare counts a row once when a rerun retried it
+
+`nanoeval compare` is the one command that reads several runs together, and a run with its reruns is the first thing to give it: a rerun is a run of its own, whose summary covers only the rows it retried, and the results of the earlier run are never changed. The table added the attempts of all its runs, so a row that was retried counted twice, as the attempt that did not pass and as its retry.
+
+**Found** on directory slots under local workerd with the scripted model: the run of 8 tasks and 3 attempts of the entries above, 7 passed, 10 failed and 7 errored, then `run --rerun RUN --failed`, 10 rows of which 4 passed, and `run --rerun RUN --errored`, 7 rows of which 1 passed. `compare` of the three printed 41 attempts, 12 passed, 16 failed and 13 errored, and for one task `failed, passed, failed, passed, passed`. The 24 rows stand at 12 passed, 6 failed and 6 errored. The same run named twice printed 48 attempts.
+
+**The rule.** `Compare.standing` takes each run once, by its id, and leaves out every attempt that an ended attempt of another run of the table names as the one it retries. What a retry of a retry replaces goes the same way. An attempt whose retry has not ended stands until it has. The line of a run says how many of its attempts were left out, and outcomes, time, tokens and cost are those of the attempts that stand, so the cost of a retried attempt is in the table of its own run and not in this one. Two reruns of the same rows both stand: they are two further attempts of those rows.
+
+**Checked.**
+
+- A unit test in `test/Compare.test.ts`: a run and its rerun in either order, the run named twice, and the rerun alone.
+- The three runs above read again: 24 attempts, 12 passed, 6 failed, 6 errored, 2,535 input tokens of which 1,560 cached and 273 output tokens, each equal to the sum by hand over the attempts that stand, and `24 attempts ended, 17 of them retried by a run of this table and left out` on the line of the first run.
+- `npm run lint`, `npm run check:types`, `npm test`.
+
+**Not verified.** A rerun that is still running beside its run, and a rerun of a rerun, outside the unit test. The table still has no pass@k, and two unrelated runs of one agent still share a row.

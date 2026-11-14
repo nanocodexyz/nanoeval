@@ -75,7 +75,23 @@ function seconds(phase: Result.Phase | undefined): number {
   return phase ? (phase.finishedAt - phase.startedAt) / 1000 : 0
 }
 
-export function arms(runs: readonly Run[]): Arm[] {
+export function standing(given: readonly Run[]): Run[] {
+  const runs = given.filter((run, at) => given.findIndex((other) => other.id === run.id) === at)
+  const retried = new Set(
+    runs.flatMap((run) =>
+      run.attempts.flatMap((attempt) =>
+        attempt.retryOf ? [attempt.retryOf.run + ' ' + attempt.retryOf.attempt] : [],
+      ),
+    ),
+  )
+  return runs.map((run) => ({
+    ...run,
+    attempts: run.attempts.filter((attempt) => !retried.has(run.id + ' ' + attempt.id)),
+  }))
+}
+
+export function arms(given: readonly Run[]): Arm[] {
+  const runs = standing(given)
   const found = new Map<string, Arm>()
   const tasks = new Map<string, Set<string>>()
   for (const run of runs)
@@ -151,7 +167,7 @@ function cost(value: number | null): string {
   return value === null ? 'not known' : '$' + value.toFixed(4)
 }
 
-function line(run: Run): string {
+function line(run: Run, ended: number): string {
   return (
     'run ' +
     run.id +
@@ -164,13 +180,20 @@ function line(run: Run): string {
     '@' +
     run.eval.version.slice(0, 12) +
     ', ' +
-    run.attempts.length +
+    ended +
     ' attempts ended' +
+    (run.attempts.length === ended
+      ? ''
+      : ', ' +
+        (ended - run.attempts.length) +
+        ' of them retried by a run of this table and left out') +
     (run.nanocode ? ', ' + Pins.text(run.nanocode) : '')
   )
 }
 
-export function table(runs: readonly Run[]): string {
+export function table(given: readonly Run[]): string {
+  const runs = standing(given)
+  const ended = new Map(given.map((run) => [run.id, run.attempts.length]))
   const all = arms(runs)
   const title = (arm: Arm) =>
     all.filter((other) => other.agent === arm.agent).length === 1
@@ -240,7 +263,9 @@ export function table(runs: readonly Run[]): string {
     ...names.map((task) => [task.split('/').at(-1)!, ...all.map((arm) => outcome(task, arm))]),
   ])
 
-  return [...runs.map(line), '', summary, '', tasks].join('\n') + '\n'
+  return (
+    [...runs.map((run) => line(run, ended.get(run.id)!)), '', summary, '', tasks].join('\n') + '\n'
+  )
 }
 
 export function changes(baseline: Run, run: Run): Change[] {
