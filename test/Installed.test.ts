@@ -316,7 +316,11 @@ test('the command of nanocode is the runtime of the slot and reads the endpoint 
     /^NANOCODE_ANTHROPIC_MESSAGES_URL=http:\/\/127\.0\.0\.1:8787\/v1\/runs\/r\/model\/a00001\/v1\/messages$/m,
   )
   assert.match(claude, new RegExp('^NANOCODE_ANTHROPIC_API_KEY=' + attemptToken + '$', 'm'))
-  assert.doesNotMatch(claude, /NANOCODE_OPENAI/)
+  assert.match(
+    claude,
+    /^NANOCODE_MODELS_URL=http:\/\/127\.0\.0\.1:8787\/v1\/runs\/r\/model\/a00001\/models$/m,
+  )
+  assert.doesNotMatch(claude, /NANOCODE_OPENAI_BASE_URL/)
   assert.equal(Config.harness({ provider: 'nanocode-codex' }), 'installed')
   assert.deepEqual(parseAgent('nc=nanocode-codex:boundless/z-ai/glm-5.3-flash:high'), {
     id: 'nc',

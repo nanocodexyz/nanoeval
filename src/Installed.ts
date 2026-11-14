@@ -142,6 +142,8 @@ export function script(agent: Agent, options: { url: string }): string {
           : [
               'export ' + anthropicMessagesUrl + '=' + quote(options.url + '/v1/messages'),
               'export ' + anthropicApiKey + '="$' + tokenVariable + '"',
+              'export NANOCODE_MODELS_URL=' + quote(options.url + '/models'),
+              'export NANOCODE_OPENAI_API_KEY="$' + tokenVariable + '"',
             ]),
         'prompt=$(cat)',
         [
