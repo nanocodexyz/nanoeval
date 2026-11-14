@@ -3602,3 +3602,17 @@ With it, nothing changes in nanoeval: `Atif.usage` already reads `cost_usd` from
 **Checked.** The events of an attempt that hit its timeout and of one that completed, from the exported job of a run on directory slots with the scripted model: the `run.failed` and `run.completed` payloads quoted above. That nanocode-ts `build-7968b53` exports no prices: `dist/models.js` names none. The source of nanocode at the commit of the pinned hand and at master, read for the two call sites and the function.
 
 **Not verified.** The patch: not compiled, not run. The Codex backend of nanocode (`crates/backends/codex`), whose cancelled turns were not read. A turn cancelled while a model call is in flight, whose tokens no event carries.
+
+## 2026-11-14: the proof of the summary, comparison, gate, selection and baseline changes
+
+The fourteen commits from "leave attempts that errored out of pass@k" to "record why a timed-out attempt has no cost" landed together. This entry says what was proven on which commit.
+
+**Before the last rebase**, on the commit whose tree differs from the landed one in `DECISIONS.md` alone:
+
+- Every run step of `.github/workflows/ci.yml` from a fresh clone, with `npm ci` as it is, on a machine with KVM that had run nothing of nanoeval before: 79 steps, 78 passed at once, no lane skipped, the 76 steps of the `check` job in 16.4 minutes, `npm test` 223 passed and none skipped, `cargo test` 48 passed.
+- The one step that failed there, "End to end, ns slots, slot networks", fails on that machine at `main` as well, at every commit tried: its passt sends a TCP segment without flags after the handshake, and the machine that masquerades for the slot does not translate it back. From a fresh clone of the same commit on a second machine with KVM that step passed, in 55 s, as did "two leased sandboxes of which one dies".
+- "End to end, krun slots, a microVM killed under its verifier" passed in the full pass and failed once on the second machine, where its verifier exited with 125 after `the guest connection ended`. The same lane failed in the same way in a proof of the commit below this stack, so it is not counted against it, and it is not hidden here.
+
+**After it**, `main` had moved by one commit that changes `DECISIONS.md` and nothing else. The stack was rebased onto it, and on the rebased tip ran `npm run lint`, `npm run check:types`, `npm test` (223 tests, 219 passed, the 4 that need KVM skipped) and the directory lanes `tasks`, `machine`, `failures` and `judge`, which passed. No lane was run again from a fresh clone after the rebase.
+
+**Lanes that failed on earlier bases of this stack**, while `main` moved three times under it, each on a machine that was fast and idle and each also without these commits: "directory slots, orchestrator restart" once, where the Worker was killed between the first response of the model and its dispatch; "two leased sandboxes of which one dies" twice, where every row had its verdict before the sandbox died, so no claim was left to lose; and the microVM lane above. Each passed in the full pass named first.
