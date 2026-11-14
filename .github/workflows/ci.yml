@@ -10,23 +10,50 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/machine
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            krun/target
+          key: launcher-${{ github.job }}-${{ hashFiles('krun/Cargo.lock', 'krun/rust-toolchain.toml') }}
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/nanoeval/oci
+          key: layers-${{ github.job }}-${{ hashFiles('tasks/*/environment/Dockerfile', 'test/fixtures/*/environment/Dockerfile', 'test/guest/Dockerfile') }}
       - run: npm ci
       - run: npm run lint
       - run: npm run check:types
       - run: npm test
       - run: npm run dry-run
+
+  e2e-dir:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
       - name: End to end, directory slots
         run: npm run e2e
         env:
@@ -284,6 +311,41 @@ jobs:
           NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
           NANOEVAL_E2E_SLOTS: '3'
           NANOEVAL_E2E_ATTEMPTS: '1'
+      - name: Keep the logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-output-dir
+          path: |
+            output/e2e/**/wrangler.log
+            output/e2e/**/runner*.log
+            output/e2e/**/status.json
+            output/e2e/**/harbor
+
+  e2e-krun:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/machine
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            krun/target
+          key: launcher-${{ github.job }}-${{ hashFiles('krun/Cargo.lock', 'krun/rust-toolchain.toml') }}
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/nanoeval/oci
+          key: layers-${{ github.job }}-${{ hashFiles('tasks/*/environment/Dockerfile', 'test/fixtures/*/environment/Dockerfile', 'test/guest/Dockerfile') }}
+      - run: npm ci
       - name: End to end, krun slots, skipped where krun cannot run
         run: npm run e2e
       - name: End to end, krun slots, oracle, skipped where krun cannot run
@@ -397,6 +459,41 @@ jobs:
         env:
           NANOEVAL_E2E_GATEWAY: '1'
           NANOEVAL_E2E_MODEL: installed
+      - name: Keep the logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-output-krun
+          path: |
+            output/e2e/**/wrangler.log
+            output/e2e/**/runner*.log
+            output/e2e/**/status.json
+            output/e2e/**/harbor
+
+  e2e-ns:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/machine
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            krun/target
+          key: launcher-${{ github.job }}-${{ hashFiles('krun/Cargo.lock', 'krun/rust-toolchain.toml') }}
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/nanoeval/oci
+          key: layers-${{ github.job }}-${{ hashFiles('tasks/*/environment/Dockerfile', 'test/fixtures/*/environment/Dockerfile', 'test/guest/Dockerfile') }}
+      - run: npm ci
       - name: End to end, ns slots, skipped where the test is not root and no guest can boot
         run: npm run e2e
         env:
@@ -472,9 +569,9 @@ jobs:
           NANOEVAL_E2E_SCENARIO: alone
       - name: Keep the logs of a failed run
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: e2e-output
+          name: e2e-output-ns
           path: |
             output/e2e/**/wrangler.log
             output/e2e/**/runner*.log
@@ -488,7 +585,17 @@ jobs:
       run:
         working-directory: krun
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/machine
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            krun/target
+          key: launcher-${{ github.job }}-${{ hashFiles('krun/Cargo.lock', 'krun/rust-toolchain.toml') }}
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked

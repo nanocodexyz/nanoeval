@@ -1,0 +1,7 @@
+name: Machine
+description: Give a hosted runner what krun and ns slots need and it does not have
+runs:
+  using: composite
+  steps:
+    - run: bash scripts/ci-machine.sh
+      shell: bash
