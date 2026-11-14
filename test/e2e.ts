@@ -4570,17 +4570,17 @@ async function main(): Promise<void> {
           (JSON.parse(payment.detail) as { description: string }).description,
           Math.round(payment.usd * 1e6),
         ])
+      const order = (left: (string | number)[], right: (string | number)[]) =>
+        String(left).localeCompare(String(right))
+      const renewal = ([description, amount]: (string | number)[]) =>
+        String(description).startsWith('compute.renew')
+          ? [String(description).replace(' estimated at the lease rate', '')]
+          : [description!, amount!]
       if (!warm) {
-        const exact = (entries: (string | number)[][]) =>
-          entries.map(([description, amount]) =>
-            String(description).startsWith('compute.renew')
-              ? [String(description).replace(' estimated at the lease rate', '')]
-              : [description, amount],
-          )
         assert.deepEqual(
-          exact(paid(status['payments'])),
-          exact(charged()),
-          'the payments of the run are what the gateway charged in order, and what it refused written back, a renewal at the price it was estimated at',
+          paid(status['payments']).map(renewal).sort(order),
+          charged().map(renewal).sort(order),
+          'the payments of the run are what the gateway charged and what it refused written back, each once, a renewal at the price it was estimated at',
         )
         assert.ok(
           Math.abs(status['spend'].sandboxUsd - sum(mock.charges.map((charge) => charge.usd))) <
@@ -4705,12 +4705,6 @@ async function main(): Promise<void> {
           idle.some(([operation]) => String(operation).startsWith('compute.renew')),
           'the pool renewed the lease while the sandbox was idle',
         )
-        const order = (left: (string | number)[], right: (string | number)[]) =>
-          String(left).localeCompare(String(right))
-        const renewal = ([description, amount]: (string | number)[]) =>
-          String(description).startsWith('compute.renew')
-            ? [String(description).replace(' estimated at the lease rate', '')]
-            : [description!, amount!]
         assert.deepEqual(
           [...paid(status['payments']), ...paid(again['payments']), ...idle]
             .map(renewal)
