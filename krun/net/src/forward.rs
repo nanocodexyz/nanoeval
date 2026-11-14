@@ -7,6 +7,7 @@ use std::{
         unix::net::{UnixListener, UnixStream},
     },
     str::FromStr,
+    sync::mpsc,
     thread,
 };
 
@@ -76,6 +77,43 @@ fn copy(mut from: &File, mut to: &File) {
     let _ = shutdown(from.as_raw_fd(), Shutdown::Read);
 }
 
+fn drain(mut from: &File, to: &File) -> io::Result<()> {
+    let (queue, queued) = mpsc::channel::<Vec<u8>>();
+    let mut to = to.try_clone()?;
+    let writer = thread::spawn(move || {
+        for chunk in queued {
+            if to.write_all(&chunk).is_err() {
+                break;
+            }
+        }
+        let _ = shutdown(to.as_raw_fd(), Shutdown::Write);
+    });
+    let mut buffer = vec![0; CHUNK];
+    loop {
+        match from.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(length) => {
+                if queue.send(buffer[..length].to_vec()).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+    let _ = shutdown(from.as_raw_fd(), Shutdown::Read);
+    drop(queue);
+    writer
+        .join()
+        .map_err(|_| io::Error::other("a relay thread panicked"))
+}
+
+fn relay(guest: &File, upstream: &File) -> io::Result<()> {
+    let (from, to) = (upstream.try_clone()?, guest.try_clone()?);
+    let back = thread::spawn(move || copy(&from, &to));
+    drain(guest, upstream)?;
+    back.join()
+        .map_err(|_| io::Error::other("a relay thread panicked"))
+}
+
 pub fn splice(left: &File, right: &File) -> io::Result<()> {
     let (from, to) = (right.try_clone()?, left.try_clone()?);
     let back = thread::spawn(move || copy(&from, &to));
@@ -98,7 +136,7 @@ where
     }
     let upstream = TcpStream::connect(target)
         .map_err(|error| io::Error::new(error.kind(), format!("{target}: {error}")))?;
-    splice(&connection, &File::from(OwnedFd::from(upstream)))
+    relay(&connection, &File::from(OwnedFd::from(upstream)))
 }
 
 pub fn serve<A>(listener: &UnixListener, allowed: A) -> io::Result<()>
@@ -144,6 +182,7 @@ where
 #[cfg(test)]
 mod tests {
     use std::{
+        env,
         io::{Read, Write},
         net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream},
         os::unix::net::UnixStream,
@@ -229,5 +268,47 @@ mod tests {
             thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(refused);
+    }
+
+    fn echo(listener: TcpListener) {
+        thread::spawn(move || {
+            let (mut served, _) = listener.accept().unwrap();
+            let mut buffer = vec![0; CHUNK];
+            loop {
+                match served.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(length) => {
+                        if served.write_all(&buffer[..length]).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn a_guest_that_writes_before_it_reads_is_echoed_in_full() {
+        let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let wanted = loopback(&upstream);
+        echo(upstream);
+        let socket = env::temp_dir().join(format!("nanoeval-net-drain-{}", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        let listener = UnixListener::bind(&socket).unwrap();
+        thread::spawn(move || serve(&listener, move |_| Ok(true)));
+        let length = 64 << 20;
+        let (done, finished) = mpsc::channel();
+        let path = socket.clone();
+        thread::spawn(move || {
+            let mut guest = File::from(OwnedFd::from(UnixStream::connect(path).unwrap()));
+            announce(&mut guest, wanted).unwrap();
+            guest.write_all(&vec![7; length]).unwrap();
+            let mut answer = vec![0; length];
+            guest.read_exact(&mut answer).unwrap();
+            done.send(answer.iter().all(|byte| *byte == 7)).unwrap();
+        });
+        let echoed = finished.recv_timeout(std::time::Duration::from_mins(1));
+        let _ = std::fs::remove_file(&socket);
+        assert_eq!(echoed, Ok(true));
     }
 }
