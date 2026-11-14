@@ -565,6 +565,13 @@ export function summary(status: Record<string, any>): string {
         .join(', '),
     'spend: model $' +
       Number(status['spend'].modelUsd).toFixed(4) +
+      (!status['key'] && status['spend'].unpricedResponses ? ' estimated from tokens' : '') +
+      (status['spend'].uncostedAttempts
+        ? ', without ' +
+          status['spend'].uncostedAttempts +
+          (status['spend'].uncostedAttempts === 1 ? ' attempt' : ' attempts') +
+          ' whose model calls have no cost'
+        : '') +
       ', sandboxes $' +
       Number(status['spend'].sandboxUsd).toFixed(4),
   ]

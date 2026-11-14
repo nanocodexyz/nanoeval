@@ -1063,6 +1063,7 @@ export class Run extends DurableObject<Env> {
       spend: {
         modelUsd: this.modelSpent(),
         sandboxUsd: this.spent(),
+        uncostedAttempts: Result.uncosted(results),
         unpricedResponses: unpriced['responses'] as number,
         webSearches: searches,
       },

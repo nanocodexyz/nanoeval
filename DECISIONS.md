@@ -3336,3 +3336,17 @@ pass@k came from gakonst/nanoeval as "any of the first k attempts passed". With 
 **Checked.** Unit tests in `test/Selection.test.ts`. On the run above: the second command without its `--agent` is refused, and `--rerun RUN --failed --errored --only t2 --only t6` made the 3 rows of those two tasks that had not passed, one failed and two of the other task, one errored and one failed. `npm run lint`, `npm run check:types`, `npm test`.
 
 **Not verified.** The sandbox settings of a rerun, which still come from the command line and not from its run.
+
+## 2026-11-14: the spend of a run says what it leaves out
+
+`status` prints `spend: model $…`. Through the gateway that is what each response reported. With a key of a provider or a plan login no response carries a cost, and the figure is the one nanocode publishes when a turn ends, `cost_usd` with `cost_status: estimated_from_usage`: tokens at list prices. The line did not say which of the two it was, and the estimate has a hole.
+
+**Found** on directory slots under local workerd, with a scripted Messages endpoint that reports tokens and no cost: 20 uncached input tokens, 40 read from the cache, 5 written to it and 7 output tokens a response, which nanocode prices at $0.00006525 for `claude-haiku-4-5`. A run of 24 rows got 37 responses: 14 attempts with two, 3 attempts of a task with an agent timeout of 3 s whose only command sleeps 30 s, with one each, and 3 attempts whose verifier wrote no reward, with two. `status` printed `spend: model $0.0022`, the exported job `cost_usd: 0.0022185`, which is 34 responses. By hand the 37 are $0.00241425. The three attempts that timed out have their tokens in every total, 65 input and 7 output, and `cost_usd: null`: the turn was cancelled, and nanocode ends a cancelled turn with `run.failed`, `cost_usd: null` and `cost_status: other`. `compare` showed it as `$0.0022 for 17 of 24`, which also counts 4 attempts that never reached the model.
+
+An attempt that runs into its timeout is the one that used the most tokens of its task, so on a benchmark this is the larger part of the estimate and not the smaller. Through the gateway each response carries its cost and an attempt has the sum of them, whatever ended its turn: read in `worker/Run.ts`, not run here.
+
+**What changed.** The cost itself is not repaired here: the prices are in the brain, nanocode-ts exports no table, and a second table in this repository would be a magic constant that drifts. `Result.uncosted` counts the attempts whose usage has model calls and no cost, the run reports it as `spend.uncostedAttempts`, and `status` prints `spend: model $0.0022 estimated from tokens, without 3 attempts whose model calls have no cost`. `estimated from tokens` is printed when the run has no gateway key and a response came without a cost. `--model-budget-usd` on such a run bounds the same estimate and does not see those attempts either.
+
+**Checked.** A unit test in `test/Summary.test.ts`. The run above and a run cancelled while one such attempt had ended, read again: 3 attempts and 1 attempt. A run with neither prints `estimated from tokens` alone. `npm run lint`, `npm run check:types`, `npm test`.
+
+**Not verified.** A gateway run, where the line is unchanged unless an attempt has no cost. A `codex` session. Whether nanocode can price a cancelled turn from the usage it already has: that is the repair, in nanocode, and the count here goes to zero with it.

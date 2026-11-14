@@ -84,6 +84,13 @@ export function outcome(reward: number | null, failure: Failure | undefined): At
   return reward === 1 ? 'passed' : 'failed'
 }
 
+export function uncosted(attempts: readonly Attempt[]): number {
+  return attempts.filter(
+    (attempt) =>
+      attempt.usage && attempt.usage.modelCalls > 0 && attempt.usage.costUsd === undefined,
+  ).length
+}
+
 export function summarize(attempts: readonly Attempt[]): Record<string, AgentSummary> {
   const agents: Record<string, AgentSummary> = {}
   const tasks: Record<string, Record<string, Attempt[]>> = {}

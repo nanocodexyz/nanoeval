@@ -79,3 +79,35 @@ test('the summary says how many tasks a pass@k rates when errors left some out',
     'haiku: passed 1/4, errored 0, mean reward 0.250, pass@1 25.0%, pass@2 50.0%',
   )
 })
+
+test('the spend says when it is an estimate and which attempts it leaves out', () => {
+  const usage = {
+    cacheWriteTokens: 0,
+    cachedTokens: 40,
+    costUsd: 0.5 as number | undefined,
+    inputTokens: 65,
+    modelCalls: 1,
+    outputTokens: 7,
+    toolCalls: 1,
+  }
+  const results = [
+    { ...row('one', 1, 'passed'), usage },
+    { ...row('two', 1, 'failed'), usage: { ...usage, costUsd: undefined } },
+    { ...row('three', 1, 'errored'), usage: { ...usage, costUsd: undefined, modelCalls: 0 } },
+    row('four', 1, 'errored'),
+  ]
+  assert.equal(Result.uncosted(results), 1)
+  const spend = (fields: Record<string, unknown>, key: unknown = null) =>
+    summary({ ...status(results), key, spend: { modelUsd: 0.5, sandboxUsd: 0, ...fields } })
+      .split('\n')
+      .find((entry) => entry.startsWith('spend: '))
+  assert.equal(spend({}), 'spend: model $0.5000, sandboxes $0.0000')
+  assert.equal(
+    spend({ uncostedAttempts: 1, unpricedResponses: 3 }),
+    'spend: model $0.5000 estimated from tokens, without 1 attempt whose model calls have no cost, sandboxes $0.0000',
+  )
+  assert.equal(
+    spend({ uncostedAttempts: 2, unpricedResponses: 3 }, { start: {} }),
+    'spend: model $0.5000, without 2 attempts whose model calls have no cost, sandboxes $0.0000',
+  )
+})
