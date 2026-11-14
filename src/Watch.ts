@@ -47,7 +47,7 @@ export type Config = {
     slots?: number
     tasks: 'all' | string[]
   }
-  hook?: { command: string[]; on: Kind[] }
+  hook?: { command: string[]; on: Kind[]; timeoutSec: number }
   limits: { buildSec?: number; runSec?: number; stopSec?: number }
   nanocode: Source
   nanocodeTs: Source
@@ -366,7 +366,7 @@ export function config(value: unknown): Config {
   const hook =
     top['hook'] === undefined
       ? undefined
-      : table(top['hook'], { allowed: ['command', 'on'], name: 'hook' })
+      : table(top['hook'], { allowed: ['command', 'on', 'timeout_sec'], name: 'hook' })
   const on = hook?.['on'] === undefined ? ['regression'] : texts(hook['on'], 'hook.on')
   for (const kind of on)
     if (!kinds.includes(kind as Kind))
@@ -402,7 +402,18 @@ export function config(value: unknown): Config {
         : { slots: whole(evaluation['slots'], { least: 1, name: 'eval.slots' }) }),
       tasks,
     },
-    ...(hook ? { hook: { command: hookCommand, on: on as Kind[] } } : {}),
+    ...(hook
+      ? {
+          hook: {
+            command: hookCommand,
+            on: on as Kind[],
+            timeoutSec:
+              hook['timeout_sec'] === undefined
+                ? 60
+                : amount(hook['timeout_sec'], 'hook.timeout_sec'),
+          },
+        }
+      : {}),
     limits: {
       ...(buildSec === undefined ? {} : { buildSec }),
       ...(runSec === undefined ? {} : { runSec }),
@@ -516,7 +527,7 @@ export function record(
     const tasks = (into.marks[row.agent] ??= {})
     tasks[row.task] = (tasks[row.task] ?? '') + letters[row.outcome]
     if (row.outcome === 'errored') {
-      const error = (row.error ?? 'no reward and no error').slice(0, 200)
+      const error = (row.error ?? 'no reward and no error').slice(0, 300)
       into.errors[error] = (into.errors[error] ?? 0) + 1
     }
     const usage = (into.usage[row.agent] ??= {
@@ -833,8 +844,8 @@ export function conclude(
   const detail =
     failure?.detail ??
     (verdict === 'incomplete'
-      ? open.length +
-        ' tasks have too few scored attempts: ' +
+      ? (open.length === 1 ? '1 task has' : open.length + ' tasks have') +
+        ' too few scored attempts: ' +
         open.map((entry) => entry.agent + '/' + entry.task).join(', ') +
         Object.entries(intent.errors)
           .sort((left, right) => right[1] - left[1])
@@ -1115,6 +1126,12 @@ function fraction(value: Tally): string {
   return value.passed + '/' + value.scored
 }
 
+function recent(revisions: number): string {
+  return revisions === 1
+    ? 'the last accepted revision'
+    : 'the last ' + revisions + ' accepted revisions'
+}
+
 function chance(p: number): string {
   return p < 0.001 ? p.toExponential(1) : p.toFixed(3)
 }
@@ -1176,10 +1193,7 @@ export function sentence(line: Evaluation): string {
         id +
         ' pass@1 ' +
         percent(summary.pass1) +
-        ' pass@' +
-        line.k +
-        ' ' +
-        percent(summary.passK) +
+        (line.k > 1 ? ' pass@' + line.k + ' ' + percent(summary.passK) : '') +
         (summary.errored ? ', ' + summary.errored + ' errored' : ''),
     ),
     ...(runs.length
@@ -1225,11 +1239,14 @@ export function comparison(
   const side = base
     ? summarize({ marks: base.marks, usage: {} }, { agents: Object.keys(base.agents), k: line.k })
     : {}
+  if (!Object.keys(line.summary).length)
+    return 'no attempt ran, so there is nothing to set against the baseline\n'
+  const several = line.k > 1
   const rows = Object.entries(line.summary).map(([id, summary]) => [
     id,
     line.agents[id]!,
     percent(side[id]?.pass1 ?? null) + ' -> ' + percent(summary.pass1),
-    percent(side[id]?.passK ?? null) + ' -> ' + percent(summary.passK),
+    ...(several ? [percent(side[id]?.passK ?? null) + ' -> ' + percent(summary.passK)] : []),
     String(summary.passed),
     String(summary.failed),
     String(summary.errored),
@@ -1242,9 +1259,8 @@ export function comparison(
     base
       ? 'against the baseline ' +
         name(base.pair) +
-        ', whose tasks have the attempts of the last ' +
-        Math.min(settings.baseline.window, state.accepted.length) +
-        ' accepted revisions'
+        ', whose tasks have the attempts of ' +
+        recent(Math.min(settings.baseline.window, state.accepted.length))
       : 'no baseline to set it against',
     '',
     cells([
@@ -1252,7 +1268,7 @@ export function comparison(
         'Agent',
         'Model',
         'pass@1',
-        'pass@' + line.k,
+        ...(several ? ['pass@' + line.k] : []),
         'Passed',
         'Failed',
         'Errored',
@@ -1315,9 +1331,9 @@ export function scoreboard(
       settings.eval.attempts +
       ' attempts a task, agents ' +
       settings.eval.agents.map((entry) => entry.id + ' (' + entry.spec + ')').join(', ') +
-      '. A task is lost or gained when its passes differ from those of the last ' +
-      settings.baseline.window +
-      ' accepted revisions at p <= ' +
+      '. A task is lost or gained when its passes differ from those of ' +
+      recent(settings.baseline.window) +
+      ' at p <= ' +
       settings.baseline.alpha +
       ' in a one-sided Fisher exact test, after one rerun of ' +
       settings.eval.attempts +
@@ -1333,9 +1349,9 @@ export function scoreboard(
         base.finishedAt +
         ' (evaluation ' +
         base.id +
-        '). Passes of scored attempts over the last ' +
-        Math.min(settings.baseline.window, state.accepted.length) +
-        ' accepted revisions:'
+        '). Passes of scored attempts over ' +
+        recent(Math.min(settings.baseline.window, state.accepted.length)) +
+        ':'
       : 'None yet.',
     '',
     ...(base
@@ -1363,7 +1379,7 @@ export function scoreboard(
             ') lost ' +
             moves(regression, 'lost').join(', ') +
             '. ' +
-            (culprit ? blame(culprit) + '.' : 'The first losing commit is not known.') +
+            (culprit ? 'The ' + blame(culprit) + '.' : 'The first losing commit is not known.') +
             ' The baseline stays until a revision loses nothing or this one is accepted.',
           '',
         ]

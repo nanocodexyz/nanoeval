@@ -6,3 +6,11 @@ Type=oneshot
 EnvironmentFile=-%h/.config/nanoeval/watch.env
 ExecStart=%h/.local/bin/nanoeval watch --config %h/.config/nanoeval/watch.toml --once
 TimeoutStartSec=infinity
+# A stop reaches the watcher alone: it stops its nanoeval revision, which gives its rows back, takes
+# its slots down and stops its Worker. What is left in the unit after that, or after
+# TimeoutStopSec, is killed. The watcher then exits with 143, which is no failure.
+KillMode=mixed
+TimeoutStopSec=120
+SuccessExitStatus=143
+# One microVM that the kernel kills for memory ends one row, not the evaluation.
+OOMPolicy=continue

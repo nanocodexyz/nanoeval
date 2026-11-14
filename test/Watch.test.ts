@@ -533,7 +533,7 @@ test('an errored attempt is run again once, and a task without its attempts make
   )
   assert.match(
     stuck.detail!,
-    /1 tasks have too few scored attempts: sonnet\/alpha, 2 x VerifierError/,
+    /1 task has too few scored attempts: sonnet\/alpha, 2 x VerifierError/,
   )
   assert.equal(
     Watch.replay([...lines, stuck], settings).baseline!.id,
@@ -890,7 +890,7 @@ test('the scoreboard and the line of a verdict say what was lost, what it cost a
   assert.match(board, /\| gamma \| 4\/4 \| 4\/4 \|/)
   assert.match(
     board,
-    /## Standing regression\n\nnanocode n2 nanocode-ts t0 \(evaluation e2\) lost luna\/gamma 4\/4 -> 0\/4 \(p 0.014\)\. first losing commit nanocode n2 "change n2"\./,
+    /## Standing regression\n\nnanocode n2 nanocode-ts t0 \(evaluation e2\) lost luna\/gamma 4\/4 -> 0\/4 \(p 0.014\)\. The first losing commit nanocode n2 "change n2"\./,
   )
   assert.match(
     board,

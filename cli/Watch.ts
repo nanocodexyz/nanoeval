@@ -285,6 +285,8 @@ function chains(settings: Watch.Config, base: Watch.Pair | undefined): Watch.Cha
   }
 }
 
+const colors = new RegExp(String.fromCharCode(27) + '\\[[0-9;]*m', 'g')
+
 function tail(log: string): string {
   let contents = ''
   try {
@@ -292,8 +294,8 @@ function tail(log: string): string {
   } catch {}
   return contents
     .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line && !/^(at |\^|Node\.js v|file:\/\/|throw )/.test(line))
+    .map((line) => line.replace(colors, '').trim())
+    .filter((line) => line && !/^(at |\^|\$ |Node\.js v|file:\/\/|stack: |throw )/.test(line))
     .slice(-3)
     .map((line) => line.slice(0, 300))
     .join(' | ')
@@ -345,10 +347,16 @@ async function invoke(
   }
 }
 
-function busy(settings: Watch.Config): boolean {
+// The holder of the lock is a child of the command and can outlive it by a moment, so a lock that the call before
+// this one held is asked about for a second before another evaluation is taken to hold the lab.
+async function busy(settings: Watch.Config): Promise<boolean> {
   const lock = Path.join(lab(settings), 'lock')
   if (!Fs.existsSync(lock)) return false
-  return spawnSync('flock', ['--nonblock', lock, 'true']).status === 1
+  for (let asked = 1; ; asked++) {
+    if (spawnSync('flock', ['--nonblock', lock, 'true']).status !== 1) return false
+    if (asked === 5) return true
+    await new Promise((done) => setTimeout(done, 250))
+  }
 }
 
 function read(directory: string): { rows: Watch.Row[] } | { reason: string } {
@@ -559,6 +567,11 @@ async function hook(settings: Watch.Config, input: { line: Watch.Evaluation; rep
     stdio: ['pipe', out, out],
   })
   Fs.closeSync(out)
+  let late = false
+  const limit = setTimeout(() => {
+    late = true
+    child.kill('SIGKILL')
+  }, settings.hook.timeoutSec * 1000)
   const exit = await new Promise<number | string | null>((done) => {
     child.once('error', (error) => done(error.message))
     child.once('exit', (code, signal) => done(code ?? signal))
@@ -571,7 +584,18 @@ async function hook(settings: Watch.Config, input: { line: Watch.Evaluation; rep
       }) + '\n',
     )
   })
-  if (exit !== 0) console.log('the hook for ' + line.id + ' ended with ' + exit + ', log ' + log)
+  clearTimeout(limit)
+  if (late)
+    console.log(
+      'the hook for ' +
+        line.id +
+        ' had not ended after ' +
+        settings.hook.timeoutSec +
+        ' s and was killed, log ' +
+        log,
+    )
+  else if (exit !== 0)
+    console.log('the hook for ' + line.id + ' ended with ' + exit + ', log ' + log)
 }
 
 async function finish(
@@ -623,8 +647,8 @@ async function advance(
   const { settings } = context
   const { intent } = input
   const evidence = Watch.replay(ledger(settings), settings).evidence
-  const held = () =>
-    !context.patient && busy(settings)
+  const held = async () =>
+    !context.patient && (await busy(settings))
       ? ({
           kind: 'busy',
           reason:
@@ -638,7 +662,7 @@ async function advance(
   while (at(intent) === 'open') {
     if (stopped) throw new StopError(stopped)
     if (!intent.rounds.build) {
-      const waits = held()
+      const waits = await held()
       if (waits) return waits
       intent.rounds.build++
       await step(context, { intent, purpose: 'build' })
@@ -667,7 +691,7 @@ async function advance(
           Watch.name(intent.request.label ?? intent.request.pair) +
           ' goes on the next day (UTC)',
       }
-    const waits = held()
+    const waits = await held()
     if (waits) return waits
     const { purpose, ...call } = intent.queue[0]!
     intent.queue = intent.queue.slice(1)

@@ -14,7 +14,13 @@ export function clean(): void {
   for (const root of roots) Fs.rmSync(root, { force: true, recursive: true })
 }
 
-type Options = { bisect?: 'off'; dailyRuns?: number; dailyUsd?: number; hook?: boolean }
+type Options = {
+  bisect?: 'off'
+  dailyRuns?: number
+  dailyUsd?: number
+  hook?: boolean | string[]
+  hookSec?: number
+}
 
 export function world(options: Options = {}) {
   const root = Fs.mkdtempSync(Path.join(Os.tmpdir(), 'nanoeval-watch-'))
@@ -76,7 +82,14 @@ export function world(options: Options = {}) {
         'command = ' + JSON.stringify([process.execPath, stub]),
         'lab = "lab"',
         ...(changed.hook
-          ? ['[hook]', 'command = ' + JSON.stringify(['sh', '-c', 'cat >> ' + hooked])]
+          ? [
+              '[hook]',
+              'command = ' +
+                JSON.stringify(
+                  changed.hook === true ? ['sh', '-c', 'cat >> ' + hooked] : changed.hook,
+                ),
+              ...(changed.hookSec === undefined ? [] : ['timeout_sec = ' + changed.hookSec]),
+            ]
           : []),
         '',
       ].join('\n'),

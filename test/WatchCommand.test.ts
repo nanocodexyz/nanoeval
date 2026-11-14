@@ -167,7 +167,7 @@ test('of several commits the newest is run first, the first losing one is found 
   assert.equal(heard[0]!.changes[0]!.kind, 'lost')
   assert.match(
     w.board(),
-    /## Standing regression\n\nnanocode \w{12} nanocode-ts \w{12} \(evaluation \S+\) lost luna\/gamma 4\/4 -> 0\/4 \(p 0.014\)\. first losing commit nanocode \w{12} "feat: three"\./,
+    /## Standing regression\n\nnanocode \w{12} nanocode-ts \w{12} \(evaluation \S+\) lost luna\/gamma 4\/4 -> 0\/4 \(p 0.014\)\. The first losing commit nanocode \w{12} "feat: three"\./,
   )
   assert.match(w.board(), new RegExp('## Baseline\\n\\nnanocode ' + short(w.origin['nanocode']!)))
 
@@ -186,6 +186,23 @@ test('of several commits the newest is run first, the first losing one is found 
   assert.doesNotMatch(w.board(), /Standing regression/)
   assert.match(w.board(), new RegExp('## Baseline\\n\\nnanocode ' + short(n6)))
   assert.equal(w.hooked().length, 2)
+})
+
+test('a hook that does not end is killed after its limit, and the evaluation stands', () => {
+  const w = world({ bisect: 'off', hook: ['sleep', '30'], hookSec: 0.3 })
+  w.watch('--once')
+  const dropped = w.commit('nanocode', 'feat: drop beta')
+  w.play({ outcomes: { [dropped]: { beta: 'f' } } })
+  const started = Date.now()
+  const said = w.watch('--once').stdout
+  assert.match(said, /REGRESSION, lost sonnet\/beta 4\/4 -> 0\/4/)
+  assert.match(
+    said,
+    /\nthe hook for \S+ had not ended after 0\.3 s and was killed, log \S+-hook\.log\n/,
+  )
+  assert.ok(Date.now() - started < 20_000)
+  assert.equal(w.lines().at(-1)!.verdict, 'regression')
+  assert.equal(w.intents().length, 0)
 })
 
 test('a revision that lost a task can be accepted as the baseline, and bisect can be off', () => {
@@ -300,7 +317,7 @@ test('a checkout with uncommitted changes is evaluated on demand beside the base
   )
   assert.match(
     result.stdout,
-    /\nagainst the baseline nanocode \w{12} nanocode-ts \w{12}, whose tasks have the attempts of the last 1 accepted revisions\n/,
+    /\nagainst the baseline nanocode \w{12} nanocode-ts \w{12}, whose tasks have the attempts of the last accepted revision\n/,
   )
   assert.match(
     result.stdout,
@@ -344,7 +361,7 @@ test('a checkout with uncommitted changes is evaluated on demand beside the base
   assert.equal(one.status, 0)
   assert.match(
     one.stdout,
-    /^on demand nanocode \S+ nanocode-ts \w{12}: ok; sonnet pass@1 100.0% pass@1 100.0%; luna pass@1 100.0% pass@1 100.0%; 1 run, \$0.0200\n/,
+    /^on demand nanocode \S+ nanocode-ts \w{12}: ok; sonnet pass@1 100.0%; luna pass@1 100.0%; 1 run, \$0.0200\n/,
   )
   const last = w.runs(directory).at(-1)!
   assert.deepEqual([value(last, '--only'), value(last, '--attempts')], [['alpha'], ['1']])
