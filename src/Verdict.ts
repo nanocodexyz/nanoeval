@@ -1,9 +1,11 @@
 import type * as Result from './Result.ts'
 
 export const report = 'ctrf.json'
+export const reward = 'reward.txt'
 export const timeoutCodes: readonly number[] = [124, 137]
 
 export const fullPrefix = 'the slot ran out of disk while the verifier ran'
+export const emptyRewardPrefix = 'the verifier left reward.txt without a reward'
 export const brokenPrefix = 'the disk of the slot failed while the verifier ran'
 export const unfetchedPrefix = 'the verifier could not download what its test.sh installs'
 export const withdrawnPrefix =
@@ -62,10 +64,18 @@ export function verifier(input: verifier.Input): {
       : facts.reward === null
         ? {
             at: now,
-            ...(untested({ diskMb: facts.diskMb, tail }) ?? {
-              kind: 'verifier',
-              message: 'the verifier exited with ' + facts.code + ' and wrote no reward: ' + tail,
-            }),
+            ...(untested({ diskMb: facts.diskMb, tail }) ??
+              (facts.files.includes(reward)
+                ? {
+                    kind: 'environment',
+                    message:
+                      emptyRewardPrefix + ' after it exited with ' + facts.code + ': ' + tail,
+                  }
+                : {
+                    kind: 'verifier',
+                    message:
+                      'the verifier exited with ' + facts.code + ' and wrote no reward: ' + tail,
+                  })),
           }
         : facts.reward !== 1 && input.ctrf && !facts.files.includes(report)
           ? {

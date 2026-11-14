@@ -116,6 +116,8 @@ export function infrastructure(input: {
     (failure.message.startsWith(queued) || failure.message.startsWith(stalledPrefix))
   )
     return 'the agent never started'
+  if (failure.kind === 'environment' && failure.message.startsWith(Verdict.emptyRewardPrefix))
+    return 'the verifier left an empty reward'
   if (failure.kind === 'environment' && failure.message.startsWith(unansweredPrefix))
     return 'the model endpoint was not reached'
   if (

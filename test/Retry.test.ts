@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import * as Payment from '../src/Payment.ts'
 import * as Retry from '../src/Retry.ts'
+import * as Verdict from '../src/Verdict.ts'
 
 test('a failure of the machine or of the way to the model is retried, a verdict or a budget never', () => {
   const disk =
@@ -249,5 +250,35 @@ test('a session that is answered nothing but refusals is ended when the wait of 
       waitSec: 15,
     }),
     undefined,
+  )
+})
+
+test('a verifier that leaves reward.txt without a reward is retried as an environment error, one that writes none is not', () => {
+  const base = { ctrf: false, log: 'tests ran', now: 5, timeoutSec: 60 }
+  const empty = Verdict.verifier({
+    ...base,
+    facts: { code: 0, files: ['reward.txt'], reward: null },
+  })
+  assert.deepEqual(empty, {
+    failure: {
+      at: 5,
+      kind: 'environment',
+      message: 'the verifier left reward.txt without a reward after it exited with 0: tests ran',
+    },
+    reward: null,
+  })
+  assert.equal(
+    Retry.infrastructure({ failure: empty.failure!, statuses: [] }),
+    'the verifier left an empty reward',
+  )
+  const none = Verdict.verifier({ ...base, facts: { code: 3, files: [], reward: null } })
+  assert.equal(none.failure?.kind, 'verifier')
+  assert.equal(Retry.infrastructure({ failure: none.failure!, statuses: [] }), undefined)
+  assert.equal(
+    Verdict.verifier({
+      ...base,
+      facts: { code: 124, files: ['reward.txt'], reward: null },
+    }).failure?.kind,
+    'verifier_timeout',
   )
 })

@@ -5624,3 +5624,18 @@ Its tasks declare task schema 1.3, `[verifier] environment_mode = "separate"` wi
 
 - An installed agent whose task closes its network, on any slot.
 - A model run through `--provider gateway`: the gateway's Boundless route failed before one was attempted.
+
+## 2026-11-14: a verifier that leaves reward.txt without a reward is an environment error, retried once
+
+A verifier whose reward.txt exists but holds no number, such as a zero-byte file from a write that a full disk or a killed process cut, was a `verifier` error and was never retried, the same as a verifier that wrote no reward at all. It was not a score, so no task failure was counted, but the attempt was lost to an infrastructure cause. `Verdict.verifier` now makes such an attempt an `environment` error whose message starts with `Verdict.emptyRewardPrefix` (unless the log already names a cause, such as a full disk), and `Retry.infrastructure` returns a cause for it, so the run ends the claim `retried` and starts the row once more from nothing, as it does for a slot out of disk. A verifier that writes no reward.txt stays a `verifier` error and is not retried. A verifier timeout keeps its kind. nanoeval reads no reward.json, so only reward.txt applies.
+
+Check: `output/empty-reward/check.ts` (ignored) writes each case into a slot's verifier directory, lists it with `slot.sh files`, parses the reward as the runner does, and passes it to `Verdict.verifier` and `Retry.infrastructure`. Hosted Hand, Linux x86_64, Node 24, one run each:
+
+| Case | Before | After |
+| --- | --- | --- |
+| zero-byte reward.txt | `verifier`, not retried | `environment`, retried |
+| reward.txt with only a newline | `verifier`, not retried | `environment`, retried |
+| no reward.txt | `verifier`, not retried | `verifier`, not retried |
+| reward 0 | scored 0 | scored 0 |
+
+Retried: 0 of 4 before, 2 of 4 after. `node --test test/Retry.test.ts` with the new test: 4 pass, 1 fail on `src/Verdict.ts` and `src/Retry.ts` of the parent commit, 5 pass with the change.
