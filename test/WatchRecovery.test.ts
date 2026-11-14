@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import * as Fs from 'node:fs'
 import * as Path from 'node:path'
 import { after, test } from 'node:test'
@@ -255,9 +255,12 @@ test('while another evaluation holds the lab the watcher records nothing, and ru
   w.watch('--once')
   const n1 = w.commit('nanocode', 'feat: one')
   const lock = Path.join(w.lab, 'lock')
-  const holder = spawn('flock', [lock, 'sleep', '60'], { stdio: 'ignore' })
-  const gone = ended(holder)
-  await until(() => spawnSync('flock', ['--nonblock', lock, 'true']).status === 1, 'the lock')
+  const holder = spawn('flock', [lock, 'sh', '-c', 'echo held; exec sleep 60'], {
+    detached: true,
+    stdio: ['ignore', 'pipe', 'inherit'],
+  })
+  const gone = new Promise((closed) => holder.once('close', closed))
+  await new Promise((held) => holder.stdout.once('data', held))
   const calls = w.calls().length
   const said = w.watch('--once').stdout
   assert.equal(
@@ -273,13 +276,8 @@ test('while another evaluation holds the lab the watcher records nothing, and ru
   assert.equal(w.watch('--once').stdout, said)
   assert.equal(w.lines().length, 1)
   assert.equal(w.calls().length, calls)
-  holder.kill('SIGKILL')
+  process.kill(-holder.pid!, 'SIGKILL')
   await gone
-  spawnSync('pkill', ['-f', 'sleep 60'])
-  await until(
-    () => spawnSync('flock', ['--nonblock', lock, 'true']).status === 0,
-    'the lock to be free',
-  )
   assert.match(
     w.watch('--once').stdout,
     new RegExp('^nanocode ' + short(n1) + ' nanocode-ts \\w{12}: ok; '),
