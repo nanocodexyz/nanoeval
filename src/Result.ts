@@ -24,7 +24,7 @@ export type Attempt = {
   agent: {
     id: string
     model: string
-    orchestration?: 'direct'
+    orchestration?: 'direct' | 'jobs'
     preflight?: true
     provider: 'claude' | 'codex' | 'oracle' | Installed.Kind
     thinking?: string

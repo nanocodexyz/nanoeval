@@ -3,7 +3,7 @@ import type * as Config from './Config.ts'
 export type Turn = {
   hand?: string
   model: string
-  orchestration?: 'direct'
+  orchestration?: 'direct' | 'jobs'
   payer?: Config.Payer
   prompt: string
   provider: 'claude' | 'codex'

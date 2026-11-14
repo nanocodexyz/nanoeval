@@ -5,7 +5,7 @@ import * as Fs from 'node:fs'
 import * as Os from 'node:os'
 import * as Path from 'node:path'
 import { after, test } from 'node:test'
-import { parseAgent } from '../cli/nanoeval.ts'
+import { agentText, parseAgent } from '../cli/nanoeval.ts'
 import type * as Atif from '../src/Atif.ts'
 import * as Config from '../src/Config.ts'
 import * as Gateway from '../src/Gateway.ts'
@@ -44,6 +44,17 @@ test('an agent names a session harness or an installed command', () => {
     provider: 'codex',
     thinking: 'high',
   })
+  assert.deepEqual(parseAgent('nanoxj=codex-jobs:gpt-6-luna:high'), {
+    id: 'nanoxj',
+    model: 'gpt-6-luna',
+    orchestration: 'jobs',
+    provider: 'codex',
+    thinking: 'high',
+  })
+  assert.equal(
+    agentText(parseAgent('nanoxj=codex-jobs:gpt-6-luna:high')),
+    'nanoxj=codex-jobs:gpt-6-luna:high',
+  )
   assert.throws(() => parseAgent('other=cursor:some-model'), /ID=HARNESS:MODEL/)
   assert.throws(() => parseAgent('codex-cli:gpt-6.1-sol'), /ID=HARNESS:MODEL/)
 
@@ -108,7 +119,7 @@ test('an agent names a session harness or an installed command', () => {
         ...config,
         agents: [{ id: 'x', model: 'm', orchestration: 'cells', provider: 'codex' }],
       }),
-    /orchestration must be one of direct/,
+    /orchestration must be one of direct, jobs/,
   )
 })
 

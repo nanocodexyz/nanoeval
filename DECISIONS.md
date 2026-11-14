@@ -5711,3 +5711,17 @@ Hosted Hand (5 cores, Linux x86_64, no `/dev/kvm`), Node 24, nanocode-ts `build-
 - A krun or ns fork: the copy of `upper.ext4` after a guest `sync` was not run on a KVM machine. A slot's processes are not forked, only its disk, which at the start checkpoint holds nothing running.
 - A checkpoint after the plan. It needs a session forked with its history in nanocode-ts and a disk snapshot of a slot whose hand runs, and was not built.
 - Any real model: whether best-of-3 by self-check beats one session per token is what a run on the losing tasks must measure.
+
+
+## 2026-11-14: a Codex arm with background jobs
+
+`codex-jobs` is a harness beside `codex` and `codex-direct`: `nanoxj=codex-jobs:gpt-6-luna:high` (or `{ "provider": "codex", "orchestration": "jobs" }`) runs a nanocode `codex` session in Code Mode whose turns send `codex_orchestration: "jobs"`. nanocode-ts 1bb9797 maps that to `Tools::with_background_jobs(true)`, so the session's cells on a hand built from nanocode 16f93adbc or later get `job_start`, `job_wait` and `job_kill` beside codex-cli's tools; `codex` and `codex-direct` arms are unchanged. Why: bet B3 (async long-running commands) on the Terminal-Bench 2.1 losing set. nanox follows a long build with exec_command and write_stdin polls that each return the output printed since the last one (fix-ocaml-gc: 18 to 83 polls per attempt in runs 650d0782 and bec3e408, see nanocode's DECISIONS of 2026-11-14), and nanocode 16f93adbc's harness measured a 360 s build at 72 tool calls and 56,630 returned bytes that way against 3 calls and 1,041 bytes with the job tools. `parseAgent` maps `codex-direct` and `codex-jobs` through one table and `agentText` writes any orchestration back as `codex-<orchestration>`, so `compare` names the arm `codex-jobs:MODEL`.
+
+### Verified
+
+- `test/Installed.test.ts`: `nanoxj=codex-jobs:gpt-6-luna:high` parses to orchestration `jobs` and prints back unchanged; a configuration naming another orchestration is refused with "orchestration must be one of direct, jobs".
+- `npm run check:types`, `node --test test/Installed.test.ts test/Compare.test.ts` (36 passed), `vp check` on the changed files, on the hosted Hand.
+
+### Not verified
+
+- An end-to-end lane and any real model: the arm needs the Worker on nanocode-ts 1bb9797 or later and a hand from nanocode 16f93adbc or later; an older nanocode-ts answers 400 to `codex_orchestration: "jobs"`.

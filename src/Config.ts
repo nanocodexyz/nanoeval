@@ -28,7 +28,7 @@ export type Agent = {
 
 export type Harness = 'installed' | 'oracle' | 'session'
 
-export type Orchestration = 'direct'
+export type Orchestration = 'direct' | 'jobs'
 
 export type Judge = {
   model: string
@@ -201,7 +201,7 @@ export function parse(value: unknown): Config {
       ...Installed.kinds,
     ])
     if (agent.orchestration !== undefined) {
-      choice(agent.orchestration, 'orchestration', ['direct'])
+      choice(agent.orchestration, 'orchestration', ['direct', 'jobs'])
       if (provider !== 'codex') fail(agent.id + ' has an orchestration, which only codex takes')
     }
     if (agent.preflight !== undefined) {
