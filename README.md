@@ -21,6 +21,46 @@ Evaluations for [nanocode](https://nanocode.xyz) agents with the harness outside
 
 [DESIGN.md](DESIGN.md) has the architecture and the alternatives it rejects. [DECISIONS.md](DECISIONS.md) records what each change established, with its measurements.
 
+## Quick start
+
+From a clone to a pass@k table, on Linux with Node 24. Nothing here needs a model credential, KVM or root: the scripted model of this repository answers in place of a model, and `--backend dir` runs each attempt in a directory of this machine.
+
+```sh
+npm ci
+node scripts/scripted-model.ts --task tasks/extract-todos --task tasks/uppercase-message --task tasks/write-greeting \
+  --plan uppercase-message=fpf --plan write-greeting=fff &
+export ANTHROPIC_API_KEY=scripted ANTHROPIC_BASE_URL=http://127.0.0.1:8790
+node cli/nanoeval.ts revision --task tasks/extract-todos --task tasks/uppercase-message --task tasks/write-greeting \
+  --agent scripted=claude:claude-haiku-4-5 --attempts 3 --backend dir
+```
+
+The last command starts a Worker and a runner, imports the three tasks, runs each three times, prints the summary and stops what it started: 17 to 32 s in five runs on a machine with 5 cores that other work shared, after 15 s of `npm ci`.
+
+```
+scripted: passed 4/9, errored 0, mean reward 0.444, pass@1 44.4%, pass@2 55.6%, pass@3 66.7%, input tokens 144 (0 cached), output tokens 72 (reasoning not reported), cost $0.0005
+  a00001 nanoeval/extract-todos scripted #1 passed
+  a00002 nanoeval/uppercase-message scripted #1 failed
+  a00003 nanoeval/write-greeting scripted #1 failed
+  ...
+```
+
+The plan makes the scripted model solve `extract-todos` every time, `uppercase-message` on its second attempt of three and `write-greeting` never, so the figures can be worked by hand: pass@1 is (3/3 + 1/3 + 0/3) / 3, and pass@3 is the two tasks of three that passed at least once. [Reading the summary](#run-it-locally) has the rule. The cost is what nanocode estimates from the tokens at the list price of the model that was named: nothing was charged.
+
+- **With a model**, leave out the scripted model and the two variables, export a credential (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `TEMPO_KEY`, or `--claude-login` and `--codex-login` for a plan) and name its model: `--agent haiku=claude:claude-haiku-5-5`, `--agent luna=codex:gpt-6-luna`.
+- **With microVMs**, leave out `--backend dir` on a machine with KVM. `node cli/nanoeval.ts doctor` checks a machine for everything a run needs and prints, under each thing that is missing, the one command that gives it.
+- **Read the run again**: `node cli/nanoeval.ts revision --serve --port 8787 &`, then `export NANOEVAL_URL=http://127.0.0.1:8787 NANOEVAL_TOKEN=$(cat ~/.local/share/nanoeval/lab/token)` and `node cli/nanoeval.ts runs`, `status RUN` or `attempt RUN a00002 verifier/test-stdout.txt`, which prints why the verifier failed that row. A run is named by its id, by the start of its id or by its `--name`.
+- **Did a change break anything**: stop the scripted model, start it again with a plan that fails every attempt, `--plan extract-todos=fff --plan uppercase-message=fff --plan write-greeting=fff`, and add `--baseline previous --fail-on regression` to the last command. It prints the comparison with the run before, `verdict: regression`, and exits with 3. One task that went from 3/3 to 0/3 is `lost` and by itself no regression: the verdict asks all tasks together, and `--fail-on lost` gates on a single one.
+- `node cli/nanoeval.ts help COMMAND` prints the usage of one command, and `node cli/nanoeval.ts` of all of them.
+
+| To | Read |
+| --- | --- |
+| Keep a Worker up and make runs against it: choose tasks by pattern, subset or file, rerun what did not pass, compare two runs, gate a script | [Run it locally](#run-it-locally) |
+| Evaluate a commit or a checkout of nanocode against a baseline | [Evaluating a nanocode commit](#evaluating-a-nanocode-commit) |
+| Import a benchmark | [Datasets](#datasets) |
+| Run nanoeval as services, with microVM slots, from a bare machine | [Keep it running on a Linux machine](#keep-it-running-on-a-linux-machine) |
+| Evaluate every new commit of nanocode | [Following nanocode](#following-nanocode) |
+| Hand runs to a runner that is already up | [How fast a run starts](#how-fast-a-run-starts) |
+
 ## Status
 
 The table says what was run. "The first version" is the flow before the eval table, whose slots pulled images when an attempt started: [DECISIONS.md](DECISIONS.md) keeps what it measured.
@@ -64,6 +104,11 @@ The table says what was run. "The first version" is the flow before the eval tab
 | `status`: tokens and cost for each agent, the judge on a line of its own and in `compare` and the exported totals, the reruns of a run, and one line a task where the attempts do not fit the screen | Implemented, tested: unit tests with sums by hand, the judge lane on directory slots, whose run prints the agents at $0.000112 and $0.000336, the judge at $0.000112 and a spend of $0.000560, and the run of 24 rows read in both forms. **Not run**: a real judge, a real terminal (the height is passed in the unit test), see [DECISIONS.md](DECISIONS.md#2026-11-14-the-summary-carries-tokens-cost-the-judge-and-one-line-a-task) |
 | The cost of an attempt that hit its agent timeout | **Not fixed here**: the brain ends a cancelled turn without a cost, and the prices are nanocode's. `status` says how many attempts the spend leaves out, and the change nanocode needs is written out, untested, in [DECISIONS.md](DECISIONS.md#2026-11-14-an-attempt-that-hit-its-agent-timeout-has-no-cost-and-the-change-that-gives-it-one-is-nanocodes) |
 | What a refused command prints | Implemented, tested: one line on standard error, `nanoeval: ` and the message, with the route and the status behind what the Worker said, and exit status 1. Unit tests, two of which run the command, one against a server that answers `404` for a run and for an artifact, and the lane `machine` on directory slots, whose runner ends with that line |
+| What a refused command says to do next | Implemented, tested: a missing `--url` or `--token` names its variable, a Worker that does not answer is said to be one with the command that starts it, a run is refused before it is made when the Worker holds no credential for the provider of an agent or of the judge, a Dockerfile task is refused on a machine where no microVM starts before the launcher is built, and the refusals for an eval, an attempt and an environment of the other kind name the command or the option to use. Unit tests, three of which run the command, and each read from a shell on directory slots on a machine without KVM, see [DECISIONS.md](DECISIONS.md#2026-11-14-a-cold-start-from-the-readme-and-what-it-changed). **Not run**: the refusal for a credential against a deployed Worker |
+| `nanoeval help COMMAND` and `COMMAND --help`: the usage of one command, and an unknown command named with the commands that exist | Implemented, tested: a unit test runs the command for every command the usage lists |
+| A run named by the start of its id or by its `--name` | Implemented, tested: a unit test of the rule, and `status`, `compare --baseline` and `run --rerun` read from a shell with short ids and names on directory slots. A run that the list of runs does not hold is named by its whole id |
+| `nanoeval doctor`: a machine checked for what a run needs, with the one command for each thing that is missing | Implemented, tested: unit tests of every check on described machines, and run on a 5-core machine without KVM, where it ends `ready for dir slots` and names three things missing for krun. **Not run**: on a machine with KVM, as root for ns slots, against a deployed Worker, see [DECISIONS.md](DECISIONS.md#2026-11-14-a-cold-start-from-the-readme-and-what-it-changed) |
+| A scripted model outside the lanes (`scripts/scripted-model.ts`): a Messages endpoint that answers each task with its own solution, or with nothing where a plan says so | Implemented, tested: unit tests of the plan and of the endpoint, and the [Quick start](#quick-start) run on directory slots, whose pass@k is the one its plan gives by hand. It answers `claude` agents only |
 | A row read while it runs (`nanoeval attempt RUN ATTEMPT [ARTIFACT]`): the events and the trajectory its session has so far, and the model requests that were answered | Implemented, tested end to end on directory slots: the lane with the rows of two runs parks a model request and reads the events of that row with the command, which end with the result of its tool, then its trajectory and its one answered request, and asks that a file the row does not have yet and a run that does not exist are refused in one line. An installed agent gives its model requests only. **Not run** against a deployed Worker or on a session with hours of events, see [DECISIONS.md](DECISIONS.md#2026-11-14-a-row-is-read-while-it-runs) |
 | nanocode-ts harness sessions | Implemented, on nanocode-ts `build-b8158fd` with the hand `nanocode-cli-0bbcb64`, two builds of one nanocode revision. The figures of this table were measured on earlier pins, and the builds since `build-f3aa94f` change what every session is sent and reads: [DECISIONS.md](DECISIONS.md#2026-11-14-what-the-builds-since-build-f3aa94f-change-for-a-session-and-the-lanes-for-a-turn-that-goes-on) lists it, and no run with a model on these pins is recorded there. Tested end to end under local workerd. A cell that names no yield runs for two minutes before it goes back to the model (`CELL_YIELD_MS`), where the protocol gives it 10 s: the plain lane on directory slots runs a cell of 12 s and asks that it ends in the exec that started it. Measured with a model on 20 tasks, one attempt each: 174 model calls where 10 s took 219, 9 `wait` calls where it took 29, 17 passed where 16 did. See [DECISIONS.md](DECISIONS.md#2026-11-13-a-cell-yields-after-two-minutes-set-by-the-brain) |
 | A `codex` session with direct tools (`codex-direct`), beside one in Code Mode in the same run | Implemented, tested end to end on directory slots with the scripted model: the lane `direct` asks that the model of one session is given `exec_command` and neither `exec` nor `wait`, that the model of the other is given `exec` and `wait`, that each command ran on the hand and that both rows pass. On a build of nanocode-ts that does not read `codex_orchestration` both sessions are given `exec`, which the lane refuses: that case was not run. **Not run**: a real model on either arm, see [DECISIONS.md](DECISIONS.md#2026-11-14-a-lane-for-a-codex-session-with-direct-tools) |
@@ -155,6 +200,8 @@ The table says what was run. "The first version" is the flow before the eval tab
 
 Requirements: Linux and Node 24. For `krun` evals and slots, which a runner takes by itself on a machine with KVM: `/dev/kvm`, libkrunfw 5, `mke2fs`, passt, and a Rust toolchain through rustup or a built launcher, see [krun slots](#krun-slots). `nanoeval runtime` and ns slots link the launcher statically, which also takes `musl-tools`. [A bare machine](#a-bare-machine) lists every package and step from a fresh Ubuntu. No Docker or other container engine, on any machine. The first import or runner of a machine builds the launcher and `nanoeval-net` from `krun/` (about a minute) and later ones reuse them. `NANOEVAL_KRUN` names a directory with the built binaries instead.
 
+Steps 1 and 2 are servers that stay in the foreground: give each a terminal of its own with the two tokens, or end its line with `&`. With no credential in its environment the Worker of step 2 runs `--oracle` only, and step 4 is refused with the variables that would serve its agent: [Quick start](#quick-start) has a scripted model that stands in for one.
+
 ```sh
 npm ci
 TOKEN=$(openssl rand -hex 32) SANDBOX_TOKEN=$(openssl rand -hex 32)
@@ -181,11 +228,25 @@ node cli/nanoeval.ts run --eval samples \
 node cli/nanoeval.ts run --rerun RUN --wait
 ```
 
-`--out` writes the Harbor job directory. `nanoeval runs` lists the runs of the Worker with their ids, `nanoeval status`, `attempt`, `export` and `cancel` read a run later, and `attempt` lists the claims of a row. A rerun keeps the budgets, the limits and the sandbox settings of its run unless the command names others. `nanoeval run --task DIR` does steps 3 and 4 at once, into the eval named `local`. A machine without KVM that has root runs the same evals in [ns slots](#ns-slots): a runner picks them by itself, and `--backend ns` names them. A machine with neither takes `--backend dir` in both steps: no isolation, for development.
+`--out` writes the Harbor job directory. `nanoeval runs` lists the runs of the Worker with their ids, `nanoeval status`, `attempt`, `export` and `cancel` read a run later, and `attempt` lists the claims of a row. A rerun keeps the budgets, the limits and the sandbox settings of its run unless the command names others. `nanoeval run --task DIR` does steps 3 and 4 at once, into the eval named `local`. A machine without KVM that has root runs the same evals in [ns slots](#ns-slots): a runner picks them by itself, and `--backend ns` names them. It converts a task that names an image, as the datasets do, and not a task with a Dockerfile, such as the three of `tasks/`: a Dockerfile is built in a microVM, so the import of step 3 is refused there in one line that says so. A machine with neither takes `--backend dir` in both steps, and so does a Dockerfile task on a machine without KVM: no isolation, for development. `nanoeval doctor` says which slots a machine can run and, for each thing the others lack, the one command that gives it.
 
 **Reading the summary.** `status` and `run --wait` print one line for each agent: the attempts that passed over the ones that ended, the ones that errored, the mean reward of the attempts that have one, pass@k, and the tokens and the cost of its sessions. pass@k is the chance that k attempts of a task include one that passed, averaged over the tasks. It is estimated from the scored attempts of each task, the ones that passed or failed: with n of them, of which c passed, a task counts 1 − C(n−c, k)/C(n, k), so every attempt counts for every k, their order does not matter, and pass@1 is the mean pass rate of the tasks. An attempt that errored or was cancelled is no trial, a task with fewer than k scored attempts is left out of pass@k, and the line then says how many tasks that pass@k rates, as in `pass@2 61.1% of 6 tasks`. A run that was cancelled says so on its first line, with the number of rows it did not finish. The mean reward is over the attempts that were scored, and says how many when that is not all of them, `mean reward 0.412 of 17 scored`: an attempt that errored has no reward, here as in pass@k. `result.json` of an exported job keeps Harbor's `metrics.mean`, which is not this one: it counts a trial without a reward as 0, 0.292 for the same run of 24. Its `n_errored_trials`, `n_errors` and `exception_stats` are the attempts that errored, as in `status`: an agent timeout that kept its verifier reward is a scored trial with no `exception_info`, and `agent_result.metadata.agent_timeout` of its `result.json` says that the agent timed out. Where attempts were judged, the tokens and the cost of the judge are a line of their own, `judge: 4 attempts judged, ...`: they are in the spend of the run and in no agent's line, in `compare` they are the column `Judge cost`, and in `result.json` the entry `stats.judge` beside the totals of the agents. A run that has reruns names them. An attempt that was scored although its agent ran into its timeout reads `passed after the agent timeout (the agent did not finish within 1800 s)`, or `failed after` it, and it is no error: the line of its task says `1/1 (1 after the agent timeout)`, `compare` `passed after the agent timeout 30 min 0 s`, and its exported trial the words of `status` under `agent_result.metadata.agent_timeout`. On a terminal too short for one line an attempt, `status` prints one line a task, `suite/two haiku 1/2 +1 errored (agent)`, and `--rows` brings the attempts back; piped output always lists the attempts, and `--tasks` asks for the short form.
 
-**Exit status.** `run --wait` exits 0 when no attempt errored and 1 when one did, or was cancelled. Attempts that failed do not change it: a failed attempt is a score. Without `--wait` the command exits 0 once the run is created. `status`, `compare` and `export` exit 0 whatever the run holds. A command that is refused prints one line and exits 1, and an unknown command prints the usage and exits 2.
+**Naming a run.** Wherever a command reads a run that exists, `status`, `timeline`, `attempt`, `export`, `cancel`, `compare`, `oracle`, `run --rerun` and `--baseline`, the run is named by its id, by the start of its id as `status` and `compare` print it (`774e5979`), or by the `--name` it was made with. A start or a name that fits two runs is refused with their ids. `revision --baseline` takes the first eight characters of an id or more, since any other word there names a revision of nanocode.
+
+**Why a row did not pass.** `status RUN` ends with one line for each attempt, and an attempt that errored has the kind of failure and its message there. The rest is read with `attempt`, by the id that line begins with:
+
+```sh
+node cli/nanoeval.ts status RUN                                    # a00002 nanoeval/uppercase-message haiku #1 failed
+node cli/nanoeval.ts attempt RUN a00002                            # its phase, claims, result, tokens and cost, and the files it has
+node cli/nanoeval.ts attempt RUN a00002 verifier/test-stdout.txt   # what the verifier printed
+node cli/nanoeval.ts attempt RUN a00002 agent/trajectory.json      # what the agent did, step by step
+node cli/nanoeval.ts export RUN --out output/job                   # every attempt as a Harbor trial directory
+```
+
+What a run cost is the `spend` line of `status`, with one figure for each agent on its own line, and `usage.costUsd` of `attempt` for one row.
+
+**Exit status.** `run --wait` exits 0 when no attempt errored and 1 when one did, or was cancelled. Attempts that failed do not change it: a failed attempt is a score. Without `--wait` the command exits 0 once the run is created. `status`, `compare` and `export` exit 0 whatever the run holds. A command that is refused prints one line and exits 1. An unknown command is named in one line with the commands that exist and exits 2, `nanoeval help COMMAND` or `COMMAND --help` prints the usage of one command, and `nanoeval` alone of all of them.
 
 **A gate for a script.** `--fail-on` makes the exit status of `run --wait`, `revision` and `compare` say more, and changes nothing where it is not given:
 
@@ -617,10 +678,11 @@ What a fresh Ubuntu 24.04 with `/dev/kvm` needs before `npm ci` and the commands
 
 1. Packages: `sudo apt-get install build-essential ca-certificates curl e2fsprogs git musl-tools passt pkg-config xz-utils`. `musl-tools` is for the static launcher of `nanoeval runtime` and of ns slots, and `passt` must be the system package.
 2. KVM for the user that runs nanoeval: `sudo usermod -aG "$(stat -c %G /dev/kvm)" "$USER"`, then a new login. Not an ACL on `/dev/kvm`: udev writes the device's mode again when the first microVM starts, and the ACL is gone. On a machine that is thrown away after a job, `scripts/ci-machine.sh` opens KVM to every user with a udev rule instead, and installs the packages of step 1 that such a machine lacks and the libkrunfw of step 5.
-3. Node 24 from nodejs.org, checked against its `SHASUMS256.txt`.
+3. Node 24 from nodejs.org, checked against its `SHASUMS256.txt`: `curl -fsSLO https://nodejs.org/dist/latest-v24.x/SHASUMS256.txt && f=$(grep -o 'node-v24[0-9.]*-linux-x64.tar.xz' SHASUMS256.txt | head -1) && curl -fsSLO https://nodejs.org/dist/latest-v24.x/$f && grep " $f\$" SHASUMS256.txt | sha256sum -c - && sudo tar -xJf $f -C /usr/local --strip-components=1`.
 4. rustup (`curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none`). `(cd krun && cargo --version)` then installs the toolchain that `krun/rust-toolchain.toml` pins, with its musl targets, and `(cd krun && rustup default "$(rustup show active-toolchain | cut -d' ' -f1)")` makes it the default, so that cargo also answers outside `krun/`.
-5. libkrunfw 5: `libkrunfw-x86_64.tgz` of its [5.5.0 release](https://github.com/containers/libkrunfw/releases/tag/v5.5.0), SHA-256 `c169206b01c89fbe134f1728bf4f988702bc7f73b4cf73e6fdece447d6fceca1`, with `lib64/libkrunfw.so.5.5.0` installed in `/usr/local/lib`, a link `libkrunfw.so.5` beside it, and `sudo ldconfig`.
+5. libkrunfw 5: `libkrunfw-x86_64.tgz` of its [5.5.0 release](https://github.com/containers/libkrunfw/releases/tag/v5.5.0), SHA-256 `c169206b01c89fbe134f1728bf4f988702bc7f73b4cf73e6fdece447d6fceca1`, with `lib64/libkrunfw.so.5.5.0` installed in `/usr/local/lib`, a link `libkrunfw.so.5` beside it, and `sudo ldconfig`. `nanoeval doctor` prints these as one command when the library is missing.
 6. `npm ci` in the checkout. The first import, runner or lane then builds the launcher, 42 s on 24 cores.
+7. `node cli/nanoeval.ts doctor`: it checks every step above, the pinned hand, memory, disk and the pulls Docker Hub has left for this address, prints the command of each thing that is missing, and ends with `ready for krun slots`.
 
 An import of Terminal-Bench 2.1 on such a machine took 9 minutes, 18 GB of store and 16 GB of layers, and 89 of the 100 pulls an hour that Docker Hub gives an address without a login, see [Checks](#checks).
 
@@ -703,7 +765,7 @@ systemctl --user daemon-reload && systemctl --user enable --now nanoeval-watch.t
 journalctl --user -u nanoeval-watch -f
 ```
 
-The unit stops the watcher alone, which stops the evaluation it runs: its rows go back, its slots are taken down, and the next start records the evaluation as `interrupted` and runs it again. The examples set no memory limit and no environment: a machine that shares its memory adds `MemoryMax=`, and one whose `nanoeval` is not at `~/.local/bin` its own `ExecStart=`.
+The unit stops the watcher alone, which stops the evaluation it runs: its rows go back, its slots are taken down, and the next start records the evaluation as `interrupted` and runs it again. The service runs `~/.local/bin/nanoeval`, the command that `scripts/install-linux.sh` installs, on `~/.config/nanoeval/watch.toml`, and reads `~/.config/nanoeval/watch.env` when that file exists. A user unit does not read the profile of a shell, so that file is where a model credential that is a variable goes, and a `PATH` that holds `cargo` and `node` where they are not in the directories systemd searches, as in `PATH=/home/you/.cargo/bin:/usr/local/bin:/usr/bin:/bin`: the build of a hand ends with `cargo is not on the PATH of this command` without it. The timer starts the service two minutes after the machine boots and five minutes after each run of it ends, so `systemctl --user start nanoeval-watch` starts the first one now. The examples set no memory limit: a machine that shares its memory adds `MemoryMax=`, and one whose `nanoeval` is not at `~/.local/bin` its own `ExecStart=`.
 
 **What it takes from `nanoeval revision`.** The watcher reads no text the command prints, and `Watch.invocation` in `src/Watch.ts` and `invoke` in `cli/Watch.ts` are the two places that know the command. The tests play it with a stand-in, `test/StubRevision.ts`. It relies on these, and each was run with the command itself, on a machine with krun slots and a model:
 
@@ -954,9 +1016,9 @@ CI is six jobs on GitHub-hosted runners: `check` (lint, types, unit tests, the d
 | `src/` | Host-agnostic modules: the eval row and its versions, the run ledger, the runner protocol, tasks, results, admission, budget, providers |
 | `sandbox/` | `Runner.ts`, the task runner, and `Main.ts`, its entry when it is bundled into one file. `slot.sh`, one attempt in one slot. `Store.ts`, the blob store and the cache. `Converter.ts`, where an environment becomes a disk through the launcher. `Prune.ts`, what can go from the layer cache and from a directory store. `Sandboxd.ts`, the local sandbox daemon |
 | `krun/` | The Rust workspace: the libkrun binding, the launcher and the guest binary of the krun backend, the image converter (`nanoeval-krun image`), and `nanoeval-net`, the relay of a private slot |
-| `cli/` | The `nanoeval` command, the import pipeline, and `Runtime.ts`, which builds the archive a remote sandbox starts its runner from |
+| `cli/` | The `nanoeval` command, the import pipeline, `Runtime.ts`, which builds the archive a remote sandbox starts its runner from, and `Doctor.ts`, the checks of `nanoeval doctor` |
 | `datasets/` | The dataset adapters, and the graders they write into tasks |
-| `scripts/` | `install-linux.sh`, the E2B price quote, and `harbor-check.py`, which loads an exported job with Harbor's own models |
+| `scripts/` | `install-linux.sh`, the E2B price quote, `harbor-check.py`, which loads an exported job with Harbor's own models, and `scripted-model.ts`, a model endpoint that needs no credential |
 | `tasks/` | Three small Harbor tasks from gakonst/nanoeval |
 | `test/` | Unit tests, the end-to-end test and its failure fixtures, and `Guest.ts`, the microVM guest that ns lanes run in on a machine without root, and `MockGateway.ts`, the scripted gateway of the gateway lanes, and `worker/Taken.ts`, the Worker of the lane `taken`, whose pool loses a call when the lane asks |
 
