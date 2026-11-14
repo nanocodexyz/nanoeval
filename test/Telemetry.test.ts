@@ -153,3 +153,71 @@ test('the usage, the steps and the first model request of a session are those of
   )
   assert.equal(Math.round(Timeline.modelRequest(events)!), 1_794_000_000_796)
 })
+
+test('the model calls of a codex session add up to the usage its run reports', () => {
+  const at = (seq: number, type: string, payload: Record<string, unknown>): Atif.SessionEvent => ({
+    created_at: 1_794_629_796_000 + seq,
+    event: { event: { payload, type }, source: 'agent' },
+    request_id: 'attempt',
+    seq,
+  })
+  const call = (index: number, usage: { cached: number; input: number; output: number }) =>
+    at(0, 'model.call.completed', {
+      attempt: 1,
+      call_index: index,
+      model: 'gpt-6-luna',
+      status: 'completed',
+      usage: {
+        input_tokens: usage.input,
+        input_tokens_details: { cached_tokens: usage.cached },
+        output_tokens: usage.output,
+        output_tokens_details: { reasoning_tokens: 0 },
+        total_tokens: usage.input + usage.output,
+      },
+    })
+  const totals = {
+    cache_write_input_tokens: 0,
+    cached_input_tokens: 155136,
+    input_tokens: 171871,
+    output_tokens: 2451,
+    reasoning_output_tokens: 1610,
+    total_tokens: 174322,
+  }
+  const session = [
+    at(16387, 'input.accepted', { input: 'Fix the proof.', session_id: 'session' }),
+    at(16388, 'run.started', {
+      model: 'gpt-6-luna',
+      orchestration: 'local_code_mode',
+      transport: 'responses_websocket_v2',
+    }),
+    call(1, { cached: 70000, input: 80000, output: 1200 }),
+    at(16389, 'tool.call', { arguments: '{}', call_id: 'call-1', tool: 'exec' }),
+    at(16390, 'tool.result', { call_id: 'call-1', result: 'ok', status: 'completed' }),
+    call(2, { cached: 85136, input: 91871, output: 1251 }),
+    at(16391, 'assistant.message', { text: 'The proof compiles.' }),
+    at(16392, 'run.completed', {
+      cost_usd: 0.00445036,
+      model_calls: 2,
+      status: 'completed',
+      usage: totals,
+    }),
+  ]
+  const sql = open()
+  assert.equal(Telemetry.record(sql, { events: session, open: true }), false)
+  const stored = session.filter((event) => !Telemetry.live(event))
+  const events = Telemetry.merge(
+    stored,
+    Telemetry.read(sql, { after: 0, last: true, through: stored.at(-1)!.seq }),
+  )
+  assert.deepEqual(events, session)
+  assert.equal(Atif.usage(stored).modelCalls, 0)
+  assert.deepEqual(Atif.usage(events), {
+    cacheWriteTokens: totals.cache_write_input_tokens,
+    cachedTokens: totals.cached_input_tokens,
+    costUsd: 0.00445036,
+    inputTokens: totals.input_tokens,
+    modelCalls: 2,
+    outputTokens: totals.output_tokens,
+    toolCalls: 1,
+  })
+})
