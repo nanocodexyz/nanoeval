@@ -821,12 +821,25 @@ export async function wrangler(
   }
 }
 
-async function freePort(): Promise<number> {
-  const server = Net.createServer()
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-  const { port } = server.address() as Net.AddressInfo
-  await new Promise<void>((resolve) => server.close(() => resolve()))
-  return port
+export async function port(): Promise<{ port: number; release(): void }> {
+  const peer = Net.createServer()
+  await new Promise<void>((resolve) => peer.listen(0, '127.0.0.1', resolve))
+  const held = Net.connect({
+    host: '127.0.0.1',
+    localAddress: '127.0.0.1',
+    port: (peer.address() as Net.AddressInfo).port,
+  })
+  await new Promise<void>((resolve, reject) => {
+    held.once('connect', resolve)
+    held.once('error', reject)
+  })
+  return {
+    port: held.localPort!,
+    release: () => {
+      held.end()
+      peer.close()
+    },
+  }
 }
 
 async function stop(child: ChildProcess): Promise<void> {
@@ -874,8 +887,8 @@ async function worker(options: {
   const { builds, lab } = options
   const logs = Path.join(lab, 'logs')
   await Fs.mkdir(logs, { recursive: true })
-  const port = await freePort()
-  const url = 'http://127.0.0.1:' + port
+  const kept = await port()
+  const url = 'http://127.0.0.1:' + kept.port
   const log = Path.join(logs, 'worker.log')
   const output = await Fs.open(log, 'a')
   const child = spawn(
@@ -884,7 +897,7 @@ async function worker(options: {
       cli,
       'worker',
       '--port',
-      String(port),
+      String(kept.port),
       '--state',
       Path.join(lab, 'worker'),
       ...(options.logins.claude ? ['--claude-login', options.logins.claude] : []),
@@ -906,6 +919,7 @@ async function worker(options: {
   const note = Path.join(lab, 'worker.json')
   const end = async () => {
     await stop(child)
+    kept.release()
     await Fs.rm(note, { force: true })
     await free(options.state)
   }

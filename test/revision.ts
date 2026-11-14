@@ -306,15 +306,11 @@ async function revision(env: Record<string, string>): Promise<void> {
       ? Fs.readdirSync(Path.join(lab, 'queue')).filter((name) => /^\d+\.json$/.test(name)).length
       : 0
 
-  const probe = Http.createServer()
-  await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve))
-  const port = (probe.address() as AddressInfo).port
-  await new Promise<void>((resolve) => probe.close(() => resolve()))
-  const server = run(['--serve', '--port', String(port)])
-  await until('the served lab to say where it is', () =>
-    server.output().stdout.includes('NANOEVAL_URL=http://127.0.0.1:' + port + ' '),
+  const server = run(['--serve'])
+  const served = await until(
+    'the served lab to say where it is',
+    () => /NANOEVAL_URL=(http:\/\/127\.0\.0\.1:\d+) /.exec(server.output().stdout)?.[1],
   )
-  const served = 'http://127.0.0.1:' + port
   const token = Fs.readFileSync(Path.join(lab, 'token'), 'utf8').trim()
   const api = client({ token, url: served })
   const read = <T>(what: string, ask: () => Promise<T>) =>

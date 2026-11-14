@@ -1153,12 +1153,6 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
   })
 }
 
-async function freePort(): Promise<number> {
-  const probe = await listen(() => {})
-  probe.close()
-  return Number(new URL(probe.url).port)
-}
-
 async function main(): Promise<void> {
   const missing =
     backend === 'krun'
@@ -1179,7 +1173,8 @@ async function main(): Promise<void> {
   const cache = Path.join(out, 'cache')
   const storeRoot = Path.join(out, 'store')
 
-  const port = await freePort()
+  const kept = await Revision.port()
+  const port = kept.port
   const beacon = await listen((_, response) => void response.end('the host\n'))
   Fs.writeFileSync(
     Path.join(out, 'slot.env'),
@@ -4738,6 +4733,7 @@ async function main(): Promise<void> {
       destroy(runner.home)
     }
     await stop(worker, 'SIGTERM')
+    kept.release()
     beacon.close()
     upstream.close()
     await relay?.close()

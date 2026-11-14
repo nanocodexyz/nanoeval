@@ -516,6 +516,21 @@ test('a served lab answers reads from the Worker of the evaluation that runs, an
   assert.equal(Fs.readFileSync(Path.join(lab, 'token'), 'utf8').trim().length, 64)
 })
 
+test('a port that is kept is one a server listens on, again after it stopped, while it is kept', async () => {
+  const kept = await Revision.port()
+  for (const _ of [1, 2]) {
+    const server = Http.createServer((_, response) => void response.end('here'))
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(kept.port, '127.0.0.1', resolve)
+    })
+    assert.equal(await (await fetch('http://127.0.0.1:' + kept.port)).text(), 'here')
+    server.closeAllConnections()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+  kept.release()
+})
+
 test('a build whose command is not on the PATH says so, and what a unit takes its PATH from', () => {
   const command = ['cargo', 'build', '--locked']
   assert.equal(
