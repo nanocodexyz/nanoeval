@@ -2404,3 +2404,11 @@ The checks that the first form of this entry asked for ran before it went to mai
 - A session with subagents, whose model calls arrive the same way and are kept, and are not counted, as before.
 - Harbor's models on a trajectory whose first step is an agent step, which a session killed in the middle of a turn now has.
 - CI on GitHub.
+
+## 2026-11-13: the model calls of codex sessions on the parity builds
+
+The parity Worker (nanoeval 179dd62 with nanocode-ts build-d738cd8, nanocode 51d7fdd18) reported 0 model calls and 0 tokens for every `codex` attempt, while its `costUsd` was set. nanocode 98cacfd39 made `model.call.completed` live-only: `OneLog` hands it over with seq 0 and stores it nowhere, so the events a run reads hold `run.completed` (its `usage` and `model_calls` totals) but no model call, and `Atif.usage` counts model calls. On a parity run's attempt (13 model calls by its `run.completed`, 171,871 input tokens of which 155,136 cached, 2,451 output) `agent/events.jsonl` held 22 `tool.call`, 22 `tool.result`, 10 `reasoning.summary.delta`, 3 `assistant.message` and no `model.call.*`. f15a5ea, which keeps those events beside the log, landed on main after 179dd62.
+
+This branch is 179dd62 with the d738cd8 pin and f15a5ea. In nanocode 51d7fdd18 a settled `model.call.completed` goes through `LogSink::persist` to `OneLog::recorded` and reaches the session object's `published` with seq 0, the path f15a5ea records; `model.call.started` goes to `live_events` and is not kept. A codex `run.completed` reports `usage` as the sum of the Responses `usage` of its calls (`input_tokens` including `cached_input_tokens`), the counts `Atif.usage` adds, and a test checks that the merged calls of a codex session equal those totals.
+
+Validation on a Linux hosted machine from a fresh clone of the branch: `npm ci`, `npm test` (141 passed, 4 skipped), and the lane "directory slots, models and the sandbox through a scripted gateway", whose `right` agent is `codex`: each of its 3 attempts had 2 model calls, 200 input, 80 cached and 14 output tokens, equal to the responses the gateway answered. `npm run lint`, `check:types` and `dry-run` pass on gak-9.
