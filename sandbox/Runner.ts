@@ -97,7 +97,7 @@ type Saved = Pick<Work, 'at' | 'memoryMb' | 'message' | 'round' | 'row' | 'sessi
 
 type Mark = { at: number; ms?: number; name: string }
 
-const hostUtilization = 0.8
+export const hostUtilization = 0.8
 const firstPollMs = 25
 const script = Path.join(import.meta.dirname, 'slot.sh')
 

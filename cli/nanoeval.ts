@@ -33,6 +33,7 @@ import * as Subset from '../src/Subset.ts'
 import * as Task from '../src/Task.ts'
 import * as Timeline from '../src/Timeline.ts'
 import * as Unsound from '../src/Unsound.ts'
+import * as Doctor from './Doctor.ts'
 import * as Import from './Import.ts'
 import * as Plan from './Plan.ts'
 import * as Revision from './Revision.ts'
@@ -44,6 +45,16 @@ const usage = `nanoeval <command>
   help      [COMMAND]
             Print the usage of one command, or of every command. COMMAND --help prints the
             same.
+  doctor    [--backend krun|ns|dir] [--url URL --token T]
+            Check this machine for what a run needs, and print under each thing it lacks the
+            one command that gives it: Node and the pinned packages, the pinned hand, for
+            krun slots /dev/kvm, libkrunfw, mke2fs, passt and the launcher, for ns slots
+            root and their tools, the memory a runner admits rows by, the free disk where
+            blobs, disks, layers and the lab go, Docker Hub and the pulls it has left for
+            this address, and a model credential: of the Worker when one is named, of this
+            shell otherwise. Without --backend it checks for the slots a runner takes by
+            itself here: krun where the machine has /dev/kvm, ns as root, dir otherwise.
+            It exits 0 when nothing is missing and 1 when something is.
   sandboxd  --token T [--host 127.0.0.1] [--port 8788] [--root output/sandboxes]
             [--exec-timeout-ms 600000]
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
@@ -1950,6 +1961,23 @@ async function main(
   }
   const backend = (values.backend ?? 'auto') as Config.Backend
   const cache = Path.resolve(values.cache ?? Store.defaultCache())
+
+  if (command === 'doctor') {
+    const asked = values.backend
+    if (asked !== undefined && asked !== 'dir' && asked !== 'krun' && asked !== 'ns')
+      throw new Error('--backend is krun, ns or dir, not ' + asked)
+    const facts = await Doctor.gather({
+      env: process.env,
+      root: Path.resolve(import.meta.dirname, '..'),
+      token: values.token,
+      url: values.url,
+    })
+    const wanted = asked ?? Doctor.backend(facts)
+    const found = Doctor.checks(facts, wanted)
+    console.log(Doctor.report(found, wanted))
+    process.exitCode = found.some((check) => check.level === 'miss') ? 1 : 0
+    return
+  }
 
   if (command === 'datasets') {
     for (const adapter of Catalog.adapters)
