@@ -3694,3 +3694,56 @@ What the table says plainly: a task that stops passing is always found, a task t
 - The search on real revisions, where a revision of nanocode-ts may not build against the nanocode it is paired with by date.
 - A daily cap across midnight, a hook that fails, a hook that does not end, and a ledger of months.
 - CI on GitHub.
+
+## 2026-11-14: `nanoeval watch` over `nanoeval revision` itself, with a model
+
+The entry above wrote the watcher against a description of `nanoeval revision` and a stand-in. This entry is what happened when it ran over the command itself, with real builds and a model, and what changed because of it. Nothing changed in how the command is called: every assumption the README lists held. What changed is the unit file, a limit for the hook, the texts of a few lines, and the README, which now says what was run.
+
+**Where.** A 32-core Linux machine shared with other work, at a load average of 90 to 140 during all of it, with KVM. krun slots, two at a time, 8 GiB of guest memory admitted. `codex:gpt-6-luna` paid by a ChatGPT plan login (`--codex-login`). Terminal-Bench 2.1 from a store that already held its converted disks, so an import took one to two seconds a task. The host policy of the machine, `--ca-bundle` and `--slot-forward`, in `[revision] options`, so it reached builds and runs alike. The watcher ran as a systemd user service with `MemoryMax=12G`. About 65 scored rows in all, $0.12 at list price as the Worker estimates it.
+
+**What held, each seen once or more.**
+
+- `--build-only` with `pinned` on both sides builds nothing and exits with 0 in a second. With two full commit ids and both repository options it built the hand and the package in an empty lab in one piece: 1,194 s, of which the hand 262 s and the package 910 s. The next revision of nanocode on the same nanocode-ts took 188 s and about 190 s, later ones 76 to 88 s for the hand. A revision built before returns in a second.
+- The run call with `--eval`, `--only`, `--agent`, `--attempts`, `--model-budget-usd`, `--slots`, `--name` and `--out` wrote the Harbor job to `--out` every time, and the rows, tokens and costs the watcher read from it are those the summary of the command printed.
+- `flock --nonblock LAB/lock` answers 1 while a build or a run of the command holds the lab. A pass of the watcher during a 20-minute build printed that another evaluation holds the lock, recorded nothing, and ran the evaluation on the next pass.
+- On SIGTERM the command gave its two rows in flight back, took its slots down, stopped its runner and its Worker and freed the lock, within a second.
+- A hand that does not compile (a checkout with one line that has the wrong type) ended the build call with 1 after 3.5 minutes, the checkout was left as it was, and the line said `build failed` with the last lines of the compiler.
+- A login whose token expired (a file made for the test, with a token that is none) passed the credential check of the command, and the row ended as an error, "ChatGPT authorization must be refreshed by logging in again": the line was `incomplete`, nothing was run again, and the run counted as its whole budget. With no login the command refused before it built, and the line was `run failed` with the refusal.
+
+**The runs.** Two tasks at two attempts unless a line says otherwise.
+
+- A baseline on the pins, with both sides `pinned`: 7 of 8, $0.0150, 224 s with the import. Then two revisions of nanocode master on demand against it, each with the head of nanocode-ts master, the commit that was newest and the one four commits before it: 4 of 4, `ok`, and 2 of 4, `ok` with both tasks listed as within noise (p 0.33 and 0.60), since two more attempts could not have brought either to 0.05.
+- The branches followed, on local copies of the two repositories whose branch was moved from the older commit to the newest. The service was stopped by systemd 50 s into the run of the first baseline. Started again, the watcher wrote the `interrupted` line, charged the budget of the run, and ran the baseline again. When the branch moved it started the evaluation of the newest commit, and the watcher alone was killed with SIGKILL 15 s into its run: the command went on. A start during the run said that the step still runs as its process and did nothing, a start after it took the job that the command had written, and the line was `ok` with one run. A third start said it was up to date.
+- A regression end to end, three tasks at three attempts, window 1. After a baseline of 9 of 9 on the newest commit, two commits made for the test arrived on the local copy: one that changes a line of a README, and after it one that makes every shell command of the hand run `/bin/false`. The first run of the newest pair met the port race of the command (below) and was recorded as `run failed`. The next pass ran it: 0 of 9, then the rerun of the three tasks, 0 of 9 again, and `REGRESSION, lost` the three tasks at `3/3 -> 0/6 (p 0.012)`, with the hook called. The search then built and ran the commit before it on the three tasks, 9 of 9, and named the second test commit as the first losing commit, with the hook called again. From the push to the name: 23 minutes, of which builds about 13, three runs for $0.05.
+
+**The port race of the command.** `nanoeval revision` finds a free port and then starts its Worker on it, and on a machine where other Workers start all the time the port can be taken in between: the command then ends with wrangler's "Address already in use" and no job. It happened once in 12 runs here. The watcher did what it does for any run without a job: `run failed`, the budget of the run counted, the same revision run once more on the next pass. That costs a pass and one `run_usd` of the daily cap for a run that spent nothing, so `daily_usd` should leave room for one or two of them.
+
+**What changed.**
+
+- `scripts/nanoeval-watch.service` stops the watcher alone (`KillMode=mixed`, `TimeoutStopSec=120`), so that the command it runs gives its rows back and takes its slots down, as it did in a second here, and what is left after that is killed. The watcher exits with 143 when it is stopped, which the unit takes as success, and `OOMPolicy=continue` keeps an evaluation when the kernel kills one microVM for memory.
+- A hook that has not ended after `hook.timeout_sec` (60) is killed and the line says so. A hook that hangs would otherwise hold the lock of the state, and every later pass would do nothing.
+- The lock of the lab is asked about for a second before another evaluation is taken to hold it. The child that holds the lock for the command can outlive it by a moment, and a watcher that asked in that moment said the lab was busy and ended its pass: one test of the watcher failed that way, once, in a run of the whole suite at a load average of 70.
+- The detail of a failed call no longer repeats the command line, the colour codes of wrangler or its stack lines, and keeps 300 characters of an error instead of 200, which cut the message of an expired login in the middle.
+- Wording: "1 task has", "the last accepted revision", one pass@1 column where K is 1, and no empty tables when no attempt ran.
+- One exact test. `src/Watch.ts` had its own Fisher test. It now calls `Stats.task` of `src/Stats.ts`, the function that `nanoeval compare` judges its tasks with, so a watcher and a comparison of the same counts give the same p. The tables of the entry above and the one below were enumerated again with it and did not change.
+
+**Which window at three attempts.** The default window at K = 3 is 1: a task that always passed and now never does is found, and little else is. A subset that has tasks the agent solves only sometimes needs more history to say anything about them. Exact, by the enumeration of the entry above:
+
+| alpha | Window | First baseline | Unchanged task called lost, worst case | 1 to 0 | 1 to 0.25 | 0.75 to 0 | 0.67 to 0 | 0.5 to 0 |
+|---|---|---|---|---|---|---|---|---|
+| 0.05 | 1 | 3 attempts | 0.015 | 1.000 | 0.534 | 0.422 | 0.296 | 0.125 |
+| 0.05 | 2 | 6 | 0.019 | 1.000 | 0.831 | 0.831 | 0.680 | 0.344 |
+| 0.05 | 3 | 9 | 0.025 | 1.000 | 0.956 | 0.951 | 0.855 | 0.500 |
+| 0.02 | 2 | 6 | 0.003 | 1.000 | 0.534 | 0.534 | 0.351 | 0.109 |
+| 0.02 | 3 | 9 | 0.006 | 1.000 | 0.831 | 0.834 | 0.650 | 0.254 |
+
+For ten tasks of which six pass 95 times in 100 and four pass 70 times in 100, the chance that an unchanged revision loses some task is 0.015 at the default, 0.047 at alpha 0.05 with window 2, and 0.020 at alpha 0.02 with window 3, which finds a task that fell from 0.7 to nothing 73 times in 100 where the default finds it 34 times. The price is a first baseline of nine attempts a task. A regression that stays is tried again at every later revision, since the baseline does not move, so these are chances for one revision.
+
+**Not verified.**
+
+- Two agents in one evaluation, and a `claude` agent, over the command itself.
+- The search where a revision of nanocode-ts does not build against the nanocode it is paired with by date. Here nanocode-ts stood still.
+- The daily cap across midnight, and a ledger of months: the scoreboard lists every evaluation.
+- A plan that reaches its usage limit in a run. None did in these rows.
+
+**Proof.** Every `run` step of `.github/workflows/ci.yml` from a fresh clone, on the three commits of this change on the main they landed on, before this paragraph was added to the last of them, which is the only difference. On a clean 48-thread Linux machine with KVM, with no lane skipped: 77 of 79 steps passed at once, the `check` job in 984 s of its 20 minutes, `npm test` with 252 tests and none skipped, the watcher's among them. The two that did not: "directory slots, two leased sandboxes of which one dies during the run" failed once with "the rows of the sandbox that died lost their claims" and passed twice alone, and fails the same way on main without this change on that machine, where every row is done before the sandbox dies; "ns slots, slot networks" fails on main on that machine every time, for a reason of its network stack, and passed on the shared machine of the runs above in 137 s, on the same commit, after `npm ci`. Main moved three times while this was proved. A first proof of the same three commits, three main commits earlier, was stopped at step 49 of 79 with all 49 passed, when the machine ran out of its pull quota at the registry. Lint, the type check, the dry run and `npm test` passed on the shared machine on each of the rebased tips.
