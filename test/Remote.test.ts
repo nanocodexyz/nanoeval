@@ -16,18 +16,22 @@ function temporary(): string {
   return Fs.mkdtempSync(Path.join(Os.tmpdir(), 'nanoeval-remote-'))
 }
 
-function partial(bytes: Uint8Array, breaks: boolean): ReadableStream<Uint8Array> {
+function partial(bytes: Uint8Array, kept?: () => boolean): ReadableStream<Uint8Array> {
   let sent = false
   return new ReadableStream({
     async pull(controller) {
-      if (!sent) controller.enqueue(bytes.subarray(0, breaks ? 100_000 : bytes.length))
-      else if (breaks) {
-        await new Promise((resolve) => setTimeout(resolve, 50))
+      if (!sent) controller.enqueue(bytes.subarray(0, kept ? 100_000 : bytes.length))
+      else if (kept) {
+        while (!kept()) await new Promise((resolve) => setTimeout(resolve, 1))
         controller.error(new Error('the connection was reset'))
       } else controller.close()
       sent = true
     },
   })
+}
+
+function size(file: string): number {
+  return Fs.statSync(file, { throwIfNoEntry: false })?.size ?? 0
 }
 
 function sha256(bytes: Uint8Array): string {
@@ -109,6 +113,11 @@ test('a download that breaks is resumed from the bytes it has', async () => {
   const name = sha256(bytes)
   const requests: string[] = []
   let cut = 2
+  const cache = Path.join(root, 'cache')
+  const staged = () =>
+    Fs.readdirSync(Path.join(cache, 'blobs'))
+      .filter((entry) => entry.startsWith(name + '.'))
+      .reduce((sum, entry) => sum + size(Path.join(cache, 'blobs', entry)), 0)
   const store = Store.remote({
     base: 'https://worker.example/v1/blobs',
     fetch: async (_input, init) => {
@@ -117,12 +126,13 @@ test('a download that breaks is resumed from the bytes it has', async () => {
       const from = range ? Number(/^bytes=(\d+)-$/.exec(range)![1]) : 0
       const rest = bytes.subarray(from)
       const breaks = cut-- > 0
-      return new Response(partial(rest, breaks), { status: from ? 206 : 200 })
+      return new Response(partial(rest, breaks ? () => staged() === from + 100_000 : undefined), {
+        status: from ? 206 : 200,
+      })
     },
     resumeMs: 1,
     token: 'secret',
   })
-  const cache = Path.join(root, 'cache')
   Fs.mkdirSync(Path.join(cache, 'blobs'), { recursive: true })
   const file = await Store.ensure([store], { blob: { bytes: bytes.length, digest: name }, cache })
   assert.ok(Fs.readFileSync(file).equals(bytes))
@@ -130,18 +140,18 @@ test('a download that breaks is resumed from the bytes it has', async () => {
 
   const whole: string[] = []
   let failed = false
+  const again = Path.join(root, 'again')
   const ignoring = Store.remote({
     base: 'https://worker.example/v1/blobs',
     fetch: async (_input, init) => {
       whole.push(new Headers(init?.headers).get('range') ?? 'whole')
       const breaks = !failed
       failed = true
-      return new Response(partial(bytes, breaks))
+      return new Response(partial(bytes, breaks ? () => size(again) === 100_000 : undefined))
     },
     resumeMs: 1,
     token: 'secret',
   })
-  const again = Path.join(root, 'again')
   assert.equal(await ignoring.fetch(name, again), true)
   assert.ok(
     Fs.readFileSync(again).equals(bytes),
