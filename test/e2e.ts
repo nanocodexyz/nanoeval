@@ -84,6 +84,8 @@ const midturnKills: Record<string, { after: string; ms: number }> = {
 const midturnSleepSec = 20
 const midturnYieldMs = 10_000
 const sandboxLeaseSec = Number(process.env['NANOEVAL_E2E_SANDBOX_LEASE_SEC'] ?? leaseSec)
+const slowStart = gateway && (scenario === 'tasks' || scenario === 'warm')
+const slowStartMs = sandboxLeaseSec * 1000 + 1000
 const seededDisk = 'e'.repeat(64)
 const slotGone = scenario === 'gone'
 const shared = scenario === 'shared'
@@ -686,6 +688,7 @@ async function main(): Promise<void> {
   })
   const mock = gateway
     ? await MockGateway.start({
+        ...(slowStart ? { bootstrapMs: slowStartMs } : {}),
         key: 'sk-tempo-' + Crypto.randomBytes(16).toString('hex'),
         model: (path, body, cost) =>
           body['fake_cli']
@@ -1762,6 +1765,13 @@ async function main(): Promise<void> {
         (sandbox) => sandbox.state !== 'failed',
       )
       assert.equal(opened.length, 1, 'every attempt shares one sandbox')
+      if (slowStart)
+        assert.ok(
+          (await api.timeline(created.id)).marks.some(
+            (mark) => mark.name === 'sandbox.exec' && (mark.ms ?? 0) >= slowStartMs,
+          ),
+          'its runner took longer to start than a lease lasts, and the lease was renewed meanwhile',
+        )
       assert.equal(status['sandboxes'].length, gateway ? 2 : 1)
       const sandbox = status['sandboxes'].at(-1)
       assert.equal(sandbox.state, warm ? 'kept' : 'closed')

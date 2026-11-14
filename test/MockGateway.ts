@@ -34,6 +34,7 @@ export type Mock = {
 }
 
 export type Options = {
+  bootstrapMs?: number
   key: string
   model(path: string, body: Record<string, any>, cost: number): string
   refusals?: { passing?: number; spentAfter?: number; spentTimes?: number }
@@ -267,6 +268,8 @@ export async function start(options: Options): Promise<Mock> {
     const command = body['command'] as string[]
     if (command.length !== 3 || command[0] !== 'bash' || command[1] !== '-lc')
       return problem(response, 400, 'the mock runs bash -lc commands only')
+    if (options.bootstrapMs)
+      await new Promise((resolve) => setTimeout(resolve, options.bootstrapMs))
     const output = await sandbox.exec(there(command[2]!))
     return answer({ ...output, timedOut: false, truncated: false })
   }

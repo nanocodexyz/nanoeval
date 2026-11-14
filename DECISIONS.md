@@ -3219,3 +3219,30 @@ The second proof found the other cost of the same kind. A runner from the runtim
 - Rows that differ between two revisions with a model: every row of both arms passed, so "gained" and "lost" were seen only in the unit test.
 - A deployed Worker with this change: it records the pinned release as the harness of the runs it creates, from the `package.json` it is bundled with. `wrangler deploy --dry-run` bundles it.
 - CI on GitHub.
+
+## 2026-11-14: a lease is renewed while a runner starts
+
+The two lanes on ns slots whose sandbox starts its runner from the runtime archive failed in the proofs of three changes of this day: "every attempt shares one sandbox", after "the lease of its sandbox ended". The entry above took that for a cost of its own change and removed one. The cause is older than all three and is in `worker/Run.ts`.
+
+**The defect.** A run opens a sandbox in a tick, and the tick waits until the gateway has run the command that starts the runner: `nanoeval runner --detach`, or with the runtime archive the bootstrap, which fetches the archive, unpacks it and starts the runner from it. A run does one tick at a time, and only a tick renews a lease, when less than `--lease-sec` of it is left and more than nothing. So for as long as a runner was being started no lease of the run was renewed, the one of the sandbox being opened included. A lease that ran out meanwhile was found over by the next tick, which closed the sandbox and took its rows away.
+
+- In the lanes a lease is 3 s. They passed while the creation of the sandbox, the bootstrap and one tick of 500 ms took less than 3 s together. The bootstrap of the archive in a guest took 870 ms in a proof that passed. In a proof of another change it took 2,636 ms, the next tick came 3.2 s after the sandbox was created, and the lane failed, twice. On the commit before every change of this day it took 1,376 to 3,085 ms in five runs beside other work, most of it the unpacking of the archive, so the lane was a race against the load of the machine and no change had to lose it.
+- For real a lease is 300 s, it is renewed with 60 s left, and the bootstrap took 21.7 s, so a run with one sandbox was never near it. A run with several is: each sandbox it opens later holds the tick for its bootstrap, and a lease of another sandbox with less left than that was renewed late or not at all. This was read, not met: the gateway sold no renewal on the day sandboxes were leased for real.
+
+**The rule.** While a tick waits for a runner to be started, the run renews as a tick does, once every tick period (`TICK_MS`), and the sandbox it is opening is renewed like the others. One renewal is under way at a time, and the tick goes on only when it has been answered. What a renewal decided meanwhile stands: a sandbox that it failed, or marked as `ending` because no renewal was sold, is not moved to `starting` when the command returns, and a command that fails in a sandbox that a renewal has failed counts as one failed sandbox, not two.
+
+**The lanes.** The scripted gateway takes `bootstrapMs` and holds every command back for that long. The lanes that lease a sandbox to run tasks or to keep it warm set it to a lease and one second, on directory, krun and ns slots, and ask that the command took that long and that every attempt still shared one sandbox. What was a race is now asked every time, on any machine.
+
+**Checked.**
+
+- **Without the change** in `worker/Run.ts`, the lane on directory slots with the gateway and the command held back: it failed in 10 s. The scripted gateway ended the sandbox with its lease while the command was held, the command was answered "sandbox not found", and after three such sandboxes every row ended as an `environment` error.
+- **With it**, the same lane: passed. The command took 4,638 ms, the lease was renewed while it ran, and the runner said hello 7.0 s after the run was created in the one sandbox of the run.
+- The lane on ns slots whose runner starts from the runtime archive, as `ci.yml` has it, beside a load average of 133: passed.
+- `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test`, 180 tests and none skipped.
+
+**Not verified.**
+
+- A real gateway. It sold no renewal on 2026-11-12, so a renewal during a bootstrap was paid to the scripted gateway only.
+- A deployed Worker, where the wait between two renewals is a timer inside the tick of an object.
+- A renewal that is refused while a runner starts. The lane where no renewal is sold has leases of 6 s and a command that is not held back, so its first renewal is asked after the runner started. The two branches for it were read, not run.
+- CI on GitHub.

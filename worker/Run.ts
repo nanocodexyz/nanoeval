@@ -1649,32 +1649,35 @@ export class Run extends DurableObject<Env> {
       if (pool) this.update('sandboxes', id, { member: pool.member })
       const sandbox = provider.connect(handle)
       const settings = JSON.stringify(this.runnerConfig(runner, pool))
-      if (config.sandbox.runtime) {
-        const runtime = config.sandbox.runtime
-        await timed('sandbox.exec', () =>
-          Sandbox.run(
-            sandbox,
-            Bootstrap.script({
-              config: settings,
-              home: handle.home,
-              run: meta.id,
-              runtime,
-              token: meta.runnerToken,
-              url: meta.publicUrl,
-            }),
-          ),
-        )
-      } else {
-        const file = handle.home + '/' + Bootstrap.files.config
-        await timed('sandbox.write', () => sandbox.write(file, Bytes.fromText(settings)))
-        await timed('sandbox.exec', () =>
-          Sandbox.run(sandbox, 'nanoeval runner --detach --config ' + Sandbox.quote(file)),
-        )
-      }
-      this.update('sandboxes', id, { state: 'starting' })
+      await this.renewing(provider, async () => {
+        if (config.sandbox.runtime) {
+          const runtime = config.sandbox.runtime
+          await timed('sandbox.exec', () =>
+            Sandbox.run(
+              sandbox,
+              Bootstrap.script({
+                config: settings,
+                home: handle.home,
+                run: meta.id,
+                runtime,
+                token: meta.runnerToken,
+                url: meta.publicUrl,
+              }),
+            ),
+          )
+        } else {
+          const file = handle.home + '/' + Bootstrap.files.config
+          await timed('sandbox.write', () => sandbox.write(file, Bytes.fromText(settings)))
+          await timed('sandbox.exec', () =>
+            Sandbox.run(sandbox, 'nanoeval runner --detach --config ' + Sandbox.quote(file)),
+          )
+        }
+      })
+      if (this.sandboxes().find((candidate) => candidate.id === id)!.state === 'creating')
+        this.update('sandboxes', id, { state: 'starting' })
     } catch (error) {
       const row = this.sandboxes().find((candidate) => candidate.id === id)!
-      await this.failSandbox(provider, row, message(error))
+      if (row.state !== 'failed') await this.failSandbox(provider, row, message(error))
     } finally {
       this.creating.delete(id)
     }
@@ -1958,11 +1961,33 @@ export class Run extends DurableObject<Env> {
     }
   }
 
+  private async renewing<T>(provider: Sandbox.Provider, work: () => Promise<T>): Promise<T> {
+    let ended = false
+    let renewal: Promise<void> | undefined
+    const renewals = async () => {
+      while (!ended) {
+        await new Promise((resolve) => setTimeout(resolve, Number(this.env.TICK_MS)))
+        if (ended) return
+        renewal = this.renew(provider).catch((error) =>
+          console.error('nanoeval renewal failed', message(error)),
+        )
+        await renewal
+      }
+    }
+    void renewals()
+    try {
+      return await work()
+    } finally {
+      ended = true
+      await renewal
+    }
+  }
+
   private async renew(provider: Sandbox.Provider): Promise<void> {
     if (!provider.renew) return
     const config = this.config()
     for (const record of this.sandboxes()) {
-      if (!['ending', 'ready', 'starting'].includes(record.state)) continue
+      if (!['creating', 'ending', 'ready', 'starting'].includes(record.state)) continue
       if (record.paid_until === null || record.expires_at === null) continue
       const left = record.paid_until - Date.now()
       if (left <= 0 || left > config.limits.leaseSec * 1000) continue
@@ -1987,12 +2012,9 @@ export class Run extends DurableObject<Env> {
         this.update('sandboxes', record.id, {
           error: null,
           paid_until: renewed.paidUntil,
-          state:
-            record.state !== 'ending'
-              ? record.state
-              : runner?.state === 'ready'
-                ? 'ready'
-                : 'starting',
+          ...(record.state === 'ending'
+            ? { state: runner?.state === 'ready' ? 'ready' : 'starting' }
+            : {}),
         })
       } catch (error) {
         const unsold =
