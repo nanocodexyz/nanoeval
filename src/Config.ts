@@ -42,6 +42,7 @@ export type Config = {
   budget: { modelUsd?: number; sandboxUsd: number }
   eval: Eval.Reference
   judge?: Judge
+  key?: { deposit?: number; topUp?: number }
   limit?: number
   limits: {
     attachSec: number
@@ -149,6 +150,18 @@ export function oracle(config: Pick<Config, 'agents'>): Agent | undefined {
   return config.agents.find((agent) => agent.provider === 'oracle')
 }
 
+export function disks(provider: Config['sandbox']['provider']): Config['sandbox']['disks'] {
+  return provider === 'local' ? 'keep' : 'remove'
+}
+
+export function rerunAgents(parent: readonly Agent[], ids: readonly string[]): Agent[] {
+  if (!ids.length) return [...parent]
+  const missing = ids.filter((id) => !parent.some((agent) => agent.id === id))
+  if (missing.length)
+    throw new InvalidError('the run has no agent ' + missing.join(', ') + ' to rerun')
+  return parent.filter((agent) => ids.includes(agent.id))
+}
+
 export function parse(value: unknown): Config {
   const config = value as Config
   const fail = (message: string): never => {
@@ -239,6 +252,17 @@ export function parse(value: unknown): Config {
     fail('sandbox.verifierCache is true or false')
   if (sandbox.verifierCache && backend === 'dir')
     fail('sandbox.verifierCache needs the krun or the ns backend')
+  if (
+    config.key !== undefined &&
+    (typeof config.key !== 'object' ||
+      config.key === null ||
+      (config.key.deposit === undefined && config.key.topUp === undefined) ||
+      (config.key.deposit !== undefined &&
+        !(typeof config.key.deposit === 'number' && config.key.deposit > 0)) ||
+      (config.key.topUp !== undefined &&
+        !(typeof config.key.topUp === 'number' && config.key.topUp >= 0)))
+  )
+    fail('key holds a deposit above zero, a topUp of at least zero, or both')
   const budget = config.budget ?? fail('budget is required')
   const limits = config.limits ?? fail('limits is required')
   if (sandbox.leaseSec !== undefined && !(sandbox.leaseSec >= limits.leaseSec))
@@ -254,6 +278,14 @@ export function parse(value: unknown): Config {
     },
     eval: reference,
     ...(judge ? { judge } : {}),
+    ...(config.key === undefined
+      ? {}
+      : {
+          key: {
+            ...(config.key.deposit === undefined ? {} : { deposit: config.key.deposit }),
+            ...(config.key.topUp === undefined ? {} : { topUp: config.key.topUp }),
+          },
+        }),
     ...(config.limit === undefined ? {} : { limit: integer(config.limit, 'limit', 1) }),
     limits: {
       attachSec: integer(limits.attachSec, 'limits.attachSec', 1),

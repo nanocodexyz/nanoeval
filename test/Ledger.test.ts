@@ -481,3 +481,22 @@ test('a row that asks for more than a runner admits runs alone with the memory i
     'a capacity the operator named, or a machine that does not say what is free, keeps the capacity',
   )
 })
+
+test('a claim that ends retried is remembered, so an attempt is retried once', () => {
+  const sql = open([{ agent: 'agent', n: 1, task: 'small' }])
+  const [row] = claim(sql)
+  assert.equal(Ledger.retried(sql, row!.id), false)
+  assert.equal(
+    Ledger.requeue(sql, { ending: 'retried', id: row!.id, limit: row!.claims + 1, now: 10 }),
+    true,
+  )
+  assert.equal(Ledger.get(sql, row!.id)!.phase, 'unclaimed')
+  assert.equal(Ledger.retried(sql, row!.id), true)
+  assert.deepEqual(
+    Ledger.claims(sql, row!.id).map((entry) => [entry.ending, Ledger.lost(entry)]),
+    [['retried', false]],
+  )
+  const [again] = claim(sql, { now: 20 })
+  assert.equal(again!.claims, 2)
+  assert.equal(Ledger.retried(sql, again!.id), true)
+})

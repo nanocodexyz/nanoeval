@@ -4,7 +4,7 @@ import type * as Sql from './Sql.ts'
 
 export type Phase = 'attach' | 'claimed' | 'done' | 'judge' | 'run' | 'unclaimed' | 'verify'
 
-export type Ending = 'cancelled' | 'expired' | 'finished' | 'forgotten' | 'released'
+export type Ending = 'cancelled' | 'expired' | 'finished' | 'forgotten' | 'released' | 'retried'
 
 export type Origin = { attempt: string; run: string }
 
@@ -274,7 +274,7 @@ export function requeue(sql: Sql.Sql, input: requeue.Input): boolean {
 
 export declare namespace requeue {
   type Input = {
-    ending: 'expired' | 'forgotten' | 'released'
+    ending: 'expired' | 'forgotten' | 'released' | 'retried'
     id: string
     limit: number
     now: number
@@ -314,6 +314,13 @@ export function claims(sql: Sql.Sql, attempt?: string): Claim[] {
 
 export function explain(sql: Sql.Sql, input: { claim: string; error: string }): void {
   sql.run('UPDATE claims SET error = ? WHERE token = ?', input.error, input.claim)
+}
+
+export function retried(sql: Sql.Sql, attempt: string): boolean {
+  return (
+    sql.all("SELECT id FROM claims WHERE attempt = ? AND ending = 'retried' LIMIT 1", attempt)
+      .length > 0
+  )
 }
 
 export function lost(claim: Pick<Claim, 'ending'>): boolean {
