@@ -5583,3 +5583,44 @@ The changes of the entry above were read once more before they landed, beside th
 **Checked** on dev-georgios (load average 150 to 300 from the live runners, one run each unless counted): `a_host_reader_that_stalls_leaves_every_other_connection_answering` in `host/tests/image.rs` boots a microVM from an image with a static busybox, has a guest `exec` write 64 MiB through a forward to the test's own `relay.sock`, which accepts and then reads nothing for 30 s while `exec -- /bin/guest oom-kills` must answer within 10 s every second, then reads all 64 MiB and the end of the stream and asks `exec` once more. With libkrun `8ce363e` the first `exec` of the stall did not answer in 10 s; with `2dad364` every one answered and the 64 MiB arrived whole. The data crossed both proxies: the guest's TCP connection to the forward goes through TSI and the forward's vsock connection through `unix.rs`, and libkrun's debug log of one run showed each forwarding all 67,108,864 bytes. The writing `exec` does not end after its stream is read, with `8ce363e` and no stall as well, so the test stops it instead of waiting for it. libkrun's own unit tests of the buffer (`cargo test -p krun-devices stream_tx`: a stalled reader never blocks the writer, credit follows bytes that left the buffer, a write shutdown waits for kept bytes) and `cargo clippy --locked --features net,blk -- -D warnings` pass. In `krun/`, `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings` and `cargo test --locked` with the KVM tests pass.
 
 **Release.** The launcher links libkrun statically: a machine takes this when its `NANOEVAL_KRUN` binaries are rebuilt from this commit, and a slot when its microVM next starts. dev-georgios runs `~/nc-live/krunfull`, which predates both `8ce363e` and this change.
+## 2026-11-12: nanocode's own command line as an installed agent, and imports without KVM
+
+Machines: a 5-core, 14 GiB Linux Hand with no KVM and no root, whose only egress is an HTTP proxy that re-signs TLS, and E2B `desktop` sandboxes (8 vCPUs, 7,955 MB) leased from the Tempo gateway with one Tempo Key. Node 24.22.2 in the sandbox, nanocode CLI 0.7.0 (the pinned `nanocode-cli` release, and a build of 0.7.0 with a patch that gives `--harness claude` a Messages endpoint and lets a custom model follow `--harness`). Model `boundless/z-ai/glm-5.3-flash` through the gateway.
+
+### What was built
+
+| | |
+| --- | --- |
+| `nanocode-codex` and `nanocode-claude` installed agents | `ID=nanocode-codex:MODEL[:THINKING]` runs `nanocode exec --ephemeral --no-subagents --no-tempo-tools --harness codex -m MODEL -t THINKING -- INSTRUCTION` inside the slot, `nanocode-claude` the same with `--harness claude`. The binary is the slot's runtime nanocode, the one its hand runs (`/opt/nanoeval/nanocode` with the runtime's loader and libraries, or `NANOEVAL_NANOCODE`), so nothing more is fetched. Codex reads `NANOCODE_OPENAI_BASE_URL` and `NANOCODE_OPENAI_API_KEY`, Claude `NANOCODE_ANTHROPIC_MESSAGES_URL`, `NANOCODE_ANTHROPIC_API_KEY` and `NANOCODE_MODELS_URL`: each is the attempt's endpoint and token, never a credential |
+| `GET models` on the run's model endpoint for nanocode agents | nanocode lists the models of a custom endpoint before it starts. The run answers with the agent's own model and forwards nothing |
+| Image conversion without KVM | The launcher built without libkrun now answers `vm` for an image build with a mount namespace instead of a builder microVM: the build disk loop-mounted at `/mnt/root` and the guest agent serving `vm.sock` in `ns-serve` mode, as root. Layers are applied by the same guest code. A Dockerfile build, which needs a builder that runs steps, is refused |
+| `deep-swe-1.1` | Pinned in the catalog: `datacurve/deep-swe-1-1` at `sha256:5affcd53…`, 113 tasks whose digests hash to `sha256:395be8f1…`. `import deep-swe-1.1 --out DIR` writes checked task directories. It is not importable as an eval, see below |
+
+### What was decided
+
+- **Two kinds, not one with a harness option.** The agent syntax has one slot for the harness, and each kind has one provider route of the run (Responses or Messages), which is what the credential swap and the meter already key on.
+- **`--no-subagents`.** A leaderboard fixes one model and effort per eval. A subagent may pick another model, so the agent gets none.
+- **The output is the final message.** `nanocode exec` streams the reply to stdout and reasoning and tool calls to stderr, with no JSON mode. The trajectory holds the instruction and the reply. stderr is kept as `agent/stderr.txt`, and tokens and cost come from the run's meter.
+- **The control plane in a sandbox.** The Hand reaches the internet only through its proxy and may not expose a port (Tailscale Funnel is not allowed for the node, and a quick tunnel needs direct egress). The Worker runs under local workerd in a gateway sandbox created with `ports: [8787]`, so the CLI on the Hand and runners in other sandboxes reach it at its public URL. The Worker holds `TEMPO_KEY`, which no slot can read: slots are chrooted, in their own PID namespace and dropped from the sandbox's addresses.
+
+### Measurements
+
+Import of three Terminal-Bench 2.1 tasks (`fix-git`, `log-summary-date-ranges`, `openssl-selfsigned-cert`) in the control-plane sandbox, no KVM: 12.7 s, conversions of 2.4 to 4.1 s. Oracle on ns slots in the same sandbox: 3 of 3 passed in about 25 s.
+
+| Run | Rows | Slots at once | Result | Attempt median (min to max) | Run wall | Model |
+| --- | --- | --- | --- | --- | --- | --- |
+| `nanocode-codex`, GLM-5.3-Flash high, stock release | 3 tasks x 3 | 3 | 8 passed, 1 failed | 44.6 s (27.0 to 62.2) | 157.5 s | $0.0432 |
+| `nanocode-claude`, GLM-5.3-Flash high, patched build | 3 tasks x 2 | 6 (runner `--memory-mb 15000`) | 6 passed | 53.0 s (50.5 to 62.2) | 64.4 s | $0.0210 |
+| Both kinds, 3 tasks x 4 each | 24 | 7 | 19 errored, 5 cancelled | | 150.6 s | $0.0080 |
+| Oracle, `--provider gateway`: the Worker leased a `desktop` sandbox with its key and started the runner from the runtime archive | 3 | 3 | 3 passed | | 45 s | sandbox $0.0445 |
+
+An attempt's environment came up in 0.3 s, and its verifier took 6 to 8 s with three slots and 9 to 16 s with six. With seven slots the sandbox's load average stayed under 0.7 and its memory under 1.8 GB: the slots of a `desktop` sandbox are bound by the memory the tasks declare, three of 2 GiB at the runner's rule. The run of 24 errored on the model, not the machine: the gateway answered `502 upstream_failed`, "boundless HTTP 402 ... voucher cumulativeAmount must be strictly greater than highest accepted voucher", for both routes, while another lane sent about five requests at once on the same key. The errors stayed errors. Minutes later the same answer came to single serial requests.
+
+### What DeepSWE v1.1 needs
+
+Its tasks declare task schema 1.3, `[verifier] environment_mode = "separate"` with a `tests/Dockerfile` of the task image plus the tests, a `[[verifier.collect]]` hook that writes `/logs/artifacts/model.patch` in the agent's environment, `artifacts` carried into the verifier's, `network_mode = "no-network"` for the agent and the verifier, 2 CPUs, 8 GiB and 20 GB for each environment, and `reward.json`. nanoeval refuses the schema and the separate verifier, does not run collect hooks or read `reward.json`, closes a network only on krun slots, and a `desktop` sandbox admits no row of 8 GiB.
+
+### Not verified
+
+- An installed agent whose task closes its network, on any slot.
+- A model run through `--provider gateway`: the gateway's Boundless route failed before one was attempted.

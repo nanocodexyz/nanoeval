@@ -209,10 +209,12 @@ const usage = `nanoeval <command>
             machine has that much free disk, and prepares one environment at a time.
             With --verifier-cache, the verifier of a krun or ns slot finds what uv downloaded for
             the same task on this machine before, when an oracle run with the option kept it.
-            An agent's HARNESS is claude or codex, a nanocode session outside the slot, or
+            An agent's HARNESS is claude or codex, a nanocode session outside the slot,
             claude-code or codex-cli, that vendor's command line inside the slot: a pinned
             release that the runner fetches once, pointed at an endpoint of the run that adds
-            the model credential, so none enters the slot.
+            the model credential, so none enters the slot. nanocode-codex and nanocode-claude
+            run nanocode exec with that harness inside the slot the same way, from the slot's
+            runtime nanocode (NANOEVAL_NANOCODE on the runner names another build).
             With --payer plan, the Claude plan signed in on the Worker (nanoeval plans) pays
             for the sessions of the run, its judge included, in place of the Worker's own
             credential: its agents and its judge are claude sessions, nothing is charged per
