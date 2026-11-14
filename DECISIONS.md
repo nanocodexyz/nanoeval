@@ -4542,3 +4542,57 @@ Both are what these two lanes ask of a loaded machine, and both were there befor
 **Checked on the rebased tip** besides the above: `npm run lint`, `npm run check:types`, `npm run dry-run`, `npm test` (270 tests, 266 passed, the 4 that need KVM skipped), and the directory lanes, once each but `stopped`: `failures` with the stop above and with the turned solution, the installed agents with failure kinds as they are and with the turned solution, the lane with the rows of two runs with its stop, the plain lane, and `stopped` 3 times. All passed, at a load average between 4 and 16.
 
 **Not verified.** The plain lane with installed agents passed on the first tip and was not run again after the rebase. krun and ns slots: the machine has no KVM, and nothing here is in a slot. A deployed Worker. The lanes with an oracle and with a judge and the lane `forgotten` passed on the first tip and were not run again after the rebase. Every step of the workflow from a fresh clone.
+## 2026-11-14: a session ends what it holds open before it is deleted
+
+**The defect.** The log of a local Worker held `Uncaught Error: session deleted` again and again, 95 times in the Worker log of one series of runs, while the runs went on and no row was the worse for it. The line has no stack. Its text is the reason of a reset: it is how workerd logs what an object still had in flight when the object called `ctx.abort()`.
+
+**The place** is `destroy()` of the session object in nanocode-ts, `dist/cloudflare/App.js` of `build-f3aa94f`, the build pinned when this was measured. `build-b8158fd` has the same `destroy()`, read and not run. It marks the object deleted, calls `close(1000, 'session deleted')` on every socket, wakes its event streams, disposes its runtimes, deletes its alarm and its storage, and resets the object with `setTimeout(() => this.ctx.abort('session deleted'), 0)`. Nothing waits for a socket to finish closing, for the task that registers a hand, or for a stream to end.
+
+A runner stops the hand of a slot before it starts the verifier, so a row that runs to its verdict deletes its session after the hand has gone, and logs nothing. A session is deleted under a live hand when its attempt ends without a verifier: a run that is cancelled, a claim that is lost while its machine lives on, a key that is spent under a turn.
+
+**Measured** against `wrangler dev` 4.151.1 alone (workerd 1.20261012.1, Node 24.22.1) on a Linux machine with 5 cores at a load average between 10 and 16, with one session and one delete at a time: five deletes of each kind, two under a stopped hand, once on the commit before this change and once with it and the change of the entry after this one, which does not touch the object of a session. The hand is nanocode 0.7.0.
+
+| What the session held when it was deleted | `Uncaught` lines of each delete, before | With this change |
+| --- | --- | --- |
+| Nothing | 0, 0, 0, 0, 0 | 0, 0, 0, 0, 0 |
+| An event stream read through the Worker (`GET /sessions/NAME/events` as `text/event-stream`) | 4, 4, 4, 4, 4: three `Uncaught Error: event stream unavailable` and one `Uncaught exception` of workerd | 0, 0, 0, 0, 0, and the reader sees the stream end |
+| A socket that attached as a hand and had not yet said what it is | 1, 3, 3, 3, 3 | 0, 0, 0, 0, 0, and the socket is closed with 1000 and `session deleted` as before |
+| A hand, attached and idle | 2, 2, 2, 2, 2 | 0, 0, 0, 0, 0 |
+| A hand that was killed first | 0, 0, 0, 0, 0 | 0, 0, 0, 0, 0 |
+| A hand that was stopped and answers nothing | 0, 0 | 0, 0 |
+
+A delete took 36 to 408 ms before. With the change it took 79 to 563 ms where something was attached, and 30.2 and 30.5 s under the stopped hand, which is `REMOTE_TIMEOUT_MS`.
+
+The unfinished attach logs because the task that waits for the first frame of the hand is still pending at the reset. A stream logs because `destroy()` wakes it, its next read is refused with `session deleted`, and it then errors the response it is the body of (`EventHub.js`, `controller.error(new Error('event stream unavailable'))`).
+
+**Where the lanes had it.** The Worker logs kept of about twenty earlier runs of the workflow's steps, 1,185 logs of 79 lanes between 2026-11-13 and 2026-11-14, hold the line in two lanes: two lines in each of the 19 logs of the lane whose key is spent during the run, where the rows end under their hands, and two lines in 1 of the 21 logs of the lane that loses a runner. No other lane logged it, which is why no lane failed for it: a lane read its rows and never the log of its Worker.
+
+**The rule.** The object that hosts a session ends what it holds open before nanocode-ts deletes it (`worker/Sessions.ts`). `destroy` is nanocode-ts's method, found on the class the way `published` is, and a build without it fails when the Worker loads and does not skip the step in silence. Before it runs:
+
+- every event stream the object handed out is ended. The object copies each stream to its reader, so it can cancel nanocode-ts's side and close the reader's side: the reader sees the end of the stream and no error;
+- every socket is closed with nanocode-ts's own code and reason, 1000 and `session deleted`, and the object waits until the other end has closed or failed, at most `REMOTE_TIMEOUT_MS`, the time nanocode-ts gives a hand to answer. A hand that is frozen delays the deletion by that long and no row, since the run waits `TICK_MS` for a deletion and leaves the rest to finish behind it;
+- every other request is answered `410` with `session deleted` from the moment the deletion is asked, as nanocode-ts answers once it has deleted, so a hand that dials again after the close is refused and does not attach to an object on its way out.
+
+And the run ends a claim before it deletes the sessions of the claim. A held `agent` call watches the events of its session, and that watch now ends when the session is deleted. `lose()` deleted the sessions first and changed the row after, so such a call would have read the turn of a session on its way out while the claim still looked held, and taken the answer for a session that lost its turn. `lose()` now takes the row back, wakes the calls held for it, and then deletes: the held call finds the claim gone and answers 410, which is what the runner takes a slot down for. `complete()` already had that order.
+
+**Rejected.** Catching the line where it is logged: nothing in the Worker throws it, workerd reports the reset. Deleting a session only once its hand has gone: a cancelled run and a lost claim cannot wait for a hand that may never go, and a stream or an unfinished attach logs without any hand. Letting a lane allow the line by its text: the log of an operator would keep it.
+
+**For nanocode-ts.** The change belongs in `destroy()`: end each open event stream instead of letting its next read be refused, settle the tasks that register hands, and wait for each socket to finish closing, within the hand's timeout, before `ctx.abort()`. With that, `destroy`, `detach` and `streamed` of `worker/Sessions.ts` go away, and the lane below stays.
+
+**The lane.** `NANOEVAL_E2E_SCENARIO=cancelled` on directory slots: one task, the agent whose cell sleeps 12 s and the one that fails at once. When the model has been asked for the long cell, the test attaches a second socket to the session of that row with a hand token and sends nothing on it, starts reading the events of the session, and cancels the run. It asserts that the socket is closed with 1000 and `session deleted`, that the reading ends, that the run finishes with the row `cancelled` and its sandbox closed, and that the log of its Worker holds no line with `Uncaught`: it stops the Worker, waits until the output of wrangler has closed, and reads `wrangler.log`. The real hand of the row is attached all the while. The second socket is there because an unfinished attach logs on every delete.
+
+**Checked** on the same machine, without KVM, at a load average between 10 and 20. Before is the commit before this change, each lane run once unless it says otherwise.
+
+- `npm run lint` and `npm run check:types` on this commit; the unit tests and the dry run with the next entry.
+- The lane without the change, on the commit before with the lane and the body read of the next entry: failed on 3 lines, `Uncaught Error: session deleted`, `Uncaught Error: internal error; reference = ...` and `Uncaught exception: ... Request failed due to internal error`, the last two from the event stream that the test reads. With the change: passed 1 time on this commit and 1 with the next entry, and the log of its Worker held no error and no warning line.
+- The lane whose key is spent during the run: 2 `Uncaught Error: session deleted` lines before, 0 with this change and the next, and it passed both times.
+- The lane that loses a runner: 4 `Uncaught Error: session deleted` lines before, 0 with this change and the next, and it passed both times.
+- The lanes that end claims and delete sessions otherwise passed with both changes and logged no such line: failure kinds and a rerun, orchestrator restart, a session that lost the turn of its row. The entry after this one has the table.
+
+**Not verified.**
+
+- A deployed Worker. How Cloudflare logs an object that resets with work in flight was not read, with or without the change.
+- Which deletions those 95 lines came from: the log was not read against its runs.
+- The order of `lose()` under a held `agent` call: it is read from the code, and no lane forces a claim to be lost in the moment a call is held. The lanes that lose a claim passed with it, see above.
+- krun and ns slots: the lane runs on directory slots, and the object of a session does not know the kind of slot.
+- A hand that is frozen in a real run. The 30 s are measured with one session and no run.

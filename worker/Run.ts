@@ -1422,6 +1422,7 @@ export class Run extends DurableObject<Env> {
     const config = this.config()
     const submitted = this.submitted(row)
     let usage: string | undefined
+    const sessions: string[] = []
     if (row.session) {
       if (submitted && row.phase === 'run') await this.halt(row.session)
       if (submitted)
@@ -1437,8 +1438,8 @@ export class Run extends DurableObject<Env> {
       const installed = this.installed(row) !== undefined
       if (installed && ['judge', 'run', 'verify'].includes(row.phase))
         usage = JSON.stringify(this.metered(row))
-      for (const name of this.judgeSessions(row)) await this.remove(name)
-      if (row.phase !== 'claimed' && !installed) await this.remove(row.session)
+      sessions.push(...this.judgeSessions(row))
+      if (row.phase !== 'claimed' && !installed) sessions.push(row.session)
     }
     const requeued = Ledger.requeue(this.sql, {
       ending,
@@ -1452,8 +1453,9 @@ export class Run extends DurableObject<Env> {
       this.sql.run('DELETE FROM artifacts WHERE attempt = ?', row.id)
       this.sql.run('DELETE FROM binary_artifacts WHERE attempt = ?', row.id)
       this.wake()
-      return
     }
+    for (const name of sessions) await this.remove(name)
+    if (requeued) return
     const current = Ledger.get(this.sql, row.id)
     if (current && current.phase !== 'done')
       await this.complete(current, {

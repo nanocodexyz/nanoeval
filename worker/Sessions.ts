@@ -150,27 +150,63 @@ export const nanocode = App.create<Env>({
   workspace: false,
 })
 
+type Destroy = () => Promise<Response>
+
 type Published = (scope: string, events: Atif.SessionEvent[], bytes: number[]) => void
 
 const hosted = nanocode.AgentSession
 
-function inherited(): Published {
-  const { published } = hosted.prototype as unknown as { published?: Published }
-  if (typeof published !== 'function')
-    throw new Error('this nanocode-ts build does not hand the events of a session to its object')
-  return published
+function inherited<Method>(name: string, missing: string): Method {
+  const method = (hosted.prototype as unknown as Record<string, unknown>)[name]
+  if (typeof method !== 'function') throw new Error('this nanocode-ts build does not ' + missing)
+  return method as Method
 }
 
-const publish = inherited()
+const destroy = inherited<Destroy>('destroy', 'delete a session in its object')
+
+const publish = inherited<Published>('published', 'hand the events of a session to its object')
+
+const removed = { code: 1000, reason: 'session deleted' }
 
 export class AgentSession extends hosted {
+  private readonly closing = new Map<WebSocket, () => void>()
+  private detached: Promise<void> | undefined
   private open = true
   private readonly sql: Sql.Sql
+  private readonly streams = new Set<() => Promise<void>>()
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
     this.sql = Storage.sql(ctx)
     Sql.setup(this.sql, Telemetry.tables)
+  }
+
+  async destroy(): Promise<Response> {
+    this.detached ??= this.detach()
+    await this.detached
+    return destroy.call(this)
+  }
+
+  private async detach(): Promise<void> {
+    await Promise.all([...this.streams].map((end) => end()))
+    const closed = this.ctx.getWebSockets().map(
+      (socket) =>
+        new Promise<void>((resolve) => {
+          this.closing.set(socket, resolve)
+          try {
+            socket.close(removed.code, removed.reason)
+          } catch {
+            resolve()
+          }
+        }),
+    )
+    let stop = () => {}
+    const expired = new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, Number(this.env.REMOTE_TIMEOUT_MS))
+      stop = () => clearTimeout(timer)
+    })
+    await Promise.race([Promise.all(closed), expired])
+    stop()
   }
 
   published(scope: string, events: Atif.SessionEvent[], bytes: number[]): void {
@@ -186,7 +222,10 @@ export class AgentSession extends hosted {
   }
 
   override async fetch(request: Request): Promise<Response> {
+    if (this.detached) return Storage.json({ error: removed.reason }, 410)
     const response = await super.fetch(request)
+    if (response.body && response.headers.get('content-type') === 'text/event-stream')
+      return this.streamed(response)
     if (!request.headers.has(Telemetry.header) || !response.ok) return response
     const page = await response.json<{ has_more: boolean; next_cursor: number }>()
     return Storage.json({
@@ -197,5 +236,40 @@ export class AgentSession extends hosted {
         through: page.next_cursor,
       }),
     })
+  }
+
+  private streamed(response: Response): Response {
+    const { readable, writable } = new IdentityTransformStream()
+    const reader = response.body!.getReader()
+    const writer = writable.getWriter()
+    const end = () => reader.cancel().catch(() => {})
+    const copy = async () => {
+      for (;;) {
+        const chunk = await reader.read()
+        if (chunk.done) return writer.close()
+        await writer.write(chunk.value)
+      }
+    }
+    this.streams.add(end)
+    void copy()
+      .catch((error) => Promise.all([end(), writer.abort(error)]))
+      .catch(() => {})
+      .finally(() => this.streams.delete(end))
+    return new Response(readable, response)
+  }
+
+  override async webSocketClose(
+    socket: WebSocket,
+    code: number,
+    reason: string,
+    wasClean: boolean,
+  ): Promise<void> {
+    await super.webSocketClose?.(socket, code, reason, wasClean)
+    this.closing.get(socket)?.()
+  }
+
+  override async webSocketError(socket: WebSocket, error: unknown): Promise<void> {
+    await super.webSocketError?.(socket, error)
+    this.closing.get(socket)?.()
   }
 }

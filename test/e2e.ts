@@ -6,6 +6,7 @@ import * as Http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import * as Os from 'node:os'
 import * as Path from 'node:path'
+import * as Util from 'node:util'
 import * as Import from '../cli/Import.ts'
 import { blobStore, client, exportJob, oracle, runsTable, summary } from '../cli/nanoeval.ts'
 import * as Plan from '../cli/Plan.ts'
@@ -20,6 +21,7 @@ import * as Config from '../src/Config.ts'
 import type * as Eval from '../src/Eval.ts'
 import * as Pins from '../src/Pins.ts'
 import * as Protocol from '../src/Protocol.ts'
+import type * as Result from '../src/Result.ts'
 import * as Slot from '../src/Slot.ts'
 import * as Guest from './Guest.ts'
 import * as Krun from './Krun.ts'
@@ -69,6 +71,7 @@ const attached =
     scenario,
   )
 const alone = scenario === 'alone'
+const cancelled = scenario === 'cancelled'
 const capped = scenario === 'capped'
 const refusedPassing = scenario === 'refused'
 const spent = scenario === 'spent'
@@ -148,7 +151,7 @@ const guestNode = process.env['NANOEVAL_E2E_NODE']
 const longCell =
   backend === 'dir' &&
   model === 'scripted' &&
-  scenario === 'tasks' &&
+  (cancelled || scenario === 'tasks') &&
   storeKind === 'directory' &&
   !gateway &&
   taskNames.includes('write-greeting')
@@ -924,6 +927,7 @@ async function main(): Promise<void> {
   const secrets = Fs.mkdtempSync(Path.join(Os.tmpdir(), 'nanoeval-e2e-'))
   Fs.writeFileSync(Path.join(secrets, 'vars.env'), Plan.envFile(vars), { mode: 0o600 })
   const log = Fs.createWriteStream(Path.join(out, 'wrangler.log'))
+  let logged = Promise.resolve()
   const start = async () => {
     const child = spawn(
       Path.resolve('node_modules/.bin/wrangler'),
@@ -948,6 +952,7 @@ async function main(): Promise<void> {
         stdio: ['ignore', 'pipe', 'pipe'],
       },
     )
+    logged = new Promise((resolve) => child.once('close', () => resolve()))
     child.stdout.pipe(log, { end: false })
     child.stderr.pipe(log, { end: false })
     for (let tries = 0; ; tries++) {
@@ -962,6 +967,7 @@ async function main(): Promise<void> {
     }
   }
   const stop = async (child: Awaited<ReturnType<typeof start>>, signal: NodeJS.Signals) => {
+    if (child.exitCode !== null || child.signalCode !== null) return
     const exited = new Promise((resolve) => child.once('exit', resolve))
     try {
       process.kill(-child.pid!, signal)
@@ -969,6 +975,19 @@ async function main(): Promise<void> {
     await exited
   }
   let worker = await start()
+  const pass = async () => {
+    await stop(worker, 'SIGTERM')
+    await logged
+    await new Promise((resolve) => log.end(resolve))
+    assert.deepEqual(
+      Util.stripVTControlCharacters(Fs.readFileSync(Path.join(out, 'wrangler.log'), 'utf8'))
+        .split('\n')
+        .filter((line) => line.includes('Uncaught')),
+      [],
+      'the Worker logged an error that nothing caught',
+    )
+    console.log('e2e passed: ' + label)
+  }
 
   const runners: { child: ChildProcess; home: string; name: string }[] = []
   const attach = (run: string, name: string, extra: readonly string[] = []) => {
@@ -1143,6 +1162,10 @@ async function main(): Promise<void> {
     if (midturn && (backend !== 'dir' || !midturnKills[killAt]))
       throw new Error(
         'the midturn scenario runs on directory slots, with NANOEVAL_E2E_KILL cell, model, pair or wait',
+      )
+    if (cancelled && !longCell)
+      throw new Error(
+        'the cancelled scenario runs on directory slots, with the task write-greeting and a directory store',
       )
     if (slotGone && backend !== 'krun') throw new Error('the gone scenario runs on krun slots')
     if (isolated) {
@@ -1545,6 +1568,64 @@ async function main(): Promise<void> {
           return undefined
         })
       : undefined
+
+    if (cancelled) {
+      await waitFor('a hand to be given the long cell of its row', async () =>
+        longCells.length ? true : undefined,
+      )
+      const running = ((await api.status(created.id))['attempts'] as Record<string, any>[]).find(
+        (row) => row['agent'] === 'right',
+      )!
+      const session =
+        url + '/sessions/' + (await api.attempt(created.id, running['id'])).claims.at(-1)!.session
+      const authorized = { authorization: 'Bearer ' + token }
+      const minted = await fetch(session + '/hands', { headers: authorized, method: 'POST' })
+      const late = new WebSocket(session.replace(/^http/, 'ws') + '/hands/late', [
+        'bearer',
+        ((await minted.json()) as { token: string }).token,
+      ])
+      await new Promise((resolve, reject) => {
+        late.addEventListener('open', resolve)
+        late.addEventListener('error', reject)
+      })
+      const closed = new Promise<CloseEvent>((resolve) => late.addEventListener('close', resolve))
+      const events = await fetch(session + '/events?after=0&limit=1', {
+        headers: { ...authorized, accept: 'text/event-stream' },
+      })
+      assert.equal(events.status, 200)
+      const followed = (async () => {
+        for await (const _ of events.body!);
+      })()
+      assert.deepEqual(await api.cancel(created.id), { cancelled: true })
+      const { code, reason } = await closed
+      assert.deepEqual(
+        [code, reason],
+        [1000, 'session deleted'],
+        'a socket that attached and named no hand yet is closed when its session is deleted',
+      )
+      await assert.doesNotReject(followed, 'the events of a session end when it is deleted')
+      const ended = await waitFor('the cancelled run to finish and close its sandbox', async () => {
+        const status = await api.status(created.id)
+        return status['state'] === 'finished' &&
+          (status['sandboxes'] as { state: string }[]).every(
+            (sandbox) => sandbox.state === 'closed',
+          )
+          ? status
+          : undefined
+      })
+      const rows = ended['attempts'] as { agent: string; failure?: Result.Failure; phase: string }[]
+      assert.deepEqual(
+        rows.filter((row) => row.agent === 'right').map((row) => row.failure?.kind),
+        Array.from({ length: attempts * directories.length }, () => 'cancelled'),
+        'a row whose turn ran when the run was cancelled ends as cancelled',
+      )
+      assert.ok(
+        rows.every((row) => row.phase === 'done'),
+        'a cancelled run leaves no row open',
+      )
+      await pass()
+      return
+    }
 
     const machines = () => [
       ...Krun.machines(sandboxes),
