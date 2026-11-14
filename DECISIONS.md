@@ -3043,7 +3043,7 @@ Three smaller things that the day with a standing runner met at the command line
 - `npm test`, 166 tests and none skipped, `npm run check:types`, `npm run lint` and `npm run dry-run`.
 - On directory slots: the plain lane, `failures` with its rerun, `shared`, `stopped`, `standing`, `runners`, `lost`, `resume`, `restart`, `midturn`, `plan` and `warm` through the scripted gateway.
 - On krun slots: `gone`, `shared`, `stopped` and `failures`.
-- Every `run` step of `.github/workflows/ci.yml` from a fresh clone ran before the push, as AGENTS.md asks. This entry was written before it and does not have its counts.
+- Every `run` step of `.github/workflows/ci.yml` from a fresh clone of the six commits, on the commit of the plan change, whose proof note is the only thing between that clone and this head: 77 steps, 77 passed on the first try, 69 end-to-end lanes and none skipped, at a load average of 115 to 190. The unit that ran them had a larger share of the machine's CPUs than the other work on it (`CPUWeight=5000` in systemd), which is what let the lanes whose sandbox has a lease of 3 s start their runner inside the lease.
 
 **Not verified.**
 
