@@ -1726,9 +1726,16 @@ export class Run extends DurableObject<Env> {
         this.update('sandboxes', id, { state: 'starting' })
     } catch (error) {
       const row = this.sandboxes().find((candidate) => candidate.id === id)!
-      if (['creating', 'ending', 'starting'].includes(row.state) && over(row))
+      if (['creating', 'ending', 'starting'].includes(row.state) && over(row)) {
         await this.expire(provider, row)
-      else if (row.state !== 'failed') {
+        this.setOpening(
+          Opening.failed(this.meta()!.opening, {
+            at: Date.now(),
+            message: 'its lease ended while its runner started',
+            passing: true,
+          }),
+        )
+      } else if (row.state !== 'failed') {
         const retryAfterSec = Opening.retryAfterSec(error)
         await this.failSandbox(provider, row, message(error), {
           passing: row.handle === null && Opening.passing(error),
@@ -2105,7 +2112,7 @@ export class Run extends DurableObject<Env> {
         const current = leased(id)
         if (!current) continue
         const ends = Gateway.endsAt(error)
-        if (ends !== undefined && ends < current.expires_at!) {
+        if (ends !== undefined && ends < current.expires_at! && ends > current.created_at) {
           this.update('sandboxes', id, { expires_at: ends })
           continue
         }

@@ -4361,7 +4361,7 @@ A deploy restarts every object at once since the entry before this one, which ma
 
 **The rule.** When opening a sandbox throws and the lease or the lifetime of that sandbox is over by then, the sandbox is closed as `lapse` closes one: `closed`, with the error it has or "its lease ended", its runner left, the pool told. It counts no failure to open, and the run opens the next sandbox as it does after any lease that ended. A create that threw has no lease and is a failure as before.
 
-**What it costs.** A run whose leases always end under the bootstrap, because no renewal is sold and a runner needs longer than a lease to start, now opens one sandbox after another, each for the price of a lease, until `--sandbox-budget-usd` is spent. A run already did that when its sandboxes were refused their renewal before they took a row, which is how the lane of this entry came to open 74 on a busy machine. Before, the second such sandbox in a row ended the rows that waited as errors. The budget is the bound in both cases, and a lease that is renewed while the runner starts, as the deployed gateway sells it, meets neither.
+**What it costs.** See the entry below on the pauses: as this entry left it, nothing but `--sandbox-budget-usd` bounded a run whose leases always end under the bootstrap.
 
 **What was weighed.** Leaving it to `lapse` one tick later: a sandbox that is still `creating` when no create is in flight is taken for one that a restart interrupted, and `lapse` does not look at it. Comparing the clocks with a margin, for a gateway whose clock is ahead of the Worker's: a margin is a guess, and a lease that is over by the gateway's clock and not yet by the Worker's is failed as before, which costs a pause and no row unless it happens twice in a row with no sandbox left.
 
@@ -4395,3 +4395,17 @@ A deploy restarts every object at once since the entry before this one, which ma
 - `npm run lint`, `npm run check:types` and `npm test` (266 tests, all passed and none skipped, on a 48-thread machine with KVM).
 
 **Not verified.** No gateway that answers this way was deployed, and nothing was paid for this change: the three answers are taken from the description of the revision, not from a request. A sandbox kept warm in the pool whose end is sooner than the pool knows. krun and ns slots: the rule is the run's and does not know the slot, and both lanes run on directory slots only.
+
+## 2026-11-14: a lease that ended while a runner started is asked for again with the pauses of a refusal
+
+**Why.** The entry on a sandbox whose lease ended while its runner started closed such a sandbox and counted nothing, so the run opened the next with the next tick. Where no renewal is sold and a bootstrap takes longer than a lease, every sandbox ends under its start, no row is ever claimed, and the run paid for a create with every bootstrap until `--sandbox-budget-usd` was spent. That is the loop the entry on a sandbox that could not be opened was written against, and before that entry two such sandboxes ended the rows.
+
+**The rule.** A sandbox whose lease or lifetime ended under its bootstrap is still closed and is still no failure that closes the opening. It is recorded as a refusal that passes, with "its lease ended while its runner started" as what was answered: the run asks again with the next tick, then after `--lease-sec`, then after twice that, up to `--setup-sec`, a sandbox that starts ends the pauses, `status` says so while rows wait, and with no sandbox serving the rows end as `environment` errors once `--setup-sec` has passed with none started. At `--lease-sec 60 --setup-sec 1200` that is six creates, at 0, 2, 62, 182, 422 and 902 s, and then "no sandbox could be opened for 1200 s with no other left to take the row, in 6 tries, the last of which ended with: its lease ended while its runner started".
+
+**Also.** A refused renewal names the end of its sandbox in milliseconds. One that names an end before the sandbox was created, as a number of seconds would be, is not taken: the refusal is then handled as one that names nothing.
+
+**What was weighed.** Counting it as a failure that does not pass, as before the entry above: two in a row end the rows at once, for a lease that did what it was paid for. Counting nothing: the budget is the only bound.
+
+**Checked.** A unit test in `test/Opening.test.ts` runs the rule over leases that end one after another: the six creates, the end after `--setup-sec` and its message. On a 48-thread machine with KVM, held to 8 threads, from a fresh clone: `npm test`, 267 tests, all passed and none skipped, and every step of the directory-slot job, 41 of 41 in 8.2 min. The lanes of a gateway that sells no renewal and of a sandbox that ends sooner, which each hold one runner back until its sandbox has ended, passed in 33.6 s and 28.7 s, where they had taken 30.7 s and 26.3 s on that machine before this change: the second sandbox is opened one notice of 3 s after the first ended, not with the next tick.
+
+**Not verified.** The real gateway, and a run whose every lease ends under its bootstrap from start to end: the lanes hold one runner back, not all. The end named in seconds is read, not met.

@@ -79,6 +79,29 @@ test('a run left with no sandbox asks at once, and ends its rows after the setup
   )
 })
 
+test('leases that end while a runner starts are asked for again like refusals, and end the rows after the setup limit', () => {
+  const lapsed = 'its lease ended while its runner started'
+  let state: Opening.Failed | undefined
+  const asked: number[] = []
+  let ended: number | undefined
+  for (let now = 0; ended === undefined; now += 2000) {
+    state = Opening.seen(state, { now, stranded: true })
+    const action = Opening.next(state, { limits, now })
+    if (action === 'end') ended = now
+    if (action !== 'open') continue
+    asked.push(now / 1000)
+    state = Opening.failed(state, { at: now, message: lapsed, passing: true })
+  }
+  assert.deepEqual(asked, [0, 2, 62, 182, 422, 902])
+  assert.equal(ended, 1_204_000)
+  assert.equal(Opening.closed(state!, { limits, now: ended }), false)
+  assert.equal(
+    Opening.ended(state!, { limits, now: ended }),
+    'no sandbox could be opened for 1200 s with no other left to take the row, in 6 tries, the last of which ended with: ' +
+      lapsed,
+  )
+})
+
 test('a pause that the provider names is kept when it is the longer one', () => {
   const named = new Gateway.RefusedError(429, 'refused', 300)
   assert.equal(Opening.retryAfterSec(named), 300)
