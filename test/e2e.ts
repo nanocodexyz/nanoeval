@@ -56,7 +56,7 @@ const label =
     '-' +
     backend +
     (scenario === 'tasks' ? '' : '-' + scenario) +
-    (scenario === 'midturn' ? '-' + killAt : '') +
+    (scenario === 'midturn' || (scenario === 'gone' && killAt === 'agent') ? '-' + killAt : '') +
     (storeKind === 'directory' ? '' : '-' + storeKind) +
     (process.env['NANOEVAL_E2E_RUNTIME'] === '1' ? '-runtime' : '') +
     (gateway ? '-gateway' : '')
@@ -94,6 +94,8 @@ const slowStart = gateway && (scenario === 'tasks' || scenario === 'warm')
 const slowStartMs = sandboxLeaseSec * 1000 + 1000
 const seededDisk = 'e'.repeat(64)
 const slotGone = scenario === 'gone'
+const underAgent = slotGone && killAt === 'agent'
+const goneIn = underAgent ? 'run' : 'verify'
 const shared = scenario === 'shared'
 const standing = scenario === 'standing'
 const planned = scenario === 'plan'
@@ -189,6 +191,7 @@ let killDue: number | undefined
 let scriptedCalls = 0
 let answered = 0
 let parked = false
+let hungUp = false
 let release = () => {}
 const released = new Promise<void>((resolve) => {
   release = resolve
@@ -695,12 +698,14 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
             ? pairwise(body)
             : scripted(body, turnLost ? MockGateway.modelUsd['/v1/messages'] : undefined)
         if (
-          (shared || stopped || turnLost) &&
+          (shared || stopped || turnLost || underAgent) &&
           !parked &&
           !body.model?.includes('sonnet') &&
-          JSON.stringify(body.messages ?? []).includes('"tool_result"')
+          (body.fake_cli || JSON.stringify(body.messages ?? []).includes('"tool_result"'))
         ) {
           parked = true
+          const closed = new Promise<true>((resolve) => response.once('close', () => resolve(true)))
+          hungUp = (await Promise.race([closed, released])) === true
           await released
           if (!shared) {
             response.destroy()
@@ -1120,7 +1125,8 @@ async function main(): Promise<void> {
     if (
       scenario !== 'tasks' &&
       model !== 'scripted' &&
-      !((judged || warm) && model === 'oracle') &&
+      !((judged || underAgent || warm) && model === 'oracle') &&
+      !(underAgent && installed) &&
       !(
         installed &&
         ['closed', 'failures', 'lost', 'refused', 'resume', 'runners', 'unreached'].includes(
@@ -1176,7 +1182,7 @@ async function main(): Promise<void> {
                 : cached
                   ? [Path.join('test/fixtures', 'cached-verifier')]
                   : slotGone
-                    ? [Path.join('test/fixtures', 'slow-verifier')]
+                    ? [Path.join('test/fixtures', underAgent ? 'slow-solution' : 'slow-verifier')]
                     : taskNames.map((name) => Path.join('tasks', name))
     const agents: Config.Agent[] =
       model === 'oracle'
@@ -1184,7 +1190,7 @@ async function main(): Promise<void> {
         : installed
           ? [
               { id: 'right', model: 'gpt-right', provider: 'codex-cli' as const },
-              ...(closed || failures
+              ...(closed || failures || slotGone
                 ? []
                 : [
                     {
@@ -1551,7 +1557,7 @@ async function main(): Promise<void> {
     let lostAt: number | undefined
     let backAt: number | undefined
     let stoppedAt: number | undefined
-    let verifyAt: number | undefined
+    let underAt: number | undefined
     let beside: { id: string } | undefined
     let cappedAt: number | undefined
     const cappedLines: string[] = []
@@ -1749,9 +1755,10 @@ async function main(): Promise<void> {
       if (
         slotGone &&
         !restarted &&
-        (status['attempts'] as { phase: string }[]).some((attempt) => attempt.phase === 'verify')
+        (status['attempts'] as { phase: string }[]).some((attempt) => attempt.phase === goneIn) &&
+        (!underAgent || model === 'oracle' || parked)
       ) {
-        verifyAt ??= Date.now()
+        underAt ??= Date.now()
         const found = spawnSync('ps', ['-eo', 'pid=,args='])
           .stdout.toString()
           .split('\n')
@@ -1762,8 +1769,9 @@ async function main(): Promise<void> {
               line.includes('/rt/krun/nanoeval-krun vm '),
           )
           .map((line) => Number(line.split(' ')[0]))
-        if (Date.now() - verifyAt > 2000 && found.length) {
+        if (Date.now() - underAt > 2000 && found.length) {
           restarted = true
+          lostAt = Date.now()
           for (const pid of found) process.kill(pid, 'SIGKILL')
         }
       }
@@ -1783,6 +1791,7 @@ async function main(): Promise<void> {
         }
       }
       if (lostAt !== undefined && status['lostClaims'] > 0) backAt ??= Date.now()
+      if (underAgent && backAt !== undefined) release()
       if (Date.now() - started > 20 * 60_000)
         throw new Error('the run did not finish:\n' + summary(status))
       await new Promise((resolve) => setTimeout(resolve, 100))
@@ -2798,10 +2807,12 @@ async function main(): Promise<void> {
       assert.deepEqual(
         claims.map((claim) => [claim['ending'], claim['phase']]),
         [
-          ['released', 'verify'],
+          ['released', goneIn],
           ['finished', 'verify'],
         ],
-        'a row whose slot ended under its verifier went back to the run and was verified again',
+        'a row whose slot ended under it in the ' +
+          goneIn +
+          ' phase went back to the run and was finished by its next claim',
       )
       assert.match(
         claims[0]!['error'],
@@ -2814,6 +2825,21 @@ async function main(): Promise<void> {
         ),
         'the timeline of the run says when the slot was found gone',
       )
+      console.log(
+        'gone: the row went back ' +
+          (backAt! - lostAt!) +
+          ' ms after its microVM was killed in the ' +
+          goneIn +
+          ' phase',
+      )
+      if (underAgent) {
+        assert.ok(
+          backAt! - lostAt! < (leaseSec * 1000) / 3,
+          'a row whose slot ended under its agent goes back before a poll of its runner ends',
+        )
+        if (model === 'scripted')
+          assert.ok(hungUp, 'the turn of a row that went back is stopped: its model request ended')
+      }
     }
     if (shared) {
       const other = besideStatus!
@@ -3044,7 +3070,8 @@ async function main(): Promise<void> {
       if (!gateway)
         assert.ok(
           Math.abs(
-            status['spend'].modelUsd - fakeUsage['claude-code'].costUsd * (closed ? 0 : total / 2),
+            status['spend'].modelUsd -
+              fakeUsage['claude-code'].costUsd * (closed || slotGone ? 0 : total / 2),
           ) < 1e-9,
           'the cost an installed agent reports counts against the model budget',
         )

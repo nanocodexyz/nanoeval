@@ -4311,3 +4311,42 @@ A deploy restarts every object at once since the entry before this one, which ma
 - A run that is alive and takes the member again after its notice: the unit tests return a member and hand it to another run, and no lane keeps the first run.
 - krun and ns slots: the rule is in the pool, which does not know the backend.
 - A kept sandbox that was taken and handed nothing, which stays as it was.
+
+## 2026-11-14: a slot that ends under its agent gives the row back when it ends
+
+**The defect.** A microVM that died while the agent of its row ran was not noticed for as long as the agent ran. Met in one evaluation, on three rows, each time under the kernel's kill for memory: the session went on with a hand that was gone, its model wrote that the execution environment had just disconnected and ended the turn, and the row ended as a `verifier` error, "the verifier exited with 125 and wrote no reward: nanoeval-krun: vm.sock: Connection refused". The entry on a row whose slot ends under it left this open: it asks whether the slot is gone where a phase ended badly, and listed a slot that ends during the turn of a session, under an installed agent or under a solution as not verified.
+
+**What `main` did**, at `438f2a9` with the lane below and nothing else, a microVM killed with SIGKILL 2 s into the agent's phase:
+
+| The agent | What happened |
+| --- | --- |
+| A solution (oracle) | The row went back 180 ms after the kill, in the `run` phase, and passed on its second claim |
+| An installed agent | The row went back 177 ms after the kill, in the `run` phase, and passed on its second claim |
+| A session whose model call is held | The runner asked the run for the turn three more times, 20 s each. The row went back when the 60 s of its agent had passed and its verifier failed, as `released` in the `verify` phase, and had its verdict 69.6 s after the run was created |
+| The same session, the held call answered 3 s after the kill and `slot.sh gone` made to say nothing, as a runner from before that entry | "errored verifier: the verifier exited with 125 and wrote no reward: nanoeval-krun: vm.sock: Connection refused (os error 111)", the failure of the evaluation |
+
+**Why a session differs.** A solution and an installed agent are commands of the slot. Their status file changes when the microVM takes them with it, the runner watches that file, the command has exited with 125, and the question of the earlier entry is asked. The turn of a session runs in the Worker. The slot holds only the hand, the runner waits on the run for the turn (`rows/ID/agent`, held for a third of the lease), and it looked at the hand's status only when the run said that the turn waits for a hand. A turn whose model is thinking, or whose tool calls now fail, is not waiting for one. So nothing asked until the turn had ended on its own, by the model giving up or by the agent's timeout, and the verifier had failed: the row was held and its model was paid for a turn that could do nothing, and the claim said `verify`.
+
+**The rule.** The process of a hand ends with its slot, since the launcher's `exec` loses its guest. When the process of a session's hand has ended, the runner asks whether the slot is gone: before each wait on the run, during a wait as soon as the watcher of the slot's directory sees a status file change, and when the run answers that the turn failed. A slot that is gone is reported as in the earlier entry (`POST …/rows/ROW/gone`), and the run does what it does there: the claim ends `released` with what the machine said, the timeline gets `attempt.gone`, the row is `unclaimed` again and counts one of `--claims`. The claim is in its `run` phase, so the run cancels the turn, keeps the tokens it had used and removes the session. Nothing changes for a hand that ended in a slot that lives: the turn goes on, and the row is an `environment` error only when the run says that the turn waits for a hand, as before. A verifier that fails in a slot that lives stays a `verifier` error. The Worker is not changed.
+
+**What the question costs.** Nothing per wait while the hand lives: its status is a file the runner reads. `slot.sh gone` is started once when the process of the hand has ended, and once more for each wait, 20 s at the lease of 60 s, for a row whose hand ended in a slot that lives while its turn goes on. One start took 27 ms on the machine below at a load average of 50 (100 starts in 2.66 s).
+
+**Directory and ns slots.** A directory slot has no machine: the runner never asks for one, as before, and what a hand that ends there means is unchanged. An ns slot is asked the same question as a krun slot, of the first process of its namespaces.
+
+**Checked** on the 32-core machine with KVM of the entries above, at a load average of 50 to 62, while every step of the workflow ran beside it for another change.
+
+- **The lane** `NANOEVAL_E2E_SCENARIO=gone NANOEVAL_E2E_KILL=agent`, three steps in `ci.yml` on krun slots, skipped without KVM: one row of a new fixture, `test/fixtures/slow-solution`, whose solution sleeps 8 s. With the scripted model the second model call of the session is held, with `NANOEVAL_E2E_MODEL=installed` the model call of the scripted command line, and with `NANOEVAL_E2E_MODEL=oracle` the solution sleeps. Two seconds later the lane kills the microVM. It asks that the first claim ended `released` in the `run` phase with what `slot.sh` printed, that the row passed on its second claim, that the run lost one claim, that the timeline has the mark, that the row was back within a third of the lease, and for the session that its held model request was closed by the Worker before the lane let it go.
+- **Before**, the table above: the session failed the lane after 138 s, the solution and the installed agent passed it.
+- **After**, the session three times in a row: the row was back 217, 164 and 227 ms after the kill and had its verdict 6.2 to 6.9 s after the run was created, each lane 13 or 14 s. The solution: 214 ms. The installed agent: 173 ms. The lane of the earlier entry, a kill under the verifier, passed after them.
+- On a machine without KVM: `npm run lint`, `npm run check:types`, `npm test` (223 tests, 219 passed, the 4 that need KVM skipped), `npm run dry-run`, and on directory slots the plain lane, `failures`, `resume`, `stopped`, `forgotten`, `restart`, the Worker killed while a model is asked and installed agents, which wait on a turn as before.
+
+**Not verified.**
+
+- A kill by the kernel for memory: the lane sends the signal itself.
+- ns slots: the same code, not run with a kill.
+- A row that is out of claims when its slot ends under its agent. It ends as the `environment` error of the earlier entry, which names the `run` phase: read, not run.
+- A slot that ends while its hand attaches. The runner asks when the wait for the hand ends, within a third of the lease, and no model runs yet.
+- A machine where the directory of a slot cannot be watched. The runner then asks when a wait ends, at most a third of the lease after the slot.
+- A turn that fails at the moment its slot ends, which the runner now asks about before it reports an `agent` failure: read, not run.
+- A real model, and what a turn spends between the end of its slot and its cancellation.
+- CI on GitHub, where the three steps are skipped.

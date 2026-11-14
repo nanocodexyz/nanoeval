@@ -89,6 +89,7 @@ type Work = {
   row: Protocol.Claimed
   session?: Protocol.Session
   stage: Stage
+  stir?: () => void
   watcher?: FSWatcher
 }
 
@@ -692,6 +693,7 @@ async function attend(
         if (!name?.endsWith('.status')) return
         item.changed++
         item.next = 0
+        item.stir?.()
         signal()
       })
       item.watcher.on('error', (error) => log('watching ' + item.row.slot + ' failed: ' + error))
@@ -1156,12 +1158,25 @@ async function attend(
       }
       case 'agent': {
         const askedAt = Date.now()
-        const state = await rowCall<Protocol.Agent>(item, 'agent', { waitMs: holdMs })
+        const ended = async () =>
+          Slot.exit(await phase(Path.join(target, 'hand.status'))) !== undefined &&
+          (await gone(item))
+        if (await ended()) return
+        const asked = rowCall<Protocol.Agent>(item, 'agent', { waitMs: holdMs })
+        asked.catch(() => {})
+        const stirred = new Promise<undefined>((resolve) => {
+          item.stir = () => resolve(undefined)
+        })
+        if ((await Promise.race([asked, stirred])) === undefined && (await ended())) return
+        const state = await asked
         if (state.state === 'completed' || state.state === 'timeout') {
           item.message = state.state === 'completed' ? state.message : ''
           return startVerifier(item)
         }
-        if (state.state === 'failed') return fail(item, 'agent', state.error)
+        if (state.state === 'failed') {
+          if (await ended()) return
+          return fail(item, 'agent', state.error)
+        }
         if (
           state.state === 'running' &&
           state.detached &&

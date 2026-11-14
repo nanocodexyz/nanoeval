@@ -447,6 +447,23 @@ jobs:
         run: npm run e2e
         env:
           NANOEVAL_E2E_SCENARIO: gone
+      - name: End to end, krun slots, a microVM killed under its agent, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: gone
+          NANOEVAL_E2E_KILL: agent
+      - name: End to end, krun slots, a microVM killed under its solution, oracle, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: gone
+          NANOEVAL_E2E_KILL: agent
+          NANOEVAL_E2E_MODEL: oracle
+      - name: End to end, krun slots, a microVM killed under its installed agent, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: gone
+          NANOEVAL_E2E_KILL: agent
+          NANOEVAL_E2E_MODEL: installed
       - name: End to end, krun slots, a runner restarted during the run, skipped where krun cannot run
         run: npm run e2e
         env:
