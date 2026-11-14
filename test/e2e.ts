@@ -17,6 +17,7 @@ import * as Converter from '../sandbox/Converter.ts'
 import * as Runner from '../sandbox/Runner.ts'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
 import * as Store from '../sandbox/Store.ts'
+import * as Compare from '../src/Compare.ts'
 import * as Config from '../src/Config.ts'
 import type * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
@@ -2510,6 +2511,35 @@ async function main(): Promise<void> {
         claude: { payer: 'key', through: 'base' },
         codex: null,
       })
+      const differs =
+        'payer the plan signed in on the Worker in the baseline and the provider key through a base URL in the run'
+      assert.deepEqual(
+        Compare.changes(await api.results(created.id), await api.results(second.id)).map(
+          (change) => change.pair.differs,
+        ),
+        agents.map(() => [differs]),
+        'a run the plan paid for and one the key paid for do not hold the same agents',
+      )
+      const refused = await cli(['compare', '--baseline', created.id, second.id])
+      assert.equal(refused.code, 1, refused.text)
+      assert.ok(
+        refused.text.includes(
+          '\nnanoeval: ' + agents[0]!.id + ' differs from the baseline: ' + differs,
+        ),
+        refused.text,
+      )
+      assert.ok(refused.text.includes(': pass --unlike to make it anyway\n'), refused.text)
+      assert.ok(
+        !refused.text.includes('\nverdict: '),
+        'a comparison that is refused has no verdict',
+      )
+      const marked = await cli(['compare', '--baseline', created.id, '--unlike', second.id])
+      assert.equal(marked.code, 0, marked.text)
+      assert.ok(marked.text.includes('\nUNLIKE: ' + differs + ': '), marked.text)
+      assert.ok(marked.text.includes('\nverdict: no change beyond noise'), marked.text)
+      const alike = await cli(['compare', '--baseline', second.id, second.id])
+      assert.equal(alike.code, 0, alike.text)
+      assert.ok(!alike.text.includes('UNLIKE') && !alike.text.includes('warning: '), alike.text)
 
       claudePlan.down = true
       const third = await api.create({ ...config, name: config.name + '-revoked' })

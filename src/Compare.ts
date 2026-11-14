@@ -1,6 +1,7 @@
 import * as Installed from './Installed.ts'
 import * as Pins from './Pins.ts'
 import * as Result from './Result.ts'
+import * as Route from './Route.ts'
 import * as Stats from './Stats.ts'
 
 export type Run = {
@@ -30,9 +31,30 @@ export type Arm = {
   outputTokens: number
   passed: number
   priced: number
+  reasoningTokens: number | null
+  routes: Route.Route[]
   runs: string[]
   tasks: number
   totalSec: number
+}
+
+export type Member = {
+  agent: Result.Attempt['agent']
+  attempts: Result.Attempt[]
+  label: string
+  routes: Route.Route[]
+  runs: string[]
+}
+
+export type Recorded = 'effort' | Route.Aspect
+
+export type Pair = {
+  agent: string
+  baseline: string[]
+  by: 'kind' | 'name' | 'none'
+  differs: string[]
+  missing: { baseline: Recorded[]; run: Recorded[] }
+  reason?: string
 }
 
 export type Score = { errored: number; passed: number; scored: number }
@@ -57,6 +79,7 @@ export type TaskChange = {
 
 export type Change = {
   agent: string
+  attempts: { baseline: Typical | undefined; run: Typical }
   baseline: Result.AgentSummary | undefined
   common: {
     baseline: Record<string, number>
@@ -73,11 +96,15 @@ export type Change = {
     verdict: 'improvement' | 'none' | 'regression'
     worse: number
   }
+  pair: Pair
+  routed: boolean
   run: Result.AgentSummary
   tasks: TaskChange[]
 }
 
 export type Side = Run | readonly Run[]
+
+export type Typical = { agentSec: number | null; modelCalls: number | null }
 
 export function harness(agent: Result.Attempt['agent'], nanocode?: Pins.Pins): string {
   if (agent.provider === 'oracle') return 'oracle'
@@ -138,8 +165,14 @@ export function arms(given: readonly Run[]): Arm[] {
       own.set(id, [...(own.get(id) ?? []), attempt])
     }
     for (const [id, attempts] of own) {
+      const routes = Route.distinct(attempts.map((attempt) => attempt.route))
       let entry = found.find(
-        (each) => each.arm.key === id && !attempts.some((attempt) => each.rows.has(row(attempt))),
+        (each) =>
+          each.arm.key === id &&
+          (!routes.length ||
+            !each.arm.routes.length ||
+            Route.text(routes) === Route.text(each.arm.routes)) &&
+          !attempts.some((attempt) => each.rows.has(row(attempt))),
       )
       if (!entry) {
         const agent = attempts[0]!.agent
@@ -162,6 +195,8 @@ export function arms(given: readonly Run[]): Arm[] {
             outputTokens: 0,
             passed: 0,
             priced: 0,
+            reasoningTokens: null,
+            routes: [],
             runs: [],
             tasks: 0,
             totalSec: 0,
@@ -172,6 +207,7 @@ export function arms(given: readonly Run[]): Arm[] {
         found.push(entry)
       }
       const arm = entry.arm
+      arm.routes = Route.distinct([...arm.routes, ...routes])
       arm.runs.push(run.id)
       for (const attempt of attempts) {
         arm.attempts++
@@ -190,6 +226,8 @@ export function arms(given: readonly Run[]): Arm[] {
           arm.cachedTokens += attempt.usage.cachedTokens
           arm.inputTokens += attempt.usage.inputTokens
           arm.outputTokens += attempt.usage.outputTokens
+          if (typeof attempt.usage.reasoningTokens === 'number')
+            arm.reasoningTokens = (arm.reasoningTokens ?? 0) + attempt.usage.reasoningTokens
           if (attempt.usage.costUsd !== undefined) {
             arm.priced++
             arm.costUsd = (arm.costUsd ?? 0) + attempt.usage.costUsd
@@ -224,6 +262,10 @@ function number(value: number): string {
 
 function cost(value: number | null): string {
   return value === null ? 'not known' : '$' + value.toFixed(4)
+}
+
+function reasoning(value: number | null | undefined): string {
+  return typeof value === 'number' ? number(value) : Route.unrecorded
 }
 
 function line(run: Run, ended: number): string {
@@ -264,6 +306,7 @@ export function table(given: readonly Run[]): string {
       'Arm',
       'Harness',
       'Model',
+      'Model route',
       'Attempts',
       'Passed',
       'Failed',
@@ -271,7 +314,7 @@ export function table(given: readonly Run[]): string {
       'Agent time',
       'Attempt time',
       'Input tokens (cached)',
-      'Output tokens',
+      'Output tokens (reasoning)',
       'Estimated cost',
       ...(judged ? ['Judge cost'] : []),
     ],
@@ -279,6 +322,7 @@ export function table(given: readonly Run[]): string {
       title(arm),
       arm.harness,
       arm.model,
+      arm.harness === 'oracle' ? 'none' : Route.text(arm.routes),
       String(arm.attempts),
       String(arm.passed),
       String(arm.failed),
@@ -288,7 +332,9 @@ export function table(given: readonly Run[]): string {
       arm.metered
         ? number(arm.inputTokens) + ' (' + number(arm.cachedTokens) + ')'
         : 'not recorded',
-      arm.metered ? number(arm.outputTokens) : 'not recorded',
+      arm.metered
+        ? number(arm.outputTokens) + ' (' + reasoning(arm.reasoningTokens) + ')'
+        : 'not recorded',
       cost(arm.costUsd) +
         (arm.costUsd === null || arm.priced === arm.attempts
           ? ''
@@ -361,10 +407,210 @@ function side(given: Side): Run[] {
   return standing(Array.isArray(given) ? (given as readonly Run[]) : [given as Run])
 }
 
-function scores(runs: readonly Run[], agent: string): Map<string, Score> {
+function typed(agent: Result.Attempt['agent']): string {
+  return [agent.provider, agent.orchestration ?? '', agent.model, agent.thinking ?? ''].join(' ')
+}
+
+function kind(agent: Result.Attempt['agent']): string {
+  return agent.provider + (agent.orchestration ? '-' + agent.orchestration : '')
+}
+
+function unique(values: readonly string[]): string[] {
+  return [...new Set(values)].sort()
+}
+
+function efforts(member: Member): string[] {
+  const recorded = unique(member.routes.flatMap((route) => route.effort ?? []))
+  return recorded.length || !member.agent.thinking ? recorded : [member.agent.thinking]
+}
+
+function alike(one: Member, other: Member): boolean {
+  if (kind(one.agent) !== kind(other.agent) || one.agent.model !== other.agent.model) return false
+  const left = efforts(one)
+  const right = efforts(other)
+  return left.length && right.length
+    ? left.join(' ') === right.join(' ')
+    : !one.agent.thinking && !other.agent.thinking
+}
+
+export function members(runs: readonly Run[]): Member[] {
+  const found: Member[] = []
+  for (const run of runs)
+    for (const attempt of run.attempts) {
+      let member = found.find(
+        (each) => each.label === attempt.agent.id && typed(each.agent) === typed(attempt.agent),
+      )
+      if (!member) {
+        member = {
+          agent: attempt.agent,
+          attempts: [],
+          label: attempt.agent.id,
+          routes: [],
+          runs: [],
+        }
+        found.push(member)
+      }
+      member.attempts.push(attempt)
+      if (!member.runs.includes(run.id)) member.runs.push(run.id)
+    }
+  for (const member of found)
+    member.routes = Route.distinct(member.attempts.map((attempt) => attempt.route))
+  return found
+}
+
+export function planned(
+  agents: readonly Result.Attempt['agent'][],
+  input: { routes: (agent: Result.Attempt['agent']) => readonly Route.Route[]; run?: string },
+): Member[] {
+  return agents.map((agent) => ({
+    agent,
+    attempts: [],
+    label: agent.id,
+    routes: Route.distinct(input.routes(agent)),
+    runs: input.run === undefined ? [] : [input.run],
+  }))
+}
+
+type Sides = { baseline: readonly Member[]; run: readonly Member[] }
+
+function partners(
+  member: Member,
+  sides: Sides,
+): { by: Pair['by']; found: Member[]; reason?: string } {
+  const like = sides.baseline.filter((each) => alike(each, member))
+  const same = like.filter((each) => each.label === member.label)
+  if (same.length) return { by: 'kind', found: same }
+  const labels = (all: readonly Member[]) => unique(all.map((each) => each.label)).join(' and ')
+  if (like.length) {
+    const twins = sides.run.filter((each) => each !== member && alike(each, member))
+    const crowded = like.some((one) =>
+      like.some(
+        (other) => other.label !== one.label && other.runs.some((run) => one.runs.includes(run)),
+      ),
+    )
+    if (crowded)
+      return {
+        by: 'none',
+        found: [],
+        reason:
+          'the baseline holds ' +
+          labels(like) +
+          ', which are all ' +
+          model(member.agent) +
+          ', and none is named ' +
+          member.label,
+      }
+    if (twins.length)
+      return {
+        by: 'none',
+        found: [],
+        reason:
+          'the run holds ' +
+          labels([member, ...twins]) +
+          ', which are all ' +
+          model(member.agent) +
+          ', and the baseline names it ' +
+          labels(like),
+      }
+    return { by: 'kind', found: like }
+  }
+  const named = sides.baseline.filter((each) => each.label === member.label)
+  return named.length ? { by: 'name', found: named } : { by: 'none', found: [] }
+}
+
+function match(member: Member, sides: Sides): { found: Member[]; pair: Pair } {
+  const { by, found, reason } = partners(member, sides)
+  const differs: string[] = []
+  const missing: Pair['missing'] = { baseline: [], run: [] }
+  const said = (name: string, value: { after: readonly string[]; before: readonly string[] }) =>
+    name +
+    ' ' +
+    value.before.join(' and ') +
+    ' in the baseline and ' +
+    value.after.join(' and ') +
+    ' in the run'
+  const lack = (name: Recorded, side: 'both' | 'left' | 'right') => {
+    if (side !== 'right') missing.baseline.push(name)
+    if (side !== 'left') missing.run.push(name)
+  }
+  if (found.length && member.agent.provider !== 'oracle') {
+    const kinds = unique(found.map((each) => kind(each.agent)))
+    if (kinds.join(' ') !== kind(member.agent))
+      differs.push(said('harness', { after: [kind(member.agent)], before: kinds }))
+    const models = unique(found.map((each) => each.agent.model))
+    if (models.join(' ') !== member.agent.model)
+      differs.push(said('model', { after: [member.agent.model], before: models }))
+    const before = unique(found.flatMap(efforts))
+    const after = efforts(member)
+    const route = Route.differences(
+      found.flatMap((each) => each.routes),
+      member.routes,
+    )
+    for (const each of route.differ)
+      differs.push(said(each.aspect, { after: [each.right], before: [each.left] }))
+    for (const each of route.missing) lack(each.aspect, each.side)
+    if (before.length && after.length) {
+      if (before.join(' ') !== after.join(' ')) differs.push(said('effort', { after, before }))
+    } else if (before.length || after.length) lack('effort', before.length ? 'right' : 'left')
+  }
+  return {
+    found,
+    pair: {
+      agent: member.label,
+      baseline: unique(found.map((each) => each.label)),
+      by,
+      differs,
+      missing,
+      ...(reason === undefined ? {} : { reason }),
+    },
+  }
+}
+
+export function pairs(baseline: readonly Member[], run: readonly Member[]): Pair[] {
+  return run.map((member) => match(member, { baseline, run }).pair)
+}
+
+export function unlike(found: readonly Pair[]): string | undefined {
+  const differing = found.filter((pair) => pair.differs.length)
+  if (!differing.length) return undefined
+  return (
+    differing
+      .map((pair) => pair.agent + ' differs from the baseline: ' + pair.differs.join(', '))
+      .join('; ') +
+    '. A comparison would set two different things against each other: pass --unlike to make it anyway'
+  )
+}
+
+function median(values: readonly number[]): number | null {
+  if (!values.length) return null
+  const sorted = [...values].sort((left, right) => left - right)
+  const middle = Math.floor(sorted.length / 2)
+  return sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2
+}
+
+function typical(attempts: readonly Result.Attempt[]): Typical {
+  const scored = attempts.filter((attempt) => attempt.outcome !== 'errored')
+  return {
+    agentSec: median(
+      scored.flatMap((attempt) =>
+        attempt.timing.agentExecution ? [seconds(attempt.timing.agentExecution)] : [],
+      ),
+    ),
+    modelCalls: median(
+      scored.flatMap((attempt) => (attempt.usage ? [attempt.usage.modelCalls] : [])),
+    ),
+  }
+}
+
+function summary(attempts: readonly Result.Attempt[]): Result.AgentSummary | undefined {
+  return Result.summarize(
+    attempts.map((attempt) => ({ ...attempt, agent: { ...attempt.agent, id: 'agent' } })),
+  )['agent']
+}
+
+function scores(attempts: readonly Result.Attempt[]): Map<string, Score> {
   const tasks = new Map<string, Score>()
-  for (const attempt of runs.flatMap((run) => run.attempts)) {
-    if (attempt.agent.id !== agent) continue
+  for (const attempt of attempts) {
     const task = tasks.get(attempt.task.name) ?? { errored: 0, passed: 0, scored: 0 }
     if (attempt.outcome === 'errored') task.errored++
     else task.scored++
@@ -375,13 +621,13 @@ function scores(runs: readonly Run[], agent: string): Map<string, Score> {
 }
 
 export function changes(baseline: Side, run: Side): Change[] {
-  const left = side(baseline)
-  const right = side(run)
-  const before = Result.summarize(left.flatMap((each) => each.attempts))
-  const after = Result.summarize(right.flatMap((each) => each.attempts))
-  return Object.entries(after).map(([agent, summary]) => {
-    const old = scores(left, agent)
-    const now = scores(right, agent)
+  const left = members(side(baseline))
+  const right = members(side(run))
+  return right.map((member) => {
+    const { found, pair } = match(member, { baseline: left, run: right })
+    const paired = found.flatMap((each) => each.attempts)
+    const old = scores(paired)
+    const now = scores(member.attempts)
     const tasks: TaskChange[] = []
     const both: { baseline: Score; run: Score }[] = []
     for (const name of [...new Set([...old.keys(), ...now.keys()])].sort()) {
@@ -420,12 +666,15 @@ export function changes(baseline: Side, run: Side): Change[] {
       common.rated[String(k)] = rated.length
       common.run[String(k)] = mean('run')
     }
-    const earlier = before[agent]
     const tails = Stats.overall(both)
     const count = (...moved: Moved[]) => tasks.filter((task) => moved.includes(task.moved)).length
     return {
-      agent,
-      baseline: earlier,
+      agent: member.label,
+      attempts: {
+        baseline: paired.length ? typical(paired) : undefined,
+        run: typical(member.attempts),
+      },
+      baseline: summary(paired),
       common,
       overall: {
         better: tails.better,
@@ -445,7 +694,9 @@ export function changes(baseline: Side, run: Side): Change[] {
               : 'none',
         worse: tails.worse,
       },
-      run: summary,
+      pair,
+      routed: member.agent.provider !== 'oracle',
+      run: summary(member.attempts)!,
       tasks,
     }
   })
@@ -478,6 +729,66 @@ function pins(runs: readonly Run[]): string {
       ' and ',
     ) || 'not recorded'
   )
+}
+
+function list(names: readonly string[]): string {
+  return names.length < 2 ? names.join('') : names.slice(0, -1).join(', ') + ' and ' + names.at(-1)
+}
+
+const recorded: Record<Recorded, string> = {
+  effort: 'the reasoning effort',
+  host: 'the host of the model',
+  payer: 'who paid for the model',
+  transport: 'the transport to the model',
+}
+
+const aspects: readonly Recorded[] = ['payer', 'transport', 'host', 'effort']
+
+export function notes(pair: Pair): string[] {
+  const renamed = pair.by === 'kind' && pair.baseline.join(' ') !== pair.agent
+  const lacks = (side: 'baseline' | 'run', name: Recorded) => pair.missing[side].includes(name)
+  return [
+    ...(renamed
+      ? [
+          'set against ' +
+            pair.baseline.join(' and ') +
+            ' of the baseline: the same harness and model under another name',
+        ]
+      : []),
+    ...(pair.differs.length
+      ? [
+          'UNLIKE: ' +
+            pair.differs.join(', ') +
+            ': the sides are not the same agent, so the verdict below is not one about the harness',
+        ]
+      : []),
+    ...(
+      [
+        [
+          'neither side records ',
+          (name: Recorded) => lacks('baseline', name) && lacks('run', name),
+        ],
+        [
+          'the baseline does not record ',
+          (name: Recorded) => lacks('baseline', name) && !lacks('run', name),
+        ],
+        [
+          'the run does not record ',
+          (name: Recorded) => lacks('run', name) && !lacks('baseline', name),
+        ],
+      ] as const
+    ).flatMap(([said, chosen]) => {
+      const names = aspects.filter(chosen)
+      return names.length
+        ? [
+            'warning: ' +
+              said +
+              list(names.map((name) => recorded[name])) +
+              ', so a difference there would not show',
+          ]
+        : []
+    }),
+  ]
 }
 
 export function regressed(changes: readonly Change[], level: 'lost' | 'regression'): boolean {
@@ -535,12 +846,18 @@ export function against(baseline: Side, run: Side): string {
           change.tasks.filter((task) => task.moved === moved).map((task) => task.name)
         const scored = change.tasks.filter((task) => task.baseline?.scored && task.run?.scored)
         const overall = change.overall
+        const route = (summary: Result.AgentSummary | undefined) =>
+          summary === undefined ? 'not run' : change.routed ? Route.text(summary.routes) : 'none'
+        const each = (value: number | null | undefined, unit: (value: number) => string) =>
+          value === undefined ? 'not run' : value === null ? 'not known' : unit(value)
         return [
           change.agent + ': run ' + named(right) + ' against the baseline ' + named(left),
+          ...notes(change.pair),
           '',
           cells([
             ['', 'Baseline', 'Run'],
             ['nanocode', pins(left), pins(right)],
+            ['Model route', route(before), route(after)],
             row('tasks'),
             row('attempts'),
             row('passed'),
@@ -561,9 +878,21 @@ export function against(baseline: Side, run: Side): string {
               ]),
             ['Input tokens (cached)', tokens(before), tokens(after)],
             [
-              'Output tokens',
-              before ? number(before.outputTokens) : 'not run',
-              number(after.outputTokens),
+              'Output tokens (reasoning)',
+              before
+                ? number(before.outputTokens) + ' (' + reasoning(before.reasoningTokens) + ')'
+                : 'not run',
+              number(after.outputTokens) + ' (' + reasoning(after.reasoningTokens) + ')',
+            ],
+            [
+              'Model calls of a scored attempt, median',
+              each(change.attempts.baseline?.modelCalls, String),
+              each(change.attempts.run.modelCalls, String),
+            ],
+            [
+              'Agent time of a scored attempt, median',
+              each(change.attempts.baseline?.agentSec, duration),
+              each(change.attempts.run.agentSec, duration),
             ],
             ['Cost', before ? cost(before.costUsd) : 'not run', cost(after.costUsd)],
             ...(before?.judge.attempts || after.judge.attempts
@@ -621,7 +950,11 @@ export function against(baseline: Side, run: Side): string {
                     ]
                   : []),
               ]
-            : ['the baseline has no agent ' + change.agent]),
+            : [
+                'the baseline has no agent ' +
+                  change.agent +
+                  (change.pair.reason ? ': ' + change.pair.reason : ''),
+              ]),
         ].join('\n')
       })
       .join('\n\n') + '\n'

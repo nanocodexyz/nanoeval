@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import type * as Atif from '../src/Atif.ts'
 import * as Compare from '../src/Compare.ts'
 import type * as Result from '../src/Result.ts'
+import * as Route from '../src/Route.ts'
 
 const usage: Atif.Usage = {
   cacheWriteTokens: 0,
@@ -82,11 +83,11 @@ test('a comparison has one row per agent across runs, and says what is not known
   assert.match(table, /^run run-1 \(first\): finished, bench@0123456789ab, 2 attempts ended$/m)
   assert.match(
     table,
-    /^\| nano \| nanocode \| codex:gpt-6\.1-sol:high \| 2 \| 1 \| 0 \| 1 \| 2 min 0 s \| 3 min 0 s \| 300 \(100\) \| 20 \| \$0\.5000 for 1 of 2 \|$/m,
+    /^\| nano \| nanocode \| codex:gpt-6\.1-sol:high \| not recorded \| 2 \| 1 \| 0 \| 1 \| 2 min 0 s \| 3 min 0 s \| 300 \(100\) \| 20 \(not recorded\) \| \$0\.5000 for 1 of 2 \|$/m,
   )
   assert.match(
     table,
-    /^\| cli \| codex-cli 0\.166\.0 \| codex:gpt-6\.1-sol:high \| 2 \| 1 \| 1 \| 0 \| 2 min 0 s \| 3 min 0 s \| 600 \(200\) \| 40 \| not known \|$/m,
+    /^\| cli \| codex-cli 0\.166\.0 \| codex:gpt-6\.1-sol:high \| not recorded \| 2 \| 1 \| 1 \| 0 \| 2 min 0 s \| 3 min 0 s \| 600 \(200\) \| 40 \(not recorded\) \| not known \|$/m,
   )
   assert.match(table, /^\| one \| passed 1 min 0 s \| failed 1 min 0 s \|$/m)
   assert.match(table, /^\| two \| errored \(agent\) 1 min 0 s \| passed 1 min 0 s \|$/m)
@@ -252,7 +253,10 @@ test('runs of one agent on different nanocode revisions are separate rows, and a
   const other: Compare.Run = {
     ...run,
     attempts: [
-      attempt({ ...luna, id: 'sol' }, { n: 1, outcome: 'passed', task: 'kept', usage: null }),
+      attempt(
+        { ...luna, id: 'sol', model: 'gpt-6.1-sol' },
+        { n: 1, outcome: 'passed', task: 'kept', usage: null },
+      ),
     ],
   }
   assert.match(Compare.against(baseline, other), /^\| Attempts \| not run \| 1 \|$/m)
@@ -517,4 +521,317 @@ test('the cost of a judge is a column of the table and a row of a comparison, wh
     /^\| Judge cost \| \$0\.0112 \| \$0\.0200 \|$/m,
   )
   assert.doesNotMatch(Compare.against(plain, side('other', { one: 'PF', two: 'PP' })), /Judge cost/)
+})
+
+const gateway: Route.Route = {
+  effort: 'medium',
+  host: 'api.openai.com',
+  payer: 'gateway',
+  transport: 'responses_https_sse',
+}
+const login: Route.Route = {
+  effort: 'medium',
+  host: 'chatgpt.com',
+  payer: 'login',
+  through: 'relay',
+  transport: 'responses_websocket_v2',
+}
+
+function arm(
+  id: string,
+  agent: Result.Attempt['agent'],
+  input: {
+    outcomes: readonly Result.Attempt['outcome'][]
+    reasoning?: number
+    route?: Route.Route
+  },
+): Compare.Run {
+  return {
+    attempts: input.outcomes.map((outcome, at) => ({
+      ...attempt(agent, {
+        n: at + 1,
+        outcome,
+        task: 'task-' + at,
+        usage:
+          input.reasoning === undefined ? usage : { ...usage, reasoningTokens: input.reasoning },
+      }),
+      ...(input.route ? { route: input.route } : {}),
+    })),
+    eval: { name: 'bench', version: '0123456789abcdef' },
+    id,
+    name: id,
+    state: 'finished',
+  }
+}
+
+const lines = (text: string) => text.split('\n')
+
+test('an agent is set against the agent of the baseline that is the same harness and model, whatever its name', () => {
+  const old = { id: 'nano-codex', model: 'gpt-6-luna', provider: 'codex' as const }
+  const luna = { ...old, id: 'luna' }
+  const outcomes = ['passed', 'passed', 'failed'] as const
+  const baseline = arm('run-old', old, { outcomes, reasoning: 600, route: gateway })
+  const run = arm('run-new', luna, { outcomes, reasoning: 50, route: gateway })
+
+  const [change] = Compare.changes(baseline, run)
+  assert.deepEqual(change!.pair, {
+    agent: 'luna',
+    baseline: ['nano-codex'],
+    by: 'kind',
+    differs: [],
+    missing: { baseline: [], run: [] },
+  })
+  assert.deepEqual([change!.baseline!.passed, change!.run.passed, change!.overall.tasks], [2, 2, 3])
+  const against = lines(Compare.against(baseline, run))
+  assert.equal(against[0], 'luna: run run-new against the baseline run-old')
+  assert.equal(
+    against[1],
+    'set against nano-codex of the baseline: the same harness and model under another name',
+  )
+  assert.equal(against[2], '')
+  assert.ok(
+    against.includes(
+      '| Model route | the gateway key, responses_https_sse to api.openai.com, effort medium | the gateway key, responses_https_sse to api.openai.com, effort medium |',
+    ),
+  )
+  assert.ok(against.includes('| Output tokens (reasoning) | 60 (1,800) | 60 (150) |'))
+  assert.ok(against.includes('| Model calls of a scored attempt, median | 2 | 2 |'))
+  assert.ok(against.includes('| Agent time of a scored attempt, median | 1 min 0 s | 1 min 0 s |'))
+  assert.equal(Compare.unlike([change!.pair]), undefined)
+
+  const same = arm('run-same', old, { outcomes, route: gateway })
+  assert.deepEqual(Compare.changes(baseline, same)[0]!.pair.baseline, ['nano-codex'])
+  assert.equal(lines(Compare.against(baseline, same))[1], '')
+
+  const two = {
+    ...baseline,
+    attempts: [
+      ...baseline.attempts,
+      ...arm('run-old', { ...old, id: 'twin' }, { outcomes }).attempts,
+    ],
+  }
+  const crowded = Compare.changes(two, run)[0]!
+  assert.deepEqual(
+    [crowded.pair.by, crowded.pair.baseline, crowded.baseline],
+    ['none', [], undefined],
+  )
+  assert.ok(
+    lines(Compare.against(two, run)).includes(
+      'the baseline has no agent luna: the baseline holds nano-codex and twin, which are all codex:gpt-6-luna, and none is named luna',
+    ),
+  )
+  assert.deepEqual(
+    Compare.changes(two, arm('run-new', { ...old, id: 'twin' }, { outcomes }))[0]!.pair.baseline,
+    ['twin'],
+  )
+
+  const pair = {
+    ...run,
+    attempts: [...run.attempts, ...arm('run-new', { ...luna, id: 'moon' }, { outcomes }).attempts],
+  }
+  assert.deepEqual(
+    Compare.changes(baseline, pair).map((each) => [each.agent, each.pair.by, each.pair.reason]),
+    [
+      [
+        'luna',
+        'none',
+        'the run holds luna and moon, which are all codex:gpt-6-luna, and the baseline names it nano-codex',
+      ],
+      [
+        'moon',
+        'none',
+        'the run holds luna and moon, which are all codex:gpt-6-luna, and the baseline names it nano-codex',
+      ],
+    ],
+  )
+
+  const renamed = [
+    arm('run-a', old, { outcomes }),
+    arm('run-b', { ...old, id: 'codex-luna' }, { outcomes }),
+  ]
+  assert.deepEqual(Compare.changes(renamed, run)[0]!.pair.baseline, ['codex-luna', 'nano-codex'])
+  assert.equal(Compare.changes(renamed, run)[0]!.baseline!.attempts, 6)
+})
+
+test('sides that differ in model, effort, payer or route are named, and refused unless asked for', () => {
+  const luna = { id: 'luna', model: 'gpt-6-luna', provider: 'codex' as const }
+  const outcomes = ['passed', 'failed'] as const
+  const paid = arm(
+    'run-old',
+    { ...luna, id: 'nano-codex' },
+    { outcomes, reasoning: 600, route: gateway },
+  )
+  const plan = arm('run-new', luna, { outcomes, reasoning: 50, route: login })
+
+  const [change] = Compare.changes(paid, plan)
+  assert.deepEqual(change!.pair.differs, [
+    'payer the gateway key in the baseline and a plan login through the relay in the run',
+    'transport responses_https_sse in the baseline and responses_websocket_v2 in the run',
+    'host api.openai.com in the baseline and chatgpt.com in the run',
+  ])
+  assert.equal(
+    Compare.unlike([change!.pair]),
+    'luna differs from the baseline: payer the gateway key in the baseline and a plan login through the relay in the run, transport responses_https_sse in the baseline and responses_websocket_v2 in the run, host api.openai.com in the baseline and chatgpt.com in the run. A comparison would set two different things against each other: pass --unlike to make it anyway',
+  )
+  assert.equal(
+    lines(Compare.against(paid, plan))[2],
+    'UNLIKE: payer the gateway key in the baseline and a plan login through the relay in the run, transport responses_https_sse in the baseline and responses_websocket_v2 in the run, host api.openai.com in the baseline and chatgpt.com in the run: the sides are not the same agent, so the verdict below is not one about the harness',
+  )
+
+  const differs = (baseline: Compare.Run, run: Compare.Run) =>
+    Compare.changes(baseline, run)[0]!.pair.differs
+  assert.deepEqual(
+    differs(
+      arm('a', luna, { outcomes, route: gateway }),
+      arm('b', { ...luna, thinking: 'high' }, { outcomes, route: { ...gateway, effort: 'high' } }),
+    ),
+    ['effort medium in the baseline and high in the run'],
+  )
+  assert.deepEqual(
+    differs(
+      arm('a', luna, { outcomes }),
+      arm('b', { ...luna, model: 'gpt-6.1-sol' }, { outcomes }),
+    ),
+    ['model gpt-6-luna in the baseline and gpt-6.1-sol in the run'],
+  )
+  assert.deepEqual(
+    differs(
+      arm('a', luna, { outcomes }),
+      arm('b', { ...luna, orchestration: 'direct' }, { outcomes }),
+    ),
+    ['harness codex in the baseline and codex-direct in the run'],
+  )
+  assert.deepEqual(
+    differs(
+      arm('a', luna, { outcomes, route: { payer: 'key' } }),
+      arm('b', luna, { outcomes, route: { payer: 'key', through: 'base' } }),
+    ),
+    ['payer the provider key in the baseline and the provider key through a base URL in the run'],
+  )
+  assert.deepEqual(
+    Compare.changes(
+      arm('a', { ...luna, thinking: 'medium' }, { outcomes }),
+      arm('b', { ...luna, id: 'moon' }, { outcomes, route: gateway }),
+    )[0]!.pair,
+    {
+      agent: 'moon',
+      baseline: ['luna'],
+      by: 'kind',
+      differs: [],
+      missing: { baseline: ['payer', 'transport', 'host'], run: [] },
+    },
+    'an effort that was typed and one that the session reported are the same effort',
+  )
+
+  const planned = Compare.planned([luna], { routes: () => [{ payer: 'login', through: 'relay' }] })
+  assert.deepEqual(
+    Compare.pairs(Compare.members([paid]), planned).map((pair) => pair.differs),
+    [['payer the gateway key in the baseline and a plan login through the relay in the run']],
+    'a run that is not made yet is known by who would pay for it',
+  )
+  assert.deepEqual(
+    Compare.pairs(Compare.members([plan]), planned).map((pair) => pair.differs),
+    [[]],
+  )
+})
+
+test('a run that records no route is set against one that does with a warning, and an oracle has none', () => {
+  const luna = { id: 'luna', model: 'gpt-6-luna', provider: 'codex' as const }
+  const outcomes = ['passed', 'failed'] as const
+  const old = arm('run-old', { ...luna, id: 'nano-codex' }, { outcomes })
+  const run = arm('run-new', luna, { outcomes, reasoning: 50, route: login })
+  const [change] = Compare.changes(old, run)
+  assert.deepEqual(change!.pair, {
+    agent: 'luna',
+    baseline: ['nano-codex'],
+    by: 'kind',
+    differs: [],
+    missing: { baseline: ['payer', 'transport', 'host', 'effort'], run: [] },
+  })
+  assert.equal(Compare.unlike([change!.pair]), undefined)
+  const against = lines(Compare.against(old, run))
+  assert.equal(
+    against[2],
+    'warning: the baseline does not record who paid for the model, the transport to the model, the host of the model and the reasoning effort, so a difference there would not show',
+  )
+  assert.ok(
+    against.includes(
+      '| Model route | not recorded | a plan login through the relay, responses_websocket_v2 to chatgpt.com, effort medium |',
+    ),
+  )
+  assert.ok(against.includes('| Output tokens (reasoning) | 40 (not recorded) | 40 (100) |'))
+  assert.ok(against.some((line) => line.startsWith('verdict: no change beyond noise')))
+
+  assert.equal(
+    lines(Compare.against(old, arm('run-older', luna, { outcomes })))[2],
+    'warning: neither side records who paid for the model, so a difference there would not show',
+  )
+  assert.equal(
+    lines(Compare.against(run, old))[2],
+    'warning: the run does not record who paid for the model, the transport to the model, the host of the model and the reasoning effort, so a difference there would not show',
+  )
+
+  const oracle = { id: 'oracle', model: 'solution', provider: 'oracle' as const }
+  const solved = arm('run-solved', oracle, { outcomes })
+  assert.deepEqual(Compare.changes(solved, solved)[0]!.pair.missing, { baseline: [], run: [] })
+  assert.ok(lines(Compare.against(solved, solved)).includes('| Model route | none | none |'))
+  assert.ok(
+    lines(Compare.table([solved]))[4]!.startsWith('| oracle | oracle | the task solution | none |'),
+  )
+})
+
+test('the table names the route and the reasoning tokens of each arm, and a rerun on another route is its own arm', () => {
+  const luna = { id: 'luna', model: 'gpt-6-luna', provider: 'codex' as const }
+  const first = arm('run-1', luna, {
+    outcomes: ['passed', 'errored'],
+    reasoning: 600,
+    route: gateway,
+  })
+  const retry = (route: Route.Route | undefined): Compare.Run => ({
+    ...arm('run-2', luna, { outcomes: ['passed'], reasoning: 50, ...(route ? { route } : {}) }),
+    attempts: arm('run-2', luna, {
+      outcomes: ['passed'],
+      reasoning: 50,
+      ...(route ? { route } : {}),
+    }).attempts.map((each) => ({
+      ...each,
+      id: 'a00009',
+      retryOf: { attempt: 'a00002', run: 'run-1' },
+      task: { checksum: 'c', name: 'bench/task-1' },
+    })),
+  })
+  const merged = Compare.arms([first, retry(gateway)])
+  assert.deepEqual(
+    merged.map((each) => [each.runs, each.attempts, each.reasoningTokens, Route.text(each.routes)]),
+    [
+      [
+        ['run-1', 'run-2'],
+        2,
+        650,
+        'the gateway key, responses_https_sse to api.openai.com, effort medium',
+      ],
+    ],
+  )
+  assert.equal(Compare.arms([first, retry(undefined)]).length, 1)
+  const split = Compare.arms([first, retry(login)])
+  assert.deepEqual(
+    split.map((each) => [each.runs, each.attempts, each.reasoningTokens]),
+    [
+      [['run-1'], 1, 600],
+      [['run-2'], 1, 50],
+    ],
+  )
+  const table = lines(Compare.table([first, retry(login)]))
+  assert.equal(
+    table[3],
+    '| Arm | Harness | Model | Model route | Attempts | Passed | Failed | Errored | Agent time | Attempt time | Input tokens (cached) | Output tokens (reasoning) | Estimated cost |',
+  )
+  assert.equal(
+    table[5],
+    '| luna of run-1 | nanocode | codex:gpt-6-luna | the gateway key, responses_https_sse to api.openai.com, effort medium | 1 | 1 | 0 | 0 | 1 min 0 s | 1 min 30 s | 300 (100) | 20 (600) | not known |',
+  )
+  assert.equal(
+    table[6],
+    '| luna of run-2 | nanocode | codex:gpt-6-luna | a plan login through the relay, responses_websocket_v2 to chatgpt.com, effort medium | 1 | 1 | 0 | 0 | 1 min 0 s | 1 min 30 s | 300 (100) | 20 (50) | not known |',
+  )
 })

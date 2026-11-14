@@ -1,4 +1,4 @@
-import type * as Config from './Config.ts'
+import * as Compare from './Compare.ts'
 import type * as Pins from './Pins.ts'
 
 export class MissingError extends Error {
@@ -6,10 +6,10 @@ export class MissingError extends Error {
 }
 
 export type Candidate = {
-  agents: readonly Config.Agent[]
   cancelled: boolean
   eval: { name: string; version: string }
   id: string
+  members: readonly Compare.Member[]
   nanocode: Pins.Pins
   rerun: boolean
   state: 'finished' | 'running'
@@ -17,8 +17,8 @@ export type Candidate = {
 }
 
 export type Wanted = {
-  agents: readonly Config.Agent[]
   eval: { name: string; version: string }
+  members: readonly Compare.Member[]
   not: readonly string[]
   pins: { hand: string; harness: string }
   tasks: readonly string[]
@@ -39,16 +39,15 @@ export function misfit(candidate: Candidate, wanted: Wanted): string | undefined
     candidate.nanocode.hands[0] !== wanted.pins.hand
   )
     return 'on other builds'
-  const same = (agent: Config.Agent) =>
-    candidate.agents.some(
-      (other) =>
-        other.id === agent.id &&
-        other.model === agent.model &&
-        (other.orchestration ?? '') === (agent.orchestration ?? '') &&
-        other.provider === agent.provider &&
-        (other.thinking ?? '') === (agent.thinking ?? ''),
+  const pairs = Compare.pairs(candidate.members, wanted.members)
+  if (pairs.some((pair) => pair.by !== 'kind')) return 'without these agents'
+  if (pairs.some((pair) => pair.differs.length)) return 'on another model route'
+  if (
+    pairs.some(
+      (pair) => pair.missing.baseline.includes('payer') && !pair.missing.run.includes('payer'),
     )
-  if (!wanted.agents.every(same)) return 'without these agents'
+  )
+    return 'without a record of who paid for their models'
   if (!wanted.tasks.every((task) => candidate.tasks.includes(task))) return 'without these tasks'
   return undefined
 }
@@ -77,7 +76,7 @@ export async function latest(
         ? ' holds this task'
         : ' holds these ' + wanted.tasks.length + ' tasks') +
       ' with ' +
-      wanted.agents.map((agent) => agent.id).join(' and ') +
+      wanted.members.map((member) => member.label).join(' and ') +
       (reasons.size
         ? ': of the runs listed, ' +
           [...reasons]

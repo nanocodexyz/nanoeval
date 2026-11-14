@@ -118,7 +118,8 @@ const usage = `nanoeval <command>
   run       --url URL --token T (--eval NAME[@DIGEST] [--only TASK]... [--only-file FILE]...
             [--subset NAME]... [--subsets FILE] [--limit N] | --task DIR...
             | --rerun RUN [--failed] [--errored] [--only TASK]... [--agent ID]...)
-            [--baseline RUN|latest]... [--with-reruns] [--fail-on regression|lost|any-failure]...
+            [--baseline RUN|latest]... [--with-reruns] [--unlike]
+            [--fail-on regression|lost|any-failure]...
             (--agent ID=HARNESS:MODEL[:THINKING]... | --oracle) [--judge PROVIDER:MODEL[:THINKING]]
             [--attempts 1] [--provider local|e2b|gateway] [--backend auto|krun|ns|dir] [--slots 4]
             [--sandboxes 1] [--memory-mb N] [--network private|host] [--template NAME]
@@ -193,7 +194,11 @@ const usage = `nanoeval <command>
             the baseline has) sets the run against that run as compare --baseline does.
             --baseline latest takes the latest finished run of the same eval version that
             ran on the builds this checkout pins, was not cancelled, is no rerun, and holds
-            the tasks and the agents of this run. --fail-on makes the exit status a gate:
+            the tasks and the agents of this run, whatever they were named there, paid for
+            as the Worker pays now. A baseline whose agent is another model or effort, or was
+            paid for another way, is refused before the run is made, and one whose sessions
+            reached the model another way when the run ends: --unlike compares them anyway
+            and marks the comparison. --fail-on makes the exit status a gate:
             regression exits 3 when the verdict against the baseline is a regression,
             lost exits 3 also when a single task is lost, any-failure exits 4 when an
             attempt failed or errored. 3 goes before 4, and 4 before 1.
@@ -285,7 +290,7 @@ const usage = `nanoeval <command>
             agent/model-requests.jsonl with the model requests that were answered.
   export    --url URL --token T RUN --out DIR
             Write the run as a Harbor job directory, and print where.
-  compare   --url URL --token T [--baseline RUN|latest]... [--with-reruns]
+  compare   --url URL --token T [--baseline RUN|latest]... [--with-reruns] [--unlike]
             [--fail-on regression|lost|any-failure]... RUN...
             Print one table of the agents of these runs: attempts, outcomes, time, tokens and
             estimated cost per agent, and the outcome of every task per agent. Runs of one
@@ -298,9 +303,16 @@ const usage = `nanoeval <command>
             gained, and the verdict a regression or an improvement, only when pass counts
             that far apart have a chance of 0.05 or less under no change; otherwise a task
             moved within noise. A task whose attempts all errored on a side is not compared.
+            An agent is set against the agent of the baseline that is the same harness and
+            model at the same effort, whatever either was named, and against the one of its
+            name otherwise. Sides that differ in model, effort, who paid for the model, or
+            the transport and host their sessions reported are refused after the table:
+            --unlike compares them anyway under a line that says how they differ. A side
+            that records none of this is compared with a warning.
             --baseline latest is the latest finished run on the pinned builds that holds the
-            tasks and agents of the runs named, as for run. --with-reruns adds to every run
-            named, and to the baseline, the reruns it has.
+            tasks and agents of the runs named and was paid for and reached as they were, as
+            for run. --with-reruns adds to every run named, and to the baseline, the reruns
+            it has.
             --fail-on makes the exit status a gate, as for run: 3 for a regression (or, with
             lost, a lost task) of any of the runs, 4 with any-failure when an attempt of the
             runs that stands failed or errored, 0 otherwise.
@@ -441,10 +453,13 @@ type Api = ReturnType<typeof client>
 async function candidate(api: Api, id: string): Promise<Baseline.Candidate> {
   const [config, status] = await Promise.all([api.config(id), api.status(id)])
   return {
-    agents: config.agents,
     cancelled: Boolean(status['cancelled']),
     eval: status['eval'],
     id,
+    members: Compare.planned(config.agents, {
+      routes: (agent) => (status['agents']?.[agent.id]?.routes ?? []) as Route.Route[],
+      run: id,
+    }),
     nanocode: status['nanocode'] ?? { hands: [], harness: null },
     rerun: Boolean(config.rerun),
     state: status['state'],
@@ -497,6 +512,9 @@ async function baselines(
       ids: listed.map((run) => run.id),
       read: (id) => candidate(api, id),
     })
+    const unpaid = wanted.members.filter(
+      (member) => member.agent.provider !== 'oracle' && !member.routes.some((route) => route.payer),
+    )
     console.error(
       'baseline: ' +
         found.id +
@@ -507,7 +525,14 @@ async function baselines(
         ' on ' +
         Pins.text(found.nanocode) +
         ' that holds these tasks with ' +
-        wanted.agents.map((agent) => agent.id).join(' and '),
+        wanted.members.map((member) => member.label).join(' and ') +
+        (unpaid.length
+          ? '. Who pays for the model of ' +
+            unpaid.map((member) => member.label).join(' and ') +
+            ' is not recorded, so the model route was not compared'
+          : wanted.members.some((member) => member.routes.length)
+            ? ', on the same model route'
+            : ''),
     )
     ids.push(found.id)
   }
@@ -1389,6 +1414,7 @@ async function main(lab?: Revision.Lab): Promise<void> {
       wait: { default: false, type: 'boolean' },
       'warm-budget-usd': { default: '0', type: 'string' },
       'warm-sec': { type: 'string' },
+      unlike: { default: false, type: 'boolean' },
       'with-reruns': { default: false, type: 'boolean' },
       'within-sec': { default: '21600', type: 'string' },
     },
@@ -2316,6 +2342,19 @@ async function main(lab?: Revision.Lab): Promise<void> {
       },
     }
     const config = parent ? rerunConfig(own, { named, parent }) : own
+    const deployment = values.baseline?.length ? await api.routes() : undefined
+    const asked = () =>
+      Compare.planned(config.agents, {
+        routes: (agent) => {
+          const paid = Route.planned(deployment, {
+            plan: config.payer === 'plan',
+            provider: Installed.is(agent.provider)
+              ? Installed.releases[agent.provider].provider
+              : agent.provider,
+          })
+          return paid ? [paid] : []
+        },
+      })
     const baseline = await baselines(api, {
       named: values.baseline ?? [],
       reruns: values['with-reruns'],
@@ -2330,8 +2369,8 @@ async function main(lab?: Revision.Lab): Promise<void> {
           reference.name + (reference.version ? '@' + reference.version : ''),
         )
         return {
-          agents: config.agents,
           eval: { name: reference.name, version: found.version.digest },
+          members: asked(),
           not: [],
           tasks: Eval.select(found.entries, {
             ...(config.limit === undefined ? {} : { limit: config.limit }),
@@ -2340,6 +2379,12 @@ async function main(lab?: Revision.Lab): Promise<void> {
         }
       },
     })
+    if (baseline.length && !values.unlike) {
+      const refusal = Compare.unlike(
+        Compare.pairs(Compare.members(Compare.standing(baseline)), asked()),
+      )
+      if (refusal) throw new Error(refusal)
+    }
     const created = await api.create(config, values.location ? { location: values.location } : {})
     console.log(
       'run ' +
@@ -2361,12 +2406,14 @@ async function main(lab?: Revision.Lab): Promise<void> {
         console.log(shown(status, screen))
         const results = baseline.length ? await api.results(created.id) : undefined
         const changes = results ? Compare.changes(baseline, results) : []
+        const refusal = values.unlike
+          ? undefined
+          : Compare.unlike(changes.map((change) => change.pair))
         if (results) {
           process.stdout.write(
             '\n' +
               Compare.table([...baseline, results]) +
-              '\n' +
-              Compare.against(baseline, results),
+              (refusal ? '' : '\n' + Compare.against(baseline, results)),
           )
         }
         if (lab) {
@@ -2395,6 +2442,7 @@ async function main(lab?: Revision.Lab): Promise<void> {
           await exportJob(api, { out, run: created.id })
           console.log('job written to ' + out)
         }
+        if (refusal) throw new Error(refusal)
         judged(changes, on)
         process.exitCode = exitStatus({ changes, counts: status['counts'], on, waited: true })
         return
@@ -2421,10 +2469,8 @@ async function main(lab?: Revision.Lab): Promise<void> {
       named: values.baseline ?? [],
       reruns: values['with-reruns'],
       wanted: async () => ({
-        agents: runs
-          .flatMap((result) => result.attempts.map((attempt) => attempt.agent))
-          .filter((agent, at, all) => all.findIndex((other) => other.id === agent.id) === at),
         eval: runs[0]!.eval,
+        members: Compare.members(Compare.standing(runs)),
         not: runs.map((result) => result.id),
         tasks: [
           ...new Set(runs.flatMap((result) => result.attempts.map((attempt) => attempt.task.name))),
@@ -2433,10 +2479,12 @@ async function main(lab?: Revision.Lab): Promise<void> {
     })
     const sides = baseline.length ? Compare.lineages(runs) : []
     const changes = sides.flatMap((side) => Compare.changes(baseline, side))
+    const refusal = values.unlike ? undefined : Compare.unlike(changes.map((change) => change.pair))
     process.stdout.write(
       Compare.table([...baseline, ...runs]) +
-        sides.map((side) => '\n' + Compare.against(baseline, side)).join(''),
+        (refusal ? '' : sides.map((side) => '\n' + Compare.against(baseline, side)).join('')),
     )
+    if (refusal) throw new Error(refusal)
     judged(changes, on)
     const standing = Compare.standing(runs).flatMap((result) => result.attempts)
     process.exitCode = exitStatus({

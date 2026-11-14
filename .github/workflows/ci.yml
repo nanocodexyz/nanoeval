@@ -94,7 +94,7 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: dir
           NANOEVAL_E2E_SCENARIO: failures
-      - name: End to end, directory slots, a Claude plan signed in on the Worker pays
+      - name: End to end, directory slots, a Claude plan signed in on the Worker pays, and compare tells its run from one the key pays for
         run: npm run e2e
         env:
           NANOEVAL_E2E_BACKEND: dir
