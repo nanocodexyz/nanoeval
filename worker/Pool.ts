@@ -157,15 +157,16 @@ export class Pool extends DurableObject<Env> {
       })
       return json(this.standing(member))
     }
-    if (action === 'take')
-      return json({
-        member:
-          Members.take(this.sql, {
-            ...(body as Pick<Members.take.Input, 'lifetimeSec' | 'run' | 'wanted'>),
-            holding: (id) => this.holding(id),
-            now,
-          }) ?? null,
-      })
+    if (action === 'take') {
+      const member =
+        Members.take(this.sql, {
+          ...(body as Pick<Members.take.Input, 'lifetimeSec' | 'run' | 'wanted'>),
+          holding: (id) => this.holding(id),
+          now,
+        }) ?? null
+      if (member) await this.schedule()
+      return json({ member })
+    }
     if (action === 'assign') {
       const input = body as { config: Config.Runner; id: number; run: string }
       const member = Members.get(this.sql, input.id)
@@ -322,6 +323,10 @@ export class Pool extends DurableObject<Env> {
     for (const due of Members.due(this.sql, { holding: (id) => this.holding(id), now })) {
       if (due.action === 'close') {
         await this.shut(due.member, due.reason)
+        continue
+      }
+      if (due.action === 'return') {
+        Members.returned(this.sql, { id: due.member.id })
         continue
       }
       try {

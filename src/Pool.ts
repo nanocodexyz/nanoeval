@@ -37,6 +37,7 @@ export type Member = {
   seen_at: number
   spec: string
   state: State
+  taken_at: number | null
   token: string
   unrenewed: number
   usd: number
@@ -50,7 +51,7 @@ export type Taken = {
   paidUntil: number | null
 }
 
-export type Due = { action: 'close' | 'renew'; member: Member; reason: string }
+export type Due = { action: 'close' | 'renew' | 'return'; member: Member; reason: string }
 
 export const tables = [
   `CREATE TABLE IF NOT EXISTS members (
@@ -74,7 +75,8 @@ export const tables = [
     runs INTEGER NOT NULL DEFAULT 0,
     assignment TEXT,
     error TEXT,
-    machine TEXT
+    machine TEXT,
+    taken_at INTEGER
   )`,
   `CREATE TABLE IF NOT EXISTS payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,8 +89,14 @@ export const tables = [
 
 export function setup(sql: Sql.Sql): void {
   for (const statement of tables) sql.run(statement)
-  if (!sql.all('PRAGMA table_info(members)').some((column) => column['name'] === 'machine'))
-    sql.run('ALTER TABLE members ADD COLUMN machine TEXT')
+  const columns = sql.all('PRAGMA table_info(members)').map((column) => column['name'])
+  if (!columns.includes('machine')) sql.run('ALTER TABLE members ADD COLUMN machine TEXT')
+  if (!columns.includes('taken_at')) {
+    sql.run('ALTER TABLE members ADD COLUMN taken_at INTEGER')
+    sql.run(
+      "UPDATE members SET taken_at = seen_at WHERE state = 'assigned' AND assignment IS NULL AND handle IS NULL",
+    )
+  }
 }
 
 export function wanted(sandbox: Config.Config['sandbox']): Wanted {
@@ -205,6 +213,7 @@ export function take(sql: Sql.Sql, input: take.Input): Taken | undefined {
     run: input.run,
     runs: member.runs + 1,
     state: 'assigned',
+    taken_at: input.now,
   })
   return {
     capabilities: JSON.parse(member.capabilities!) as Sandbox.Capabilities,
@@ -232,6 +241,22 @@ export function assign(
   const member = get(sql, input.id)
   if (!member || member.state !== 'assigned' || member.run !== input.run) return false
   update(sql, member.id, { assignment: input.assignment })
+  return true
+}
+
+function assignBy(member: Member): number | undefined {
+  return member.state === 'assigned' &&
+    member.handle === null &&
+    member.assignment === null &&
+    member.taken_at !== null
+    ? member.taken_at + member.notice_sec * 1000
+    : undefined
+}
+
+export function returned(sql: Sql.Sql, input: { id: number }): boolean {
+  const member = get(sql, input.id)
+  if (!member || assignBy(member) === undefined) return false
+  update(sql, member.id, { run: null, runs: member.runs - 1, state: 'idle' })
   return true
 }
 
@@ -356,6 +381,12 @@ export function due(sql: Sql.Sql, input: due.Input): Due[] {
           member,
           reason: 'the runner stopped asking for a run while it had one',
         })
+      else if (input.now > (assignBy(member) ?? Infinity))
+        found.push({
+          action: 'return',
+          member,
+          reason: 'the run that took it handed it no runner within its notice',
+        })
       continue
     }
     if (member.state !== 'idle') continue
@@ -390,8 +421,11 @@ export function wakeAt(sql: Sql.Sql): number | undefined {
   }
   const members = all(sql)
   for (const member of members) {
-    if (member.state === 'assigned' && member.handle === null)
+    if (member.state === 'assigned' && member.handle === null) {
       sooner(askedUntil(machine(members, member)) + 1)
+      const by = assignBy(member)
+      if (by !== undefined) sooner(by + 1)
+    }
     if (member.state !== 'idle') continue
     if (member.handle === null) {
       sooner(member.seen_at + member.notice_sec * 1000 + 1)

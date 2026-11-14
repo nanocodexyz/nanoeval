@@ -4266,3 +4266,48 @@ Local workerd defers no update: the Worker that is started is the code that runs
 - That the pool of the deployment ran the code before for those minutes was not read from it. It follows from Cloudflare's default, from the missing setting, from the times, and from the same listing under the code before.
 - The five members were made in the file of the pool, not by a run whose runner was stopped.
 - Runs in flight at a deploy on Cloudflare: each of their objects is now restarted at the deploy where it was restarted within 300 s before.
+
+## 2026-11-14: a member that a run took and handed nothing goes back to the pool
+
+**The defect.** The entry on a standing runner with several runs left it open: "a member that a run took but never assigned (the run died between the two pool calls) stays 'assigned' while its runner keeps asking". A run gets a runner from the pool in two calls. `take` marks a member as the run's. The run then writes a runner of its own for it, and `assign` hands the member the configuration of that runner, which answers the request the standing runner holds. When the second call never comes or fails, because the run's object was restarted between the two, the run was cancelled or deleted, or the pool did not answer, the member is "with a run" and has nothing to give its runner. The runner is answered that there is no run yet and asks again, for good:
+
+- The pool closes a machine member only when no member of its machine asks any more, and this one asks.
+- No other run takes it, since it is not idle. The run that took it is not handed another member of the same machine, since it has one.
+- The runner enrols one more member only when a member of it is handed a run. So a standing runner in this state serves nothing until it is started again, and the rows of every run that waits for it end as `environment` errors after `--setup-sec`.
+
+A deploy restarts every object at once since the entry before this one, which makes a run that is restarted between the two calls more likely than it was.
+
+**The rule.** A take is the run's for one notice of the member, the time the pool already gives a runner to say a word.
+
+- The pool keeps when a member was taken (`members.taken_at`). A machine member that is "with a run", has no assignment, and was taken more than its notice ago goes back: idle, with no run, and with one run less in its count, since the run that handed it nothing is no run of it. Its runner notices nothing, and the request it holds is the one the next run answers.
+- `wakeAt` names that moment, and the pool sets its alarm when a member is taken. Before, a take set no alarm.
+- A member whose runner asks no more is closed as before, taken or not: that rule is asked first.
+- An `assign` that comes after the member went back is refused, as it was for any member that is not the run's. `adopt` in `worker/Run.ts` already calls its runner lost then and takes again at a later tick. The ticks of a run are one at a time, so a run has one take in flight.
+- A run that is alive and lost its `assign` waits one notice for the member, 60 s for a standing runner with the default lease, which is inside the default `--setup-sec` of 600. Handing the member again to the same run at its next tick would be faster, and was left out: the pool cannot tell a run that asks again from the same take arriving late.
+- A kept sandbox (`--warm-sec`) is not given back. A run that is alive finds the runner of such a sandbox by the lease and ends the sandbox, which would then end under the run that took it next.
+
+**State of an existing deployment.** The column is added when the pool object next starts. A machine member that is "with a run" and has no assignment then is taken to have been taken when its runner last asked, so it goes back one notice after that, or is closed when its runner is gone. Runs are not touched, and `Protocol.version` stays: nothing between a runner and a Worker changes.
+
+**The lane `taken`**, new in `ci.yml` on directory slots. Nothing in the Worker that is deployed lets an operator lose a call between two objects, and none was added: the lane starts `wrangler dev` on `test/worker/Taken.ts`, a Worker of the lane that exports the objects of `worker/index.ts` and extends the pool with one route, `POST /v1/pool/lose-assign`, after which the pool answers the next `assign` with `503`. The take is the real one, of a real run. The lane stands a runner with a lease of 10 s, asks the pool to lose an assign, creates a run, waits until the pool lists the member with that run, cancels the run and asks that the member is still listed with it. It then creates a second run with `--setup-sec 30`, and asks that the pool hands it the same member with a count of one run, no sooner than one notice after the first run was asked for, that it ends as every lane's run, and that the runner exits with status 0 and leaves the pool empty when it is stopped.
+
+**Measured** on 2026-11-14 on a Linux machine with 5 cores, kernel 6.18, at a load average of 17 to 32, scripted model, 3 tasks and 2 agents.
+
+| | The lane |
+| --- | --- |
+| At the commit of the entry before, with the lane and its Worker | failed, once of once, after 127 s: "the second run ended with no member of the pool", its 6 rows `environment` errors, "no runner of the run could take the row for 30 s: the run has no runner, and opens no sandbox itself" |
+| With the rule | passed 3 times of 3, in 67 to 81 s: the pool handed the member to the second run 10.5, 10.8 and 11.1 s after the first run was asked for, a row was claimed 10.3 to 10.7 s after the second run was created, and the run ended with 3 passed, the 3 failed that its scripted agent fails, and no error |
+
+**Checked.**
+
+- `test/Pool.test.ts`: a member taken and handed nothing while its runner asks is due at the end of its notice and not a millisecond before, `wakeAt` names that time, a member that was handed its run in time is never due, a member whose runner is gone is closed and not returned, a returned member is idle with its count of runs as before and is taken by another run, an `assign` of the first run is refused after the return and after another run took the member, and a table made before the column. At the commit of the entry before, with these tests: 8 passed, 2 failed. With the rule: 10 passed.
+- The test of a machine with a member for each run took members without handing them their runs, a shortcut that this rule ends: it now hands each one, and asks what it asked.
+- The lanes that share the pool, once each on directory slots with the rule: `standing`, `shared` and `stopped` passed, and `warm` through the scripted gateway, where a kept sandbox is taken and handed its run.
+- `npm run check`, `npm run check:types` and `npm test`. The other lanes of `ci.yml` were not run with it.
+
+**Not verified.**
+
+- A deployed Worker.
+- A run whose object is restarted between the two calls, or deleted: the lane loses the second call in the pool and cancels the run, which leaves the pool in the same state.
+- A run that is alive and takes the member again after its notice: the unit tests return a member and hand it to another run, and no lane keeps the first run.
+- krun and ns slots: the rule is in the pool, which does not know the backend.
+- A kept sandbox that was taken and handed nothing, which stays as it was.

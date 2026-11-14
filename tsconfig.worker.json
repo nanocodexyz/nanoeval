@@ -4,5 +4,5 @@
     "types": ["@cloudflare/workers-types"],
     "lib": ["ES2023", "ESNext.Disposable"]
   },
-  "include": ["src/**/*.ts", "worker/*.ts"]
+  "include": ["src/**/*.ts", "test/worker/*.ts", "worker/*.ts"]
 }

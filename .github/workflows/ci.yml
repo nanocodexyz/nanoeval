@@ -230,6 +230,15 @@ jobs:
           NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
           NANOEVAL_E2E_SLOTS: '6'
           NANOEVAL_E2E_ATTEMPTS: '1'
+      - name: End to end, directory slots, a standing runner that a run took and handed nothing
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: taken
+          NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
+          NANOEVAL_E2E_SLOTS: '3'
+          NANOEVAL_E2E_ATTEMPTS: '1'
+          NANOEVAL_E2E_LEASE_SEC: '10'
       - name: End to end, directory slots, a sandbox kept warm for a second run through a scripted gateway
         run: npm run e2e
         env:

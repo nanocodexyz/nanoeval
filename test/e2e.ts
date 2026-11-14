@@ -65,7 +65,9 @@ const largeTestBytes = 3 * 1024 * 1024
 const ending = scenario === 'ending'
 const attached =
   ending ||
-  ['lost', 'machine', 'resume', 'runners', 'shared', 'standing', 'stopped'].includes(scenario)
+  ['lost', 'machine', 'resume', 'runners', 'shared', 'standing', 'stopped', 'taken'].includes(
+    scenario,
+  )
 const alone = scenario === 'alone'
 const capped = scenario === 'capped'
 const refusedPassing = scenario === 'refused'
@@ -108,7 +110,8 @@ const claudePlan = {
   revoked: 0,
 }
 const stopped = scenario === 'stopped'
-const stood = shared || standing || stopped
+const taken = scenario === 'taken'
+const stood = shared || standing || stopped || taken
 const warm = scenario === 'warm'
 const installed = model === 'installed'
 const fakeCli = Path.resolve('test/fixtures/fake-cli.sh')
@@ -916,6 +919,7 @@ async function main(): Promise<void> {
       Path.resolve('node_modules/.bin/wrangler'),
       [
         'dev',
+        ...(taken ? [Path.resolve('test/worker/Taken.ts')] : []),
         '--ip',
         '127.0.0.1',
         '--port',
@@ -1327,7 +1331,8 @@ async function main(): Promise<void> {
         attachSec: 60,
         claims: 3,
         leaseSec,
-        setupSec: scenario === 'disk' || stopped ? 5 : ending ? 4 : spent ? 15 : 600,
+        setupSec:
+          scenario === 'disk' || stopped ? 5 : ending ? 4 : spent ? 15 : taken ? 3 * leaseSec : 600,
         stepRetries: failures ? 1 : 3,
       },
       name: 'e2e-' + label,
@@ -1366,6 +1371,35 @@ async function main(): Promise<void> {
     if (stood) {
       stand('a')
       await standingBy(api)
+    }
+    let unassigned: { before: number; member: Record<string, any>; seen: number } | undefined
+    if (taken) {
+      const armed = await fetch(url + '/v1/pool/lose-assign', {
+        headers: { authorization: 'Bearer ' + token },
+        method: 'POST',
+      })
+      assert.equal(armed.status, 200, 'the pool of the lane loses the next assign')
+      const before = Date.now()
+      const lost = await api.create({ ...config, name: config.name + '-lost' })
+      const member = await waitFor('a run to take the member and hand it no runner', async () =>
+        ((await api.pool())['members'] as Record<string, any>[]).find(
+          (candidate) => candidate['run'] === lost.id,
+        ),
+      )
+      unassigned = { before, member, seen: Date.now() }
+      await api.cancel(lost.id)
+      await waitFor('the run that took the member to end', async () =>
+        (await api.status(lost.id))['state'] === 'finished' ? true : undefined,
+      )
+      assert.deepEqual(
+        ((await api.pool())['members'] as Record<string, any>[]).map((candidate) => [
+          candidate['id'],
+          candidate['state'],
+          candidate['run'],
+        ]),
+        [[member['id'], 'assigned', lost.id]],
+        'the member stays with the run that took it, and its runner enrols no other',
+      )
     }
     if (planned) {
       for (const [path, method] of [
@@ -1481,6 +1515,25 @@ async function main(): Promise<void> {
       attach(created.id, 'a')
       if (scenario !== 'resume') attach(created.id, 'b')
     }
+    const handed = unassigned
+      ? await waitFor('the pool to hand the member to the second run', async () => {
+          const found = ((await api.pool())['members'] as Record<string, any>[]).find(
+            (candidate) => candidate['run'] === created.id,
+          )
+          if (found) return { at: Date.now(), member: found }
+          const current = await api.status(created.id)
+          if (current['state'] === 'finished')
+            assert.fail(
+              'the second run ended with no member of the pool: ' +
+                JSON.stringify(current['counts']) +
+                ' ' +
+                JSON.stringify(
+                  (await api.results(created.id)).attempts.map((row) => row.failure?.message),
+                ),
+            )
+          return undefined
+        })
+      : undefined
 
     const machines = () => [
       ...Krun.machines(sandboxes),
@@ -3221,6 +3274,35 @@ async function main(): Promise<void> {
           ) < 1e-9,
         )
       }
+    }
+    if (unassigned && handed) {
+      assert.deepEqual(
+        [handed.member['id'], handed.member['runs']],
+        [unassigned.member['id'], 1],
+        'the member that was handed no runner serves the second run, and counts only that run',
+      )
+      const claimed = status['createdAt'] + status['start'].claimMs
+      assert.ok(
+        claimed - unassigned.before >= leaseSec * 1000,
+        'the member stayed with the run that took it for its notice',
+      )
+      console.log(
+        'taken: the member was seen with the first run ' +
+          (unassigned.seen - unassigned.before) +
+          ' ms after that run was asked for, the second run had it ' +
+          (handed.at - unassigned.before) +
+          ' ms after, and claimed a row ' +
+          (claimed - unassigned.before) +
+          ' ms after, ' +
+          status['start'].claimMs +
+          ' ms after it was created',
+      )
+      await standingAlone()
+      const runner = runners[0]!
+      const exited = new Promise<number | null>((resolve) => runner.child.once('exit', resolve))
+      runner.child.kill('SIGTERM')
+      assert.equal(await exited, 0, 'a standing runner that is stopped exits 0')
+      assert.deepEqual(await members(), [], 'a runner that is stopped leaves the pool')
     }
     if (standing) {
       const member = await standingAlone()

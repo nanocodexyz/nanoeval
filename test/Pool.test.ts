@@ -278,9 +278,12 @@ test('a machine has a member for each run it serves and one more that stands by'
     return member
   }
   const holding = (...ids: number[]) => ({ holding: (id: number) => ids.includes(id) })
+  const hand = (id: number, run: string) =>
+    assert.equal(Pool.assign(sql, { assignment: '{}', id, run }), true)
 
   const first = stand('one', 0)
   assert.equal(take(sql, { now: 1000, run: 'run-a', wanted })!.id, first.id)
+  hand(first.id, 'run-a')
   const second = stand('one', 1000)
   assert.equal(
     take(sql, { now: 2000, run: 'run-a', wanted }),
@@ -292,6 +295,7 @@ test('a machine has a member for each run it serves and one more that stands by'
     second.id,
     'a run that is created while the machine has a run is handed the member that stands by',
   )
+  hand(second.id, 'run-b')
   const third = stand('one', 2000)
   const other = stand('two', 2000)
   assert.equal(
@@ -299,6 +303,7 @@ test('a machine has a member for each run it serves and one more that stands by'
     other.id,
     'a member of another machine is one more runner of the run',
   )
+  hand(other.id, 'run-a')
 
   assert.deepEqual(
     Pool.due(sql, { ...holding(third.id), now: 60_000 }).map((due) => due.member.id),
@@ -370,6 +375,106 @@ test('the members of a pool made before machines were named stay, and one with a
     Pool.all(sql).map((member) => member.id),
     [2],
     'the runners that left before are no members either',
+  )
+})
+
+test('a machine member that a run took and handed no runner goes back to the pool one notice later', () => {
+  const sql = open()
+  const machine: Pool.Spec = {
+    ...spec,
+    kind: 'machine',
+    provider: null,
+    runtime: null,
+    template: null,
+  }
+  const wanted: Pool.Wanted = { ...machine, backend: 'auto' }
+  const stand = (name: string) => {
+    const member = Pool.enroll(sql, {
+      idleSec: 0,
+      machine: name,
+      noticeSec: 10,
+      now: 0,
+      spec: machine,
+      token: 't',
+      usd: 0,
+    })
+    Pool.seen(sql, { capabilities, id: member.id, now: 1000 })
+    return member.id
+  }
+  const actions = (input: Pool.due.Input) =>
+    Pool.due(sql, input).map((entry) => [entry.member.id, entry.action])
+  const lost = stand('one')
+  const kept = stand('two')
+  assert.equal(take(sql, { now: 2000, run: 'run-a', wanted })!.id, lost)
+  assert.equal(take(sql, { now: 2000, run: 'run-b', wanted })!.id, kept)
+  assert.equal(Pool.assign(sql, { assignment: '{}', id: kept, run: 'run-b' }), true)
+  for (const id of [lost, kept]) Pool.seen(sql, { id, now: 9000 })
+
+  assert.equal(Pool.wakeAt(sql), 12_001, 'the alarm is set for the end of the notice of the take')
+  assert.deepEqual(actions({ holding: () => true, now: 12_000 }), [])
+  assert.deepEqual(
+    actions({ holding: () => true, now: 12_001 }),
+    [[lost, 'return']],
+    'the member whose runner still asks goes back, and the one that was handed its run stays',
+  )
+  assert.deepEqual(
+    actions({ holding: () => false, now: 19_001 }),
+    [
+      [lost, 'close'],
+      [kept, 'close'],
+    ],
+    'a member whose runner asks no more is closed, taken or not',
+  )
+  assert.equal(Pool.returned(sql, { id: kept }), false, 'a member that has its run is not returned')
+  assert.equal(Pool.returned(sql, { id: lost }), true)
+  const back = Pool.get(sql, lost)!
+  assert.deepEqual(
+    [back.state, back.run, back.runs],
+    ['idle', null, 0],
+    'it stands by again, and the run that handed it nothing is no run of it',
+  )
+  assert.equal(Pool.returned(sql, { id: lost }), false)
+  assert.equal(
+    Pool.assign(sql, { assignment: '{}', id: lost, run: 'run-a' }),
+    false,
+    'the run that took it is refused once the member went back',
+  )
+  assert.equal(Pool.wakeAt(sql), 19_001)
+
+  assert.equal(take(sql, { now: 13_000, run: 'run-c', wanted })!.id, lost)
+  assert.equal(Pool.assign(sql, { assignment: '{}', id: lost, run: 'run-a' }), false)
+  assert.equal(Pool.assign(sql, { assignment: '{}', id: lost, run: 'run-c' }), true)
+  assert.equal(Pool.get(sql, lost)!.runs, 1)
+  assert.deepEqual(actions({ holding: () => true, now: 1_000_000 }), [])
+})
+
+test('a member that a run took before the pool kept the time of a take goes back one notice after its runner last asked', () => {
+  const sql = Rows.database()
+  sql.run(Pool.tables[0]!.replace(/,\s+taken_at INTEGER/, ''))
+  sql.run(
+    `INSERT INTO members (state, spec, token, capabilities, created_at, seen_at, idle_sec, notice_sec, usd, run, runs, assignment)
+      VALUES ('assigned', ?, 't', ?, 0, 5000, 0, 60, 0, 'run-a', 1, NULL), ('assigned', ?, 't', ?, 0, 5000, 0, 60, 0, 'run-b', 1, '{}')`,
+    ...Array.from({ length: 2 }, () => [
+      JSON.stringify({ ...spec, kind: 'machine', provider: null, runtime: null, template: null }),
+      JSON.stringify(capabilities),
+    ]).flat(),
+  )
+  Pool.setup(sql)
+  Pool.setup(sql)
+  assert.deepEqual(
+    Pool.all(sql).map((member) => [member.id, member.taken_at]),
+    [
+      [1, 5000],
+      [2, null],
+    ],
+  )
+  assert.deepEqual(Pool.due(sql, { holding: () => true, now: 65_000 }), [])
+  assert.deepEqual(
+    Pool.due(sql, { holding: () => true, now: 65_001 }).map((entry) => [
+      entry.member.id,
+      entry.action,
+    ]),
+    [[1, 'return']],
   )
 })
 
