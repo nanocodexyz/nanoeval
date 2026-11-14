@@ -3450,3 +3450,30 @@ Every command that was refused ended in an uncaught rejection: Node printed the 
 - `npm run lint`, `npm run check:types`, `npm test`.
 
 **Not verified.** `subsets.json` ships one subset, `smoke` of `terminal-bench-2.1`, with the four task ids that the revision command was run on: the ids were read from an import of that eval, and no run was made through `--subset smoke`. The lab path was not run: it needs a build of nanocode.
+
+## 2026-11-14: a baseline is found by rule
+
+A comparison needed the id of its baseline typed by hand, and a baseline whose errored rows had been retried needed the ids of its reruns too. The run to compare against is nearly always the same one: the last full run on the pins.
+
+**The rule.** `--baseline latest`, on `run --wait`, `revision` and `compare`, is the newest run in the list of runs that
+
+- has finished, was not cancelled, and is not a rerun of another run,
+- is of the same eval and the same version digest,
+- ran on the builds this checkout pins: the Worker named the pinned nanocode-ts release, and every runner reported the pinned hand and no other,
+- has every agent of the run it is set against, with the same id, harness, orchestration, model and thinking,
+- holds every task of that run. It may hold more: a full run is a baseline for every subset, and the comparison is then over the tasks both have,
+- is not one of the runs it would be set against.
+
+The command prints the id it took. When none fits it is refused before a run is created, with the count of runs it read by the first reason each did not fit. A rerun cannot ask for `latest`: its selection is the rows of its run, and its baseline is named. `--with-reruns` adds the reruns a run lists, and theirs, to the baseline and, for `compare`, to each run named: a rerun that is still under way counts with the rows it has ended.
+
+**Why the pins and not "the latest run".** The latest run of an eval is often the one made a minute ago on the change under test. A baseline has to be what the change is measured against, and the pins are the one build every checkout agrees on. A run on another build is named by its id.
+
+**Why not the same number of attempts.** The comparison handles sides of different sizes, and a baseline with more attempts is a better one. The line that names the baseline is followed by the table with both counts.
+
+**Checked.**
+
+- `test/Baseline.test.ts`: a run that fits, each reason a run does not fit, the order of the search, that it stops at the first fit, and the refusal with its counts.
+- On directory slots with the scripted model, a Worker with 16 listed runs of one eval: `compare --baseline latest RUN` for a run of 8 tasks took the earlier full run, past 11 newer runs of fewer tasks, a cancelled run and three reruns, and printed the comparison of the entry on comparisons; with `--with-reruns` the baseline was that run with its two reruns and the verdict the regression at 0.010. A run of 6 tasks took the latest run that held those 6. `run --subset smoke --attempts 2 --baseline latest --with-reruns --fail-on regression --wait` took the latest run that held the two tasks with its rerun, and exited 0 on no change. An agent no run had was refused with `of the runs listed, 3 a rerun, 1 cancelled, 11 without these agents` and no run was made; a rerun with `latest` and an id that is no run were each refused in one line.
+- `npm run lint`, `npm run check:types`, `npm test`.
+
+**Not verified.** A deployed Worker with many runs: the search reads the config and the status of each listed run of the eval version, newest first, until one fits. A lab, where `revision --baseline latest` would take the last run on the pins: not run, it needs a build. A run whose runners reported two hands is never a baseline by rule, which is intended and was only unit tested.

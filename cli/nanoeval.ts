@@ -14,17 +14,19 @@ import * as Converter from '../sandbox/Converter.ts'
 import * as Prune from '../sandbox/Prune.ts'
 import * as Runner from '../sandbox/Runner.ts'
 import * as Store from '../sandbox/Store.ts'
+import * as Baseline from '../src/Baseline.ts'
 import * as Bootstrap from '../src/Bootstrap.ts'
 import * as Compare from '../src/Compare.ts'
 import * as Config from '../src/Config.ts'
 import * as E2b from '../src/E2b.ts'
-import type * as Eval from '../src/Eval.ts'
+import * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
 import type * as Ledger from '../src/Ledger.ts'
 import * as Pins from '../src/Pins.ts'
 import * as Protocol from '../src/Protocol.ts'
 import type * as Runs from '../src/Runs.ts'
 import * as Sandbox from '../src/Sandbox.ts'
+import * as Slot from '../src/Slot.ts'
 import * as Subset from '../src/Subset.ts'
 import * as Task from '../src/Task.ts'
 import * as Timeline from '../src/Timeline.ts'
@@ -110,7 +112,7 @@ const usage = `nanoeval <command>
   run       --url URL --token T (--eval NAME[@DIGEST] [--only TASK]... [--only-file FILE]...
             [--subset NAME]... [--subsets FILE] [--limit N] | --task DIR...
             | --rerun RUN [--failed] [--errored] [--only TASK]... [--agent ID]...)
-            [--baseline RUN]... [--fail-on regression|lost|any-failure]...
+            [--baseline RUN|latest]... [--with-reruns] [--fail-on regression|lost|any-failure]...
             (--agent ID=HARNESS:MODEL[:THINKING]... | --oracle) [--judge PROVIDER:MODEL[:THINKING]]
             [--attempts 1] [--provider local|e2b|gateway] [--backend auto|krun|ns|dir] [--slots 4]
             [--sandboxes 1] [--memory-mb N] [--network private|host] [--template NAME]
@@ -181,8 +183,11 @@ const usage = `nanoeval <command>
             no attempt errored, also when attempts failed, and 1 when one errored or was
             cancelled. Without --wait it exits 0 once the run is created. A command that
             is refused exits 1, and an unknown command 2. With --wait, --baseline RUN
-            (repeat it for the reruns of the baseline) sets the run against that run as
-            compare --baseline does, and --fail-on makes the exit status a gate:
+            (repeat it for the reruns of the baseline, or add --with-reruns for every rerun
+            the baseline has) sets the run against that run as compare --baseline does.
+            --baseline latest takes the latest finished run of the same eval version that
+            ran on the builds this checkout pins, was not cancelled, is no rerun, and holds
+            the tasks and the agents of this run. --fail-on makes the exit status a gate:
             regression exits 3 when the verdict against the baseline is a regression,
             lost exits 3 also when a single task is lost, any-failure exits 4 when an
             attempt failed or errored. 3 goes before 4, and 4 before 1.
@@ -263,8 +268,8 @@ const usage = `nanoeval <command>
   attempt   --url URL --token T RUN ATTEMPT [ARTIFACT]
   export    --url URL --token T RUN --out DIR
             Write the run as a Harbor job directory, and print where.
-  compare   --url URL --token T [--baseline RUN]... [--fail-on regression|lost|any-failure]...
-            RUN...
+  compare   --url URL --token T [--baseline RUN|latest]... [--with-reruns]
+            [--fail-on regression|lost|any-failure]... RUN...
             Print one table of the agents of these runs: attempts, outcomes, time, tokens and
             estimated cost per agent, and the outcome of every task per agent. Runs of one
             agent on different nanocode revisions are separate rows, and so are runs that
@@ -276,6 +281,9 @@ const usage = `nanoeval <command>
             gained, and the verdict a regression or an improvement, only when pass counts
             that far apart have a chance of 0.05 or less under no change; otherwise a task
             moved within noise. A task whose attempts all errored on a side is not compared.
+            --baseline latest is the latest finished run on the pinned builds that holds the
+            tasks and agents of the runs named, as for run. --with-reruns adds to every run
+            named, and to the baseline, the reruns it has.
             --fail-on makes the exit status a gate, as for run: 3 for a regression (or, with
             lost, a lost task) of any of the runs, 4 with any-failure when an attempt of the
             runs that stands failed or errored, 0 otherwise.
@@ -409,6 +417,85 @@ function subsetsFile(named: string | undefined): string {
       process.env['NANOEVAL_SUBSETS'] ??
       Path.join(import.meta.dirname, '..', 'subsets.json'),
   )
+}
+
+type Api = ReturnType<typeof client>
+
+async function candidate(api: Api, id: string): Promise<Baseline.Candidate> {
+  const [config, status] = await Promise.all([api.config(id), api.status(id)])
+  return {
+    agents: config.agents,
+    cancelled: Boolean(status['cancelled']),
+    eval: status['eval'],
+    id,
+    nanocode: status['nanocode'] ?? { hands: [], harness: null },
+    rerun: Boolean(config.rerun),
+    state: status['state'],
+    tasks: [...new Set((status['attempts'] as { task: string }[]).map((attempt) => attempt.task))],
+  }
+}
+
+async function withReruns(api: Api, ids: readonly string[]): Promise<string[]> {
+  const found: string[] = []
+  const add = async (id: string): Promise<void> => {
+    if (found.includes(id)) return
+    found.push(id)
+    for (const rerun of ((await api.status(id))['reruns'] ?? []) as string[]) await add(rerun)
+  }
+  for (const id of ids) await add(id)
+  return found
+}
+
+async function baselines(
+  api: Api,
+  input: {
+    named: readonly string[]
+    reruns: boolean
+    wanted: () => Promise<Omit<Baseline.Wanted, 'pins'>>
+  },
+): Promise<Compare.Run[]> {
+  const ids: string[] = []
+  for (const name of input.named) {
+    if (name !== Baseline.rule) {
+      ids.push(name)
+      continue
+    }
+    const manifest = JSON.parse(
+      await Fs.readFile(Path.join(import.meta.dirname, '..', 'package.json'), 'utf8'),
+    ) as { dependencies: Record<string, string> }
+    const wanted = {
+      ...(await input.wanted()),
+      pins: {
+        hand: Pins.release(Slot.runtime.release),
+        harness: Pins.pinned(manifest.dependencies['nanocode-ts']!),
+      },
+    }
+    const listed = (await api.runs()).runs.filter(
+      (run) =>
+        run.state === 'finished' &&
+        run.eval.name === wanted.eval.name &&
+        run.eval.version === wanted.eval.version,
+    )
+    const found = await Baseline.latest(wanted, {
+      ids: listed.map((run) => run.id),
+      read: (id) => candidate(api, id),
+    })
+    console.error(
+      'baseline: ' +
+        found.id +
+        ', the latest finished run of ' +
+        wanted.eval.name +
+        '@' +
+        wanted.eval.version.slice(0, 12) +
+        ' on ' +
+        Pins.text(found.nanocode) +
+        ' that holds these tasks with ' +
+        wanted.agents.map((agent) => agent.id).join(' and '),
+    )
+    ids.push(found.id)
+  }
+  const all = input.reruns ? await withReruns(api, ids) : ids
+  return Promise.all(all.map((id) => api.results(id)))
 }
 
 export type Gate = 'any-failure' | 'lost' | 'regression'
@@ -1125,6 +1212,7 @@ async function main(lab?: Revision.Lab): Promise<void> {
       wait: { default: false, type: 'boolean' },
       'warm-budget-usd': { default: '0', type: 'string' },
       'warm-sec': { type: 'string' },
+      'with-reruns': { default: false, type: 'boolean' },
       'within-sec': { default: '21600', type: 'string' },
     },
   })
@@ -1868,7 +1956,6 @@ async function main(lab?: Revision.Lab): Promise<void> {
       throw new Error(
         '--fail-on ' + [...on].join(',') + ' needs a baseline: name one with --baseline',
       )
-    const baseline = await Promise.all((values.baseline ?? []).map((id) => api.results(id)))
     const wants = async (name: string) => {
       const file = subsetsFile(values.subsets)
       const texts = await Promise.all(
@@ -2041,6 +2128,30 @@ async function main(lab?: Revision.Lab): Promise<void> {
       },
     }
     const config = parent ? rerunConfig(own, { named, parent }) : own
+    const baseline = await baselines(api, {
+      named: values.baseline ?? [],
+      reruns: values['with-reruns'],
+      wanted: async () => {
+        if (parent)
+          throw new Error(
+            '--baseline ' +
+              Baseline.rule +
+              ' reads the selection of a new run: name the baseline of a rerun by its id',
+          )
+        const found = await api.eval(
+          reference.name + (reference.version ? '@' + reference.version : ''),
+        )
+        return {
+          agents: config.agents,
+          eval: { name: reference.name, version: found.version.digest },
+          not: [],
+          tasks: Eval.select(found.entries, {
+            ...(config.limit === undefined ? {} : { limit: config.limit }),
+            ...(config.only?.length ? { only: config.only } : {}),
+          }).map((entry) => entry.name),
+        }
+      },
+    })
     const created = await api.create(config, values.location ? { location: values.location } : {})
     console.log(
       'run ' +
@@ -2115,8 +2226,23 @@ async function main(lab?: Revision.Lab): Promise<void> {
       throw new Error(
         '--fail-on ' + [...on].join(',') + ' needs a baseline: name one with --baseline',
       )
-    const runs = await Promise.all(rest.map((id) => api.results(id)))
-    const baseline = await Promise.all((values.baseline ?? []).map((id) => api.results(id)))
+    const runs = await Promise.all(
+      (values['with-reruns'] ? await withReruns(api, rest) : rest).map((id) => api.results(id)),
+    )
+    const baseline = await baselines(api, {
+      named: values.baseline ?? [],
+      reruns: values['with-reruns'],
+      wanted: async () => ({
+        agents: runs
+          .flatMap((result) => result.attempts.map((attempt) => attempt.agent))
+          .filter((agent, at, all) => all.findIndex((other) => other.id === agent.id) === at),
+        eval: runs[0]!.eval,
+        not: runs.map((result) => result.id),
+        tasks: [
+          ...new Set(runs.flatMap((result) => result.attempts.map((attempt) => attempt.task.name))),
+        ],
+      }),
+    })
     const sides = baseline.length ? Compare.lineages(runs) : []
     const changes = sides.flatMap((side) => Compare.changes(baseline, side))
     process.stdout.write(
