@@ -144,13 +144,13 @@ export function create(options: {
     format,
     name: 'krun-image',
     async convert(environment, disk) {
-      const lacks =
-        environment.image === undefined
-          ? Host.microvm((options.machine ?? Host.machine)())
-          : undefined
+      const lacks = Host.microvm((options.machine ?? Host.machine)())
       if (lacks)
         throw new ConvertError(
-          'its environment is a Dockerfile, which is built in a microVM, and ' +
+          'its environment is ' +
+            (environment.image === undefined
+              ? 'a Dockerfile, which is built in a microVM, and '
+              : 'an image, which is written to its disk in a microVM, and ') +
             lacks +
             ': import it with --backend dir, which keeps the files and runs them on directory slots without isolation, or on a machine with KVM. nanoeval doctor says what this machine lacks',
         )

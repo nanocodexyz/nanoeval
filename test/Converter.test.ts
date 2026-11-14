@@ -101,7 +101,7 @@ test('a wait for a registry that is not a whole number of seconds is refused', (
     )
 })
 
-test('a Dockerfile is refused on a machine that cannot start a microVM, before anything is built', async () => {
+test('an environment is refused on a machine that cannot start a microVM, before anything is built or pulled', async () => {
   const home = await Fs.promises.mkdtemp(Path.join(Os.tmpdir(), 'nanoeval-converter-'))
   try {
     const said: string[] = []
@@ -126,6 +126,15 @@ test('a Dockerfile is refused on a machine that cannot start a microVM, before a
             ': import it with --backend dir, which keeps the files and runs them on directory slots without isolation, or on a machine with KVM. nanoeval doctor says what this machine lacks',
         ),
       )
+    await assert.rejects(
+      converter({ krunfw: true, kvm: 'absent' }).convert(
+        { image: 'alpine:3.21', storageMb: 16 },
+        Path.join(home, 'disk'),
+      ),
+      new Converter.ConvertError(
+        'its environment is an image, which is written to its disk in a microVM, and this machine has no /dev/kvm: import it with --backend dir, which keeps the files and runs them on directory slots without isolation, or on a machine with KVM. nanoeval doctor says what this machine lacks',
+      ),
+    )
     assert.deepEqual(said, [])
     assert.deepEqual(await Fs.promises.readdir(home), [])
   } finally {

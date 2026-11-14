@@ -173,6 +173,11 @@ test('a machine without KVM is checked for the slots a runner takes there, and f
     ],
   )
   assert.match(Doctor.report(found, 'dir'), /\nready for dir slots$/)
+  assert.ok(
+    Doctor.report(Doctor.checks({ ...plain, root: true }, 'ns'), 'ns').includes(
+      'this machine has no /dev/kvm: no microVM slots (krun), and no import of an environment as a disk, which a microVM writes for an image as it does for a Dockerfile: a task is imported with --backend dir here, or on a machine with KVM',
+    ),
+  )
   assert.deepEqual(misses(Doctor.checks(plain, 'krun')).slice(0, 2), [
     [
       'this machine has no /dev/kvm, so no microVM starts on it',

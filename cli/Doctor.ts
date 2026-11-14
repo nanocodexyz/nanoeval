@@ -311,7 +311,7 @@ export function checks(facts: Facts, wanted: Backend = backend(facts)): Check[] 
   if (wanted !== 'krun' && facts.kvm === 'absent')
     found.push({
       level: 'note',
-      text: 'this machine has no /dev/kvm: no microVM slots (krun), and a task whose environment is a Dockerfile is imported with --backend dir or on a machine with KVM',
+      text: 'this machine has no /dev/kvm: no microVM slots (krun), and no import of an environment as a disk, which a microVM writes for an image as it does for a Dockerfile: a task is imported with --backend dir here, or on a machine with KVM',
     })
   if (wanted === 'dir' && !facts.root)
     found.push({
