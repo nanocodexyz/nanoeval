@@ -580,6 +580,7 @@ test('an agent is set against the agent of the baseline that is the same harness
     by: 'kind',
     differs: [],
     missing: { baseline: [], run: [] },
+    reported: [],
   })
   assert.deepEqual([change!.baseline!.passed, change!.run.passed, change!.overall.tasks], [2, 2, 3])
   const against = lines(Compare.against(baseline, run))
@@ -666,6 +667,8 @@ test('sides that differ in model, effort, payer or route are named, and refused 
   const [change] = Compare.changes(paid, plan)
   assert.deepEqual(change!.pair.differs, [
     'payer the gateway key in the baseline and a plan login through the relay in the run',
+  ])
+  assert.deepEqual(change!.pair.reported, [
     'transport responses_https_sse in the baseline and responses_websocket_v2 in the run',
     'host api.openai.com in the baseline and chatgpt.com in the run',
   ])
@@ -719,6 +722,7 @@ test('sides that differ in model, effort, payer or route are named, and refused 
       by: 'kind',
       differs: [],
       missing: { baseline: ['payer', 'transport', 'host'], run: [] },
+      reported: [],
     },
     'an effort that was typed and one that the session reported are the same effort',
   )
@@ -735,6 +739,51 @@ test('sides that differ in model, effort, payer or route are named, and refused 
   )
 })
 
+test('what the sessions of a harness report may differ: the comparison is made and says so', () => {
+  const luna = { id: 'luna', model: 'gpt-6-luna', provider: 'codex' as const }
+  const outcomes = ['passed', 'failed'] as const
+  const pinned = arm('run-old', luna, { outcomes, route: gateway })
+  const revision = arm('run-new', luna, {
+    outcomes,
+    route: { ...gateway, effort: 'low', host: 'another host', transport: 'responses_websocket_v2' },
+  })
+  const [change] = Compare.changes(pinned, revision)
+  assert.deepEqual(change!.pair, {
+    agent: 'luna',
+    baseline: ['luna'],
+    by: 'kind',
+    differs: [],
+    missing: { baseline: [], run: [] },
+    reported: [
+      'transport responses_https_sse in the baseline and responses_websocket_v2 in the run',
+      'host api.openai.com in the baseline and another host in the run',
+      'effort medium in the baseline and low in the run',
+    ],
+  })
+  assert.equal(Compare.unlike([change!.pair]), undefined)
+  const against = lines(Compare.against(pinned, revision))
+  assert.equal(
+    against[1],
+    'DIFFERS: transport responses_https_sse in the baseline and responses_websocket_v2 in the run, host api.openai.com in the baseline and another host in the run, effort medium in the baseline and low in the run: the sessions of the harness report this, so the comparison is made, and it may be what moved',
+  )
+  assert.ok(against.some((line) => line.startsWith('verdict: no change beyond noise')))
+  assert.equal(Compare.regressed([change!], 'regression'), false)
+
+  const typed = Compare.changes(
+    arm('run-old', { ...luna, thinking: 'medium' }, { outcomes, route: gateway }),
+    arm(
+      'run-new',
+      { ...luna, thinking: 'low' },
+      { outcomes, route: { ...gateway, effort: 'low' } },
+    ),
+  )[0]!.pair
+  assert.deepEqual(
+    [typed.by, typed.differs, typed.reported],
+    ['name', ['effort medium in the baseline and low in the run'], []],
+    'an effort that was typed is the operator saying it, and is refused',
+  )
+})
+
 test('a run that records no route is set against one that does with a warning, and an oracle has none', () => {
   const luna = { id: 'luna', model: 'gpt-6-luna', provider: 'codex' as const }
   const outcomes = ['passed', 'failed'] as const
@@ -747,6 +796,7 @@ test('a run that records no route is set against one that does with a warning, a
     by: 'kind',
     differs: [],
     missing: { baseline: ['payer', 'transport', 'host', 'effort'], run: [] },
+    reported: [],
   })
   assert.equal(Compare.unlike([change!.pair]), undefined)
   const against = lines(Compare.against(old, run))

@@ -55,6 +55,7 @@ export type Pair = {
   differs: string[]
   missing: { baseline: Recorded[]; run: Recorded[] }
   reason?: string
+  reported: string[]
 }
 
 export type Score = { errored: number; passed: number; scored: number }
@@ -426,11 +427,10 @@ function efforts(member: Member): string[] {
 
 function alike(one: Member, other: Member): boolean {
   if (kind(one.agent) !== kind(other.agent) || one.agent.model !== other.agent.model) return false
+  if (!one.agent.thinking && !other.agent.thinking) return true
   const left = efforts(one)
   const right = efforts(other)
-  return left.length && right.length
-    ? left.join(' ') === right.join(' ')
-    : !one.agent.thinking && !other.agent.thinking
+  return left.length > 0 && left.join(' ') === right.join(' ')
 }
 
 export function members(runs: readonly Run[]): Member[] {
@@ -521,6 +521,7 @@ function partners(
 function match(member: Member, sides: Sides): { found: Member[]; pair: Pair } {
   const { by, found, reason } = partners(member, sides)
   const differs: string[] = []
+  const reported: string[] = []
   const missing: Pair['missing'] = { baseline: [], run: [] }
   const said = (name: string, value: { after: readonly string[]; before: readonly string[] }) =>
     name +
@@ -547,10 +548,14 @@ function match(member: Member, sides: Sides): { found: Member[]; pair: Pair } {
       member.routes,
     )
     for (const each of route.differ)
-      differs.push(said(each.aspect, { after: [each.right], before: [each.left] }))
+      (each.aspect === 'payer' ? differs : reported).push(
+        said(each.aspect, { after: [each.right], before: [each.left] }),
+      )
     for (const each of route.missing) lack(each.aspect, each.side)
+    const typed = member.agent.thinking || found.some((each) => each.agent.thinking)
     if (before.length && after.length) {
-      if (before.join(' ') !== after.join(' ')) differs.push(said('effort', { after, before }))
+      if (before.join(' ') !== after.join(' '))
+        (typed ? differs : reported).push(said('effort', { after, before }))
     } else if (before.length || after.length) lack('effort', before.length ? 'right' : 'left')
   }
   return {
@@ -562,6 +567,7 @@ function match(member: Member, sides: Sides): { found: Member[]; pair: Pair } {
       differs,
       missing,
       ...(reason === undefined ? {} : { reason }),
+      reported,
     },
   }
 }
@@ -575,7 +581,12 @@ export function unlike(found: readonly Pair[]): string | undefined {
   if (!differing.length) return undefined
   return (
     differing
-      .map((pair) => pair.agent + ' differs from the baseline: ' + pair.differs.join(', '))
+      .map(
+        (pair) =>
+          pair.agent +
+          ' differs from the baseline: ' +
+          [...pair.differs, ...pair.reported].join(', '),
+      )
       .join('; ') +
     '. A comparison would set two different things against each other: pass --unlike to make it anyway'
   )
@@ -758,10 +769,16 @@ export function notes(pair: Pair): string[] {
     ...(pair.differs.length
       ? [
           'UNLIKE: ' +
-            pair.differs.join(', ') +
+            [...pair.differs, ...pair.reported].join(', ') +
             ': the sides are not the same agent, so the verdict below is not one about the harness',
         ]
-      : []),
+      : pair.reported.length
+        ? [
+            'DIFFERS: ' +
+              pair.reported.join(', ') +
+              ': the sessions of the harness report this, so the comparison is made, and it may be what moved',
+          ]
+        : []),
     ...(
       [
         [

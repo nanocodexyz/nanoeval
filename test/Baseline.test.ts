@@ -145,7 +145,8 @@ test('a baseline by rule was paid for and reached as the run it is set against',
   assert.equal(reason([login], paid([{ payer: 'login' }])), 'on another model route')
   assert.equal(
     reason([{ ...gateway, transport: 'responses_websocket_v2' }], paid([gateway])),
-    'on another model route',
+    undefined,
+    'a transport is what the harness of a run reported, and the comparison says that it differs',
   )
   assert.equal(reason([gateway, login], paid([login])), 'on another model route')
   assert.equal(reason([], paid([login])), 'without a record of who paid for their models')

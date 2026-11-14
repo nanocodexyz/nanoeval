@@ -4715,3 +4715,20 @@ Two arms of one agent, `codex:gpt-6-luna` at the effort `medium`, 89 tasks of Te
 - `npm run lint`, `npm run check:types`, and `npm test` on a machine without KVM: 285 tests, 281 passed and the 4 that need KVM were skipped.
 
 **Not verified.** The rule against a real Worker that holds runs on two routes, deployed or in a lab: the lanes run on a hand that is not the pinned release, so no run of a lane fits the pins the rule asks for, and the stand-in answers only what the command reads. `run --baseline latest`, which asks `/v1/routes` before it makes a run: the same rule behind another command, not run. After a deploy the first full run on the pins is the baseline the rule finds, as after the deploy that recorded the builds.
+
+## 2026-11-14: what a harness reports of its sessions does not refuse a comparison
+
+The entry on agents compared by what they are refused a comparison on any difference between the two sides, the transport, the host and the effort among them. Those three are read from the `run.started` event of a session: the harness under test reports them. `nanoeval revision` and `run --wait --baseline` exist to set a revision of nanocode against the pinned builds, and a revision that moves a Codex session from the WebSocket to HTTPS, or changes the effort a model defaults to, would have run its rows, been paid for, and then been refused with exit status 1 and the words that the sides are not the same agent. The difference is then the revision, and may be the regression the run was made to find.
+
+**The rule.**
+
+- A comparison is refused, unless `--unlike` asks for it, on what the deployment or the operator chose: who paid, with `through`; the model; the harness; an effort where either side typed one.
+- A transport, a host, or an effort that both sides only reported and that differs is `reported` of the pair. The comparison is made under a line `DIFFERS: transport responses_https_sse in the baseline and responses_websocket_v2 in the run: the sessions of the harness report this, so the comparison is made, and it may be what moved`, with its verdict and with the status of `--fail-on`. Where the sides are refused for another reason, the refusal and the `UNLIKE` line still name these too.
+- Two agents that typed no effort are the same agent whatever their sessions reported. An agent that typed one is the same as another only at that effort.
+- `--baseline latest` leaves a run out for another payer, and no more for another transport or host: a run that the rule takes is never refused afterwards.
+
+**Why not refuse when both sides ran the same builds.** There the harness cannot be the cause, and a transport that differs says the model was reached another way. But a Worker can be started on another build of the package without the pins of a run changing by more than that name, and the rule would then turn on how two build names read. The line above the table says the same thing to whoever reads the comparison.
+
+**Checked.** `test/Compare.test.ts`: the same payer with another transport, another host and another reported effort is paired, not refused, and the comparison prints the `DIFFERS` line and its verdict; an effort that was typed and differs is refused; the two arms of the entries above are still refused for their payer, and name the transport and the host with it. `test/Baseline.test.ts`: a run with another transport on the same payer fits. `npm run lint`, `npm run check:types`, and the unit tests of the six files this lane changed, 64 tests.
+
+**Not verified.** A revision of nanocode that changes a transport, through `nanoeval revision --baseline`: no such revision was built here. The whole of `npm test` and the lanes on this commit: the lane of the signed-in plan differs in its payer only, and no lane has two runs that differ in what their sessions report.

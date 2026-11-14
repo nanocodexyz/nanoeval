@@ -195,10 +195,11 @@ const usage = `nanoeval <command>
             --baseline latest takes the latest finished run of the same eval version that
             ran on the builds this checkout pins, was not cancelled, is no rerun, and holds
             the tasks and the agents of this run, whatever they were named there, paid for
-            as the Worker pays now. A baseline whose agent is another model or effort, or was
-            paid for another way, is refused before the run is made, and one whose sessions
-            reached the model another way when the run ends: --unlike compares them anyway
-            and marks the comparison. --fail-on makes the exit status a gate:
+            as the Worker pays now. A baseline whose agent is another model, has another
+            effort typed, or was paid for another way is refused before the run is made:
+            --unlike compares them anyway and marks the comparison. A transport, a host or
+            an effort that only the sessions reported and that differs is said above the
+            comparison, which is made. --fail-on makes the exit status a gate:
             regression exits 3 when the verdict against the baseline is a regression,
             lost exits 3 also when a single task is lost, any-failure exits 4 when an
             attempt failed or errored. 3 goes before 4, and 4 before 1.
@@ -305,10 +306,12 @@ const usage = `nanoeval <command>
             moved within noise. A task whose attempts all errored on a side is not compared.
             An agent is set against the agent of the baseline that is the same harness and
             model at the same effort, whatever either was named, and against the one of its
-            name otherwise. Sides that differ in model, effort, who paid for the model, or
-            the transport and host their sessions reported are refused after the table:
-            --unlike compares them anyway under a line that says how they differ. A side
-            that records none of this is compared with a warning.
+            name otherwise. Sides that differ in model, in an effort that was typed or in
+            who paid for the model are refused after the table: --unlike compares them
+            anyway under a line that says how they differ. Where only the transport, the
+            host or the effort that their sessions reported differ, which a revision of the
+            harness can change, a line says so and the comparison is made. A side that
+            records none of this is compared with a warning.
             --baseline latest is the latest finished run on the pinned builds that holds the
             tasks and agents of the runs named and was paid for and reached as they were, as
             for run. --with-reruns adds to every run named, and to the baseline, the reruns
