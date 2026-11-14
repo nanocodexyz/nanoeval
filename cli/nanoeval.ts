@@ -25,6 +25,7 @@ import * as Pins from '../src/Pins.ts'
 import * as Protocol from '../src/Protocol.ts'
 import type * as Runs from '../src/Runs.ts'
 import * as Sandbox from '../src/Sandbox.ts'
+import * as Subset from '../src/Subset.ts'
 import * as Task from '../src/Task.ts'
 import * as Timeline from '../src/Timeline.ts'
 import * as Import from './Import.ts'
@@ -103,10 +104,12 @@ const usage = `nanoeval <command>
   import    DATASET --out DIR [--only ID]... [--limit N] [--sources DIR]
             Write the dataset's tasks as Harbor task directories instead, with dataset.json.
   evals     --url URL --token T
-  eval      --url URL --token T NAME[@DIGEST]
-            List the imported evals, or the versions and tasks of one.
-  run       --url URL --token T (--eval NAME[@DIGEST] [--only ID]... [--limit N] | --task DIR...
-            | --rerun RUN [--failed] [--errored] [--only ID]... [--agent ID]...)
+  eval      --url URL --token T NAME[@DIGEST] [--subsets FILE]
+            List the imported evals, or the versions and tasks of one, with the subsets
+            that subsets.json names for it.
+  run       --url URL --token T (--eval NAME[@DIGEST] [--only TASK]... [--only-file FILE]...
+            [--subset NAME]... [--subsets FILE] [--limit N] | --task DIR...
+            | --rerun RUN [--failed] [--errored] [--only TASK]... [--agent ID]...)
             [--baseline RUN]... [--fail-on regression|lost|any-failure]...
             (--agent ID=HARNESS:MODEL[:THINKING]... | --oracle) [--judge PROVIDER:MODEL[:THINKING]]
             [--attempts 1] [--provider local|e2b|gateway] [--backend auto|krun|ns|dir] [--slots 4]
@@ -119,6 +122,13 @@ const usage = `nanoeval <command>
             [--out DIR] [--location HINT] [--warm-sec N [--warm-budget-usd 0]]
             [--payer deployment|plan]
             Create the rows of a run, task x agent x attempt, against one version of an eval.
+            --only names a task by its id, by its name as status prints it, or by a pattern
+            with * and ?, which takes every task whose id or name it matches. --only-file
+            reads such names from a file, one a line, # starts a comment. --subset takes the
+            tasks listed under that name for the eval in subsets.json of this checkout
+            (--subsets FILE or NANOEVAL_SUBSETS for another file), which holds
+            {"EVAL": {"SUBSET": ["task", ...]}}. The three add up, --limit then takes the
+            first N of them, and a name or a pattern that finds no task is refused.
             Task runners claim the rows: the run starts one in each sandbox it opens
             (--sandboxes, with --slots attempts at once each), and nanoeval runner attaches
             more from any machine. --sandboxes 0 waits for attached runners only. With
@@ -391,6 +401,14 @@ export function rerunSelection(values: {
         ', and narrow it with --failed, --errored, --only or --agent',
     )
   return values.failed === values.errored ? 'unpassed' : values.failed ? 'failed' : 'errored'
+}
+
+function subsetsFile(named: string | undefined): string {
+  return Path.resolve(
+    named ??
+      process.env['NANOEVAL_SUBSETS'] ??
+      Path.join(import.meta.dirname, '..', 'subsets.json'),
+  )
 }
 
 export type Gate = 'any-failure' | 'lost' | 'regression'
@@ -1059,6 +1077,7 @@ async function main(lab?: Revision.Lab): Promise<void> {
       'nanocode-ts-repository': { default: Revision.repositories.nanocodeTs, type: 'string' },
       network: { type: 'string' },
       only: { multiple: true, type: 'string' },
+      'only-file': { multiple: true, type: 'string' },
       'opened-at': { type: 'string' },
       oracle: { default: false, type: 'boolean' },
       out: { type: 'string' },
@@ -1095,6 +1114,8 @@ async function main(lab?: Revision.Lab): Promise<void> {
       state: { type: 'string' },
       'step-retries': { default: '3', type: 'string' },
       store: { type: 'string' },
+      subset: { multiple: true, type: 'string' },
+      subsets: { type: 'string' },
       task: { multiple: true, type: 'string' },
       template: { type: 'string' },
       'tick-ms': { default: '500', type: 'string' },
@@ -1586,6 +1607,20 @@ async function main(lab?: Revision.Lab): Promise<void> {
           (version.parent ? '  after ' + version.parent.slice(0, 12) : ''),
       )
     for (const entry of found.entries) console.log('  ' + entry.id + '  ' + entry.name)
+    const file = subsetsFile(values.subsets)
+    const text = await Fs.readFile(file, 'utf8').catch(() => undefined)
+    for (const [subset, wanted] of Object.entries(
+      text === undefined ? {} : (Subset.parse(text, file)[name] ?? {}),
+    ).sort(([left], [right]) => left.localeCompare(right))) {
+      const tasks = Subset.match(found.entries, wanted)
+      console.log(
+        '  subset ' +
+          subset +
+          ': ' +
+          tasks.ids.join(' ') +
+          (tasks.unknown.length ? '  (no task: ' + tasks.unknown.join(' ') + ')' : ''),
+      )
+    }
     return
   }
 
@@ -1834,12 +1869,53 @@ async function main(lab?: Revision.Lab): Promise<void> {
         '--fail-on ' + [...on].join(',') + ' needs a baseline: name one with --baseline',
       )
     const baseline = await Promise.all((values.baseline ?? []).map((id) => api.results(id)))
+    const wants = async (name: string) => {
+      const file = subsetsFile(values.subsets)
+      const texts = await Promise.all(
+        (values['only-file'] ?? []).map((path) => Fs.readFile(path, 'utf8')),
+      )
+      return [
+        ...(values.only ?? []),
+        ...texts.flatMap(Subset.lines),
+        ...(values.subset?.length
+          ? Subset.named(
+              Subset.parse(
+                await Fs.readFile(file, 'utf8').catch(() => {
+                  throw new Error(
+                    '--subset reads ' + file + ', which is not there: name it with --subsets',
+                  )
+                }),
+                file,
+              ),
+              { eval: name, file, names: values.subset },
+            )
+          : []),
+      ]
+    }
     if (lab && !values.task?.length && !values.rerun) {
       const name = required(values.eval, 'eval').split('@')[0]!
-      const held = (await api.evals()).evals.some((entry) => entry.name === name)
-        ? (await api.eval(name)).entries.map((entry) => entry.id)
+      const entries = (await api.evals()).evals.some((entry) => entry.name === name)
+        ? (await api.eval(name)).entries
         : []
-      const wanted = Revision.missing(held, selection)
+      const found = Subset.match(entries, await wants(name))
+      const loose = found.unknown.filter((text) => Subset.glob(text) || text.includes('/'))
+      if (loose.length)
+        throw new Error(
+          'the lab holds no task of ' +
+            name +
+            ' that matches ' +
+            loose.join(' or ') +
+            ': a task is imported by its id',
+        )
+      const wanted = Revision.missing(
+        entries.map((entry) => entry.id),
+        {
+          ...(selection.limit === undefined ? {} : { limit: selection.limit }),
+          ...(found.ids.length || found.unknown.length
+            ? { only: [...found.ids, ...found.unknown] }
+            : {}),
+        },
+      )
       const dataset = Catalog.find(name)
       if (wanted && !dataset)
         throw new Error(
@@ -1869,6 +1945,13 @@ async function main(lab?: Revision.Lab): Promise<void> {
       const [name, digest] = required(values.eval, 'eval').split('@')
       reference = { name: name!, ...(digest ? { version: digest } : {}) }
     }
+    const wanted = values.task?.length ? [] : await wants(reference.name)
+    if (wanted.length)
+      only = Subset.resolve(
+        (await api.eval(reference.name + (reference.version ? '@' + reference.version : '')))
+          .entries,
+        { eval: reference.name, wanted },
+      )
     const named = new Set(tokens.flatMap((token) => (token.kind === 'option' ? [token.name] : [])))
     if (lab) named.add('sandboxes')
     const provider = (

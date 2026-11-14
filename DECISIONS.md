@@ -3428,3 +3428,25 @@ Every command that was refused ended in an uncaught rejection: Node printed the 
 - `npm run lint`, `npm run check:types`, `npm test`.
 
 **Not verified.** `revision --fail-on`: it shares the code of `run --wait` and was not run, since it builds nanocode. A gate in a CI job.
+
+## 2026-11-14: tasks are chosen by name, by pattern and by subset
+
+`--only` took task ids, one a flag. `status` and `compare` print task names, a selection of ten tasks was ten flags on every command, and the same ten had to be typed again for the baseline, the run and the rerun.
+
+**The rule.**
+
+- `--only` takes an id, a name as `status` prints it (`terminal-bench/fix-git`), the last part of a name as `compare` prints it, or a pattern. A pattern is a word with `*` (any characters) or `?` (one character), matched against the whole id, the whole name and its last part, and it takes every task it matches. Nothing else is special: a bracket or a dot is itself.
+- `--only-file FILE` holds such words one a line, with `#` comments. `--subset NAME` reads `{"EVAL": {"SUBSET": ["task", ...]}}` from `subsets.json` at the root of the checkout, or from `--subsets FILE` or `NANOEVAL_SUBSETS`, and takes the list under the eval of the run. The three add up, and `--limit` takes the first N of the result in the order of the eval, as before.
+- Refused before a run exists, with one line: a name that no task has, a pattern that matches none, a last part that two tasks share (it names them), a subset the file does not have for that eval (it names the ones it has), and a file that is not there or does not have that shape.
+- The CLI resolves the words against the tasks of the eval version and sends ids, so a Worker of an earlier commit takes them. A rerun resolves `--only` against the eval of its run.
+- In a lab (`nanoeval revision`) a word is resolved against the tasks the lab holds, and one that is not there is imported by its id as before. A pattern or a name that matches nothing in the lab is refused, since nothing says which task to import.
+
+**Why a file in the checkout and not a table with the eval.** A subset is a choice of the people who run an eval, it changes more often than the eval, and it wants review. A file is versioned with the commands that use it, works against a deployed Worker and a lab alike, and needs no deploy. A table in the eval index would need a route, a migration and a protocol change to hold a dozen names.
+
+**Checked.**
+
+- `test/Subset.test.ts`: an id, a full name, a last part, patterns over ids and names, the union in the order of the eval, each refusal with its text, the file of words with comments, and the subsets file with four wrong shapes.
+- On directory slots with the scripted model, an eval of 8 tasks, one attempt each: `--only audit/t1 --only 't?' --limit 3` ran t1, t2, t3; a file with a name, an id and `*low` ran slow, t3, t4; `--subset smoke` ran its two tasks; two subsets and an `--only` ran five; a rerun with `--only audit/t5 --only 'e*'` retried the two errored rows of two tasks. Seven refusals each printed one line and exited 1 with no run created, and `nanoeval eval` printed the two subsets with their tasks.
+- `npm run lint`, `npm run check:types`, `npm test`.
+
+**Not verified.** `subsets.json` ships one subset, `smoke` of `terminal-bench-2.1`, with the four task ids that the revision command was run on: the ids were read from an import of that eval, and no run was made through `--subset smoke`. The lab path was not run: it needs a build of nanocode.

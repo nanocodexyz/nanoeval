@@ -57,6 +57,7 @@ The table says what was run. "The first version" is the flow before the eval tab
 | `nanoeval compare RUN...`: the agents of one or more runs in one table | Implemented, tested. A row that a rerun in the table retried counts once, as its retry, and a run named twice counts once: unit tested, and read on a run of 24 rows with its two reruns on directory slots, see [DECISIONS.md](DECISIONS.md#2026-11-14-compare-counts-a-row-once-when-a-rerun-retried-it). Two runs that hold the same rows of one agent are two rows of the table: unit tested |
 | `nanoeval compare --baseline RUN... RUN...`: a run set against a baseline: the pass counts of every task that moved, pass@k over the tasks both sides rate, and a verdict that allows for noise | Implemented, unit tested against figures worked by hand, and read on directory slots with the scripted model: runs of 8 tasks and 3 attempts whose answers were planned, one against the other alone and with its two reruns, and two runs of one attempt. **Not run** with a real model, see [DECISIONS.md](DECISIONS.md#2026-11-14-a-comparison-says-what-the-numbers-support) |
 | `--fail-on regression\|lost\|any-failure` on `run --wait`, `revision` and `compare`: an exit status that gates a script | Implemented, tested: a unit test of every status and its order, and each status read from a shell on directory slots with the scripted model, see [DECISIONS.md](DECISIONS.md#2026-11-14-an-exit-status-that-gates-a-script) |
+| Tasks chosen by name, by pattern, from a file and as a named subset (`--only`, `--only-file`, `--subset` with `subsets.json`) | Implemented, tested: unit tests, and each form run on directory slots with the scripted model, with every refusal read from a shell. The `smoke` subset of `terminal-bench-2.1` names four tasks of that eval and was **not run** through `--subset`, see [DECISIONS.md](DECISIONS.md#2026-11-14-tasks-are-chosen-by-name-by-pattern-and-by-subset) |
 | `nanoeval revision`: a revision of nanocode and of nanocode-ts built and run on one machine with no release, see [Evaluating a nanocode commit](#evaluating-a-nanocode-commit) | Implemented, tested: unit tests for what is built from what is named, the name of a checkout with changes, a build tree moved between a branch, a commit and such a checkout, the lab's lock, the aliases of the Worker, the tasks to import and the credential check. Run for real on a Linux machine with KVM, krun slots: the commit of the pinned hand with nanocode-ts `2672c04` on its own nanocode, the nanocode and nanocode-ts masters of the day, and a checkout with an uncommitted change, each built by the command, then four Terminal-Bench 2.1 tasks with a scripted model that runs each task's solution through the hand, two attempts each, 8 of 8 passed on both revisions, and `gpt-6-luna` on two of the tasks, 2 of 2 on both. The plain lanes on krun and on directory slots passed on the builds of the masters. **Not run**: a package in an empty lab from start to end in one build, `--hand-profile dist`, `--nanocode-ts` as a checkout, ns and directory slots through the command, two labs at once, a `claude` agent with a model |
 | What a run ran on: the nanocode-ts build of its Worker and the hand of each runner, in `status`, `compare`, the trajectory and the Harbor result, and `compare --baseline` | Implemented, tested: unit tests, every end-to-end lane asks that its run names the build of its Worker and one hand, and three runs on three builds of nanocode-ts in one state were compared under one of them, each baseline read under the build of the run set against it. A runner that starts from the runtime archive names the release its archive was built with, which the lanes on that archive ask |
 | Local sandbox provider (`nanoeval sandboxd`) | Implemented, tested |
@@ -168,6 +169,23 @@ node cli/nanoeval.ts run --eval samples --only write-greeting --attempts 3 --age
 ```
 
 `regression` is wrong for an agent that did not change at most 1 time in 20, see [Reading a comparison](#evaluating-a-nanocode-commit). `lost` holds each task to that line by itself, so over many flaky tasks it fails more often.
+
+**Choosing tasks.** `--only` names a task by its id, by its name as `status` prints it, or by a pattern with `*` and `?` that takes every task whose id or name it matches. `--only-file FILE` reads such names from a file, one a line, where `#` starts a comment. `--subset NAME` takes the tasks that `subsets.json` of this checkout lists under that name for the eval, so that a selection is written once, and `nanoeval eval NAME` prints the subsets of an eval beside its tasks:
+
+```sh
+node cli/nanoeval.ts run --eval terminal-bench-2.1 --subset smoke --attempts 3 --agent luna=codex:gpt-6-luna --wait
+node cli/nanoeval.ts run --eval terminal-bench-2.1 --only 'git-*' --only terminal-bench/fix-git --only-file tasks.txt --oracle --wait
+```
+
+```json
+{
+  "terminal-bench-2.1": {
+    "smoke": ["cancel-async-tasks", "fix-git", "git-leak-recovery", "openssl-selfsigned-cert"]
+  }
+}
+```
+
+The three options add up and `--limit` then takes the first N. A name or a pattern that finds no task, a name that two tasks share and a subset the file does not have are refused before a run exists. `--subsets FILE` or `NANOEVAL_SUBSETS` names another file. A rerun takes `--only` the same way.
 
 Blobs go to a directory by default, `~/.local/share/nanoeval/store` (`--store DIR` or `NANOEVAL_STORE`), which the runners of the same machine read. `--store r2` uploads them through the Worker into its `BLOBS` bucket instead, and runners then fetch them through their run. A runner keeps what it fetched, verified, in `~/.cache/nanoeval` (`--cache` or `NANOEVAL_CACHE`). An import keeps the image layers it read from registries in `oci` under that cache (`--layers` or `NANOEVAL_LAYERS`), so importing a dataset again downloads none of them.
 

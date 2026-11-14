@@ -1,0 +1,5 @@
+{
+  "terminal-bench-2.1": {
+    "smoke": ["cancel-async-tasks", "fix-git", "git-leak-recovery", "openssl-selfsigned-cert"]
+  }
+}
