@@ -196,7 +196,10 @@ test('the configuration takes its defaults from the attempts, and refuses what i
   refused({ eval: { ...file.eval, agents: ['sonnet'] } }, /ID=HARNESS:MODEL/)
   refused({ eval: { ...file.eval, tasks: ['alpha', 'alpha'] } }, /twice/)
   refused({ eval: { ...file.eval, attempts: 0 } }, /at least 1/)
-  refused({ nanocode: { ...file.nanocode, revision: 'pinned' } }, /not both/)
+  refused(
+    { nanocode: { ...file.nanocode, revision: 'pinned' } },
+    /nanocode names a revision, which holds that side still and goes without repository and branch: /,
+  )
   refused({ hook: { command: ['notify'], on: ['lost'] } }, /hook.on names verdicts/)
   refused({ bisect: 'always' }, /"auto" or "off"/)
 })

@@ -88,6 +88,8 @@ done
 [[ $name =~ ^[a-z][a-z0-9-]*$ ]] || die "a name is lowercase letters, digits and dashes: $name"
 command -v systemctl >/dev/null || die 'systemctl is not on the PATH'
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+systemctl --user show-environment >/dev/null 2>&1 ||
+  die "$(id -un) has no systemd user session, which the services run in. On Ubuntu: sudo apt-get install -y libpam-systemd dbus-user-session && sudo loginctl enable-linger $(id -un), then log in again"
 config=${XDG_CONFIG_HOME:-$HOME/.config}/$name
 units=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 bin=$HOME/.local/bin

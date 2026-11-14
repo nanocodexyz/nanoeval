@@ -273,7 +273,10 @@ function source(value: unknown, name: string): Source {
   const fields = table(value, { allowed: ['branch', 'repository', 'revision'], name: name })
   if (fields['revision'] !== undefined) {
     if (fields['branch'] !== undefined || fields['repository'] !== undefined)
-      throw new ConfigError(name + ' names a revision to hold or a branch to watch, not both')
+      throw new ConfigError(
+        name +
+          ' names a revision, which holds that side still and goes without repository and branch: leave those two out, or leave the revision out to watch the branch',
+      )
     return { revision: text(fields['revision'], name + '.revision') }
   }
   return {

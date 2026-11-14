@@ -484,7 +484,7 @@ export function checks(facts: Facts, wanted: Backend = backend(facts)): Check[] 
   if (!facts.systemd)
     found.push({
       level: 'note',
-      text: 'no systemd user session here: scripts/install-linux.sh and the units of the watcher and of a runner are for a machine that has one',
+      text: 'no systemd user session here: scripts/install-linux.sh and the units of the watcher and of a runner are for a machine that has one. On Ubuntu "sudo apt-get install -y libpam-systemd dbus-user-session && sudo loginctl enable-linger $USER" and a new login give this user one',
     })
   return found
 }
