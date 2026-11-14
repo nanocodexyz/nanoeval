@@ -4596,3 +4596,49 @@ And the run ends a claim before it deletes the sessions of the claim. A held `ag
 - The order of `lose()` under a held `agent` call: it is read from the code, and no lane forces a claim to be lost in the moment a call is held. The lanes that lose a claim passed with it, see above.
 - krun and ns slots: the lane runs on directory slots, and the object of a session does not know the kind of slot.
 - A hand that is frozen in a real run. The 30 s are measured with one session and no run.
+
+## 2026-11-14: the run reads a request before it answers it, and every lane reads the log of its Worker
+
+**The defect.** The Worker hands the body of a request for a run to the object of the run as a stream. Where the run answered before it had read that body, local workerd logged `Uncaught TypeError: Can't read from request stream after response has been sent.`, and after a large body the request that followed was lost: wrangler's proxy answered it 500 with `Error inside ProxyWorker (the affected request failed; the dev server continues)` and `Network connection lost`. The run answers that way for a run that does not exist (404), a runner token it refuses (401), a method a route does not take (405), and an artifact of a claim that is gone, which is refused with 410 before its bytes are read. The entry on installed agents made a refused model request read its body for this reason, "A refusal must read the request first", and every other answer of the run was left as it was.
+
+The lanes had the line all along. Each plain lane on directory slots starts a runner of another protocol, which is refused and leaves a run the Worker does not know: in the Worker logs kept of about twenty earlier runs of the workflow's steps, 118 of the 137 logs of those six lanes hold the line once. Nothing read those logs.
+
+**Measured** against `wrangler dev` 4.151.1 alone (workerd 1.20261012.1, Node 24.22.1) on a Linux machine with 5 cores at a load average near 10, one run of each line: four `POST /v1/runs/<a new UUID>/runner/leave` with a JSON body, four `POST` of 200 kB to `/cancel` of such a run and four `GET` of such a run, 1.2 s apart.
+
+| | `Uncaught TypeError` lines | The twelve answers |
+| --- | ---: | --- |
+| The commit before this change | 6: one for each `leave`, one for the first and the third `cancel` | ten 404, and 500 for the second and the fourth `cancel`, each the request after a line |
+| The same with `request.body.cancel()` before the answer | 6, the same six | the same: ten 404 and two 500 |
+| With this change | 0 | twelve 404 |
+
+**The rule.** The run reads what is left of the body of a request before it answers, in one place, `fetch` of the `Run` object, so a route that is added later cannot leave it out. What is left is piped to nothing and not collected, so a body nobody asked for is not held in memory. Cancelling the body instead is rejected by the table above.
+
+**The assertion.** Every end-to-end lane now ends the way the lane of the entry before does: it stops its Worker, waits until the output of wrangler has closed, and reads `wrangler.log`. A line that holds `Uncaught` fails the lane and is printed. The `plan` lane allows three lines by their text, `Uncaught Claude.InvalidError: the code does not belong to this sign-in`, `Uncaught Claude.LoginRequiredError: the sign-in was refused` and `Uncaught Claude.LoginRequiredError: Claude is not signed in`. All three are refusals of the vault that its caller catches: workerd logs an error that a method of an object threw to its caller in those words although the caller caught it. The lane gives the vault a code of another sign-in and a login that the scripted Claude refuses, on purpose, and the route answers both as refusals. The third is the vault asked for a credential after the plan was signed out: the lane signs the plan out right after it creates its last run, and a turn that the session took before that asks the vault from the egress, which answers the refusal as the run expects. The kept logs never have it, there the turn was refused when it was submitted, and one run of the lane on a faster machine did. No lane is left out by name.
+
+What the kept logs say this costs: of their 1,185 Worker logs of 79 lanes, 219 lines hold `Uncaught`, and all of them are one of the three kinds named here and in the entry before: 119 of the unread body, 40 of a deleted session, 60 of the two refusals of the vault. The 325 logs of the 25 lanes on krun slots and the 124 logs of the 11 lanes on ns slots hold none.
+
+**Checked** on the same machine, without KVM, at a load average between 10 and 20. Before is the commit before the change of the entry before this one, each lane run once unless it says otherwise.
+
+- `npm run lint`, `npm run check:types`, `npm test` (265 tests, 261 passed, the 4 that need KVM skipped) and `npm run dry-run`.
+- Lanes on directory slots, run once before and once with the two changes but where the table says otherwise, counting the lines of the Worker's log that hold `Uncaught`. Every lane passed, before by its own assertions alone.
+
+| Lane | Before | With the changes |
+| --- | --- | --- |
+| The plain lane | 1, the unread body | 0 |
+| Failure kinds and a rerun | 0 | 0 |
+| Orchestrator restart | 0 | 0 |
+| A session that lost the turn of its row | not run | 0 |
+| The Worker killed in a turn while a cell runs on the hand | 0 | not run |
+| A runner lost during the run | 4, `session deleted` | 0 |
+| A key that is spent during the run | 2, `session deleted` | 0 |
+
+  7 such lines in the 5 lanes that ran both times before, none after. What stays in the log of a Worker is what workerd writes when a hand goes away while its session still writes to it, a hand that its runner stops before the verifier or a runner that is killed: `disconnected: write(): Broken pipe` or `Connection reset by peer`, 5 lines in those lanes before and 8 after, and 627 in the kept logs. A deletion writes none: the 27 single deletes of the entry before logged 43 error lines before and none of any kind with the change. These lines do not hold `Uncaught` and no lane reads them.
+- The lane of the entry before, a run cancelled in a turn: passed with both changes, with no error and no warning line in the log of its Worker.
+
+**Not verified.**
+
+- The lanes on krun and ns slots with the assertion: the machine has no KVM. Their kept logs hold no such line, see above.
+- The directory lanes that are not listed under Checked, the `plan` lane among them: its third line is allowed from the log of one run elsewhere, and the lane was not run here with it.
+- The three refusals of the vault are still logged by a Worker that an operator runs. The vault would have to answer them as values for the lines to go.
+- A deployed Worker, where no proxy of wrangler stands before the run. Whether Cloudflare logs the unread body there was not read.
+- Other versions of wrangler and workerd.

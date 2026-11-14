@@ -242,6 +242,12 @@ export class Run extends DurableObject<Env> {
   }
 
   override async fetch(request: Request): Promise<Response> {
+    const response = await this.answer(request)
+    if (!request.bodyUsed) await request.body?.pipeTo(new WritableStream())
+    return response
+  }
+
+  private async answer(request: Request): Promise<Response> {
     const url = new URL(request.url)
     const parts = url.pathname.split('/').filter(Boolean)
     try {

@@ -105,6 +105,13 @@ const goneIn = underAgent ? 'run' : 'verify'
 const shared = scenario === 'shared'
 const standing = scenario === 'standing'
 const planned = scenario === 'plan'
+const vaultRefusals = planned
+  ? [
+      'Uncaught Claude.InvalidError: the code does not belong to this sign-in',
+      'Uncaught Claude.LoginRequiredError: Claude is not signed in',
+      'Uncaught Claude.LoginRequiredError: the sign-in was refused',
+    ]
+  : []
 const planSecret = Crypto.randomBytes(32).toString('hex')
 const firstTokenAnswers = 3
 const claudePlan = {
@@ -982,7 +989,10 @@ async function main(): Promise<void> {
     assert.deepEqual(
       Util.stripVTControlCharacters(Fs.readFileSync(Path.join(out, 'wrangler.log'), 'utf8'))
         .split('\n')
-        .filter((line) => line.includes('Uncaught')),
+        .filter(
+          (line) =>
+            line.includes('Uncaught') && !vaultRefusals.some((refusal) => line.includes(refusal)),
+        ),
       [],
       'the Worker logged an error that nothing caught',
     )
@@ -1399,7 +1409,7 @@ async function main(): Promise<void> {
         api.create(config),
         /closes the network of its agent, which only krun slots on a private network enforce/,
       )
-      console.log('e2e passed: ' + label)
+      await pass()
       return
     }
     if (stood) {
@@ -2574,7 +2584,7 @@ async function main(): Promise<void> {
         'the scan read the storage of the vault',
       )
       console.log('plan: ' + scanned + ' files of the lane hold no token and no secret')
-      console.log('e2e passed: ' + label)
+      await pass()
       return
     }
 
@@ -2618,7 +2628,7 @@ async function main(): Promise<void> {
       assert.equal(again['counts'].passed + again['counts'].failed, total)
       assert.equal(again['lostClaims'], 0)
       assert.ok(again['runners'][0].endsAt - again['createdAt'] <= 121_000)
-      console.log('e2e passed: ' + label)
+      await pass()
       return
     }
 
@@ -2628,7 +2638,7 @@ async function main(): Promise<void> {
       assert.equal(mock!.paymentRefusals.length, 2)
       assert.deepEqual(mock!.funding, [{ topUp: 5 }])
       assert.ok(status['key'].funded, 'the run set the top-up of the key when it was created')
-      console.log('e2e passed: ' + label)
+      await pass()
       return
     }
 
@@ -2642,7 +2652,7 @@ async function main(): Promise<void> {
       for (const row of rows) assert.equal(row['claims'], 2, 'each row was retried once')
       assert.equal(status['lostClaims'], 0)
       assert.equal(unreachedSeen.size, rows.length)
-      console.log('e2e passed: ' + label)
+      await pass()
       return
     }
 
@@ -2667,7 +2677,7 @@ async function main(): Promise<void> {
         Math.abs(status['spend'].modelUsd - mock!.modelCosts.reduce((all, usd) => all + usd, 0)) <
           1e-9,
       )
-      console.log('e2e passed: ' + label)
+      await pass()
       return
     }
 
@@ -2832,7 +2842,7 @@ async function main(): Promise<void> {
       })
       assert.equal(refused.status, 400)
       assert.match(await refused.text(), /no failed attempt to rerun/)
-      console.log('e2e passed: ' + label)
+      await pass()
       return
     }
 
@@ -2851,7 +2861,7 @@ async function main(): Promise<void> {
       console.log(
         'alone: ' + detail['result'].sandbox.memoryMb + ' MB of a machine with ' + machine + ' MB',
       )
-      console.log('e2e passed: ' + label)
+      await pass()
       return
     }
 
@@ -2866,7 +2876,7 @@ async function main(): Promise<void> {
         started['nanoeval/write-greeting']! < started['nanoeval/uppercase-message']!,
         'a small attempt starts while a larger one ahead of it waits for memory',
       )
-      console.log('e2e passed: ' + label)
+      await pass()
       return
     }
 
@@ -2881,7 +2891,7 @@ async function main(): Promise<void> {
         [],
         'a runner short of disk removes every disk that no row of it uses, of its run and of others',
       )
-      console.log('e2e passed: ' + label)
+      await pass()
       return
     }
 
@@ -3705,7 +3715,7 @@ async function main(): Promise<void> {
     }
     Fs.writeFileSync(Path.join(out, 'summary.json'), JSON.stringify(measured, null, 2) + '\n')
     console.log(JSON.stringify({ ...measured, import: { ms: importMs } }))
-    console.log('e2e passed: ' + label)
+    await pass()
   } finally {
     for (const runner of runners) {
       runner.child.kill('SIGKILL')
