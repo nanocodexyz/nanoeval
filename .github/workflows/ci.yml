@@ -144,6 +144,11 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: dir
           NANOEVAL_E2E_SCENARIO: forgotten
+      - name: End to end, directory slots, a codex session with direct tools beside one in Code Mode
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: direct
       - name: End to end, directory slots, two attached runners
         run: npm run e2e
         env:

@@ -5012,3 +5012,25 @@ The causes, to the line:
 - A run in which a sound task fails for a cause of the machine, and its rerun: the 82 that count as sound are the ones every oracle run since 2026-11-10 passed, with `mailman`, `custom-memory-heap-crash`, `query-optimize` and `pypi-server` passing only when rerun or on another machine in some of them, which is what `--with-reruns` is for. The reading of a rerun is unit tested, and was not met in the run above.
 - The reproductions under a memory limit.
 - How often the verifier of `torch-tensor-parallelism` hangs: the counts are small, here and in the earlier entries (3 of 3, then 1 of 4 on krun slots, 5 of 6 on a 48-thread machine).
+
+## 2026-11-14: a lane for a `codex` session with direct tools
+
+The entry on the `codex-direct` agent left its end-to-end lanes unrun, and the entry on the cell that answered beside a running one found the gap that this leaves: on a build of nanocode-ts without `codex_orchestration` a turn whose body says `codex_orchestration: "direct"` is a Code Mode session, and nothing here says so. The unit tests hold the agent syntax, the configuration and the comparison, which is this repository's half. What the pinned build does with the field was checked once, by hand, on nanocode-ts's own harness. This entry adds the lane that checks it in a run. It changes `test/e2e.ts`, `.github/workflows/ci.yml` and README.md, and nothing a run executes.
+
+**The lane.** `NANOEVAL_E2E_SCENARIO=direct`, on directory slots: one row of `write-greeting` for each of two agents on `gpt-right`, a model nanocode does not know. `cells` is a `codex` session and `direct` a `codex` session with `orchestration: "direct"`, in one run and on one Worker, paid with a key so that their Responses requests reach the scripted endpoint without the gateway, as in the kill `pair`. The scripted model answers by the tools a request declares: a session that is given `exec` gets a cell that calls `tools.exec_command` with the solution, and a session that is not gets a function call of `exec_command` with the solution and `echo direct-$((40 + 2))`. Each then gets the final message.
+
+It asks that both rows passed with two model calls each, that the `tool.call` events of the direct attempt are one `exec_command` and those of the other an `exec` and the `exec_command` inside it, that two of the four requests declared `exec` and `wait` and two `exec_command`, none of them both, and that the model of the direct session read `direct-42` in the output of its call: the command ran on the hand and its output came back as the result of the function call.
+
+**Rejected.** A check in the Worker that refuses a build without the option: a package does not say which fields of a turn it reads, and a release of nanocode-ts is trusted as built. A unit test of the turn body: `worker/Harness.ts` sends the field on every build, and what failed without a word is what the build does with it.
+
+**What a session with direct tools is given** on the pinned `build-f3aa94f`, as the lane printed it: `exec_command`, `write_stdin`, `view_image`, the hand's `Bash`, `Edit`, `Read`, `TaskStop` and `Write`, eight subagent tools (`close_agent`, `hands`, `interrupt_agent`, `list_agents`, `send_agent_message`, `spawn_agent`, `submit_result`, `wait_agent`) and `web__run`: 17 tools, and no `apply_patch` for a model nanocode does not know. The session beside it is given `exec` and `wait`.
+
+**Checked** on a machine with 5 cores and no KVM, on directory slots. No model was paid for.
+
+- **On the pinned `build-f3aa94f` with the hand `nanocode-cli-3f97ab0`**, one run of a copy of the lane with three added lines that write each model request to a file: both rows passed, two of the four requests declared `exec` and `wait` and two the 17 tools above, and the second request of the direct session held `direct-42` in the output of its function call. That run then failed on a mistake of the lane as first written, which read the name of a tool from the wrong field of a `tool.call` event. The field was corrected, and the corrected lane had not run again on that build when this entry was written.
+- **On `build-f3aa94f` with the hand `nanocode-cli-d2473f9`**, the pins of this commit: the corrected lane passed on this commit in 88 s, and once before its last rebase in 250 s.
+- **On nanocode-ts `build-8e141d5` with the hand `nanocode-cli-d2473f9`**, a later release that this repository does not pin yet: the corrected lane passed, one run of 124 s beside the lanes of other work on the machine. The direct session is given 12 tools there.
+- `npm run lint` and `npm run check:types` pass.
+- **Not run**: the lane on a build of nanocode-ts without the option. There both sessions are given `exec`, the scripted model answers both with a cell, and the lane fails on the tools of two of its requests and on the `exec` event of the direct attempt: read in the lane, with the run still waiting for the machine.
+
+**Not verified.** A real model on either arm, a deployed Worker, and the direct agent on krun and ns slots: the lane reads nothing of a slot, and the tools are those of the same hand.

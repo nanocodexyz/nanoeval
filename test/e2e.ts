@@ -76,6 +76,7 @@ const attached =
 const alone = scenario === 'alone'
 const cancelled = scenario === 'cancelled'
 const capped = scenario === 'capped'
+const direct = scenario === 'direct'
 const refusedPassing = scenario === 'refused'
 const spent = scenario === 'spent'
 const funded = scenario === 'funded'
@@ -212,6 +213,7 @@ const budgetLog: { cost: number; search: boolean }[] = []
 let budgetFlying = 0
 let budgetPeak = 0
 const midturnRequests: { decision: string; digest: string; last: string; read: string }[] = []
+const directRequests: { output: string; tools: readonly string[] }[] = []
 let killDue: number | undefined
 let scriptedCalls = 0
 let answered = 0
@@ -306,10 +308,11 @@ function cellTools(input: unknown): string[] | undefined {
 }
 
 function responses(
-  body: { input?: unknown; model?: string; tools?: unknown },
-  cost: number,
+  body: { input?: unknown; model?: string; tools?: { name?: string }[] },
+  cost?: number,
 ): string {
-  const text = JSON.stringify(body.input ?? [])
+  const input = (Array.isArray(body.input) ? body.input : []) as Record<string, any>[]
+  const text = JSON.stringify(input)
   const id = ++scriptedCalls
   const solution = solutions.find(([marker]) => text.includes(marker))
   if (!solution) throw new Error('the scripted model has no solution for this prompt')
@@ -317,24 +320,50 @@ function responses(
     'await tools.exec_command({ cmd: ' +
     JSON.stringify(solution[1]) +
     ' }); text("cell tools: " + JSON.stringify(ALL_TOOLS.map((tool) => tool.name)))'
-  codexExecs.push(execDescription(body.tools))
+  const tools = [
+    ...(body.tools ?? []),
+    ...input.flatMap((item) => (item['type'] === 'additional_tools' ? item['tools'] : [])),
+  ].flatMap((tool: { name?: string }) => tool.name ?? [])
+  const output = input.findLast((item) =>
+    ['custom_tool_call_output', 'function_call_output'].includes(item['type']),
+  )?.['output']
+  const plain = direct && !tools.includes('exec')
+  if (!plain) codexExecs.push(execDescription(body.tools))
   if (text.includes('"custom_tool_call_output"')) codexCells.push(cellTools(body.input))
-  const item = text.includes('"custom_tool_call_output"')
-    ? {
-        content: [{ annotations: [], text: 'The task is complete.', type: 'output_text' }],
-        id: 'msg_' + id,
-        role: 'assistant',
-        status: 'completed',
-        type: 'message',
-      }
-    : {
-        call_id: 'call_' + id,
-        id: 'ctc_' + id,
-        input: code,
-        name: 'exec',
-        status: 'completed',
-        type: 'custom_tool_call',
-      }
+  if (direct)
+    directRequests.push({
+      output:
+        typeof output === 'string'
+          ? output
+          : ((output ?? []) as { text?: string }[]).map((part) => part.text ?? '').join(''),
+      tools,
+    })
+  const item =
+    output !== undefined
+      ? {
+          content: [{ annotations: [], text: 'The task is complete.', type: 'output_text' }],
+          id: 'msg_' + id,
+          role: 'assistant',
+          status: 'completed',
+          type: 'message',
+        }
+      : plain
+        ? {
+            arguments: JSON.stringify({ cmd: solution[1] + '; echo direct-$((40 + 2))' }),
+            call_id: 'call_' + id,
+            id: 'fc_' + id,
+            name: 'exec_command',
+            status: 'completed',
+            type: 'function_call',
+          }
+        : {
+            call_id: 'call_' + id,
+            id: 'ctc_' + id,
+            input: code,
+            name: 'exec',
+            status: 'completed',
+            type: 'custom_tool_call',
+          }
   const response = {
     created_at: 0,
     id: 'resp_' + id,
@@ -343,7 +372,7 @@ function responses(
     output: [item],
     status: 'completed',
     usage: {
-      cost,
+      ...(cost === undefined ? {} : { cost }),
       input_tokens: 100,
       input_tokens_details: { cached_tokens: 40 },
       output_tokens: 7,
@@ -778,7 +807,9 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
             ? metered(body)
             : codex && midturnPair
               ? pairwise(body)
-              : scripted(body, turnLost ? MockGateway.modelUsd['/v1/messages'] : undefined)
+              : codex && direct
+                ? responses(body)
+                : scripted(body, turnLost ? MockGateway.modelUsd['/v1/messages'] : undefined)
         if (
           (shared || stopped || turnLost || underAgent) &&
           !parked &&
@@ -991,7 +1022,7 @@ async function main(): Promise<void> {
     ...((model === 'scripted' || installed || scenario === 'judge') && !mock
       ? { ANTHROPIC_API_KEY: 'scripted' }
       : {}),
-    ...((installed || midturnPair) && upstream.url && !mock
+    ...((direct || installed || midturnPair) && upstream.url && !mock
       ? { OPENAI_API_KEY: 'scripted-openai', OPENAI_BASE_URL: upstream.url }
       : {}),
     ...(model === 'anthropic' ? { ANTHROPIC_API_KEY: process.env['ANTHROPIC_API_KEY']! } : {}),
@@ -1241,6 +1272,8 @@ async function main(): Promise<void> {
       )
     )
       throw new Error('the ' + scenario + ' scenario runs on the scripted model')
+    if (direct && (backend !== 'dir' || gateway))
+      throw new Error('the direct scenario runs on directory slots, without the gateway')
     if (midturn && (backend !== 'dir' || !midturnKills[killAt]))
       throw new Error(
         'the midturn scenario runs on directory slots, with NANOEVAL_E2E_KILL cell, model, pair or wait',
@@ -1264,7 +1297,7 @@ async function main(): Promise<void> {
     const lost = 'tasks/write-greeting'
     const directories = judged
       ? ['final-answer', 'judged-answer'].map((name) => Path.join('test/fixtures', name))
-      : alone || midturn
+      : alone || direct || midturn
         ? [Path.join('tasks', 'write-greeting')]
         : packing
           ? ['extract-todos', 'uppercase-message', 'write-greeting'].map((name) =>
@@ -1325,42 +1358,52 @@ async function main(): Promise<void> {
               ]
             : midturnPair
               ? [{ id: 'right', model: 'gpt-right', provider: 'codex' }]
-              : alone ||
-                  cached ||
-                  closed ||
-                  failures ||
-                  isolated ||
-                  midturn ||
-                  packing ||
-                  slotGone ||
-                  budgeted ||
-                  searching ||
-                  model !== 'scripted'
+              : direct
                 ? [
+                    { id: 'cells', model: 'gpt-right', provider: 'codex' },
                     {
-                      id:
-                        alone ||
-                        cached ||
-                        closed ||
-                        failures ||
-                        isolated ||
-                        midturn ||
-                        packing ||
-                        slotGone ||
-                        budgeted ||
-                        searching
-                          ? 'right'
-                          : 'nanocode',
-                      model: realModel,
-                      provider: 'claude',
+                      id: 'direct',
+                      model: 'gpt-right',
+                      orchestration: 'direct' as const,
+                      provider: 'codex',
                     },
                   ]
-                : [
-                    gateway
-                      ? { id: 'right', model: 'gpt-right', provider: 'codex' }
-                      : { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
-                    { id: 'wrong', model: 'claude-sonnet-4-6', provider: 'claude' },
-                  ]
+                : alone ||
+                    cached ||
+                    closed ||
+                    failures ||
+                    isolated ||
+                    midturn ||
+                    packing ||
+                    slotGone ||
+                    budgeted ||
+                    searching ||
+                    model !== 'scripted'
+                  ? [
+                      {
+                        id:
+                          alone ||
+                          cached ||
+                          closed ||
+                          failures ||
+                          isolated ||
+                          midturn ||
+                          packing ||
+                          slotGone ||
+                          budgeted ||
+                          searching
+                            ? 'right'
+                            : 'nanocode',
+                        model: realModel,
+                        provider: 'claude',
+                      },
+                    ]
+                  : [
+                      gateway
+                        ? { id: 'right', model: 'gpt-right', provider: 'codex' }
+                        : { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
+                      { id: 'wrong', model: 'claude-sonnet-4-6', provider: 'claude' },
+                    ]
 
     const api = client({ token, url })
     const store = blobStore(storeKind === 'r2' ? 'r2' : storeRoot, { token, url })
@@ -1440,7 +1483,7 @@ async function main(): Promise<void> {
     const config: Config.Config = {
       agents,
       attempts:
-        alone || cached || closed || failures || midturn || packing || slotGone
+        alone || cached || closed || direct || failures || midturn || packing || slotGone
           ? 1
           : isolated
             ? slots
@@ -3085,6 +3128,53 @@ async function main(): Promise<void> {
       })
       assert.equal(refused.status, 400)
       assert.match(await refused.text(), /no failed attempt to rerun/)
+      await pass()
+      return
+    }
+
+    if (direct) {
+      const names = (wanted: string) => directRequests.filter((r) => r.tools.includes(wanted))
+      for (const detail of details) {
+        const agent = detail['result'].agent.id as string
+        assert.equal(detail['attempt'].outcome, 'passed', JSON.stringify(detail['attempt'].failure))
+        const called = (await api.artifact(created.id, detail['attempt'].id, 'agent/events.jsonl'))
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line).event?.event)
+          .flatMap((event) => (event?.type === 'tool.call' ? [event.payload.tool as string] : []))
+        assert.deepEqual(
+          called,
+          agent === 'direct' ? ['exec_command'] : ['exec', 'exec_command'],
+          'the model of the ' + agent + ' agent called ' + called.join(', '),
+        )
+        assert.equal(detail['result'].usage.modelCalls, 2)
+      }
+      assert.deepEqual(
+        [names('exec').length, names('wait').length, names('exec_command').length],
+        [2, 2, 2],
+        'a session with direct tools is given exec_command and neither exec nor wait, and the session beside it exec and wait',
+      )
+      assert.ok(
+        names('exec_command').every((request) => !request.tools.includes('exec')),
+        'no session is given both exec and the tools of the hand',
+      )
+      assert.deepEqual(
+        directRequests.flatMap((request) =>
+          request.tools.includes('exec_command') && request.output ? [request.output] : [],
+        ).length,
+        1,
+      )
+      assert.match(
+        directRequests.find((r) => r.tools.includes('exec_command') && r.output)!.output,
+        /direct-42/,
+        'the model read what its command printed on the hand',
+      )
+      console.log(
+        'direct: the model of one session was given ' +
+          names('exec_command')[0]!.tools.join(', ') +
+          ' and the model of the other ' +
+          names('exec')[0]!.tools.join(', '),
+      )
       await pass()
       return
     }
