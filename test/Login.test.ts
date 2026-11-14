@@ -94,7 +94,7 @@ function tokens(kind: Login.Kind, path: string): { access: string; refresh: stri
 
 type Issuer = {
   asked: { body: Record<string, string>; url: string }[]
-  before?: () => void
+  before?: () => void | Promise<void>
   current: string
   delayMs: number
   down?: { body: unknown; status: number }
@@ -114,7 +114,7 @@ function issuer(kind: Login.Kind): Issuer {
     fetch: async (url, init) => {
       const body = JSON.parse(String(init.body)) as Record<string, string>
       state.asked.push({ body, url })
-      state.before?.()
+      await state.before?.()
       if (state.delayMs) await new Promise((resolve) => setTimeout(resolve, state.delayMs))
       if (state.down) return Response.json(state.down.body, { status: state.down.status })
       if (body['refresh_token'] !== state.current)
@@ -746,8 +746,11 @@ test('a Claude refresh waits for the lock of Claude Code and takes one that went
   const path = file('claude', { endsAt: now - hour })
   const lock = Path.join(Path.dirname(path), '.oauth_refresh.lock')
   Fs.mkdirSync(lock)
-  const started = Date.now()
-  setTimeout(() => Fs.rmdirSync(lock), 400)
+  let askedUnderIt: number | undefined
+  setTimeout(() => {
+    askedUnderIt = endpoint.asked.length
+    Fs.rmdirSync(lock)
+  }, 400)
   const waited = await Login.refresh('claude', {
     path: path,
     fetch: endpoint.fetch,
@@ -755,7 +758,7 @@ test('a Claude refresh waits for the lock of Claude Code and takes one that went
     withinMs: early,
   })
   assert.equal(waited.outcome, 'refreshed')
-  assert.ok(Date.now() - started >= 400, 'the refresh waited for the lock')
+  assert.equal(askedUnderIt, 0, 'nothing is asked while Claude Code holds the lock')
 
   const stale = file('claude', { endsAt: now - hour, refresh: 'refresh-1' })
   const left = Path.join(Path.dirname(stale), '.oauth_refresh.lock')
@@ -788,11 +791,17 @@ test('a Codex refresh writes under the locks of Codex, and asks under none of th
   const endpoint = issuer('codex')
   const path = file('codex', { endsAt: now - hour })
   const lock = Path.join(Path.dirname(path), 'auth.lock')
-  let holder: ReturnType<typeof spawn> | undefined
-  endpoint.before = () => {
-    holder = spawn('flock', [lock, 'sleep', '0.5'], { stdio: 'ignore' })
+  let writtenUnderIt: boolean | undefined
+  endpoint.before = async () => {
+    const holder = spawn('flock', [lock, 'sh', '-c', 'echo held && exec cat'], {
+      stdio: ['pipe', 'pipe', 'ignore'],
+    })
+    await new Promise((resolve) => holder.stdout.once('data', resolve))
+    setTimeout(() => {
+      writtenUnderIt = tokens('codex', path).refresh !== 'refresh-0'
+      holder.stdin.end()
+    }, 400)
   }
-  const started = Date.now()
   const result = await Login.refresh('codex', {
     path: path,
     fetch: endpoint.fetch,
@@ -800,8 +809,8 @@ test('a Codex refresh writes under the locks of Codex, and asks under none of th
     withinMs: early,
   })
   assert.equal(result.outcome, 'refreshed')
-  assert.ok(holder)
-  assert.ok(Date.now() - started >= 400, 'the write waited for the lock that Codex held')
+  assert.equal(writtenUnderIt, false, 'the file is not written while Codex holds its lock')
+  assert.equal(tokens('codex', path).refresh, 'refresh-1')
 })
 
 test('a Claude refresh sends the client and the scopes of the file, and keeps the earlier end of its refresh token', async () => {
