@@ -199,6 +199,42 @@ test('the line of an agent carries its tokens and cost, and the judge has a line
   )
 })
 
+test('an attempt that was scored after its agent timed out says so in words, and is no error', () => {
+  const late = {
+    at: 1,
+    kind: 'agent_timeout' as const,
+    message: 'the agent did not finish within 1800 s',
+  }
+  const run = status([
+    { ...row('one', 1, 'passed'), failure: late },
+    { ...row('one', 2, 'failed'), failure: late },
+    row('one', 3, 'passed'),
+    { ...row('two', 1, 'errored'), failure: late },
+  ])
+  run['attempts'].push({
+    agent: 'haiku',
+    claims: 1,
+    failure: late,
+    id: 'two2',
+    n: 2,
+    phase: 'verify',
+    task: 'suite/two',
+  })
+  const full = summary(run)
+  assert.deepEqual(full.split('\n').slice(-5), [
+    '  one1 suite/one haiku #1 passed after the agent timeout (the agent did not finish within 1800 s)',
+    '  one2 suite/one haiku #2 failed after the agent timeout (the agent did not finish within 1800 s)',
+    '  one3 suite/one haiku #3 passed',
+    '  two1 suite/two haiku #1 errored agent_timeout: the agent did not finish within 1800 s',
+    '  two2 suite/two haiku #2 verify after the agent timeout (the agent did not finish within 1800 s)',
+  ])
+  assert.doesNotMatch(full, /(passed|failed|verify) agent_timeout/)
+  assert.deepEqual(summary(run, { tasks: true }).split('\n').slice(-2), [
+    '  suite/one haiku 2/3 (2 after the agent timeout)',
+    '  suite/two haiku 1 errored (agent_timeout) +1 not ended',
+  ])
+})
+
 test('a run names its reruns, and a run too long for the screen is one line a task', () => {
   const results = [
     row('one', 1, 'passed'),

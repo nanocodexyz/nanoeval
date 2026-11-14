@@ -4486,3 +4486,27 @@ So Harbor's format has one place for "an exception happened", every reader takes
 **What this gives up.** A tool of Harbor that selects trials by exception type, as `harbor jobs` does to run them again, no longer finds a scored agent timeout under `AgentTimeoutError`, and Harbor's `failure_cause` of such a trial is empty where it was `agent_exhausted_budget`. The job has no count of them: they are read from the trials. A job exported before this change keeps what it says, and one exported again from the same run says the new thing, since the export is made from the results when it is asked for.
 
 **Not verified.** krun and ns slots and installed agents, whose failures lanes run the same assertions and were not run here. A version of Harbor other than 0.25.0. The tool of the operator, which was not at hand: the change is to the three figures and the field it was said to read.
+
+## 2026-11-14: a row that was scored after its agent timed out says so in words
+
+`status` printed a failure behind every row that had one, as `KIND: MESSAGE`, and a row that was scored after its agent ran into its timeout has one: `a00044 terminal-bench/rstan-to-pystan nano-claude #1 passed agent_timeout: the agent did not finish within 1800 s`. `compare` printed `passed (agent_timeout)`. An operator read the name of a failure on a row that passed as a defect of the row, or of nanoeval. The fact is right and worth keeping: the agent was cut off, and what it had done by then passed.
+
+**Found** on directory slots under local workerd, in the failures lane, whose slow agent has 3 s: `a00003 fixtures/slow-agent right #1 failed agent_timeout: the agent did not finish within 3 s`. The table of `compare` wrote such an attempt as `passed (agent_timeout) 1 min 0 s`, which the unit test of this entry prints on the code before it, and the line of a task counted it among the scored attempts and had no word for it.
+
+**The rule.** One phrase, `after the agent timeout` (`Result.afterTimeout`), behind the outcome, wherever such a row is shown:
+
+- `status`, a row: `passed after the agent timeout (the agent did not finish within 1800 s)` (`Result.late`), with what the run recorded in the brackets, so an oracle's row says `the solution did not finish`. The row has no `KIND: MESSAGE` behind it: that form is for errors.
+- `status`, the line of a task: `2/3 (2 after the agent timeout)`, counted among the scored attempts and not among the errors.
+- `compare`: `passed after the agent timeout 30 min 0 s`. An error keeps `errored (verifier)`.
+- The exported trial: the `message` under `agent_result.metadata.agent_timeout` is the text of the `status` row, `passed after the agent timeout (...)`.
+- A row that has not ended and whose agent has timed out reads the same way with its phase, `verify after the agent timeout (...)`. An agent timeout that ended without a reward is an error and reads as one, `errored agent_timeout: ...`.
+
+"The" and not "its", so that the phrase also reads behind a count. The seconds are not taken out of the message to make `(1800 s)`: the run records the sentence, and rows that ended before this change have nothing else.
+
+**Checked.**
+
+- `test/Summary.test.ts`: a task with a pass and a fail after the timeout and a plain pass, and a task with a timeout that errored and a row in its `verify` phase: the five rows and the two task lines, and no `passed agent_timeout` anywhere. `test/Compare.test.ts`: the three cells and the counts of the arm. `test/Result.test.ts`: the exported message for a pass and for a fail, and that a failure of another kind on a row that has not ended is not taken for a timeout. Before the change the three fail on the old forms.
+- The failures lane on directory slots (`NANOEVAL_E2E_SCENARIO=failures`): `status` prints `a00003 fixtures/slow-agent right #1 failed after the agent timeout (the agent did not finish within 3 s)`, the trial's message is that text from `failed` on, `nanoeval status RUN --tasks` prints `fixtures/slow-agent right 0/1 (1 after the agent timeout)` and `nanoeval compare RUN` a cell `failed after the agent timeout` with its time for `slow-agent`. Before the change it fails at the first. Both jobs still load with the models of Harbor 0.25.0.
+- `npm run lint`, `npm run check:types`, `npm test`.
+
+**Not verified.** A row that passed after its timeout, end to end: the fixture's agent fails, and the pass is unit tested. An installed agent and an oracle, whose messages are built the same way and whose lanes were not run here. A script that reads the rows of `status` for `agent_timeout`: it now finds the kind only on rows that errored.

@@ -134,7 +134,12 @@ export function trial(attempt: Result.Attempt, options: trial.Options): Record<s
             rollout_details: null,
             metadata: {
               ...(late
-                ? { agent_timeout: { message: late.message, occurred_at: iso(late.at) } }
+                ? {
+                    agent_timeout: {
+                      message: Result.late(attempt.outcome, late),
+                      occurred_at: iso(late.at),
+                    },
+                  }
                 : {}),
               ...(usage
                 ? {

@@ -2651,10 +2651,23 @@ async function main(): Promise<void> {
       const slow = JSON.parse(files['slow-agent__right__1/result.json']!)
       assert.equal(slow.exception_info, null)
       assert.deepEqual(slow.verifier_result, { rewards: { reward: 0 } })
-      assert.match(
+      const said =
+        /^ {2}a\d+ fixtures\/slow-agent right #1 (failed after the agent timeout \(the agent did not finish within \d+ s\))$/m.exec(
+          summary(status),
+        )?.[1]
+      assert.ok(said, 'status says in words that the row was scored after its agent timed out')
+      assert.equal(
         slow.agent_result.metadata.agent_timeout.message,
-        /^the agent did not finish within \d+ s$/,
-        'the trial of an agent that timed out and was scored says so beside its agent',
+        said,
+        'the trial of an agent that timed out and was scored says so beside its agent, as status does',
+      )
+      assert.match(
+        (await cli(['status', created.id, '--tasks'])).text,
+        /^ {2}fixtures\/slow-agent right 0\/1 \(1 after the agent timeout\)$/m,
+      )
+      assert.match(
+        (await cli(['compare', created.id])).text,
+        /^\| slow-agent \| failed after the agent timeout \d+ s \|$/m,
       )
 
       const rerun = await api.create({

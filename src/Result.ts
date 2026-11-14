@@ -96,8 +96,19 @@ export function error(attempt: Pick<Attempt, 'failure' | 'outcome'>): Failure | 
   return attempt.outcome === 'errored' ? attempt.failure : undefined
 }
 
-export function timeout(attempt: Pick<Attempt, 'failure' | 'outcome'>): Failure | undefined {
-  return attempt.outcome === 'errored' ? undefined : attempt.failure
+export function timeout(attempt: {
+  failure?: Failure
+  outcome?: Attempt['outcome']
+}): Failure | undefined {
+  return attempt.outcome !== 'errored' && attempt.failure?.kind === 'agent_timeout'
+    ? attempt.failure
+    : undefined
+}
+
+export const afterTimeout = 'after the agent timeout'
+
+export function late(state: string, failure: Failure): string {
+  return state + ' ' + afterTimeout + ' (' + failure.message + ')'
 }
 
 export function uncosted(attempts: readonly Attempt[]): number {

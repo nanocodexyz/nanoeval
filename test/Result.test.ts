@@ -447,6 +447,15 @@ test('an agent timeout that kept its reward is exported as a scored trial, with 
     attempt({ id: 'a5', index: 5 }),
   ]
   assert.deepEqual(attempts.map(Result.timeout), [late, late, undefined, undefined, undefined])
+  assert.equal(Result.timeout({ failure: late }), late, 'a row that has not ended keeps it too')
+  assert.equal(
+    Result.timeout({ failure: { at: 1, kind: 'environment', message: 'the turn never started' } }),
+    undefined,
+  )
+  assert.equal(
+    Result.late('passed', late),
+    'passed ' + Result.afterTimeout + ' (the agent did not finish within 1800 s)',
+  )
   assert.deepEqual(attempts.map(Result.error), [
     undefined,
     undefined,
@@ -487,13 +496,13 @@ test('an agent timeout that kept its reward is exported as a scored trial, with 
   })
 
   const trial = (n: number) => JSON.parse(files['one__haiku__' + n + '/result.json']!)
-  const kept = {
-    message: 'the agent did not finish within 1800 s',
+  const kept = (outcome: string) => ({
+    message: outcome + ' after the agent timeout (the agent did not finish within 1800 s)',
     occurred_at: '1970-01-01T00:00:01.900Z',
-  }
+  })
   assert.equal(trial(1).exception_info, null)
   assert.deepEqual(trial(1).verifier_result, { rewards: { reward: 1 } })
-  assert.deepEqual(trial(1).agent_result.metadata.agent_timeout, kept)
+  assert.deepEqual(trial(1).agent_result.metadata.agent_timeout, kept('passed'))
   assert.equal(trial(1).agent_result.n_input_tokens, 10750)
   assert.equal(trial(2).exception_info, null)
   assert.deepEqual(
@@ -504,7 +513,7 @@ test('an agent timeout that kept its reward is exported as a scored trial, with 
       n_output_tokens: null,
       cost_usd: null,
       rollout_details: null,
-      metadata: { agent_timeout: kept },
+      metadata: { agent_timeout: kept('failed') },
     },
     'an attempt without usage still says that its agent timed out',
   )

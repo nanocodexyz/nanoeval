@@ -316,7 +316,11 @@ export function table(given: readonly Run[]): string {
           .map(
             (attempt) =>
               attempt.outcome +
-              (attempt.failure ? ' (' + attempt.failure.kind + ')' : '') +
+              (Result.timeout(attempt)
+                ? ' ' + Result.afterTimeout
+                : attempt.failure
+                  ? ' (' + attempt.failure.kind + ')'
+                  : '') +
               ' ' +
               duration(seconds(attempt.timing.agentExecution)),
           )

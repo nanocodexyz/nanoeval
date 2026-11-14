@@ -308,6 +308,36 @@ test('a row that a rerun retried counts once, as its retry, and a run named twic
   assert.match(table, /\| two \| errored \(agent\) 1 min 0 s \|/)
 })
 
+test('an attempt that was scored after its agent timed out reads as its outcome, in the words of the summary', () => {
+  const nano = { id: 'nano', model: 'gpt-6.1-sol', provider: 'codex' as const }
+  const late = {
+    at: 80_000,
+    kind: 'agent_timeout' as const,
+    message: 'the agent did not finish within 60 s',
+  }
+  const run: Compare.Run = {
+    attempts: [
+      { ...attempt(nano, { n: 1, outcome: 'passed', task: 'one', usage }), failure: late },
+      { ...attempt(nano, { n: 2, outcome: 'failed', task: 'two', usage }), failure: late },
+      {
+        ...attempt(nano, { n: 3, outcome: 'errored', task: 'three', usage: null }),
+        failure: late,
+      },
+    ],
+    eval: { name: 'bench', version: '0123456789abcdef' },
+    id: 'run-1',
+    name: 'first',
+    state: 'finished',
+  }
+  const [arm] = Compare.arms([run])
+  assert.deepEqual([arm!.passed, arm!.failed, arm!.errored], [1, 1, 1])
+  const table = Compare.table([run])
+  assert.match(table, /\| one \| passed after the agent timeout 1 min 0 s \|/)
+  assert.match(table, /\| two \| failed after the agent timeout 1 min 0 s \|/)
+  assert.match(table, /\| three \| errored \(agent_timeout\) 1 min 0 s \|/)
+  assert.doesNotMatch(table, /(passed|failed) \(agent_timeout\)/)
+})
+
 const one = { id: 'one', model: 'm', provider: 'claude' as const }
 
 function side(id: string, tasks: Record<string, string>, retries?: string): Compare.Run {

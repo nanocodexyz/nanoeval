@@ -24,6 +24,7 @@ import * as Installed from '../src/Installed.ts'
 import type * as Ledger from '../src/Ledger.ts'
 import * as Pins from '../src/Pins.ts'
 import * as Protocol from '../src/Protocol.ts'
+import * as Result from '../src/Result.ts'
 import type * as Runs from '../src/Runs.ts'
 import * as Sandbox from '../src/Sandbox.ts'
 import * as Slot from '../src/Slot.ts'
@@ -968,6 +969,7 @@ export function summary(status: Record<string, any>, options: { tasks?: boolean 
       const count = (outcome: string) =>
         attempts.filter((attempt) => attempt['outcome'] === outcome).length
       const errors = attempts.filter((attempt) => attempt['outcome'] === 'errored')
+      const late = attempts.filter((attempt) => attempt['outcome'] && Result.timeout(attempt))
       const open = attempts.filter((attempt) => !attempt['outcome'])
       lines.push(
         '  ' +
@@ -976,6 +978,7 @@ export function summary(status: Record<string, any>, options: { tasks?: boolean 
           (count('passed') + count('failed') || !errors.length
             ? count('passed') + '/' + (count('passed') + count('failed'))
             : '') +
+          (late.length ? ' (' + late.length + ' ' + Result.afterTimeout + ')' : '') +
           (errors.length
             ? (count('passed') + count('failed') ? ' +' : '') +
               errors.length +
@@ -990,7 +993,9 @@ export function summary(status: Record<string, any>, options: { tasks?: boolean 
     }
     return lines.join('\n')
   }
-  for (const attempt of status['attempts'] as Record<string, any>[])
+  for (const attempt of status['attempts'] as Record<string, any>[]) {
+    const late = Result.timeout(attempt)
+    const state = attempt['outcome'] ?? attempt['phase']
     lines.push(
       '  ' +
         [
@@ -998,14 +1003,14 @@ export function summary(status: Record<string, any>, options: { tasks?: boolean 
           attempt['task'],
           attempt['agent'],
           '#' + attempt['n'],
-          attempt['outcome'] ?? attempt['phase'],
+          late ? Result.late(state, late) : state,
           attempt['oomKills'] ? 'oom_kills=' + attempt['oomKills'] : '',
           attempt['claims'] > 1 ? 'claims=' + attempt['claims'] : '',
           attempt['retries'] ? 'retries=' + attempt['retries'] : '',
           attempt['retryOf']
             ? 'retries ' + attempt['retryOf'].run.slice(0, 8) + '/' + attempt['retryOf'].attempt
             : '',
-          attempt['failure']
+          attempt['failure'] && !late
             ? attempt['failure'].kind +
               ': ' +
               String(attempt['failure'].message).replace(/\s+/g, ' ').trim().slice(0, 160)
@@ -1014,6 +1019,7 @@ export function summary(status: Record<string, any>, options: { tasks?: boolean 
           .filter(Boolean)
           .join(' '),
     )
+  }
   return lines.join('\n')
 }
 
