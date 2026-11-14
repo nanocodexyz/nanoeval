@@ -3637,3 +3637,7 @@ On the 32-core machine of the entries above, at a load average above 55, the lan
 
 - ns slots, whose process is the first of the slot's namespaces: the same test of the same file, not run with a kill.
 - A microVM that the kernel kills for memory, which the entry on the row leaves open as well.
+
+## 2026-11-14: the line of an agent without a scored attempt has no empty part
+
+The line of an agent in `status` joined its pass@k figures and its tokens with commas whether or not there were any, so an agent whose attempts all errored printed `right: passed 0/1, errored 1, , input tokens 16 (0 cached), output tokens 8, cost $0.0001`, and one without usage ended in a comma. Seen in the log of the lane that kills a microVM under its verifier. The parts are now joined only where they exist: `passed 0/1, errored 1, input tokens ...` and `passed 0/1, errored 1`. A unit test in `test/Summary.test.ts` holds both lines.

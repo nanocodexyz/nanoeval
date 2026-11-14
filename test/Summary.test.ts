@@ -181,6 +181,15 @@ test('the line of an agent carries its tokens and cost, and the judge has a line
     unpriced.find((entry) => entry.startsWith('judge: ')),
     undefined,
   )
+  assert.equal(
+    line(
+      summary(
+        status([{ ...row('one', 1, 'errored'), usage: { ...usage(0), costUsd: undefined } }]),
+      ),
+    ),
+    'haiku: passed 0/1, errored 1, input tokens 1,000 (400 cached), output tokens 50, cost not known',
+  )
+  assert.equal(line(summary(status([row('one', 1, 'errored')]))), 'haiku: passed 0/1, errored 1')
   const older = status([row('one', 1, 'passed')])
   delete older['agents'].haiku.judge
   delete older['agents'].haiku.scored

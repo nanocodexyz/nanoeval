@@ -866,9 +866,8 @@ export function summary(status: Record<string, any>, options: { tasks?: boolean 
             (row.scored === undefined || row.scored === row.attempts
               ? ''
               : ' of ' + row.scored + ' scored')) +
-        ', ' +
-        Object.entries(row.passAtK as Record<string, number>)
-          .map(([k, value]) => {
+        [
+          ...Object.entries(row.passAtK as Record<string, number>).map(([k, value]) => {
             const rated = row.rated?.[k] as number | undefined
             return (
               'pass@' +
@@ -880,9 +879,11 @@ export function summary(status: Record<string, any>, options: { tasks?: boolean 
                 ? ''
                 : ' of ' + rated + (rated === 1 ? ' task' : ' tasks'))
             )
-          })
-          .join(', ') +
-        (row.inputTokens || row.outputTokens || row.costUsd !== null ? ', ' + used(row) : ''),
+          }),
+          ...(row.inputTokens || row.outputTokens || row.costUsd !== null ? [used(row)] : []),
+        ]
+          .map((part) => ', ' + part)
+          .join(''),
     )
   const judges = Object.values(status['agents'] as Record<string, any>).flatMap((row) =>
     row.judge?.attempts ? [row.judge] : [],
