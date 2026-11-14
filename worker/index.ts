@@ -1,4 +1,5 @@
 import * as Protocol from '../src/Protocol.ts'
+import type * as Runs from '../src/Runs.ts'
 import * as Blobs from './Blobs.ts'
 import { locations, type Env } from './Env.ts'
 import * as Evals from './Evals.ts'
@@ -51,6 +52,36 @@ export default {
     if (resource !== 'runs') return json({ error: 'route not found' }, 404)
 
     const [id, ...rest] = path
+    if (!id && request.method === 'GET') {
+      const limit = url.searchParams.get('limit')
+      if (limit !== null && !/^[1-9][0-9]*$/.test(limit))
+        return json({ error: 'limit is a number of runs above zero' }, 400)
+      const listed = await Evals.object(env, Evals.indexName).fetch(
+        'https://eval.internal/runs' + (limit === null ? '' : '?limit=' + limit),
+      )
+      const { runs } = (await listed.json()) as { runs: Runs.Listed[] }
+      return json({
+        runs: await Promise.all(
+          runs.map(async (run): Promise<Runs.Listed> => {
+            if (run.state === 'finished') return run
+            const live = await env.RUNS.get(env.RUNS.idFromName(run.id)).fetch(
+              'https://run.internal/counts',
+            )
+            if (!live.ok) return run
+            const { counts, finishedAt } = (await live.json()) as {
+              counts: Runs.Counts
+              finishedAt: number | null
+            }
+            return {
+              ...run,
+              counts,
+              finishedAt,
+              state: finishedAt === null ? 'running' : 'finished',
+            }
+          }),
+        ),
+      })
+    }
     if (!id) {
       if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405)
       const created = crypto.randomUUID()

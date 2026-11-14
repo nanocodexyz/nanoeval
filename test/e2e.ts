@@ -7,7 +7,7 @@ import type { AddressInfo } from 'node:net'
 import * as Os from 'node:os'
 import * as Path from 'node:path'
 import * as Import from '../cli/Import.ts'
-import { blobStore, client, exportJob, oracle, summary } from '../cli/nanoeval.ts'
+import { blobStore, client, exportJob, oracle, runsTable, summary } from '../cli/nanoeval.ts'
 import * as Plan from '../cli/Plan.ts'
 import * as Runtime from '../cli/Runtime.ts'
 import type * as Dataset from '../datasets/Dataset.ts'
@@ -1229,6 +1229,12 @@ async function main(): Promise<void> {
     const created = await api.create(config)
     const total = directories.length * agents.length * config.attempts
     assert.equal(created.attempts, total)
+    const newest = (await api.runs(1)).runs
+    assert.deepEqual(
+      newest.map((run) => [run.id, run.name, run.eval, run.counts?.total]),
+      [[created.id, config.name, { name: evalName, version: version.digest }, total]],
+      'a run is in the list of the deployment once it is created',
+    )
     const disks = (guest ? Guest.root + '/cache' : cache) + '/disks'
     if (scenario === 'disk')
       await there(
@@ -1509,6 +1515,15 @@ async function main(): Promise<void> {
         'a row whose session lost its turn does not wait for a lease to end',
       )
     }
+    const listed = (await api.runs()).runs
+    console.log(runsTable(listed))
+    assert.deepEqual(
+      listed
+        .filter((run) => run.id === created.id)
+        .map((run) => [run.state, run.counts, run.finishedAt]),
+      [['finished', status['counts'], status['finishedAt']]],
+      'the list has the run with the counts and the end its status has',
+    )
     const { files } = await exportJob(api, { out: Path.join(out, 'harbor'), run: created.id })
     const details: Record<string, any>[] = []
     for (const attempt of status['attempts'] as { id: string }[])

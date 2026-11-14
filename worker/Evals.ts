@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers'
 import * as Eval from '../src/Eval.ts'
+import * as Runs from '../src/Runs.ts'
 import * as SqlSetup from '../src/Sql.ts'
 import type { Env } from './Env.ts'
 import * as Storage from './Storage.ts'
@@ -24,7 +25,7 @@ export class Evals extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
     this.sql = Storage.sql(ctx)
-    SqlSetup.setup(this.sql, [...Eval.tables, indexTable])
+    SqlSetup.setup(this.sql, [...Eval.tables, indexTable, ...Runs.tables])
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -53,6 +54,20 @@ export class Evals extends DurableObject<Env> {
           entry.tasks,
           entry.updatedAt,
         )
+        return Storage.json({ ok: true })
+      }
+      if (route === 'GET /runs') {
+        const limit = url.searchParams.get('limit')
+        return Storage.json({
+          runs: Runs.list(this.sql, limit === null ? undefined : Number(limit)),
+        })
+      }
+      if (route === 'POST /runs') {
+        Runs.created(this.sql, (await request.json()) as Runs.Entry)
+        return Storage.json({ ok: true })
+      }
+      if (route === 'POST /runs/ended') {
+        Runs.ended(this.sql, (await request.json()) as Runs.Ended)
         return Storage.json({ ok: true })
       }
       if (route === 'POST /versions') {

@@ -20,6 +20,7 @@ import * as Members from '../src/Pool.ts'
 import * as Protocol from '../src/Protocol.ts'
 import * as Proxy from '../src/Proxy.ts'
 import * as Result from '../src/Result.ts'
+import type * as Runs from '../src/Runs.ts'
 import * as Sandbox from '../src/Sandbox.ts'
 import * as Slot from '../src/Slot.ts'
 import * as SqlSetup from '../src/Sql.ts'
@@ -243,6 +244,8 @@ export class Run extends DurableObject<Env> {
       if (request.method === 'GET' && parts[0] === 'status') return json(this.status())
       if (request.method === 'GET' && parts[0] === 'harbor') return json(this.harbor())
       if (request.method === 'GET' && parts[0] === 'config') return json(this.config())
+      if (request.method === 'GET' && parts[0] === 'counts')
+        return json({ counts: this.counts(), finishedAt: meta.finishedAt })
       if (request.method === 'GET' && parts[0] === 'timeline')
         return json({ createdAt: meta.createdAt, id: meta.id, marks: Timeline.all(this.sql) })
       if (request.method === 'GET' && parts[0] === 'results')
@@ -499,6 +502,13 @@ export class Run extends DurableObject<Env> {
         'https://run.internal/reruns',
         { body: JSON.stringify({ id }), method: 'POST' },
       )
+    await this.list('runs', {
+      attempts: seeds.length,
+      createdAt: receivedAt,
+      eval: { name: config.eval.name, version: snapshot.version.digest },
+      id,
+      name: config.name,
+    } satisfies Runs.Entry)
     this.ctx.waitUntil(this.readKey('start'))
     this.ctx.waitUntil(this.tick())
     return json(
@@ -509,6 +519,33 @@ export class Run extends DurableObject<Env> {
       },
       201,
     )
+  }
+
+  private async list(path: 'runs' | 'runs/ended', body: Runs.Ended | Runs.Entry): Promise<void> {
+    await Evals.object(this.env, Evals.indexName)
+      .fetch('https://eval.internal/' + path, { body: JSON.stringify(body), method: 'POST' })
+      .then(
+        async (response) => {
+          if (!response.ok)
+            console.error('nanoeval run list answered', response.status, await response.text())
+        },
+        (error) => console.error('nanoeval run list failed', message(error)),
+      )
+  }
+
+  private counts(): Runs.Counts {
+    const rows = this.rows()
+    const results = this.results()
+    const count = (outcome: Result.Attempt['outcome']) =>
+      results.filter((result) => result.outcome === outcome).length
+    return {
+      active: rows.filter(Ledger.active).length,
+      errored: count('errored'),
+      failed: count('failed'),
+      passed: count('passed'),
+      total: rows.length,
+      unclaimed: rows.filter((row) => row.phase === 'unclaimed').length,
+    }
   }
 
   private meta(): Meta | undefined {
@@ -897,8 +934,6 @@ export class Run extends DurableObject<Env> {
     const config = this.config()
     const rows = this.rows()
     const results = this.results()
-    const count = (outcome: Result.Attempt['outcome']) =>
-      results.filter((result) => result.outcome === outcome).length
     const retries = new Map(
       this.sql
         .all(
@@ -919,14 +954,7 @@ export class Run extends DurableObject<Env> {
         ...(retries.has(row.id) ? { retries: retries.get(row.id) } : {}),
       })),
       cancelled: meta.cancelled,
-      counts: {
-        active: rows.filter(Ledger.active).length,
-        errored: count('errored'),
-        failed: count('failed'),
-        passed: count('passed'),
-        total: rows.length,
-        unclaimed: rows.filter((row) => row.phase === 'unclaimed').length,
-      },
+      counts: this.counts(),
       createdAt: meta.createdAt,
       eval: meta.eval,
       finishedAt: meta.finishedAt,
@@ -1048,7 +1076,16 @@ export class Run extends DurableObject<Env> {
     )
     if (this.rows().every((row) => row.phase === 'done') && !open) {
       await this.readKey('end')
-      this.setMeta({ ...this.meta()!, finishedAt: Date.now() })
+      const finishedAt = Date.now()
+      this.setMeta({ ...this.meta()!, finishedAt })
+      const { errored, failed, passed } = this.counts()
+      await this.list('runs/ended', {
+        errored,
+        failed,
+        finishedAt,
+        id: meta.id,
+        passed,
+      } satisfies Runs.Ended)
       return
     }
     await this.ctx.storage.setAlarm(Date.now() + Number(this.env.TICK_MS))

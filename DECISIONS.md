@@ -3018,3 +3018,36 @@ Three of the defects of the day are one change, in the pool (`src/Pool.ts`, `wor
 - A runner of protocol 1 with this Worker for a run that lasts longer than its lease, where the pool closes its member while it serves: argued in the entry on the pool, and the two runs above were shorter.
 - Either pair on a deployment.
 - CI on GitHub.
+
+## 2026-11-14: a list of runs, a rerun that keeps its settings, an export that says where
+
+Three smaller things that the day with a standing runner met at the command line.
+
+**A list of runs.** A run is an object named by its id, and nothing named the runs of a deployment: whoever created a run had to keep its id. The eval index object, the one object of a deployment that every eval is written to, now also has a table of runs (`src/Runs.ts`): a run writes its id, its name, its eval and version, its creation and the number of its rows there when it is created, and its end with the counts of passed, failed and errored rows when it finishes. `GET /v1/runs` reads the table newest first, `?limit=N` the first N, and asks each run that has no end in it for its counts now, so a run that still runs is listed with what it has. `nanoeval runs [--limit N]` prints a line a run: id, state, counts, creation, eval and name.
+
+- A run that cannot write to the table still runs, and says so in the Worker's log: the list is a convenience, and the ledger of a run is in the run.
+- **Runs made before this change are not in the list.** Nothing enumerates the objects of a deployment from inside it, so there is nothing to fill the table from. Their ids still read as before.
+- The counts of a finished run are a copy, written once. A run is never changed after it finished, so the copy cannot go stale.
+
+**A rerun that keeps its settings.** `run --rerun RUN` took the eval, the agents, the attempts, the judge and the verifier cache from its run and everything else from the defaults of the command: a rerun of a run with `--sandboxes 0 --model-budget-usd 2 --setup-sec 7200` opened a sandbox of its own, with no budget and a wait of 600 s, unless all three were named again. It now takes the budgets, the limits and the sandbox settings of its run wherever the command names none (`rerunConfig` in `cli/nanoeval.ts`). What is named wins, flag by flag, and a `--backend` that is named brings its own network. Two settings are not taken over. The lifetime of a sandbox, which a run stores as it was computed for all its rows and which would be bought whole for the few rows of a rerun: it is computed again, or named. And the runtime archive, which belongs to the commit that published it and is published again from this checkout where the provider needs one. The budget of a rerun is its own: it starts at nothing spent.
+
+**An export that says where.** `nanoeval export RUN --out DIR` printed nothing. It prints "job written to DIR", the line `run --wait` ends with.
+
+**Checked.**
+
+- Every lane asks that the newest run of the list is the run it created, with its name, its eval and the number of its rows, and when the run is finished that the list has it as finished with the counts and the end of its status. The lanes of the list below passed with it.
+- Unit tests: `test/Runs.test.ts` for the table, and `test/Rerun.test.ts` for what a rerun takes over, what a named flag wins and the lines of the list.
+
+**What ran on the six changes of this day together**, on the 32-core machine with KVM of the entries above, beside other work that kept its load average between 55 and 100. The runs that the six entries name, with and without each change, were made on the commit of the last entry of 2026-11-13. Two commits landed between that one and these: a turn that goes on after its Worker was killed, and Claude plans. On top of them, each once on the code of this entry:
+
+- `npm test`, 166 tests and none skipped, `npm run check:types`, `npm run lint` and `npm run dry-run`.
+- On directory slots: the plain lane, `failures` with its rerun, `shared`, `stopped`, `standing`, `runners`, `lost`, `resume`, `restart`, `midturn`, `plan` and `warm` through the scripted gateway.
+- On krun slots: `gone`, `shared`, `stopped` and `failures`.
+- Every `run` step of `.github/workflows/ci.yml` from a fresh clone ran before the push, as AGENTS.md asks. This entry was written before it and does not have its counts.
+
+**Not verified.**
+
+- The commands themselves from a shell against a Worker: the lanes call the functions behind `runs` and `export`, and `rerunConfig` is tested as a function, not through `run --rerun` with its flags.
+- A list of thousands of runs, and many runs that run at once, each of which is one call between objects when the list is read.
+- A deployed Worker, where the table is made in the eval index object when it next starts.
+- CI on GitHub.

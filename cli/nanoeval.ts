@@ -22,6 +22,7 @@ import type * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
 import type * as Ledger from '../src/Ledger.ts'
 import * as Protocol from '../src/Protocol.ts'
+import type * as Runs from '../src/Runs.ts'
 import * as Sandbox from '../src/Sandbox.ts'
 import * as Task from '../src/Task.ts'
 import * as Timeline from '../src/Timeline.ts'
@@ -110,7 +111,10 @@ const usage = `nanoeval <command>
             that closes the network of its agent or verifier needs --backend krun. --task
             imports the directories into the eval named local first. --rerun makes a run of
             the attempts of RUN that did not pass (--failed or --errored narrow it), each
-            pointing at the attempt it retries, on the same eval version and agents.
+            pointing at the attempt it retries, on the same eval version and agents. It
+            takes the budgets, the limits and the sandbox settings of RUN wherever the
+            command names none: --model-budget-usd, --sandboxes, --slots, --setup-sec and
+            the rest. --sandbox-timeout-sec and the runtime are not taken over.
             A row whose runner stops answering for --lease-sec is claimable again, at most
             --claims times in all, and then ends as an error. Rows are claimed longest
             timeouts first. A row that no runner could take for --setup-sec ends as an
@@ -205,13 +209,17 @@ const usage = `nanoeval <command>
             and a Worker work together when their protocols are the same, and the command
             exits with status 1 when they are not. A Worker names its commit when it was
             deployed with --var COMMIT:$(git rev-parse HEAD).
+  runs      --url URL --token T [--limit N]
+            List the runs of the deployment, the newest first: id, state, counts, when it
+            was created, its eval and its name. A run made by a Worker of a commit before
+            this list existed is not in it.
   status    --url URL --token T RUN
   timeline  --url URL --token T RUN
             Print where the time of a run went: every mark the run and its runners recorded,
             by its offset from the creation of the run, with the span it measured.
   attempt   --url URL --token T RUN ATTEMPT [ARTIFACT]
   export    --url URL --token T RUN --out DIR
-            Write the run as a Harbor job directory.
+            Write the run as a Harbor job directory, and print where.
   compare   --url URL --token T RUN...
             Print one table of the agents of these runs: attempts, outcomes, time, tokens and
             estimated cost per agent, and the outcome of every task per agent.
@@ -399,6 +407,10 @@ export function client(options: { token: string; url: string }) {
       ).json() as Promise<Record<string, any>>,
     results: async (run: string) =>
       (await (await call('/v1/runs/' + run + '/results')).json()) as Compare.Run,
+    runs: async (limit?: number) =>
+      (await (await call('/v1/runs' + (limit === undefined ? '' : '?limit=' + limit))).json()) as {
+        runs: Runs.Listed[]
+      },
     standing: async (body: Protocol.Enrol, location?: string) => {
       const response = await fetch(
         base + '/v1/pool/members' + (location ? '?location=' + location : ''),
@@ -646,6 +658,81 @@ export function planSummary(claude: Record<string, any>): string {
   return 'claude plan: ' + claude['state'] + ': sign in with ' + Config.planSignIn
 }
 
+export function runsTable(runs: readonly Runs.Listed[]): string {
+  return runs
+    .map((run) =>
+      [
+        run.id,
+        run.state,
+        run.counts
+          ? 'passed ' +
+            run.counts.passed +
+            ', failed ' +
+            run.counts.failed +
+            ', errored ' +
+            run.counts.errored +
+            ' of ' +
+            run.counts.total +
+            (run.state === 'running'
+              ? ', active ' + run.counts.active + ', unclaimed ' + run.counts.unclaimed
+              : '')
+          : 'its counts were not read',
+        'created ' + new Date(run.createdAt).toISOString(),
+        run.eval.name + '@' + run.eval.version.slice(0, 12),
+        run.name,
+      ].join('  '),
+    )
+    .join('\n')
+}
+
+export function rerunConfig(
+  own: Config.Config,
+  input: { named: ReadonlySet<string>; parent: Config.Config },
+): Config.Config {
+  const { named, parent } = input
+  const from = <T>(flag: string, mine: T, theirs: T): T => (named.has(flag) ? mine : theirs)
+  const modelUsd = from('model-budget-usd', own.budget.modelUsd, parent.budget.modelUsd)
+  const freeDiskMb = from('free-disk-mb', own.sandbox.freeDiskMb, parent.sandbox.freeDiskMb)
+  const leaseSec = from('sandbox-lease-sec', own.sandbox.leaseSec, parent.sandbox.leaseSec)
+  const memoryMb = from('memory-mb', own.sandbox.memoryMb, parent.sandbox.memoryMb)
+  const template = from('template', own.sandbox.template, parent.sandbox.template)
+  const warm = from('warm-sec', own.sandbox.warm, parent.sandbox.warm)
+  return {
+    ...own,
+    budget: {
+      ...(modelUsd === undefined ? {} : { modelUsd }),
+      sandboxUsd: from('sandbox-budget-usd', own.budget.sandboxUsd, parent.budget.sandboxUsd),
+    },
+    limits: {
+      attachSec: from('attach-sec', own.limits.attachSec, parent.limits.attachSec),
+      claims: from('claims', own.limits.claims, parent.limits.claims),
+      leaseSec: from('lease-sec', own.limits.leaseSec, parent.limits.leaseSec),
+      setupSec: from('setup-sec', own.limits.setupSec, parent.limits.setupSec),
+      stepRetries: from('step-retries', own.limits.stepRetries, parent.limits.stepRetries),
+    },
+    sandbox: {
+      backend: from('backend', own.sandbox.backend, parent.sandbox.backend),
+      disks: from('disks', own.sandbox.disks, parent.sandbox.disks),
+      ...(freeDiskMb === undefined ? {} : { freeDiskMb }),
+      ...(leaseSec === undefined ? {} : { leaseSec }),
+      max: from('sandboxes', own.sandbox.max, parent.sandbox.max),
+      ...(memoryMb === undefined ? {} : { memoryMb }),
+      network:
+        named.has('network') || named.has('backend') ? own.sandbox.network : parent.sandbox.network,
+      pollMs: from('poll-ms', own.sandbox.pollMs, parent.sandbox.pollMs),
+      provider: from('provider', own.sandbox.provider, parent.sandbox.provider),
+      ...(own.sandbox.runtime ? { runtime: own.sandbox.runtime } : {}),
+      slots: from('slots', own.sandbox.slots, parent.sandbox.slots),
+      ...(template === undefined ? {} : { template }),
+      ...(own.sandbox.timeoutSec === undefined ? {} : { timeoutSec: own.sandbox.timeoutSec }),
+      ...(own.sandbox.verifierCache || parent.sandbox.verifierCache
+        ? { verifierCache: true as const }
+        : {}),
+      ...(warm === undefined ? {} : { warm }),
+    },
+  }
+}
+
 export function checkout(): string | undefined {
   const head = spawnSync('git', [
     '-C',
@@ -739,8 +826,9 @@ export function blobStore(
 }
 
 async function main(): Promise<void> {
-  const { positionals, values } = parseArgs({
+  const { positionals, tokens, values } = parseArgs({
     allowPositionals: true,
+    tokens: true,
     options: {
       agent: { multiple: true, type: 'string' },
       'allow-empty': { default: false, type: 'boolean' },
@@ -1066,6 +1154,7 @@ async function main(): Promise<void> {
       'pool',
       'run',
       'runner',
+      'runs',
       'sandbox',
       'status',
       'timeline',
@@ -1114,6 +1203,12 @@ async function main(): Promise<void> {
     if (action === 'complete') await api.planComplete(await code())
     if (action === 'sign-out') await api.planSignOut()
     console.log(planSummary((await api.plans()).claude))
+    return
+  }
+
+  if (command === 'runs') {
+    const { runs } = await api.runs(values.limit === undefined ? undefined : Number(values.limit))
+    if (runs.length) console.log(runsTable(runs))
     return
   }
 
@@ -1421,7 +1516,10 @@ async function main(): Promise<void> {
       const [name, digest] = required(values.eval, 'eval').split('@')
       reference = { name: name!, ...(digest ? { version: digest } : {}) }
     }
-    const provider = values.provider as Config.Config['sandbox']['provider']
+    const named = new Set(tokens.flatMap((token) => (token.kind === 'option' ? [token.name] : [])))
+    const provider = (
+      parent && !named.has('provider') ? parent.sandbox.provider : values.provider
+    ) as Config.Config['sandbox']['provider']
     const runtime = values['runtime-blob']
       ? await api.blob(values['runtime-blob'])
       : values.runtime || provider === 'e2b' || provider === 'gateway'
@@ -1436,7 +1534,7 @@ async function main(): Promise<void> {
       : values.errored
         ? 'errored'
         : 'unpassed'
-    const config: Config.Config = {
+    const own: Config.Config = {
       agents: parent
         ? parent.agents
         : values.oracle
@@ -1498,6 +1596,7 @@ async function main(): Promise<void> {
           : {}),
       },
     }
+    const config = parent ? rerunConfig(own, { named, parent }) : own
     const created = await api.create(config, values.location ? { location: values.location } : {})
     console.log(
       'run ' +
@@ -1545,7 +1644,11 @@ async function main(): Promise<void> {
     console.log(Timeline.table(timeline.marks, timeline.createdAt))
   }
   if (command === 'cancel') console.log(JSON.stringify(await api.cancel(run)))
-  if (command === 'export') await exportJob(api, { out: required(values.out, 'out'), run })
+  if (command === 'export') {
+    const out = required(values.out, 'out')
+    await exportJob(api, { out, run })
+    console.log('job written to ' + out)
+  }
   if (command === 'attempt') {
     const attempt = required(rest[1], 'ATTEMPT')
     if (rest[2]) process.stdout.write(await api.artifactBytes(run, attempt, rest[2]))
