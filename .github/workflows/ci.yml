@@ -247,6 +247,14 @@ jobs:
           NANOEVAL_E2E_SCENARIO: fleet
           NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
           NANOEVAL_E2E_SLOTS: '1'
+      - name: End to end, directory slots, a provider that refuses sandboxes for a cap and ends one under its rows
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_GATEWAY: '1'
+          NANOEVAL_E2E_SCENARIO: capped
+          NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
+          NANOEVAL_E2E_SLOTS: '1'
       - name: End to end, directory slots, a gateway that sells no renewal, so sandboxes end with their lease and are replaced
         run: npm run e2e
         env:

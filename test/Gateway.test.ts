@@ -190,6 +190,83 @@ test('a lease is never longer than the lifetime, and the default template is nam
   assert.equal(seen.length, 2, 'a lifetime the gateway does not sell is refused before asking')
 })
 
+test('a create refused for a cap keeps what the provider took, and says when to ask again', async () => {
+  const cap =
+    (meta?: { kept: number }, headers: Record<string, string> = {}) =>
+    () =>
+      new Response(
+        JSON.stringify({
+          code: 'rate_limited',
+          detail: 'you have reached the maximum number of concurrent E2B sandboxes (20).',
+          ...(meta ? { meta } : {}),
+          status: 429,
+        }),
+        { headers: { 'content-type': 'application/problem+json', ...headers }, status: 429 },
+      )
+  const create = (provider: ReturnType<typeof Gateway.create>) =>
+    provider.create({ leaseSec: 900, metadata: {}, template: 'desktop', timeoutSec: 3600 })
+  const recorded = (charges: Payment.Charge[]) =>
+    charges.map((charge) => [charge.description, charge.amount, charge.usd])
+
+  const silent = gateway({ create: '42280' }, { create: cap() })
+  await assert.rejects(
+    create(silent.provider),
+    (error: unknown) =>
+      error instanceof Gateway.RefusedError &&
+      error.status === 429 &&
+      error.retryAfterSec === undefined,
+  )
+  assert.deepEqual(recorded(silent.charges), [
+    ['compute.create', '42280', 0.04228],
+    ['compute.create refused with 429, of which the provider kept $0.04228', '0', 0],
+  ])
+  assert.equal(
+    silent.spent(),
+    0.04228,
+    'a gateway that does not say what was kept took the price of the create on the day',
+  )
+
+  const unpaid = gateway({ create: '42280' }, { create: cap({ kept: 0 }, { 'retry-after': '45' }) })
+  await assert.rejects(
+    create(unpaid.provider),
+    (error: unknown) => error instanceof Gateway.RefusedError && error.retryAfterSec === 45,
+  )
+  assert.deepEqual(recorded(unpaid.charges), [
+    ['compute.create', '42280', 0.04228],
+    ['compute.create refused with 429', '-42280', -0.04228],
+  ])
+  assert.equal(unpaid.spent(), 0, 'a refusal that says nothing was kept leaves the spend')
+
+  const paid = gateway({ create: '42280' }, { create: cap({ kept: 0.04228 }) })
+  await assert.rejects(create(paid.provider), /refused create with 429: /)
+  assert.equal(paid.spent(), 0.04228, 'what the answer says the provider kept stays in the spend')
+
+  const part = gateway({ renew: '50000' }, { renew: cap({ kept: 0.02 }) })
+  await assert.rejects(part.provider.renew!({ home: Gateway.home, id: 'sbx-9' }, 300), /429/)
+  assert.deepEqual(recorded(part.charges), [
+    ['compute.renew', '50000', 0.05],
+    ['compute.renew refused with 429, of which the provider kept $0.02', '-30000', -0.03],
+  ])
+  assert.equal(part.spent(), 0.02)
+
+  const other = gateway({ renew: '50000' }, { renew: cap() })
+  await assert.rejects(other.provider.renew!({ home: Gateway.home, id: 'sbx-9' }, 300), /429/)
+  assert.equal(other.spent(), 0, 'only a create is known to be paid before it is refused')
+
+  const priceless = Gateway.create({
+    budget: Budget.create({ limitUsd: 1 }),
+    fetch: async () => cap({ kept: 0 }, { 'retry-after': '30' })(),
+    key: 'sk-tempo-test',
+    onCharge: () => assert.fail('nothing was quoted'),
+  })
+  await assert.rejects(
+    create(priceless),
+    (error: unknown) =>
+      error instanceof Gateway.UnpricedError && error.status === 429 && error.retryAfterSec === 30,
+    'a refusal before the price carries its status and its pause too',
+  )
+})
+
 test('a price over the budget is refused before the key is used', async () => {
   const { charges, provider, seen } = gateway({ create: '100001' }, {})
   await assert.rejects(

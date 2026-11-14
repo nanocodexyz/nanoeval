@@ -67,6 +67,7 @@ const attached =
   ending ||
   ['lost', 'machine', 'resume', 'runners', 'shared', 'standing', 'stopped'].includes(scenario)
 const alone = scenario === 'alone'
+const capped = scenario === 'capped'
 const refusedPassing = scenario === 'refused'
 const spent = scenario === 'spent'
 const funded = scenario === 'funded'
@@ -850,6 +851,7 @@ async function main(): Promise<void> {
   const mock = gateway
     ? await MockGateway.start({
         ...(slowStart ? { bootstrapMs: slowStartMs } : {}),
+        ...(capped ? { cap: 1 } : {}),
         key: 'sk-tempo-' + Crypto.randomBytes(16).toString('hex'),
         model: (path, body, cost) => {
           if (fleet && !parked) {
@@ -1329,7 +1331,7 @@ async function main(): Promise<void> {
         disks: scenario === 'disks' || scenario === 'disk' ? 'remove' : 'keep',
         ...(scenario === 'disk' ? { freeDiskMb: 2 ** 40 } : {}),
         ...(gateway ? { leaseSec: sandboxLeaseSec } : {}),
-        max: attached ? 0 : fleet ? 2 : 1,
+        max: attached ? 0 : capped || fleet ? 2 : 1,
         ...(packing ? { memoryMb: 768 } : {}),
         network,
         pollMs,
@@ -1442,7 +1444,7 @@ async function main(): Promise<void> {
           created.id +
           ' other.ext4 other.run-other',
       )
-    if ((fleet || lapse) && !mock)
+    if ((capped || fleet || lapse) && !mock)
       throw new Error('the ' + scenario + ' scenario runs through the scripted gateway')
     assert.deepEqual(created.eval, { name: evalName, version: version.digest })
     if (ending) {
@@ -1493,6 +1495,10 @@ async function main(): Promise<void> {
     let stoppedAt: number | undefined
     let verifyAt: number | undefined
     let beside: { id: string } | undefined
+    let cappedAt: number | undefined
+    const cappedLines: string[] = []
+    let cappedRefusals = 0
+    let cappedRow: string | undefined
     let besideStatus: Record<string, any> | undefined
     let besidePool: Record<string, any>[] | undefined
     const members = async () => (await api.pool())['members'] as Record<string, any>[]
@@ -1556,6 +1562,49 @@ async function main(): Promise<void> {
             Fs.closeSync(output)
             runners.push({ ...runner, child: resumed })
           }
+        }
+      }
+      if (capped && !restarted) {
+        const serving = (status['sandboxes'] as { runner: number; state: string }[]).find(
+          (sandbox) => sandbox.state === 'ready',
+        )
+        const busy = (
+          status['attempts'] as { id: string; phase: string; runner: number | null }[]
+        ).find(
+          (attempt) =>
+            serving !== undefined &&
+            attempt.runner === serving.runner &&
+            !['claimed', 'done', 'unclaimed'].includes(attempt.phase),
+        )?.id
+        const began = busy !== undefined && busy !== cappedRow
+        cappedRow = busy
+        const idle = status['counts'].active === 0 && status['counts'].unclaimed === 0
+        if (cappedAt === undefined && began && mock!.capped.length >= 3 && status['opening']) {
+          cappedAt = Date.now()
+          cappedLines.push(
+            summary(status)
+              .split('\n')
+              .find((line) => line.startsWith('sandboxes: '))!,
+          )
+          mock!.cap(0)
+          cappedRefusals = mock!.capped.length
+          await mock!.die([...mock!.sandboxes.keys()][0]!)
+        } else if (
+          cappedAt !== undefined &&
+          cappedLines.length === 1 &&
+          mock!.capped.length > cappedRefusals &&
+          status['opening']?.endsAt
+        ) {
+          cappedLines.push(
+            summary(status)
+              .split('\n')
+              .find((line) => line.startsWith('sandboxes: '))!,
+          )
+          mock!.hold(1)
+          mock!.cap(2)
+        } else if (cappedLines.length === 2 && idle) {
+          restarted = true
+          mock!.release()
         }
       }
       if (fleet && !restarted) {
@@ -1682,6 +1731,7 @@ async function main(): Promise<void> {
     }
     if (
       [
+        'capped',
         'fleet',
         'forgotten',
         'gone',
@@ -1943,6 +1993,85 @@ async function main(): Promise<void> {
           /the gateway answered 502 to an unpaid renew instead of its price: /,
           'a sandbox that is sold no renewal says so, and is used until its lease ends',
         )
+    } else if (capped) {
+      const rows = status['sandboxes'] as {
+        error: string | null
+        id: number
+        runner: number | null
+        state: string
+      }[]
+      assert.equal(status['counts'].errored, 0, 'no row ended as an error: ' + summary(status))
+      assert.match(rows[0]!.error!, /the gateway refused create with 503: /)
+      assert.equal(rows[1]!.state, 'failed', 'the sandbox that its provider ended is failed')
+      assert.match(rows[1]!.error!, /the runner stopped answering|refused renew with 404: /)
+      const refusals = rows.filter((row) => /refused create with 429: /.test(row.error ?? ''))
+      assert.ok(refusals.length >= 4, 'creates were refused for the cap before and after')
+      assert.equal(refusals.length, mock!.capped.length)
+      const kept = mock!.log.filter((entry) => entry.kept)
+      assert.ok(
+        kept.length >= 2 && kept.length < refusals.length,
+        'the provider kept the price of the first create it refused for its cap, each time, and of no other',
+      )
+      assert.equal(
+        (status['payments'] as { detail: string; usd: number }[]).filter(
+          (payment) =>
+            payment.usd === 0 &&
+            (JSON.parse(payment.detail) as { description: string }).description.startsWith(
+              'compute.create refused with 429, of which the provider kept $',
+            ),
+        ).length,
+        kept.length,
+        'a create that the provider was paid for and then refused stays in the spend of the run',
+      )
+      const opened = rows.filter((row) => row.id > rows[1]!.id && row.state === 'closed')
+      assert.equal(opened.length, 2, 'two more sandboxes were opened once the cap allowed them')
+      const openedAt = new Map(
+        (await api.timeline(created.id)).marks
+          .filter((mark) => mark.name === 'sandbox.create')
+          .map((mark) => [mark.sandbox!, mark.at]),
+      )
+      const earlier = refusals.filter((row) => openedAt.get(row.id)! < cappedAt!)
+      assert.ok(earlier.length >= 3)
+      assert.ok(
+        openedAt.get(earlier[1]!.id)! - openedAt.get(earlier[0]!.id)! < leaseSec * 1000,
+        'the first refusal is asked again at once',
+      )
+      assert.ok(
+        openedAt.get(earlier[2]!.id)! - openedAt.get(earlier[1]!.id)! >= leaseSec * 1000,
+        'the second refusal in a row is asked again after the notice of the run, not with every tick',
+      )
+      assert.match(
+        cappedLines[0]!,
+        /^sandboxes: 1 open; another could not be opened \d+ times since \+\d+ s, and is asked for again at \+\d+ s: Gateway\.RefusedError: the gateway refused create with 429: /,
+        'while a sandbox works, the status says that another is refused and when it is asked for again',
+      )
+      assert.match(
+        cappedLines[1]!,
+        /^sandboxes: none open; one could not be opened \d+ times since \+\d+ s, and is asked for again at \+\d+ s; the rows that wait end as errors at \+\d+ s unless one starts: Gateway\.RefusedError: the gateway refused create with 429: /,
+        'with no sandbox left, the status says until when the rows wait',
+      )
+      assert.equal(status['opening'], null)
+      assert.ok(status['lostClaims'] >= 1, 'the row of the sandbox that was ended lost its claim')
+      const again = (status['attempts'] as { claims: number; runner: number }[]).filter(
+        (attempt) => attempt.claims === 2,
+      )
+      assert.ok(again.length >= 1, 'the row of the sandbox that was ended was claimed again')
+      for (const attempt of again) assert.notEqual(attempt.runner, rows[1]!.runner)
+      const late = opened.at(-1)!
+      assert.ok(
+        !(status['attempts'] as { runner: number }[]).some(
+          (attempt) => attempt.runner === late.runner,
+        ),
+        'the sandbox whose runner started after the last row ended ran no row',
+      )
+      assert.equal(
+        (status['runners'] as { id: number; state: string }[]).find(
+          (runner) => runner.id === late.runner,
+        )!.state,
+        'left',
+        'and is closed when its runner leaves, not kept until the setup limit',
+      )
+      assert.ok(wallMs < config.limits.setupSec * 1000)
     } else if (fleet) {
       const rows = status['sandboxes'] as { error: string | null; state: string }[]
       assert.match(rows[0]!.error!, /the gateway refused create with 503: /)
@@ -2934,7 +3063,18 @@ async function main(): Promise<void> {
           ['compute.' + entry.operation, micro(entry)],
           ...(entry.refused === undefined
             ? []
-            : [['compute.' + entry.operation + ' refused with ' + entry.refused, -micro(entry)]]),
+            : [
+                [
+                  'compute.' +
+                    entry.operation +
+                    ' refused with ' +
+                    entry.refused +
+                    (entry.kept
+                      ? ', of which the provider kept $' + Math.round(entry.kept * 1e6) / 1e6
+                      : ''),
+                  Math.round((entry.kept ?? 0) * 1e6) - micro(entry),
+                ],
+              ]),
         ])
       const paid = (list: readonly { detail: string; usd: number }[]) =>
         list.map((payment) => [
@@ -2983,7 +3123,7 @@ async function main(): Promise<void> {
       } else if (!warm) {
         assert.deepEqual(
           leased.map((sandbox) => sandbox.ended),
-          fleet ? ['died', ...leased.slice(1).map(() => 'terminated')] : ['terminated'],
+          capped || fleet ? ['died', ...leased.slice(1).map(() => 'terminated')] : ['terminated'],
           'every sandbox was terminated, not left to lapse, the one whose renewal was refused in passing too',
         )
       }

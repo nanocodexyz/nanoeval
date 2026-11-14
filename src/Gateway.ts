@@ -8,13 +8,22 @@ export class RequestError extends Error {
 
 export class UnpricedError extends RequestError {
   override name = 'Gateway.UnpricedError'
+  readonly retryAfterSec: number | undefined
+  readonly status: number
+  constructor(status: number, text: string, retryAfterSec?: number) {
+    super(text)
+    this.retryAfterSec = retryAfterSec
+    this.status = status
+  }
 }
 
 export class RefusedError extends RequestError {
   override name = 'Gateway.RefusedError'
+  readonly retryAfterSec: number | undefined
   readonly status: number
-  constructor(status: number, text: string) {
+  constructor(status: number, text: string, retryAfterSec?: number) {
     super(text)
+    this.retryAfterSec = retryAfterSec
     this.status = status
   }
 }
@@ -196,12 +205,14 @@ export function create(options: create.Options): Sandbox.Provider {
           : undefined
     if (!charge)
       throw new UnpricedError(
+        asked.status,
         'the gateway answered ' +
           asked.status +
           ' to an unpaid ' +
           operation +
           ' instead of its price: ' +
           unpaid.slice(0, 500),
+        retryAfter(asked.headers.get('retry-after')),
       )
     const budgeted = operation !== 'terminate'
     if (budgeted) options.budget.charge(charge.usd, 'compute.' + operation)
@@ -242,16 +253,31 @@ export function create(options: create.Options): Sandbox.Provider {
           answer.slice(0, 500),
       )
     }
-    if (budgeted) options.budget.refund(charge.usd, 'compute.' + operation)
+    const all = BigInt(charge.amount)
+    const held = providerKept(answer)
+    const named =
+      held === undefined
+        ? operation === 'create' && response.status === 429
+          ? all
+          : BigInt(0)
+        : BigInt(Math.round(held * 10 ** Payment.decimals))
+    const taken = named < all ? named : all
+    const back = all - taken
+    if (budgeted) options.budget.refund(Payment.usd(String(back)), 'compute.' + operation)
     await options.onCharge({
       ...charge,
-      amount: '-' + charge.amount,
-      description: charge.description + ' refused with ' + response.status,
-      usd: -charge.usd,
+      amount: back ? '-' + String(back) : '0',
+      description:
+        charge.description +
+        ' refused with ' +
+        response.status +
+        (taken ? ', of which the provider kept $' + Payment.usd(String(taken)) : ''),
+      usd: back ? -Payment.usd(String(back)) : 0,
     })
     throw new RefusedError(
       response.status,
       'the gateway refused ' + operation + ' with ' + response.status + ': ' + answer.slice(0, 500),
+      retryAfter(response.headers.get('retry-after')),
     )
   }
   const call = async <T>(operation: string, body: unknown): Promise<T> =>
@@ -369,6 +395,21 @@ export declare namespace create {
     onCharge(charge: Payment.Charge): void | Promise<void>
     url?: string
   }
+}
+
+function providerKept(answer: string): number | undefined {
+  try {
+    const problem = JSON.parse(answer) as { meta?: { kept?: unknown } } | null
+    const held = problem?.meta?.kept
+    return typeof held === 'number' && Number.isFinite(held) && held >= 0 ? held : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function retryAfter(header: string | null): number | undefined {
+  const seconds = header === null || header.trim() === '' ? NaN : Number(header)
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined
 }
 
 function code(answer: string): string | undefined {

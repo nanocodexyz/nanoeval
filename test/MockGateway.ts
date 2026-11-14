@@ -7,7 +7,7 @@ import type * as Sandbox from '../src/Sandbox.ts'
 
 export type Charge = { operation: string; usd: number }
 
-export type Entry = Charge & { refused?: number }
+export type Entry = Charge & { kept?: number; refused?: number }
 
 export type Leased = {
   ended?: 'died' | 'lapsed' | 'terminated'
@@ -18,16 +18,20 @@ export type Leased = {
 }
 
 export type Mock = {
+  cap(limit: number | undefined): void
+  readonly capped: readonly Charge[]
   readonly charges: readonly Charge[]
   close(): void
   die(id: string): Promise<void>
   readonly funding: readonly unknown[]
+  hold(after: number): void
   readonly key: string
   readonly log: readonly Entry[]
   readonly modelCosts: readonly number[]
   readonly outside: readonly number[]
   readonly paymentRefusals: readonly string[]
   readonly refused: readonly string[]
+  release(): void
   readonly sandboxes: ReadonlyMap<string, Leased>
   readonly unavailable: readonly Charge[]
   readonly url: string
@@ -35,6 +39,7 @@ export type Mock = {
 
 export type Options = {
   bootstrapMs?: number
+  cap?: number
   key: string
   model(path: string, body: Record<string, any>, cost: number): string | undefined
   refusals?: { passing?: number; spentAfter?: number; spentTimes?: number }
@@ -101,7 +106,16 @@ async function read(request: Http.IncomingMessage): Promise<Buffer> {
 }
 
 export async function start(options: Options): Promise<Mock> {
+  let cap = options.cap
+  let capKnown = false
+  const capped: Charge[] = []
   const charges: Charge[] = []
+  const held = new Set<string>()
+  let holdAfter: number | undefined
+  let release = () => {}
+  const released = new Promise<void>((resolve) => {
+    release = resolve
+  })
   const funding: unknown[] = []
   const log: Entry[] = []
   const quoted = new Map<string, number>()
@@ -223,6 +237,29 @@ export async function start(options: Options): Promise<Mock> {
       )
       return
     }
+    const open = [...sandboxes.values()].filter((sandbox) => !sandbox.ended).length
+    if (operation === 'create' && cap !== undefined && open >= cap) {
+      const kept = capKnown ? 0 : usd
+      capKnown = true
+      capped.push({ operation, usd })
+      if (kept) charges.push({ operation, usd })
+      log.push({ operation, refused: 429, usd, ...(kept ? { kept } : {}) })
+      response.writeHead(429, { 'content-type': 'application/problem+json', 'retry-after': '1' })
+      response.end(
+        JSON.stringify({
+          code: 'rate_limited',
+          detail:
+            'you have reached the maximum number of concurrent E2B sandboxes (' +
+            cap +
+            '). ' +
+            (kept ? 'E2B took ' + kept + ' and returns nothing.' : 'Nothing was charged.'),
+          meta: { kept },
+          status: 429,
+        }),
+      )
+      return
+    }
+    if (operation === 'create') capKnown = false
     charges.push({ operation, usd })
     log.push({ operation, usd })
     const answer = (value: unknown) => {
@@ -240,6 +277,8 @@ export async function start(options: Options): Promise<Mock> {
         renewals: 0,
       }
       sandboxes.set(id, fresh)
+      if (holdAfter === 0) held.add(id)
+      else if (holdAfter !== undefined) holdAfter--
       return answer(view(id, fresh))
     }
     const id = String(body['sandboxId'])
@@ -271,6 +310,7 @@ export async function start(options: Options): Promise<Mock> {
       return problem(response, 400, 'the mock runs bash -lc commands only')
     if (options.bootstrapMs)
       await new Promise((resolve) => setTimeout(resolve, options.bootstrapMs))
+    if (held.has(id)) await released
     const output = await sandbox.exec(there(command[2]!))
     return answer({ ...output, timedOut: false, truncated: false })
   }
@@ -358,6 +398,11 @@ export async function start(options: Options): Promise<Mock> {
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   return {
+    cap(limit) {
+      cap = limit
+      capKnown = false
+    },
+    capped,
     charges,
     close() {
       clearInterval(lapse)
@@ -366,12 +411,16 @@ export async function start(options: Options): Promise<Mock> {
     },
     die: (id) => end(id, 'died'),
     funding,
+    hold(after) {
+      holdAfter = after
+    },
     key: options.key,
     log,
     modelCosts,
     outside,
     paymentRefusals,
     refused,
+    release: () => release(),
     sandboxes,
     unavailable,
     url: 'http://127.0.0.1:' + (server.address() as AddressInfo).port,

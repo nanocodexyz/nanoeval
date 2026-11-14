@@ -15,6 +15,7 @@ import * as Judge from '../src/Judge.ts'
 import * as Ledger from '../src/Ledger.ts'
 import * as Bytes from '../src/internal/Bytes.ts'
 import * as Local from '../src/Local.ts'
+import * as Opening from '../src/Opening.ts'
 import * as Payment from '../src/Payment.ts'
 import * as Pins from '../src/Pins.ts'
 import * as Members from '../src/Pool.ts'
@@ -82,12 +83,12 @@ type Meta = {
     start?: KeyRead
   }
   location?: string
+  opening?: Opening.Failed
   publicUrl: string
   refused?: { at: number; message: string; plan?: true }
   reruns: string[]
   restranded?: true
   runnerToken: string
-  sandboxFailures: number
   starvedAt?: number
   strandedAt?: number
 }
@@ -104,7 +105,6 @@ const judgeRequestId = 'judge'
 const modelRequests = 'agent/model-requests.jsonl'
 const partCharacters = 524_288
 const requestId = 'attempt'
-const sandboxAttempts = 2
 const verifierLog = 'verifier/test-stdout.txt'
 const version = '0.2.0'
 
@@ -507,7 +507,6 @@ export class Run extends DurableObject<Env> {
         publicUrl: params.get('url')!,
         reruns: [],
         runnerToken: secret(),
-        sandboxFailures: 0,
       })
     })
     if (config.rerun)
@@ -1033,6 +1032,10 @@ export class Run extends DurableObject<Env> {
       lostClaims: Ledger.claims(this.sql).filter(Ledger.lost).length,
       name: config.name,
       nanocode: this.pins(),
+      opening:
+        meta.opening && rows.some((row) => row.phase === 'unclaimed')
+          ? Opening.view(meta.opening, { limits: config.limits, now: Date.now() })
+          : null,
       payer: config.payer ?? 'deployment',
       payments: this.sql.all('SELECT at, usd, detail FROM payments ORDER BY id'),
       refused: meta.refused ?? null,
@@ -1466,15 +1469,16 @@ export class Run extends DurableObject<Env> {
       }
       if (!['ending', 'ready', 'starting'].includes(row.state)) continue
       const runner = this.runners().find((candidate) => candidate.id === row.runner)
+      let started = false
       try {
         if (!runner) throw new Error('the sandbox has no runner')
-        const started =
+        started =
           row.state === 'starting' &&
           runner.capabilities !== null &&
           ['left', 'ready', 'refused'].includes(runner.state)
         if (started) {
           this.update('sandboxes', row.id, { capabilities: runner.capabilities, state: 'ready' })
-          this.setMeta({ ...this.meta()!, sandboxFailures: 0 })
+          this.setOpening(undefined)
         }
         const holds = this.rows().some((held) => Ledger.active(held) && held.runner === runner.id)
         if ((runner.state === 'refused' && !holds) || runner.state === 'lost')
@@ -1494,28 +1498,50 @@ export class Run extends DurableObject<Env> {
           )
         }
       } catch (error) {
-        await this.failSandbox(provider, row, message(error))
+        await this.failSandbox(
+          provider,
+          row,
+          message(error),
+          row.state === 'starting' && !started ? { passing: false } : undefined,
+        )
       }
     }
+  }
+
+  private setOpening(opening: Opening.Failed | undefined): void {
+    const { opening: before, ...rest } = this.meta()!
+    if (opening || before) this.setMeta(opening ? { ...rest, opening } : rest)
   }
 
   private async failSandbox(
     provider: Sandbox.Provider,
     row: SandboxRow,
     error: string,
+    unopened?: { passing: boolean; retryAfterSec?: number },
   ): Promise<void> {
-    this.fail(row, error)
+    this.fail(row, error, unopened)
     await this.discard(provider, { ...row, error })
   }
 
-  private fail(row: SandboxRow, error: string): void {
+  private fail(
+    row: SandboxRow,
+    error: string,
+    unopened?: { passing: boolean; retryAfterSec?: number },
+  ): void {
     this.update('sandboxes', row.id, { error, state: 'failed' })
     if (row.runner !== null) {
       const runner = this.runners().find((candidate) => candidate.id === row.runner)
       if (runner && (runner.state === 'ready' || runner.state === 'starting'))
         this.update('runners', runner.id, { error, state: 'lost' })
     }
-    this.setMeta({ ...this.meta()!, sandboxFailures: this.meta()!.sandboxFailures + 1 })
+    if (unopened)
+      this.setOpening(
+        Opening.failed(this.meta()!.opening, {
+          at: Date.now(),
+          message: error,
+          ...unopened,
+        }),
+      )
   }
 
   private async discard(provider: Sandbox.Provider, row: SandboxRow): Promise<void> {
@@ -1691,7 +1717,13 @@ export class Run extends DurableObject<Env> {
         this.update('sandboxes', id, { state: 'starting' })
     } catch (error) {
       const row = this.sandboxes().find((candidate) => candidate.id === id)!
-      if (row.state !== 'failed') await this.failSandbox(provider, row, message(error))
+      if (row.state !== 'failed') {
+        const retryAfterSec = Opening.retryAfterSec(error)
+        await this.failSandbox(provider, row, message(error), {
+          passing: row.handle === null && Opening.passing(error),
+          ...(row.handle === null && retryAfterSec !== undefined ? { retryAfterSec } : {}),
+        })
+      }
     } finally {
       this.creating.delete(id)
     }
@@ -1820,12 +1852,10 @@ export class Run extends DurableObject<Env> {
   private async grow(provider: Sandbox.Provider): Promise<void> {
     const config = this.config()
     const unclaimed = this.rows().filter((row) => row.phase === 'unclaimed')
-    if (!unclaimed.length) return
     const sandboxes = this.sandboxes()
     const live = sandboxes.filter((sandbox) =>
       ['creating', 'ready', 'starting'].includes(sandbox.state),
     )
-    if (live.some((sandbox) => sandbox.state !== 'ready')) return
     const ending = new Set(
       sandboxes.filter((sandbox) => sandbox.state === 'ending').map((sandbox) => sandbox.runner),
     )
@@ -1837,15 +1867,21 @@ export class Run extends DurableObject<Env> {
     const ready = this.runners().filter(
       (runner) => runner.state === 'ready' && !ending.has(runner.id) && !drained.has(runner.id),
     )
+    const now = Date.now()
+    const serving = ready.length > 0 || live.some((sandbox) => sandbox.state === 'ready')
+    const known = this.meta()!.opening
+    const opening = Opening.seen(known, { now, stranded: unclaimed.length > 0 && !serving })
+    if (opening !== known) this.setOpening(opening)
+    if (!unclaimed.length || live.some((sandbox) => sandbox.state !== 'ready')) return
     const room = ready.some((runner) => {
       const report = runner.report ? (JSON.parse(runner.report) as Protocol.Report) : undefined
       return !report?.offer || (report.offer.slots > 0 && !report.unfit)
     })
     if (room) return
-    if (this.meta()!.sandboxFailures >= sandboxAttempts) {
-      if (live.length || ready.length) return
-      const last =
-        sandboxes.filter((sandbox) => sandbox.error).at(-1)?.error ?? 'no sandbox could be opened'
+    const action = Opening.next(opening, { limits: config.limits, now })
+    if (action === 'wait') return
+    if (action === 'end') {
+      const last = Opening.ended(opening!, { limits: config.limits, now })
       for (const row of unclaimed)
         await this.complete(row, {
           failure: {
@@ -1923,7 +1959,10 @@ export class Run extends DurableObject<Env> {
       body: { config: { ...this.runnerConfig(runner), ready: true }, id: member.id, run: meta.id },
       location: meta.location,
     })
-    if (assigned) return true
+    if (assigned) {
+      this.setOpening(undefined)
+      return true
+    }
     const error = 'the pool did not hand its runner to this run'
     this.update('runners', runner, { error, state: 'lost' })
     if (sandbox !== null) this.update('sandboxes', sandbox, { error, state: 'failed' })
@@ -2066,7 +2105,13 @@ export class Run extends DurableObject<Env> {
             ...(passing ? {} : { state: 'ending' }),
           })
         else {
-          this.fail(current, message(error))
+          this.fail(
+            current,
+            message(error),
+            current.state === 'creating' || current.state === 'starting'
+              ? { passing: false }
+              : undefined,
+          )
           failed.push({ ...current, error: message(error) })
         }
       }

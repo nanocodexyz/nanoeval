@@ -848,6 +848,31 @@ export function summary(status: Record<string, any>, options: { tasks?: boolean 
       )
     else if (runner['drained'] && runner['state'] === 'ready')
       lines.push('runner ' + runner['id'] + ' claims no more rows: ' + runner['drained'])
+  const opening = status['opening'] as Record<string, any> | null | undefined
+  if (opening) {
+    const open = ((status['sandboxes'] ?? []) as Record<string, any>[]).filter((sandbox) =>
+      ['creating', 'ready', 'starting'].includes(sandbox['state']),
+    ).length
+    const times = opening['failures'] + (opening['failures'] === 1 ? ' time' : ' times')
+    lines.push(
+      'sandboxes: ' +
+        (open ? open + ' open; another' : 'none open; one') +
+        ' could not be opened ' +
+        times +
+        ' since ' +
+        offset(opening['since']) +
+        (opening['closed']
+          ? ', and no other is asked for after failures that do not pass'
+          : ', and is asked for again at ' + offset(opening['nextAt'])) +
+        (opening['endsAt'] === null
+          ? ''
+          : '; the rows that wait end as errors at ' +
+            offset(opening['endsAt']) +
+            ' unless one starts') +
+        ': ' +
+        String(opening['message']).replace(/\s+/g, ' ').trim().slice(0, 300),
+    )
+  }
   if (status['strandedAt'])
     lines.push(
       'rows wait since ' +
