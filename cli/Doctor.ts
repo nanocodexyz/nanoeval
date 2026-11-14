@@ -36,6 +36,7 @@ export type Facts = {
   cgroup: boolean
   credentials: Record<'claude' | 'codex', readonly string[]>
   disk: readonly { freeMb: number; holds: string; path: string }[]
+  endpoints: readonly { name: string; said?: string; url: string }[]
   hand: { release: string; said?: string }
   kvm: Host.Kvm
   kvmGroup: string | undefined
@@ -425,6 +426,25 @@ export function checks(facts: Facts, wanted: Backend = backend(facts)): Check[] 
               Protocol.version,
           },
     )
+  for (const endpoint of facts.endpoints)
+    found.push(
+      endpoint.said === undefined
+        ? { level: 'ok', text: endpoint.name + ' ' + endpoint.url + ' answers' }
+        : {
+            fix:
+              'start what serves it again, node scripts/scripted-model.ts --task DIR for the scripted model, or unset ' +
+              endpoint.name,
+            level: 'miss',
+            text:
+              'nothing answers at ' +
+              endpoint.name +
+              ' ' +
+              endpoint.url +
+              ' (' +
+              endpoint.said +
+              '): a Worker started from this shell sends its model requests there, and every row of a run then ends as an agent error',
+          },
+    )
   const routes = worker?.kind === 'answered' ? worker.routes : undefined
   if (routes) {
     const paid = (['claude', 'codex'] as const).flatMap((provider) =>
@@ -606,7 +626,7 @@ export async function gather(input: {
     { holds: 'the lab of nanoeval revision', path: Revision.defaultLab(env) },
   ]
   const target = process.arch === 'arm64' ? 'aarch64-unknown-linux-gnu' : 'x86_64-unknown-linux-gnu'
-  const [hub, hand, worker, claude, codex] = await Promise.all([
+  const [hub, hand, worker, claude, codex, ...endpoints] = await Promise.all([
     registry(),
     reach(async (signal) => {
       const response = await fetch(Slot.runtime.release + '/nanocode-' + target + '.gz', {
@@ -636,6 +656,16 @@ export async function gather(input: {
       : undefined,
     login('claude', env['NANOEVAL_CLAUDE_LOGIN']),
     login('codex', env['NANOEVAL_CODEX_LOGIN']),
+    ...['ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL'].flatMap((name) => {
+      const url = env[name]
+      if (!url) return []
+      return [
+        reach(async (signal) => {
+          await (await fetch(url, { signal })).body?.cancel()
+          return {}
+        }).then((answer) => ({ name, ...('said' in answer ? { said: answer.said } : {}), url })),
+      ]
+    }),
   ])
   const group = spawnSync('stat', ['-c', '%G', '/dev/kvm'], { encoding: 'utf8' })
   return {
@@ -658,6 +688,7 @@ export async function gather(input: {
         }
       },
     ),
+    endpoints,
     hand: { release: Slot.runtime.release, ...('said' in hand ? { said: hand.said } : {}) },
     krunfw: Host.krunfw(),
     kvm: Host.kvm(),

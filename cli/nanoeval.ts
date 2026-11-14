@@ -54,7 +54,10 @@ const usage = `nanoeval <command>
             root and their tools, the memory a runner admits rows by, the free disk where
             blobs, disks, layers and the lab go, Docker Hub and the pulls it has left for
             this address, and a model credential: of the Worker when one is named, of this
-            shell otherwise. Without --backend it checks for the slots a runner takes by
+            shell otherwise. A shell with none is missing one, so a machine check ends
+            ready only with one exported. A base URL that this shell names for a model
+            (ANTHROPIC_BASE_URL, OPENAI_BASE_URL) is asked, and is missing when nothing
+            answers there. Without --backend it checks for the slots a runner takes by
             itself here: krun where the machine has /dev/kvm, ns as root, dir otherwise.
             It exits 0 when nothing is missing and 1 when something is.
   sandboxd  --token T [--host 127.0.0.1] [--port 8788] [--root output/sandboxes]

@@ -15,6 +15,7 @@ const ready: Doctor.Facts = {
   disk: [
     { freeMb: 400_000, holds: 'the blob store, the cache of disks and blobs', path: '/data/store' },
   ],
+  endpoints: [],
   hand: { release },
   krunfw: true,
   kvm: 'open',
@@ -72,6 +73,29 @@ test('a machine with everything is ready for krun slots, and says what it found'
       'ready for krun slots',
     ].join('\n'),
   )
+})
+
+test('a base URL of this shell where nothing answers is missing, with what to do', () => {
+  const dead = {
+    name: 'ANTHROPIC_BASE_URL',
+    said: 'fetch failed: connect ECONNREFUSED 127.0.0.1:8790',
+    url: 'http://127.0.0.1:8790',
+  }
+  const lines = (endpoints: Doctor.Facts['endpoints']) =>
+    Doctor.checks({ ...ready, endpoints }).flatMap((check) =>
+      check.text.includes('BASE_URL') ? [check.level + ' ' + check.text.split(':')[0]] : [],
+    )
+  assert.deepEqual(lines([dead]), ['miss nothing answers at ANTHROPIC_BASE_URL http'])
+  assert.deepEqual(
+    misses(Doctor.checks({ ...ready, endpoints: [dead] })).map(([, fix]) => fix),
+    [
+      'start what serves it again, node scripts/scripted-model.ts --task DIR for the scripted model, or unset ANTHROPIC_BASE_URL',
+    ],
+  )
+  assert.deepEqual(lines([{ name: 'OPENAI_BASE_URL', url: 'http://127.0.0.1:8790' }]), [
+    'ok OPENAI_BASE_URL http',
+  ])
+  assert.deepEqual(lines([]), [])
 })
 
 test('a bare machine with KVM gets one command for each thing it lacks, in the order to run them', () => {
