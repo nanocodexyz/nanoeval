@@ -153,3 +153,27 @@ test('the usage, the steps and the first model request of a session are those of
   )
   assert.equal(Math.round(Timeline.modelRequest(events)!), 1_794_000_000_796)
 })
+
+test('a session that goes on after its host was lost has each input and each model call once', () => {
+  const cut = published.findLastIndex(Telemetry.live) + 1
+  const again = (event: Atif.SessionEvent): Atif.SessionEvent => {
+    const inner = event.event.event!
+    const payload =
+      inner.type === 'model.call.completed'
+        ? { ...inner.payload, attempt: 0, timing: { ...inner.payload['timing'], replayed: true } }
+        : inner.payload
+    return {
+      ...event,
+      event: { ...event.event, event: { ...inner, payload } },
+      seq: event.seq && event.seq + 16384,
+    }
+  }
+  const recovered = [
+    ...published.slice(0, cut),
+    ...[published[2]!, published[3]!, published[cut - 1]!].map(again),
+    ...published.slice(cut),
+  ]
+  assert.deepEqual(Atif.usage(recovered), Atif.usage(published))
+  const options = { model: '', name: '', session: '', version: '' }
+  assert.deepEqual(Atif.fromEvents(recovered, options), Atif.fromEvents(published, options))
+})

@@ -74,6 +74,7 @@ export function fromEvents(
   let session = ''
   let extra: Record<string, unknown> = {}
   let current: Step | undefined
+  const accepted = new Set<string>()
 
   const agentStep = (at: number): Step => {
     if (!current) {
@@ -90,6 +91,10 @@ export function fromEvents(
 
     switch (event.type) {
       case 'input.accepted':
+        if (typeof payload['item_id'] === 'string') {
+          if (accepted.has(payload['item_id'])) break
+          accepted.add(payload['item_id'])
+        }
         session = String(payload['session_id'] ?? session)
         steps.push({
           step_id: steps.length + 1,
@@ -104,6 +109,7 @@ export function fromEvents(
         extra = { orchestration: payload['orchestration'], transport: payload['transport'] }
         break
       case 'model.call.completed': {
+        if (replayed(payload)) break
         current = undefined
         const step = agentStep(entry.created_at)
         const used = payload['usage'] ?? {}
@@ -226,7 +232,7 @@ export function usage(events: readonly SessionEvent[]): Usage {
     if (entry.event.source !== 'agent' || !event) continue
     const payload = event.payload
 
-    if (event.type === 'model.call.completed') {
+    if (event.type === 'model.call.completed' && !replayed(payload)) {
       const used = payload['usage'] ?? {}
       const details = used['input_tokens_details'] ?? {}
       totals.modelCalls++
@@ -262,6 +268,10 @@ function count(value: unknown): number {
 
 function iso(milliseconds: number): string {
   return new Date(milliseconds).toISOString()
+}
+
+function replayed(payload: Record<string, any>): boolean {
+  return payload['timing']?.replayed === true
 }
 
 function argumentsOf(value: unknown): Record<string, unknown> {

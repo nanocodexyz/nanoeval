@@ -64,6 +64,23 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: dir
           NANOEVAL_E2E_SCENARIO: restart
+      - name: End to end, directory slots, the Worker killed in a turn while a cell runs on the hand
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: midturn
+      - name: End to end, directory slots, the Worker killed in a turn while its model is asked
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: midturn
+          NANOEVAL_E2E_KILL: model
+      - name: End to end, directory slots, the Worker killed in a turn while a wait for a cell is out
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: midturn
+          NANOEVAL_E2E_KILL: wait
       - name: End to end, directory slots, a session that lost the turn of its row
         run: npm run e2e
         env:
