@@ -4124,3 +4124,62 @@ Model calls and tokens were already right in all four: 8 calls for 8 responses.
 - `npm run lint`, `npm run check:types` and `npm test`: 149 tests, 145 passed and 4 skipped on a machine without KVM.
 
 **Not verified.** The end-to-end lanes of this repository were not run with the change, and no lane here kills a `codex` session: the numbers above are from the separate harness. A second `tool.result` for one `call_id`, which a recovered cell can publish, is still two results in a step. A deployed Worker and a real model, as in the entry before this.
+
+## 2026-11-14: a lane for a cell that answered beside a running one, and what the next nanocode-ts pin must hold
+
+The entry on the tool calls that a session publishes again listed what a separate harness found in nanocode-ts `build-7968b53` and this repository could not fix. One of those was fixed in nanocode-ts on this day: when the tool calls of one reply run side by side and the Worker is killed after one cell has answered and while another still runs, the cell that had answered came back to the model as "Tool execution interrupted by a host crash; outcome unknown". This entry adds the kill that shows it to the lane `midturn`, checks the tool calls in the three kills that were there, and records why the pin of nanocode-ts was not moved and what the next pin must hold. It changes `test/e2e.ts` and README.md. `package.json`, `.github/workflows/ci.yml`, `worker/` and `src/` are unchanged.
+
+**The cause and the fix, in nanocode-ts.** A hand answers a cell with a compact reply: a call inside the cell whose end the hand had already sent as an update is listed as delivered, and the hand keeps the whole reply only until the brain acknowledges the compact one. The session stored the compact reply alone, in its table `hand_requests`, and nanocode cannot read that back without the updates. A session whose calls run one after the other never has to: since `build-7968b53` the result of a cell is in a row of the log before the next request leaves. A `codex` session runs the calls of one reply together, so a cell that answered while its neighbour ran had its result in no row. nanocode sends `parallel_tool_calls: true` for a model it does not know and `false` for `gpt-6-luna`, and runs two calls together for either when the model sends them. The fix (nanocode-ts 4f2f8f9 on its master) keeps the update frames of a hand request, writes them to a new table of the session object, `hand_updates`, when the reply names a delivered call, and reads the reply back whole. It is TypeScript only.
+
+**The builds that hold the fix.**
+
+| Build | What it is | Holds |
+|---|---|---|
+| `build-fab71ba` | nanocode-ts master at 4f2f8f9 and its two commits of lanes and notes, nanocode 86c465b | this fix. Not `codex_orchestration` |
+| `build-ac29d32` | nanocode-ts master at ac29d32, nanocode 67e6a187d | this fix, and the fixes for a turn that spawned a subagent and for a cell whose frame never left (nanocode 8f70c4a72, eb707662a, 16217ef97). Not `codex_orchestration` |
+| `build-0f8ae19` | `build-f3aa94f` and the one commit of this fix, on the nanocode-ts branch `feat/codex-orchestration-hand-updates` | this fix and `codex_orchestration`. Not the other three |
+
+`build-0f8ae19` has the four WebAssembly modules of `build-f3aa94f` byte for byte. The package differs in `dist/cloudflare/App.js`, the new `dist/cloudflare/internal/Replies.js` and the Pyodide snapshot, which every build writes anew. Its tarball has SHA-256 `0af3f1a5935c09b6ed2dba58c3ed347c57c40c38a6020ed960332630f4dc102e` and the integrity `sha512-P1RVlUTLhfdIUG+uBf2sJWDdgpCdV6VHkpvgPbXepBVQtvipaHfVj6TeKqRqdkVckvbOFD8+YJiX3RY85b22XQ==`.
+
+**Why the pin stays at `build-f3aa94f`.** The `codex-direct` agent needs `codex_orchestration`, which is nanocode-ts f3aa94f and nanocode 0e428f673, each on a branch and on neither master. On a build of master, a turn whose body says `codex_orchestration: "direct"` is a Code Mode session, so a pin of master would change that agent without a word. `build-0f8ae19` keeps the option and was measured below, but it holds one of the fixes and not the other three, and a pin is moved once: a run records its pins, and the baseline of a comparison is the latest run on the pinned builds, so every move starts the baselines again. Bringing the other three onto the branch line was tried and stopped. The two nanocode commits for subagents apply to 0e428f673. The third, 16217ef97, conflicts in `crates/backends/claude/src/agent/durable.rs` with changes that master has and the branch has not, and a merge by hand of the recovery of a call is not a thing to ship unread by its author.
+
+**What the next pin must hold**, all of it in one build:
+
+1. `codex_orchestration`: nanocode-ts f3aa94f (`src/cloudflare/App.ts`, `src/Contracts.ts`, `src/wasm.rs`) and nanocode 0e428f673.
+2. nanocode-ts 4f2f8f9, the fix of this entry.
+3. nanocode-ts ac29d32 with nanocode 8f70c4a72, eb707662a and 16217ef97.
+
+The plain way is that `codex_orchestration` lands on both masters and the pin goes to the first release of nanocode-ts master after it. That move is a large one: from 2aad477 it takes 13 commits of nanocode-ts and, from the base of 0e428f673, the nanocode of master, 67e6a187d or later. What a session of this repository sends on a build of master is under the next heading. The move needs the request check below again and, for a `codex` agent, a paired arm. With it, the kill `pair` joins the lanes of `midturn` in `ci.yml`, six lines after the step of the kill `wait` with `NANOEVAL_E2E_KILL: pair`, and the README rows of the harness sessions and of the orchestrator restart name the build.
+
+**What a session sends on the builds with the fix.** Every model request of the kills `cell` and `pair` below, and of `pair` with `gpt-6-luna` in the place of `gpt-right`, was written out under `build-f3aa94f`, `build-0f8ae19` and `build-fab71ba`, on directory slots with the same hand, `nanocode-cli-3f97ab0`.
+
+- **`build-0f8ae19`**: the 8 requests of the `claude` session are byte for byte those of `build-f3aa94f` in the first five, and differ in the last three only in the wall time that the cell which was waited for reports. The 5 requests of each `codex` session are the same but for ids, the directory of the slot, and the one output that the fix is for.
+- **`build-fab71ba`**: the `claude` requests and the `gpt-6-luna` requests are the same in that sense. For `gpt-right`, `prompt_cache_key` is the id of the session where it was a digest of the prefix. Not seen in a request and in the brain of that build: a streaming turn is admitted without a row of its own, a model without remote compaction compacts locally at 90% of its window, a reply without visible text is nudged once, and a 402 of the gateway's payment layer is retried.
+- **`build-ac29d32`**: every session sends other text for its two tools. The description of `exec` is 12,101 bytes where it was 11,426 for a `claude` session, and 31,821 where it was 31,398 for a `codex` session, in its sentences on the token budget, on work that is not awaited, on `audio`, `notify` and `exit`, and on a name missing from `ALL_TOOLS`. `wait` and the two budget fields say "no budget of its own" where they said "unlimited output". A `claude` request also carries `metadata.user_id` and the header `x-claude-code-session-id`, and a `gpt-right` request the id of the session as `prompt_cache_key`. Scores on that build do not stand beside earlier ones without a paired arm.
+
+**The kill.** `NANOEVAL_E2E_SCENARIO=midturn NANOEVAL_E2E_KILL=pair`, on directory slots: one row of `write-greeting` and one `codex` session on `gpt-right`, a model nanocode does not know, paid with a key so that its Responses requests reach the scripted endpoint without the gateway. The model answers `exec 1`, then two cells in one reply, `exec 2a` and `exec 2b`, of which the second sleeps 20 s, then a `wait` for the cell that still runs, then `exec 3`, which writes the greeting and prints `steps.log`, then its final message. The Worker is killed 5 s after `steps.log` in the slot holds `step-2a` and `step-2b`: the first cell has answered, the second runs, and its yield of 10 s has not passed. It asks what the three kills before it ask, for five requests and four commands, and that no output the model was sent reads `outcome unknown`. All four now also ask that the tool calls of the attempt are the distinct `call_id` values of the `tool.call` events it kept, and the three whose cells run one at a time that they are 13.
+
+| Kill `pair` | `build-7968b53` and `build-f3aa94f` | `build-0f8ae19` and `build-fab71ba` |
+|---|---|---|
+| the model is asked | `exec 1`, `exec 2a+exec 2b`, `wait`, `exec 3`, final | the same five |
+| the output of `exec 2a` in the request after the kill | the unknown outcome | the result of the cell |
+| the lane | fails: the model did not read the result of a cell that had answered | passes |
+
+**What the kept events of that attempt hold**, on the builds with the fix: 10 `tool.call` events for 8 ids, where 9 calls ran. The two `exec` calls of the reply are published again when the session goes on, which the entry before this counts once. The Bash call inside the cell that was in flight has its `tool.result` and no `tool.call`: the event of its start was handed to the session before the kill and was in no row of the log, and nanocode does not publish it again. So that attempt shows 8 tool calls, and its trajectory has the result of that call without the call. The kills whose cells run one at a time keep all 13. Not changed here: which events a session keeps is nanocode's.
+
+**Checked** on a machine with 5 cores and no KVM, with the hand `nanocode-cli-3f97ab0`. No model was paid for.
+
+- **The kill `pair`**: fails on `build-7968b53` and on the pinned `build-f3aa94f` (3 runs each, one of them with `gpt-6-luna`), each time on the result the model did not read. Passes on `build-0f8ae19` 7 of 7, five of them in a row in 38 to 53 s with the Worker back 5.4 to 7.7 s after the kill beside two other lanes on the machine, and once more with `gpt-6-luna`. Passes on `build-fab71ba` and on `build-ac29d32`, one run and one with `gpt-6-luna` each.
+- **The kills `cell`, `model` and `wait` with the check of the tool calls**, on the pinned build: passed, each with 13 tool calls. Also on `build-0f8ae19`, three runs each.
+- **nanocode-ts's own lanes**, the harness that its `bench/resume` was written from, five runs a lane. On `build-7968b53` the lane of this fix, `pairDone` on a `codex` session on `gpt-right`, failed 5 of 5. On a package of the commit of `build-0f8ae19` with the modules of that release, and on the tarball of `build-fab71ba`, it passed 5 of 5, and so did eleven other lanes on each: `cell`, `model`, `wait`, `twoKills`, `pairDone` and `clean` on a `claude` session, `cell`, `pair`, `pairWaits` and `waitExec` on `gpt-right`, and `cell` on `gpt-6-luna` over the Responses WebSocket.
+- `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test`: 224 tests, 220 passed and 4 skipped on a machine without KVM.
+- The proof of this change, every `run` step of `.github/workflows/ci.yml` from a fresh clone, is in the entry on what was run for the changes of this day, at the end of this file.
+
+**Not verified.**
+
+- A deployed Worker and a real model. A real `gpt-6-luna` is sent `parallel_tool_calls: false`, so the case needs a model that is not in nanocode's catalog, or one that answers two calls all the same.
+- The `codex-direct` agent on `build-0f8ae19`. Its option is in the package (`codex_orchestration` is in `dist/cloudflare/App.js` as often as in `build-f3aa94f`), and no lane here runs it.
+- A cell whose calls are tools of the brain, which nanocode-ts names as not covered by its fix, and two cells that had both answered.
+- The kill on krun and ns slots: it reads `steps.log` in the directory of a slot, and the change is in the session object.
+- `hand_updates` in a real session: its rows go when the request they belong to is pruned, and their size was measured by nanocode-ts only (11 rows and 3.5 KB more for a turn of six cells).
+- A build with all of what the next pin must hold: none exists.

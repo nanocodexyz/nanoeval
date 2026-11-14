@@ -77,11 +77,13 @@ const turnLost = scenario === 'forgotten'
 const lapse = scenario === 'lapse'
 const machine = scenario === 'machine'
 const midturn = scenario === 'midturn'
-const midturnKills: Record<string, { after: string; ms: number }> = {
-  cell: { after: 'exec 4', ms: 5000 },
+const midturnKills: Record<string, { after: string; marks?: readonly string[]; ms: number }> = {
+  cell: { after: 'exec 4', marks: ['step-4'], ms: 5000 },
   model: { after: 'exec 3', ms: 1000 },
+  pair: { after: 'exec 2a+exec 2b', marks: ['step-2a', 'step-2b'], ms: 5000 },
   wait: { after: 'wait', ms: 2000 },
 }
+const midturnPair = midturn && killAt === 'pair'
 const midturnSleepSec = 20
 const midturnYieldMs = 10_000
 const sandboxLeaseSec = Number(process.env['NANOEVAL_E2E_SANDBOX_LEASE_SEC'] ?? leaseSec)
@@ -178,7 +180,7 @@ function sse(events: [string, unknown][]): string {
 const longCells: { exec: string | undefined; received: string }[] = []
 const codexCells: (string[] | undefined)[] = []
 const codexExecs: (string | undefined)[] = []
-const midturnRequests: { decision: string; digest: string; last: string }[] = []
+const midturnRequests: { decision: string; digest: string; last: string; read: string }[] = []
 let killDue: number | undefined
 let scriptedCalls = 0
 let answered = 0
@@ -371,8 +373,129 @@ function stepwise(
     decision: call === undefined ? 'final' : call.name === 'exec' ? 'exec ' + step : call.name,
     digest: Crypto.createHash('sha256').update(JSON.stringify(messages)).digest('hex'),
     last,
+    read: JSON.stringify(blocks.filter((block) => block['type'] === 'tool_result')),
   })
   return call
+}
+
+function pairwise(body: {
+  input?: unknown
+  model?: string
+  tools?: { name: string; type: string }[]
+}): string {
+  const input = (Array.isArray(body.input) ? body.input : []) as Record<string, any>[]
+  const id = ++scriptedCalls
+  const solution = solutions.find(([marker]) => JSON.stringify(input).includes(marker))
+  if (!solution) throw new Error('the scripted model has no solution for this prompt')
+  const calls = input.filter((item) => ['custom_tool_call', 'function_call'].includes(item['type']))
+  const outputs = input
+    .filter((item) => ['custom_tool_call_output', 'function_call_output'].includes(item['type']))
+    .map((item) => ({
+      call: item['call_id'] as string,
+      text:
+        typeof item['output'] === 'string'
+          ? item['output']
+          : ((item['output'] ?? []) as { text?: string }[]).map((part) => part.text ?? '').join(''),
+    }))
+  const exec = (step: string, more = '') => ({
+    input: {
+      code:
+        'const result = await tools.exec_command({ cmd: ' +
+        JSON.stringify('echo step-' + step + ' >> steps.log' + more) +
+        ', yield_time_ms: ' +
+        2 * midturnSleepSec * 1000 +
+        ' }); text(result.output + "\\ncell tools: " + JSON.stringify(ALL_TOOLS.map((tool) => tool.name)))',
+    },
+    label: 'exec ' + step,
+    name: 'exec',
+  })
+  const round = [
+    () => [exec('1')],
+    () => [exec('2a'), exec('2b', '; sleep ' + midturnSleepSec)],
+    undefined,
+    () => {
+      const cell = /Script running with cell ID (\d+)/.exec(
+        outputs.find((output) => output.call === calls[2]!['call_id'])?.text ?? '',
+      )?.[1]
+      if (cell === undefined)
+        throw new Error('the scripted model asks for a wait only after a cell that still runs')
+      return [{ input: { cell_id: cell, yield_time_ms: 60_000 }, label: 'wait', name: 'wait' }]
+    },
+    () => [exec('3', '; ' + solution[1] + '; cat steps.log')],
+    () => [],
+  ][calls.length]?.()
+  if (!round) throw new Error('the scripted model has no reply after ' + calls.length + ' calls')
+  codexExecs.push(execDescription(body.tools))
+  if (JSON.stringify(input).includes('"custom_tool_call_output"')) codexCells.push(cellTools(input))
+  midturnRequests.push({
+    decision: round.map((call) => call.label).join('+') || 'final',
+    digest: Crypto.createHash('sha256').update(JSON.stringify(input)).digest('hex'),
+    last: outputs.at(-1)?.text ?? '',
+    read: JSON.stringify(outputs),
+  })
+  const custom = (name: string) =>
+    [
+      ...(body.tools ?? []),
+      ...input.flatMap((item) => (item['type'] === 'additional_tools' ? item['tools'] : [])),
+    ].find((tool) => tool.name === name)?.type === 'custom'
+  const items = round.length
+    ? round.map((call, index) =>
+        custom(call.name)
+          ? {
+              call_id: 'call_' + id + '_' + index,
+              id: 'ctc_' + id + '_' + index,
+              input: (call.input as { code: string }).code,
+              name: call.name,
+              status: 'completed',
+              type: 'custom_tool_call',
+            }
+          : {
+              arguments: JSON.stringify(call.input),
+              call_id: 'call_' + id + '_' + index,
+              id: 'fc_' + id + '_' + index,
+              name: call.name,
+              status: 'completed',
+              type: 'function_call',
+            },
+      )
+    : [
+        {
+          content: [{ annotations: [], text: 'The task is complete.', type: 'output_text' }],
+          id: 'msg_' + id,
+          role: 'assistant',
+          status: 'completed',
+          type: 'message',
+        },
+      ]
+  const response = {
+    created_at: 0,
+    id: 'resp_' + id,
+    model: body.model,
+    object: 'response',
+    output: items,
+    status: 'completed',
+    usage: {
+      input_tokens: 100,
+      input_tokens_details: { cached_tokens: 40 },
+      output_tokens: 7,
+      output_tokens_details: { reasoning_tokens: 0 },
+      total_tokens: 107,
+    },
+  }
+  return sse([
+    [
+      'response.created',
+      {
+        response: { ...response, output: [], status: 'in_progress', usage: null },
+        type: 'response.created',
+      },
+    ],
+    ...items.map((item, index): [string, unknown] => [
+      'response.output_item.done',
+      { item, output_index: index, type: 'response.output_item.done' },
+    ]),
+    ['response.completed', { response, type: 'response.completed' }],
+  ])
 }
 
 function scripted(
@@ -564,7 +687,9 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
           )
         const reply = body.fake_cli
           ? fake(request.url!, body)
-          : scripted(body, turnLost ? MockGateway.modelUsd['/v1/messages'] : undefined)
+          : codex && midturnPair
+            ? pairwise(body)
+            : scripted(body, turnLost ? MockGateway.modelUsd['/v1/messages'] : undefined)
         if (
           (shared || stopped || turnLost) &&
           !parked &&
@@ -578,7 +703,7 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
             return
           }
         }
-        const kill = midturn && killAt !== 'cell' ? midturnKills[killAt] : undefined
+        const kill = midturn && !midturnKills[killAt]!.marks ? midturnKills[killAt] : undefined
         if (kill && killDue === undefined && midturnRequests.at(-1)!.decision === kill.after) {
           killDue = Date.now() + kill.ms
           if (killAt === 'model') {
@@ -772,7 +897,7 @@ async function main(): Promise<void> {
     ...((model === 'scripted' || installed || scenario === 'judge') && !mock
       ? { ANTHROPIC_API_KEY: 'scripted' }
       : {}),
-    ...(installed && upstream.url && !mock
+    ...((installed || midturnPair) && upstream.url && !mock
       ? { OPENAI_API_KEY: 'scripted-openai', OPENAI_BASE_URL: upstream.url }
       : {}),
     ...(model === 'anthropic' ? { ANTHROPIC_API_KEY: process.env['ANTHROPIC_API_KEY']! } : {}),
@@ -995,7 +1120,7 @@ async function main(): Promise<void> {
       throw new Error('the ' + scenario + ' scenario runs on the scripted model')
     if (midturn && (backend !== 'dir' || !midturnKills[killAt]))
       throw new Error(
-        'the midturn scenario runs on directory slots, with NANOEVAL_E2E_KILL cell, model or wait',
+        'the midturn scenario runs on directory slots, with NANOEVAL_E2E_KILL cell, model, pair or wait',
       )
     if (slotGone && backend !== 'krun') throw new Error('the gone scenario runs on krun slots')
     if (isolated) {
@@ -1068,38 +1193,40 @@ async function main(): Promise<void> {
                   ...(thinking ? { thinking } : {}),
                 },
               ]
-            : alone ||
-                cached ||
-                closed ||
-                failures ||
-                isolated ||
-                midturn ||
-                packing ||
-                slotGone ||
-                model !== 'scripted'
-              ? [
-                  {
-                    id:
-                      alone ||
-                      cached ||
-                      closed ||
-                      failures ||
-                      isolated ||
-                      midturn ||
-                      packing ||
-                      slotGone
-                        ? 'right'
-                        : 'nanocode',
-                    model: realModel,
-                    provider: 'claude',
-                  },
-                ]
-              : [
-                  gateway
-                    ? { id: 'right', model: 'gpt-right', provider: 'codex' }
-                    : { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
-                  { id: 'wrong', model: 'claude-sonnet-4-6', provider: 'claude' },
-                ]
+            : midturnPair
+              ? [{ id: 'right', model: 'gpt-right', provider: 'codex' }]
+              : alone ||
+                  cached ||
+                  closed ||
+                  failures ||
+                  isolated ||
+                  midturn ||
+                  packing ||
+                  slotGone ||
+                  model !== 'scripted'
+                ? [
+                    {
+                      id:
+                        alone ||
+                        cached ||
+                        closed ||
+                        failures ||
+                        isolated ||
+                        midturn ||
+                        packing ||
+                        slotGone
+                          ? 'right'
+                          : 'nanocode',
+                      model: realModel,
+                      provider: 'claude',
+                    },
+                  ]
+                : [
+                    gateway
+                      ? { id: 'right', model: 'gpt-right', provider: 'codex' }
+                      : { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
+                    { id: 'wrong', model: 'claude-sonnet-4-6', provider: 'claude' },
+                  ]
 
     const api = client({ token, url })
     const store = blobStore(storeKind === 'r2' ? 'r2' : storeRoot, { token, url })
@@ -1466,12 +1593,14 @@ async function main(): Promise<void> {
         release()
       }
       if (midturn && !restarted) {
+        const marks = midturnKills[killAt]!.marks
         if (
-          killAt === 'cell' &&
+          marks &&
           killDue === undefined &&
-          Fs.globSync(Path.join(sandboxes, '**', 'steps.log')).some((file) =>
-            Fs.readFileSync(file, 'utf8').includes('step-4'),
-          )
+          Fs.globSync(Path.join(sandboxes, '**', 'steps.log')).some((file) => {
+            const steps = Fs.readFileSync(file, 'utf8')
+            return marks.every((mark) => steps.includes(mark))
+          })
         )
           killDue = Date.now() + midturnKills[killAt]!.ms
         if (killDue !== undefined && Date.now() >= killDue) {
@@ -2363,21 +2492,27 @@ async function main(): Promise<void> {
       assert.equal(status['lostClaims'], 0, 'the claim of the row outlives the Worker')
       assert.deepEqual(
         asked,
-        [
-          'exec 1',
-          'exec 2',
-          'exec 3',
-          ...(killAt === 'model' ? ['exec 3'] : []),
-          'exec 4',
-          'wait',
-          'exec 5',
-          'exec 6',
-          'final',
-        ],
+        midturnPair
+          ? ['exec 1', 'exec 2a+exec 2b', 'wait', 'exec 3', 'final']
+          : [
+              'exec 1',
+              'exec 2',
+              'exec 3',
+              ...(killAt === 'model' ? ['exec 3'] : []),
+              'exec 4',
+              'wait',
+              'exec 5',
+              'exec 6',
+              'final',
+            ],
         'a turn whose Worker was killed goes on where it was, and asks again only the request that was not answered',
       )
       const digests = midturnRequests.map((request) => request.digest)
-      assert.equal(new Set(digests).size, 8, 'no request that was answered is sent again')
+      assert.equal(
+        new Set(digests).size,
+        midturnPair ? 5 : 8,
+        'no request that was answered is sent again',
+      )
       if (killAt === 'model')
         assert.equal(
           digests[2],
@@ -2388,9 +2523,16 @@ async function main(): Promise<void> {
         midturnRequests
           .at(-1)!
           .last.split('\n')
-          .filter((line) => line.startsWith('step-')),
-        [1, 2, 3, 4, 5, 6].map((step) => 'step-' + step),
+          .filter((line) => line.startsWith('step-'))
+          .sort(),
+        (midturnPair ? ['1', '2a', '2b', '3'] : ['1', '2', '3', '4', '5', '6']).map(
+          (step) => 'step-' + step,
+        ),
         'every command of the turn ran once',
+      )
+      assert.ok(
+        midturnRequests.every((request) => !request.read.includes('outcome unknown')),
+        'the model read the result of every cell that had finished',
       )
       const read = (name: string) => api.artifact(created.id, row['attempt'].id, name)
       assert.deepEqual(
@@ -2400,10 +2542,27 @@ async function main(): Promise<void> {
         ['user', ...asked.slice(killAt === 'model' ? 1 : 0).map(() => 'agent')],
         'the trajectory has the instruction once and a step for each response',
       )
+      const events = await read('agent/events.jsonl')
       assert.ok(
-        !(await read('agent/events.jsonl')).includes('"outcome_unknown":true'),
+        !events.includes('"outcome_unknown":true'),
         'no tool call of the turn has an unknown outcome',
       )
+      const called = events
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line).event?.event)
+        .flatMap((event) => (event?.type === 'tool.call' ? [event.payload.call_id as string] : []))
+      assert.equal(
+        row['result'].usage.toolCalls,
+        new Set(called).size,
+        'a tool call that the session publishes again is one tool call',
+      )
+      if (!midturnPair)
+        assert.equal(
+          row['result'].usage.toolCalls,
+          13,
+          'six cells of one command each and one wait are 13 tool calls',
+        )
       assert.equal(
         (await read('agent/model-requests.jsonl')).trim().split('\n').length,
         answered,
