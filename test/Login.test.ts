@@ -716,6 +716,47 @@ test('a login file that cannot be replaced whole is refused before its refresh t
   assert.ok(Fs.existsSync(target + '.lock'), 'the lock of the file that Codex replaces')
 })
 
+for (const kind of kinds)
+  test(
+    'new ' +
+      kind +
+      ' tokens that could not be written are written by the next request, and nothing is asked again',
+    { skip: process.getuid?.() === 0 },
+    async () => {
+      const endpoint = issuer(kind)
+      const path = file(kind, { endsAt: now - hour })
+      const before = Fs.readFileSync(path, 'utf8')
+      const folder = Path.dirname(path)
+      endpoint.before = () => Fs.chmodSync(folder, 0o500)
+      try {
+        await assert.rejects(
+          Login.refresh(kind, { fetch: endpoint.fetch, now: () => now, path, withinMs: early }),
+          (error: unknown) =>
+            error instanceof Login.RefreshError &&
+            /was not refreshed: its refresh token is spent and its new tokens were not written: EACCES.*sign in again with (codex login|claude auth login)$/.test(
+              error.message,
+            ),
+        )
+      } finally {
+        Fs.chmodSync(folder, 0o700)
+      }
+      assert.equal(Fs.readFileSync(path, 'utf8'), before)
+      assert.equal(endpoint.grants, 1)
+      Fs.rmSync(Path.join(folder, '.oauth_refresh.lock'), { force: true, recursive: true })
+      delete endpoint.before
+      const result = await Login.refresh(kind, {
+        fetch: endpoint.fetch,
+        now: () => now,
+        path,
+        withinMs: early,
+      })
+      assert.equal(result.outcome, 'refreshed')
+      assert.equal(endpoint.asked.length, 1, 'the refresh token that was spent is not sent again')
+      assert.equal(tokens(kind, path).refresh, 'refresh-1')
+      assert.equal(result.login.expiresAt, now + endpoint.lifetimeMs)
+    },
+  )
+
 test(
   'a login that root refreshes stays the file of its owner, and so do the locks beside it',
   { skip: process.getuid?.() !== 0 },

@@ -72,6 +72,10 @@ const claudeLocks = {
   write: { name: '.storage-write.lock', staleMs: 15_000, updateMs: 7500 },
 } as const
 
+const writes = { pauseMs: 500, tries: 3 } as const
+
+const unwritten = new Map<string, { access: string; at: number; fresh: Fresh; refresh: string }>()
+
 const codexRefusals = ['refresh_token_expired', 'refresh_token_invalidated', 'refresh_token_reused']
 
 function signedOut(kind: Kind, input: { path: string; why: string }): string {
@@ -485,18 +489,45 @@ export async function refresh(
       throw new RefusedError(signedOut(kind, { path, why: 'it holds no refresh token' }))
     }
     await replaceable(path)
-    let fresh: Fresh
-    try {
-      fresh = await ask(kind, { fetch: input.fetch, held, path, url: input.url })
-    } catch (error) {
-      if (!(error instanceof RefusedError)) throw error
-      const stored = await read(kind, path)
-      if (stored.access === held.access) throw error
-      return { login: shown(stored), outcome: 'adopted' }
+    const kept = unwritten.get(path)
+    let answered = kept?.access === held.access && kept.refresh === held.refresh ? kept : undefined
+    if (!answered) {
+      unwritten.delete(path)
+      try {
+        const fresh = await ask(kind, { fetch: input.fetch, held, path, url: input.url })
+        answered = { access: held.access, at: now(), fresh, refresh: held.refresh }
+      } catch (error) {
+        if (!(error instanceof RefusedError)) throw error
+        const stored = await read(kind, path)
+        if (stored.access === held.access) throw error
+        return { login: shown(stored), outcome: 'adopted' }
+      }
     }
-    const written = await commit(kind, { fresh, held, now: now(), path }).catch(
-      failed('its new tokens were not written'),
-    )
+    let written: boolean | undefined
+    let why: unknown
+    for (let tries = 0; written === undefined && tries < writes.tries; tries++) {
+      if (tries) await new Promise((resolve) => setTimeout(resolve, writes.pauseMs))
+      try {
+        written = await commit(kind, { fresh: answered.fresh, held, now: answered.at, path })
+      } catch (error) {
+        if (error instanceof LoginError || error instanceof RefusedError) throw error
+        why = error
+      }
+    }
+    if (written === undefined) {
+      unwritten.set(path, answered)
+      throw new RefreshError(
+        unrefreshed(kind, {
+          path,
+          why:
+            'its refresh token is spent and its new tokens were not written: ' +
+            (why as Error).message +
+            '. This command writes them with its next request, and one that ends before that leaves a login to sign in again with ' +
+            tools[kind].signIn,
+        }),
+      )
+    }
+    unwritten.delete(path)
     return { login: shown(await read(kind, path)), outcome: written ? 'refreshed' : 'adopted' }
   } finally {
     await release()
