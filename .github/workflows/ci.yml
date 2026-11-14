@@ -131,6 +131,12 @@ jobs:
           NANOEVAL_E2E_BACKEND: dir
           NANOEVAL_E2E_SCENARIO: midturn
           NANOEVAL_E2E_KILL: wait
+      - name: End to end, directory slots, the Worker killed in a turn while one of two cells of a reply still runs
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: midturn
+          NANOEVAL_E2E_KILL: pair
       - name: End to end, directory slots, a run cancelled while a cell of a turn runs on the hand
         run: npm run e2e
         env:

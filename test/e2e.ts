@@ -540,7 +540,7 @@ function pairwise(body: {
       input_tokens: 100,
       input_tokens_details: { cached_tokens: 40 },
       output_tokens: 7,
-      output_tokens_details: { reasoning_tokens: 0 },
+      output_tokens_details: { reasoning_tokens: 3 },
       total_tokens: 107,
     },
   }
@@ -1768,7 +1768,6 @@ async function main(): Promise<void> {
       imported.tasks.map((task) => Math.ceil(task.resources.cpus) + ' ' + task.resources.memoryMb),
     )
     let status: Record<string, any>
-    const cut = new Set<string>()
     let restarted = false
     let forgotten = 0
     let activeAt: number | undefined
@@ -3458,33 +3457,15 @@ async function main(): Promise<void> {
     } else if (model === 'scripted' || installed) {
       if (scenario === 'restart' && !installed)
         for (const attempt of status['attempts'] as { id: string }[])
-          if (
-            (await api.artifact(created.id, attempt.id, 'agent/events.jsonl')).includes(
+          assert.ok(
+            !(await api.artifact(created.id, attempt.id, 'agent/events.jsonl')).includes(
               '"outcome_unknown":true',
-            )
+            ),
+            'no tool call of a session whose Worker was killed has an unknown outcome',
           )
-            cut.add(attempt.id)
-      if (scenario === 'restart' && !installed)
-        console.log(
-          'restart: the kill cut a tool call of ' +
-            cut.size +
-            ' of ' +
-            total +
-            ' attempts before it was dispatched',
-        )
-      const interrupted = (
-        status['attempts'] as { agent: string; id: string; outcome: string }[]
-      ).filter(
-        (attempt) =>
-          attempt.agent === 'right' && attempt.outcome === 'failed' && cut.has(attempt.id),
-      ).length
-      assert.equal(
-        status['agents'].right.passed + interrupted,
-        total / 2,
-        'a right attempt passes unless the restart cut a tool call, whose outcome nanocode reports as unknown',
-      )
+      assert.equal(status['agents'].right.passed, total / 2)
       assert.equal(status['agents'].wrong.failed, total / 2)
-      if (!interrupted) assert.equal(status['agents'].right.passAtK['1'], 1)
+      assert.equal(status['agents'].right.passAtK['1'], 1)
       assert.equal(status['agents'].wrong.passAtK['1'], 0)
     } else if (unsound) {
       assert.equal(status['counts'].passed, total - 1, 'every solution but the stale one passes')
@@ -3706,10 +3687,7 @@ async function main(): Promise<void> {
         )
         assert.equal(trajectory.schema_version, 'ATIF-v1.7')
         assert.ok(trajectory.steps.length >= 2)
-        assert.ok(
-          cut.has(attempt.id) || trajectory.final_metrics.extra.tool_calls >= 1,
-          'an attempt made a tool call, unless the restart cut the call before it was dispatched',
-        )
+        assert.ok(trajectory.final_metrics.extra.tool_calls >= 1)
         if (installed) {
           const kind = detail['result'].agent.provider as keyof typeof fakeUsage
           assert.deepEqual(
