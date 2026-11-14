@@ -3616,3 +3616,24 @@ The fourteen commits from "leave attempts that errored out of pass@k" to "record
 **After it**, `main` had moved by one commit that changes `DECISIONS.md` and nothing else. The stack was rebased onto it, and on the rebased tip ran `npm run lint`, `npm run check:types`, `npm test` (223 tests, 219 passed, the 4 that need KVM skipped) and the directory lanes `tasks`, `machine`, `failures` and `judge`, which passed. No lane was run again from a fresh clone after the rebase.
 
 **Lanes that failed on earlier bases of this stack**, while `main` moved three times under it, each on a machine that was fast and idle and each also without these commits: "directory slots, orchestrator restart" once, where the Worker was killed between the first response of the model and its dispatch; "two leased sandboxes of which one dies" twice, where every row had its verdict before the sandbox died, so no claim was left to lose; and the microVM lane above. Each passed in the full pass named first.
+
+## 2026-11-14: a slot whose process is still ending is gone
+
+**The defect.** The entry on a row whose slot ends under it gives the row back when the process of its slot is gone, and `slot.sh gone` asked that with `kill -0`. A process that was killed answers `kill -0` until it has finished ending and has been reaped. A microVM lets go of its guest's memory first and closes its files after that, so the socket of the guest refuses connections while the process still exists. On a faster machine the runner asked in that window: the verifier's command had already ended with 125, "the guest connection ended", `gone` still said that the slot runs, and the row ended as a `verifier` error where it should have gone back to the run. The lane that kills a microVM under its verifier (`NANOEVAL_E2E_SCENARIO=gone`) failed that way.
+
+**The rule.** A slot is gone when its process is gone or has given up its memory: `/proc/PID/status` of a process that is ending, and of one that waits to be reaped, has no `VmSize` line. The kernel releases the memory of a process before it closes its files, so by the time a command in the guest fails for a closed socket, the line is gone.
+
+**Measured** on a second, faster machine (Linux, 24 cores, 48 threads, kernel 7.0, libkrunfw 5.5.0), the lane alone, at `2244c58` with two changes that machine needed for other lanes and that are not in this repository, and then with this one.
+
+| | The lane |
+| --- | --- |
+| Before, alone | passed 0 times of 4: "errored verifier: the verifier exited with 125 and wrote no reward: nanoeval-krun: the guest connection ended" |
+| Before, in runs of every step of the workflow at three commits that hold the lane | passed 1 time of 3 |
+| With the rule, alone | passed 4 times of 4 |
+
+On the 32-core machine of the entries above, at a load average above 55, the lane without the rule passed 5 times of 5 in the runs and the proof of this day's entries, and then failed the same way once, in a run of every step of the workflow for a later change. With the rule it passed there once, alone.
+
+**Not verified.**
+
+- ns slots, whose process is the first of the slot's namespaces: the same test of the same file, not run with a kill.
+- A microVM that the kernel kills for memory, which the entry on the row leaves open as well.

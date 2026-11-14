@@ -982,7 +982,7 @@ cmd_gone() {
   local dir=$home/slots/$slot
   [ "$(state "$dir/up.status")" = exit:0 ] || return 0
   pid=$(cat "$dir/vm.pid" 2>/dev/null) || return 0
-  if ! kill -0 "$pid" 2>/dev/null; then printf 'the %s slot %s is not running any more: its process %s is gone\n' "$(cat "$dir/backend")" "$slot" "$pid"; fi
+  if ! kill -0 "$pid" 2>/dev/null || ! grep -q '^VmSize:' "/proc/$pid/status" 2>/dev/null; then printf 'the %s slot %s is not running any more: its process %s is gone\n' "$(cat "$dir/backend")" "$slot" "$pid"; fi
 }
 
 cmd_status() {
