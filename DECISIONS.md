@@ -3975,3 +3975,30 @@ The rule is on the machine's own input, not only on what answers a slot: a packe
 
 - Why passt sent that segment there and not on the machine of the earlier entries: its version, the kernel of the machine, 7.0 there against 6.8, and the speed of the connection may all differ, and none was varied.
 - A machine that is the root of its ns slots without a guest, and a leased sandbox: the rule is the same table there, and no such machine had the fault to show.
+
+## 2026-11-14: the lane where a leased sandbox dies no longer races its rows
+
+**The defect.** The lane on directory slots with two leased sandboxes of which one dies (`NANOEVAL_E2E_GATEWAY=1 NANOEVAL_E2E_SCENARIO=fleet`) ended the first sandbox when it saw a row of that sandbox's runner in flight, and failed with "the fleet happened during the run" when it never saw one. It reads the status every 100 ms. A sandbox is `ready` only at the tick after its runner said hello, and ticks are half a second apart. On a fast machine the 12 rows of the run were done 1.8 s after it began, so a run could end before one reading had both a ready sandbox and a busy row. The lane was a race against the speed of the machine, and the faster machine lost it.
+
+**Two ways that did not work.**
+
+- Holding back a model response in the model endpoint of the test, as the lanes with a standing runner do. A gateway lane does not use that endpoint: its model requests go to the scripted gateway. The lane failed 6 times of 6.
+- Holding the response back in the scripted gateway and answering it after the sandbox had died. The run takes the row from the dead sandbox and halts its session while the request is out, so the gateway charged for a response that the run never read, and the lane failed at "the model spend of the run is what the gateway reported as charged". Once in two runs on a loaded machine.
+
+**The rule.** The scripted gateway can leave a model request without an answer: its `model` returns nothing, the request stays open, nothing is charged for it, and the gateway ends it when the lane closes it. The fleet lane leaves the first model request of the run unanswered. That is the request of the first row of the first sandbox, because a run opens a second sandbox only when the runner of the first has no slot free. The row stays in its `run` phase until the lane has seen it there and ended its sandbox, however fast the machine is. The run then takes the row away, which halts the session and ends the request, and the row is claimed again in another sandbox, where the model answers. The gateway charged nothing that the run did not record.
+
+What the lane no longer does: end a sandbox under a row in any phase it happened to be in. The row is now always waiting for its model.
+
+**Measured.** On directory slots, one run of each line.
+
+| | The lane |
+| --- | --- |
+| Before, on a machine with 24 cores and 48 threads that did little else: in a run of every step of the workflow, in another as a user without KVM on four of its cores, and alone | failed 2 of 2, 2 of 4 and 2 of 6 times, each with "the fleet happened during the run" |
+| Before, on the 32-core machine of the entries above at a load average of 58 to 74, where a row takes seconds | passed 6 of 6 |
+| With the change, on that 32-core machine at a load average of 76 to 94 | passed 6 of 6, and 6 of 6 more with the change to leases of the entry below |
+| With the change, on a 5-core machine without KVM at a load average of 16 to 21 | passed 2 of 2, and 4 of 4 more with the change to leases. A third run of the first two lost its Worker to the inspector port, before the entry above was under it |
+
+**Not verified.**
+
+- The lane with the change on a machine as fast as the one it failed on. None could be had on the night of the change. On such a machine the row waits as it does on a slow one: nothing answers its model.
+- A sandbox that dies while its row is in the environment or the verifier phase. The lane on krun slots where a microVM is killed under its verifier covers the slot, not the sandbox.

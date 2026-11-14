@@ -36,7 +36,7 @@ export type Mock = {
 export type Options = {
   bootstrapMs?: number
   key: string
-  model(path: string, body: Record<string, any>, cost: number): string
+  model(path: string, body: Record<string, any>, cost: number): string | undefined
   refusals?: { passing?: number; spentAfter?: number; spentTimes?: number }
   renewals?: boolean
   sandboxd: { token: string; url: string }
@@ -111,6 +111,7 @@ export async function start(options: Options): Promise<Mock> {
   const refused: string[] = []
   const sum = (values: readonly number[]) => values.reduce((all, value) => all + value, 0)
   const sandboxes = new Map<string, Leased>()
+  const unanswered: Http.ServerResponse[] = []
   const unavailable: Charge[] = []
   const provider = Local.create(options.sandboxd)
   const problem = (
@@ -341,6 +342,10 @@ export async function start(options: Options): Promise<Mock> {
       }
       const cost = modelUsd[path]
       const reply = options.model(path, body, cost)
+      if (reply === undefined) {
+        unanswered.push(response)
+        return
+      }
       modelCosts.push(cost)
       outside.push(searchUsd)
       response.writeHead(200, { 'content-type': 'text/event-stream' }).end(reply)
@@ -356,6 +361,7 @@ export async function start(options: Options): Promise<Mock> {
     charges,
     close() {
       clearInterval(lapse)
+      for (const response of unanswered) response.destroy()
       server.close()
     },
     die: (id) => end(id, 'died'),

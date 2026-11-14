@@ -726,12 +726,17 @@ async function main(): Promise<void> {
     ? await MockGateway.start({
         ...(slowStart ? { bootstrapMs: slowStartMs } : {}),
         key: 'sk-tempo-' + Crypto.randomBytes(16).toString('hex'),
-        model: (path, body, cost) =>
-          body['fake_cli']
+        model: (path, body, cost) => {
+          if (fleet && !parked) {
+            parked = true
+            return undefined
+          }
+          return body['fake_cli']
             ? fake(path, body, cost)
             : path === '/v1/responses'
               ? responses(body, cost)
-              : scripted(body, cost),
+              : scripted(body, cost)
+        },
         ...(refusedPassing
           ? { refusals: { passing: 3 } }
           : spent
@@ -1435,7 +1440,7 @@ async function main(): Promise<void> {
             attempt.runner === first.runner &&
             !['claimed', 'done', 'unclaimed'].includes(attempt.phase),
         )
-        if (busy) {
+        if (busy && parked) {
           restarted = true
           await mock!.die([...mock!.sandboxes.keys()][0]!)
         }
