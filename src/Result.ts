@@ -92,6 +92,14 @@ export function outcome(reward: number | null, failure: Failure | undefined): At
   return reward === 1 ? 'passed' : 'failed'
 }
 
+export function error(attempt: Pick<Attempt, 'failure' | 'outcome'>): Failure | undefined {
+  return attempt.outcome === 'errored' ? attempt.failure : undefined
+}
+
+export function timeout(attempt: Pick<Attempt, 'failure' | 'outcome'>): Failure | undefined {
+  return attempt.outcome === 'errored' ? undefined : attempt.failure
+}
+
 export function uncosted(attempts: readonly Attempt[]): number {
   return attempts.filter(
     (attempt) =>

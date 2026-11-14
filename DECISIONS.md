@@ -4459,3 +4459,30 @@ An exported trial is named `TASK__AGENT__N` after its task, agent and attempt nu
 - `npm run lint`, `npm run check:types`, `npm test`.
 
 **Not verified.** A rerun of a rerun end to end: the unit test has one, the lane does not. krun and ns slots and installed agents, whose lanes run the same assertions and were not run here. A tool of Harbor that takes a trial name apart at `__`: none was found in Harbor 0.25.0, whose own names are `TASK__RANDOM`.
+
+## 2026-11-14: an agent timeout that was scored is no error in an exported job
+
+An attempt whose agent ran into its timeout is verified, and with a reward it is `passed` or `failed`: the rule of this repository since the first failure kinds. Its exported `result.json` said something else. The trial had `exception_info` with `AgentTimeoutError` beside its reward, and the job counted it in `n_errored_trials`, in `n_errors` and under `exception_stats`. A tool of an operator that reads `result.json` counted such trials as errors, while `status` of the same run counted them as passed or failed.
+
+This reverses a choice. The entry "the summary carries tokens, cost, the judge and one line a task" kept `n_errored_trials` "as Harbor counts them, with scored agent timeouts", because the file is Harbor's format. That entry is right about what Harbor writes and wrong about what follows from it.
+
+**What Harbor does**, read in the source of Harbor 0.25.0 as installed from PyPI:
+
+- It writes the same thing. `trial/single_step.py` catches `AgentTimeoutError`, records it as the `exception_info` of the trial and goes on to the verifier, so a trial of Harbor's own has the exception and a reward.
+- It counts it as an error. `JobStats.increment` adds every trial with `exception_info` to `n_errors`, `n_errored_trials` and `exception_stats`, and the same trial to `n_trials` and `reward_stats`. The viewer counts it in `n_errors`, `analyze` takes a trial as passing only with reward 1 and no `exception_info`, and `job_diff` calls a trial with one not completed.
+- It knows the reward is good. `models/trial/error_policy.py` puts `AgentTimeoutError` under `AGENT_EXHAUSTED_BUDGET`, whose reward is "a valid measurement", and `TrialResult.reward_valid` is true for it. That is a property computed on load: it is not in the file, and nothing in 0.25.0 counts with it.
+
+So Harbor's format has one place for "an exception happened", every reader takes it for "this trial errored", and Harbor's own figures for a job with agent timeouts disagree with its own policy for their rewards. Writing the exception there made the exported job say what `status` does not, to every reader, in order to match a count that Harbor's own policy does not stand behind.
+
+**The rule.** An exported trial has `exception_info` when its attempt errored, and only then (`Result.error`). `n_errored_trials`, `n_errors` and `exception_stats` count those trials, so they are the errors of `status`. An agent timeout that kept its verifier reward (`Result.timeout`) is a scored trial: `exception_info` is null, the reward is where it was, and the timeout is in `agent_result.metadata.agent_timeout`, with `message` and `occurred_at`. `metadata` is Harbor's own field for "additional metadata about the agent execution", a free object that its model keeps when it loads the file, where a key of ours at the top of the trial would be dropped. A trial without usage, as an oracle's, gets an `agent_result` with null tokens for it, so the fact never depends on tokens. An agent timeout without a reward is an error as before, with `AgentTimeoutError`. `metrics.mean` stays Harbor's.
+
+**Checked.**
+
+- `test/Result.test.ts`: five attempts, a timeout that passed, one that failed and has no usage, a verifier error, a timeout with no reward, and a pass. The job counts 2 errors where the summary counts 2, `reward_stats` has the three scored trials, and each trial has the exception or the timeout or neither. Before the change the job counted 4.
+- The failures lane on directory slots (`NANOEVAL_E2E_SCENARIO=failures`): `status` counts 3 errored, and the job now has `n_errored_trials` 3, `n_errors` 3 and `VerifierError` and `EnvironmentError` under `exception_stats`. The trial of the slow agent has reward 0, no `exception_info` and `the agent did not finish within 3 s` under `agent_timeout`. Before the change the lane fails: 4, 4 and `AgentTimeoutError` among the exceptions.
+- Both jobs of that lane load with the models of Harbor 0.25.0 (`scripts/harbor-check.py`: 17 and 11 files, none refused), whose `JobStats.from_trial_results` over the trials gives the `n_errored_trials` of the job. `TrialResult` of the slow agent, loaded by Harbor, has no exception, the reward, and the timeout in `agent_result.metadata`.
+- `npm run lint`, `npm run check:types`, `npm test`.
+
+**What this gives up.** A tool of Harbor that selects trials by exception type, as `harbor jobs` does to run them again, no longer finds a scored agent timeout under `AgentTimeoutError`, and Harbor's `failure_cause` of such a trial is empty where it was `agent_exhausted_budget`. The job has no count of them: they are read from the trials. A job exported before this change keeps what it says, and one exported again from the same run says the new thing, since the export is made from the results when it is asked for.
+
+**Not verified.** krun and ns slots and installed agents, whose failures lanes run the same assertions and were not run here. A version of Harbor other than 0.25.0. The tool of the operator, which was not at hand: the change is to the three figures and the field it was said to read.

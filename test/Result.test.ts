@@ -427,6 +427,93 @@ test('a run exports as a Harbor job directory', () => {
   })
 })
 
+test('an agent timeout that kept its reward is exported as a scored trial, with the timeout beside its agent', () => {
+  const late: Result.Failure = {
+    at: 1900,
+    kind: 'agent_timeout',
+    message: 'the agent did not finish within 1800 s',
+  }
+  const attempts = [
+    attempt({ failure: late, id: 'a1', index: 1 }),
+    attempt({ failure: late, id: 'a2', index: 2, outcome: 'failed', reward: 0, usage: null }),
+    attempt({
+      failure: { at: 1950, kind: 'verifier', message: 'no reward' },
+      id: 'a3',
+      index: 3,
+      outcome: 'errored',
+      reward: null,
+    }),
+    attempt({ failure: late, id: 'a4', index: 4, outcome: 'errored', reward: null }),
+    attempt({ id: 'a5', index: 5 }),
+  ]
+  assert.deepEqual(attempts.map(Result.timeout), [late, late, undefined, undefined, undefined])
+  assert.deepEqual(attempts.map(Result.error), [
+    undefined,
+    undefined,
+    attempts[2]!.failure,
+    late,
+    undefined,
+  ])
+
+  const files = Harbor.files({
+    artifacts: {},
+    attempts,
+    job: {
+      finishedAt: 3000,
+      id: '0b1f5a3e-6c1d-4f0a-9d2e-7a8b9c0d1e2f',
+      name: 'example',
+      startedAt: 500,
+    },
+    running: 0,
+    source: 'example',
+    total: 5,
+    version: '0.1.0',
+  })
+  const summary = Result.summarize(attempts)['haiku']!
+  const job = JSON.parse(files['result.json']!)
+  const stats = job.stats.evals['haiku__example']
+  assert.deepEqual(
+    [job.stats.n_errored_trials, stats.n_errors, stats.n_trials],
+    [summary.errored, summary.errored, summary.passed + summary.failed],
+    'the job counts what status counts',
+  )
+  assert.deepEqual([summary.passed, summary.failed, summary.errored], [2, 1, 2])
+  assert.deepEqual(stats.exception_stats, {
+    AgentTimeoutError: ['one__haiku__4'],
+    VerifierError: ['one__haiku__3'],
+  })
+  assert.deepEqual(stats.reward_stats, {
+    reward: { '0': ['one__haiku__2'], '1': ['one__haiku__1', 'one__haiku__5'] },
+  })
+
+  const trial = (n: number) => JSON.parse(files['one__haiku__' + n + '/result.json']!)
+  const kept = {
+    message: 'the agent did not finish within 1800 s',
+    occurred_at: '1970-01-01T00:00:01.900Z',
+  }
+  assert.equal(trial(1).exception_info, null)
+  assert.deepEqual(trial(1).verifier_result, { rewards: { reward: 1 } })
+  assert.deepEqual(trial(1).agent_result.metadata.agent_timeout, kept)
+  assert.equal(trial(1).agent_result.n_input_tokens, 10750)
+  assert.equal(trial(2).exception_info, null)
+  assert.deepEqual(
+    trial(2).agent_result,
+    {
+      n_input_tokens: null,
+      n_cache_tokens: null,
+      n_output_tokens: null,
+      cost_usd: null,
+      rollout_details: null,
+      metadata: { agent_timeout: kept },
+    },
+    'an attempt without usage still says that its agent timed out',
+  )
+  assert.equal(trial(3).exception_info.exception_type, 'VerifierError')
+  assert.equal(trial(4).exception_info.exception_type, 'AgentTimeoutError')
+  assert.equal(trial(4).verifier_result, null)
+  for (const n of [3, 4, 5]) assert.ok(!('agent_timeout' in trial(n).agent_result.metadata))
+})
+
 test('admission needs a free slot and memory at once, and clamps oversized tasks', () => {
   const capacity = { memoryMb: 1024, slots: 2 }
   assert.ok(Admission.admits({ memoryMb: 0, running: 0 }, capacity, 512))

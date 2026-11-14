@@ -2637,10 +2637,24 @@ async function main(): Promise<void> {
         )
       }
       assert.equal(status['counts'].errored, 3)
-      assert.equal(
-        JSON.parse(files['result.json']!).stats.n_errored_trials,
-        4,
-        'Harbor counts every trial with an exception, the agent timeout included',
+      const job = JSON.parse(files['result.json']!).stats
+      const [counted] = Object.values(job.evals) as Record<string, any>[]
+      assert.deepEqual(
+        [
+          job.n_errored_trials,
+          counted!['n_errors'],
+          Object.keys(counted!['exception_stats']).sort(),
+        ],
+        [status['counts'].errored, status['counts'].errored, ['EnvironmentError', 'VerifierError']],
+        'the exported job counts the errors that status counts, and the agent timeout that was scored is none',
+      )
+      const slow = JSON.parse(files['slow-agent__right__1/result.json']!)
+      assert.equal(slow.exception_info, null)
+      assert.deepEqual(slow.verifier_result, { rewards: { reward: 0 } })
+      assert.match(
+        slow.agent_result.metadata.agent_timeout.message,
+        /^the agent did not finish within \d+ s$/,
+        'the trial of an agent that timed out and was scored says so beside its agent',
       )
 
       const rerun = await api.create({

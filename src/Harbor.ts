@@ -93,6 +93,8 @@ export function trial(attempt: Result.Attempt, options: trial.Options): Record<s
   const phase = (value: Result.Phase | undefined) =>
     value ? { started_at: iso(value.startedAt), finished_at: iso(value.finishedAt) } : null
   const usage = attempt.usage
+  const error = Result.error(attempt)
+  const late = Result.timeout(attempt)
   const oracle = attempt.agent.provider === 'oracle'
   const installed = Installed.is(attempt.agent.provider)
     ? Installed.releases[attempt.agent.provider]
@@ -122,21 +124,29 @@ export function trial(attempt: Result.Attempt, options: trial.Options): Record<s
               (installed?.provider ?? attempt.agent.provider) === 'claude' ? 'anthropic' : 'openai',
           },
     },
-    agent_result: usage
-      ? {
-          n_input_tokens: usage.inputTokens,
-          n_cache_tokens: usage.cachedTokens,
-          n_output_tokens: usage.outputTokens,
-          cost_usd: usage.costUsd ?? null,
-          rollout_details: null,
-          metadata: {
-            cache_write_input_tokens: usage.cacheWriteTokens,
-            model_calls: usage.modelCalls,
-            session: attempt.session,
-            tool_calls: usage.toolCalls,
-          },
-        }
-      : null,
+    agent_result:
+      usage || late
+        ? {
+            n_input_tokens: usage?.inputTokens ?? null,
+            n_cache_tokens: usage?.cachedTokens ?? null,
+            n_output_tokens: usage?.outputTokens ?? null,
+            cost_usd: usage?.costUsd ?? null,
+            rollout_details: null,
+            metadata: {
+              ...(late
+                ? { agent_timeout: { message: late.message, occurred_at: iso(late.at) } }
+                : {}),
+              ...(usage
+                ? {
+                    cache_write_input_tokens: usage.cacheWriteTokens,
+                    model_calls: usage.modelCalls,
+                    session: attempt.session,
+                    tool_calls: usage.toolCalls,
+                  }
+                : {}),
+            },
+          }
+        : null,
     verifier_result: attempt.reward === null ? null : { rewards: { reward: attempt.reward } },
     started_at: iso(attempt.startedAt),
     finished_at: iso(attempt.finishedAt),
@@ -144,12 +154,12 @@ export function trial(attempt: Result.Attempt, options: trial.Options): Record<s
     agent_setup: phase(attempt.timing.agentSetup),
     agent_execution: phase(attempt.timing.agentExecution),
     verifier: phase(attempt.timing.verifier),
-    exception_info: attempt.failure
+    exception_info: error
       ? {
-          exception_type: exceptions[attempt.failure.kind],
-          exception_message: attempt.failure.message,
+          exception_type: exceptions[error.kind],
+          exception_message: error.message,
           exception_traceback: '',
-          occurred_at: iso(attempt.failure.at),
+          occurred_at: iso(error.at),
         }
       : null,
     step_results: null,
@@ -199,13 +209,14 @@ export function job(
     const rewards: Record<string, string[]> = {}
     const errors: Record<string, string[]> = {}
     for (const attempt of own) {
+      const error = Result.error(attempt)
       const name = trialName(attempt, options.job.id)
       if (attempt.reward !== null) (rewards[String(attempt.reward)] ??= []).push(name)
-      if (attempt.failure) (errors[exceptions[attempt.failure.kind]] ??= []).push(name)
+      if (error) (errors[exceptions[error.kind]] ??= []).push(name)
     }
     evals[agent + '__' + options.source] = {
       n_trials: scored.length,
-      n_errors: own.filter((attempt) => attempt.failure).length,
+      n_errors: own.filter(Result.error).length,
       metrics: [
         {
           mean: own.length
@@ -236,7 +247,7 @@ export function job(
     n_total_trials: options.total,
     stats: {
       n_completed_trials: attempts.length,
-      n_errored_trials: attempts.filter((attempt) => attempt.failure).length,
+      n_errored_trials: attempts.filter(Result.error).length,
       n_running_trials: options.running,
       n_pending_trials: options.total - attempts.length - options.running,
       n_cancelled_trials: attempts.filter((attempt) => attempt.failure?.kind === 'cancelled')
