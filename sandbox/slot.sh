@@ -133,6 +133,11 @@ forwards() {
   done
 }
 
+hosts() {
+  [ -n "${NANOEVAL_SLOT_FORWARD:-}" ] || return 0
+  forwards | awk 'NR == FNR { sub(/:[0-9]+$/, ""); kept[$0]; kept["::ffff:" $0]; next } { sub(/#.*/, "") } NF > 1 && ($1 in kept) { address = $1; $1 = ""; sub(/^ /, ""); print address "	" $0 }' - /etc/hosts
+}
+
 reach() {
   local dir=$1 phase=$2
   [ -f "$dir/forwards" ] || return 0
@@ -203,7 +208,7 @@ cmd_probe() {
 asked() {
   cat "$boot"
   sha256sum "$self" | cut -d' ' -f1
-  printf '%s\n' "$*" "NANOEVAL_CA_BUNDLE=${NANOEVAL_CA_BUNDLE:-}" "NANOEVAL_KRUN=${NANOEVAL_KRUN:-}" "NANOEVAL_KRUN_SOURCE=${NANOEVAL_KRUN_SOURCE:-}" "NANOEVAL_NANOCODE=${NANOEVAL_NANOCODE:-}"
+  printf '%s\n' "$*" "NANOEVAL_CA_BUNDLE=${NANOEVAL_CA_BUNDLE:-}" "NANOEVAL_KRUN=${NANOEVAL_KRUN:-}" "NANOEVAL_KRUN_SOURCE=${NANOEVAL_KRUN_SOURCE:-}" "NANOEVAL_NANOCODE=${NANOEVAL_NANOCODE:-}" "NANOEVAL_SLOT_FORWARD=${NANOEVAL_SLOT_FORWARD:-}"
 }
 
 cmd_setup() {
@@ -375,6 +380,8 @@ cmd__setup() {
   fi
   mapfile -t run < <(launcher "$rt")
   "${run[@]}" --version
+  mkdir -p "$krun"
+  hosts >"$krun/hosts"
   if [ "$backend" = krun ]; then setup_krun; fi
   if [ "$backend" = ns ]; then setup_ns "$network"; fi
   if [ "$network" = private ]; then setup_private "$backend"; fi

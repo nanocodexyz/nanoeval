@@ -569,6 +569,42 @@ test('a finished setup runs again for another pin or another boot, and not for t
   }
 })
 
+test('a setup gives slots the names the machine maps to the addresses of its forwards', async () => {
+  const provider = Local.create({ token, url: server.url })
+  const created = await provider.create({ metadata: {}, template: undefined, timeoutSec: 60 })
+  const sandbox = provider.connect(created.handle)
+  const slots = Slot.create({ home: created.handle.home })
+  const status = async () => Slot.parseStatus(await Sandbox.run(sandbox, slots.status()))
+  const setup = async (forward: string) => {
+    await Sandbox.run(
+      sandbox,
+      'NANOEVAL_NANOCODE="$(command -v bash)" NANOEVAL_SLOT_FORWARD=' +
+        Sandbox.quote(forward) +
+        ' ' +
+        slots.setup({ backend: 'dir', network: 'host', runtime: Slot.runtime }),
+    )
+    return wait(async () => (await status()).setup)
+  }
+  const kept = ['127.0.0.1', '127.0.0.2'].flatMap((address) => [address, '::ffff:' + address])
+  const mapped = Fs.readFileSync('/etc/hosts', 'utf8')
+    .split('\n')
+    .map((line) => line.replace(/#.*/, '').trim().split(/\s+/))
+    .filter(([address, ...names]) => kept.includes(address!) && names.length > 0)
+    .map(([address, ...names]) => address + '\t' + names.join(' ') + '\n')
+    .join('')
+  try {
+    await sandbox.write(slots.script, script)
+    assert.ok(mapped, 'the machine names 127.0.0.1 in /etc/hosts')
+    assert.equal(await setup('127.0.0.1:9 127.0.0.2:443'), 'exit:0')
+    assert.equal(await Sandbox.run(sandbox, 'cat rt/krun/hosts'), mapped)
+    assert.equal(await setup(''), 'exit:0', 'a setup for other forwards runs again')
+    assert.equal(await Sandbox.run(sandbox, 'cat rt/krun/hosts'), '')
+    assert.equal(await setup('10.0.0.1:443'), 'exit:2', 'a forward off the loopback is refused')
+  } finally {
+    await provider.kill(created.handle)
+  }
+})
+
 test(
   'a krun slot runs the solution and the verifier in a microVM',
   { skip: Krun.missing() ?? false },
@@ -596,7 +632,10 @@ test(
       await sandbox.write(slots.script, script)
       await Sandbox.run(
         sandbox,
-        cached(slots.setup({ backend: 'krun', network: 'host', runtime: Slot.runtime })),
+        cached(
+          'NANOEVAL_SLOT_FORWARD=127.0.0.1:9 ' +
+            slots.setup({ backend: 'krun', network: 'host', runtime: Slot.runtime }),
+        ),
       )
       assert.equal(await wait(async () => (await status()).setup, 12_000), 'exit:0')
       const capabilities = JSON.parse(
@@ -650,6 +689,13 @@ test(
         stdout: '1\nnotes.md\n',
       })
       assert.equal((await guest('cat /proc/sys/kernel/pid_max')).stdout, '32768\n')
+      const forwarded = await Sandbox.run(sandbox, 'cat rt/krun/hosts')
+      assert.ok(forwarded, 'the machine names the address of the forward')
+      assert.equal(
+        (await guest('cat /etc/hosts')).stdout,
+        '127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n' + forwarded,
+        'a guest maps the names the machine maps to the address of a forward',
+      )
       assert.equal(
         (await guest('if (: </dev/tty) 2>/dev/null; then echo terminal; else echo none; fi'))
           .stdout,

@@ -10,6 +10,7 @@ use nix::{
 
 use crate::{NONE, build, step};
 
+const FORWARDED_HOSTS: &str = "/opt/nanoeval/krun/hosts";
 const HOSTS: &str = "127.0.0.1\tlocalhost\n::1\tlocalhost ip6-localhost ip6-loopback\n";
 const LOST_AND_FOUND: &str = "lost+found";
 const PID_MAX: &str = "/proc/sys/kernel/pid_max";
@@ -106,7 +107,13 @@ pub(crate) fn names(private: bool) -> io::Result<()> {
     } else if let Ok(resolver) = fs::read(RESOLVER) {
         provide(Path::new("/etc/resolv.conf"), &resolver)?;
     }
-    provide(Path::new("/etc/hosts"), HOSTS.as_bytes())
+    let mut hosts = HOSTS.as_bytes().to_vec();
+    match fs::read(FORWARDED_HOSTS) {
+        Ok(forwarded) => hosts.extend(forwarded),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    provide(Path::new("/etc/hosts"), &hosts)
 }
 
 fn build(options: &Build) -> io::Result<()> {

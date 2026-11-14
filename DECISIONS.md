@@ -3762,3 +3762,23 @@ Decided (Georgios, 2026-11-14): the codex sessions match codex-cli. `src/Turn.ts
 `package.json` moves from build-b8158fd to build-281c7dd (nanocode-ts 281c7dd, nanocode a5d401e0c), so a `codex` session sends what codex-cli 0.166.0 sends in three more places: no `reasoning.summary` for gpt-6 catalog models and a 10000 ms `exec_command` yield in the exec description (nanocode 96dfd92c5), a reprompt when the model ends a turn with an empty final message instead of a placeholder answer (778e5ad4a), and no `<code_mode_orchestration>` developer block, which told the model to poll `write_stdin` inside one cell until the process exits (a5d401e0c). nanocode-ts also carries its Cloudflare session-object commits since b8158fd. The hand stays `nanocode-cli-0bbcb64`: nothing in this wave runs on the hand. The losers of the Codex gate run again on it as `losers3-wave3` (nanox against cx, 4 attempts).
 
 **Checked.** On dev-georgios (Node 24.22.2): `npm ci`, `npm run lint`, `npm run check:types` and `npm test` (254 tests, all passed).
+
+## 2026-11-14: a slot gets the names the machine's /etc/hosts gives a forwarded address
+
+**What was wrong.** A runner with `--slot-forward 127.77.0.1:443` gave each private slot a listener at 127.77.0.1:443 on its own loopback, relayed to the machine's registry proxy, but no name pointed there inside the slot. The guest wrote its own `/etc/hosts` with `localhost` alone, so `pypi.org` reached the proxy only because the machine's resolver happened to answer from the machine's `/etc/hosts`: on dev-georgios, `systemd-resolved` on 127.0.0.53, reached through passt's `--dns-forward`. A machine whose resolver does not read `/etc/hosts` (a plain `nameserver` line, `ReadEtcHosts=no`), and every ns slot on a private network, which is given only nameservers off the loopback, resolved the registries to their real addresses and went around the proxy. Nothing in `~/nc-live` on dev-georgios changed this: the runner scripts pass `--slot-forward 127.77.0.1:443` and `--ca-bundle`, and the mapping came from the machine's stub resolver.
+
+**What changed.** `sandbox/slot.sh` setup writes `rt/krun/hosts`: the lines of the machine's `/etc/hosts` whose address is the address of a forward or its IPv4-mapped IPv6 form (`::ffff:127.77.0.1`), comments dropped, empty without forwards. The krun guest (`krun/guest/src/boot.rs`, used by krun slots and by ns slots) appends that file, read from `/opt/nanoeval/krun/hosts`, to the `/etc/hosts` it writes. `NANOEVAL_SLOT_FORWARD` is part of what a finished setup was asked for, so a setup for other forwards runs again. Image builds keep their own `/etc/hosts` and are unchanged.
+
+**Checked.** On dev-georgios (32 cores, KVM, the AEGIS block of `/etc/hosts` mapping 12 registry names to 127.77.0.1), one krun slot on a private network from `python:3.12-alpine`, with `NANOEVAL_SLOT_FORWARD=127.77.0.1:443` and the machine's CA bundle, by a script on `Sandboxd` and `Slot` (one run each):
+
+| | Before: main's `slot.sh` and the deployed launcher | After |
+|---|---|---|
+| `pypi.org` lines in the guest's `/etc/hosts` | 0 | 2 |
+| `getent hosts pypi.org` | `::ffff:127.77.0.1`, by DNS | `::ffff:127.77.0.1`, from the file |
+| GET `https://pypi.org/simple/six/` | 200 | 200 |
+| The same with the guest's resolver set to 192.0.2.1 | unresolved, `URLError [Errno -3]` | 200 |
+
+`test/Sandbox.test.ts` holds the file a setup writes for two forwards against the machine's `/etc/hosts`, that a setup without forwards writes it empty and that a forward off the loopback is refused (it fails on main's `slot.sh`: no `rt/krun/hosts`), and the krun microVM test reads the guest's `/etc/hosts`. `npm run lint`, `npm run check:types`, `npm test` (255 tests, the krun ones not skipped), `npm run dry-run`, `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`, and the krun lanes `NANOEVAL_E2E_SCENARIO=network` (4 of 4) and `closed` (3 of 3) passed. The ns lanes need root and were not run.
+
+**Release.** The guest is part of the launcher, so a runner machine takes it when its `NANOEVAL_KRUN` binaries are rebuilt from this commit (dev-georgios runs prebuilt ones from `~/nc-live/krunfull`). A new `slot.sh` with an old guest writes the file and the guest ignores it, as before. The Worker, nanocode-ts and the hand are unchanged.
+

@@ -45,7 +45,8 @@ const usage = `nanoeval <command>
             each sandbox it opens here. With --ca-bundle, slots trust that certificate bundle,
             for a machine whose network re-signs TLS. With --slot-env, they start with the
             variables of that file. With --slot-forward, a slot on a private network reaches
-            that listener on this machine's loopback at the same address. --store names the
+            that listener on this machine's loopback at the same address, and the names that
+            this machine's /etc/hosts gives the address are in the slot's. --store names the
             directory blob store its runners read, and --cache where they keep verified blobs
             and unpacked environment disks.
   worker    --token T [--host 127.0.0.1] [--port 8787] [--state DIR] [--tick-ms 500]
