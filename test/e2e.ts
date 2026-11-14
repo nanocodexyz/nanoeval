@@ -58,7 +58,8 @@ const label =
 const out = Path.resolve('output/e2e', label)
 const largeTestBytes = 3 * 1024 * 1024
 const ending = scenario === 'ending'
-const attached = ending || ['lost', 'machine', 'resume', 'runners', 'standing'].includes(scenario)
+const attached =
+  ending || ['lost', 'machine', 'resume', 'runners', 'standing', 'stopped'].includes(scenario)
 const alone = scenario === 'alone'
 const refusedPassing = scenario === 'refused'
 const spent = scenario === 'spent'
@@ -90,6 +91,7 @@ const claudePlan = {
   rejected: 0,
   revoked: 0,
 }
+const stopped = scenario === 'stopped'
 const warm = scenario === 'warm'
 const installed = model === 'installed'
 const fakeCli = Path.resolve('test/fixtures/fake-cli.sh')
@@ -517,7 +519,7 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
           ? fake(request.url!, body)
           : scripted(body, turnLost ? MockGateway.modelUsd['/v1/messages'] : undefined)
         if (
-          turnLost &&
+          (turnLost || stopped) &&
           !parked &&
           !body.model?.includes('sonnet') &&
           JSON.stringify(body.messages ?? []).includes('"tool_result"')
@@ -1083,7 +1085,7 @@ async function main(): Promise<void> {
         attachSec: 60,
         claims: 3,
         leaseSec,
-        setupSec: scenario === 'disk' ? 5 : ending ? 4 : 600,
+        setupSec: scenario === 'disk' || stopped ? 5 : ending ? 4 : 600,
         stepRetries: failures ? 1 : 3,
       },
       name: 'e2e-' + label,
@@ -1119,7 +1121,7 @@ async function main(): Promise<void> {
       console.log('e2e passed: ' + label)
       return
     }
-    if (standing) {
+    if (standing || stopped) {
       stand('a')
       await standingBy(api)
     }
@@ -1227,7 +1229,7 @@ async function main(): Promise<void> {
         ),
       )
       attach(created.id, 'b')
-    } else if (attached && !standing) {
+    } else if (attached && !standing && !stopped) {
       attach(created.id, 'a')
       if (scenario !== 'resume') attach(created.id, 'b')
     }
@@ -1246,6 +1248,7 @@ async function main(): Promise<void> {
     let activeAt: number | undefined
     let lostAt: number | undefined
     let backAt: number | undefined
+    let stoppedAt: number | undefined
     for (;;) {
       status = await api.status(created.id)
       if (status['state'] === 'finished') break
@@ -1353,12 +1356,36 @@ async function main(): Promise<void> {
           release()
         }
       }
+      if (
+        stopped &&
+        !restarted &&
+        parked &&
+        status['counts'].active === 1 &&
+        status['counts'].unclaimed === 0 &&
+        Date.now() - started > (config.limits.setupSec + 1) * 1000
+      ) {
+        restarted = true
+        const first = runners[0]!
+        const exited = new Promise<number | null>((resolve) => first.child.once('exit', resolve))
+        stoppedAt = Date.now()
+        first.child.kill('SIGTERM')
+        assert.equal(await exited, 0, 'a standing runner that is stopped exits 0')
+        assert.deepEqual(
+          Fs.readdirSync(Path.join(first.home, 'slots')),
+          [],
+          'a runner that is stopped takes every slot down',
+        )
+        stand('b')
+        release()
+      }
       if (lostAt !== undefined && status['lostClaims'] > 0) backAt ??= Date.now()
       if (Date.now() - started > 20 * 60_000)
         throw new Error('the run did not finish:\n' + summary(status))
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
-    if (['fleet', 'forgotten', 'lost', 'midturn', 'restart', 'resume'].includes(scenario))
+    if (
+      ['fleet', 'forgotten', 'lost', 'midturn', 'restart', 'resume', 'stopped'].includes(scenario)
+    )
       assert.ok(restarted, 'the ' + scenario + ' happened during the run')
     const wallMs = Date.now() - started
     console.log(summary(status))
@@ -1456,7 +1483,7 @@ async function main(): Promise<void> {
 
     assert.deepEqual(status['eval'], { name: evalName, version: version.digest })
     if (attached) {
-      for (const runner of standing ? [] : runners) {
+      for (const runner of standing || stopped ? [] : runners) {
         if (runner.child.exitCode === null && runner.child.signalCode === null)
           await new Promise((resolve) => runner.child.once('exit', resolve))
       }
@@ -2153,6 +2180,38 @@ async function main(): Promise<void> {
       assert.ok(status['counts'].passed > 0, 'the model solves at least one task')
     }
 
+    if (stopped) {
+      const again = details.filter((detail) => detail['attempt'].claims > 1)
+      assert.equal(again.length, 1, 'the row the stopped runner held was claimed again')
+      assert.deepEqual(
+        (again[0]!['claims'] as Record<string, any>[]).map((claim) => [
+          claim['ending'],
+          claim['phase'],
+        ]),
+        [
+          ['released', 'run'],
+          ['finished', 'verify'],
+        ],
+        'the stopped runner gave its row back once, and the runner that came next finished it',
+      )
+      assert.equal(status['lostClaims'], 1)
+      assert.equal(status['strandedAt'], null, 'no row waits for a runner once the run is done')
+      assert.ok(
+        Date.now() - stoppedAt! < leaseSec * 1000,
+        'a row that a stopped runner gave back does not wait for a lease to end',
+      )
+      assert.ok(
+        Date.now() - started > config.limits.setupSec * 1000,
+        'the runner was stopped later than the time a stranded row waits',
+      )
+      console.log(
+        'stopped: the run finished ' +
+          (Date.now() - stoppedAt!) +
+          ' ms after its runner was stopped, ' +
+          (Date.now() - started) +
+          ' ms after it was created',
+      )
+    }
     if (turnLost) {
       const cost = MockGateway.modelUsd['/v1/messages']
       const again = details.filter((detail) => detail['attempt'].claims === 2)

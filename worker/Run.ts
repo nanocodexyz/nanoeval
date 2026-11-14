@@ -2172,14 +2172,12 @@ export class Run extends DurableObject<Env> {
 
   private async leave(body: Protocol.Leave): Promise<{ left: true }> {
     const runner = this.known(body.runner)
-    for (const entry of body.held) {
-      const row = Ledger.held(this.sql, entry)
-      if (row && row.runner === runner.id) await this.lose(row, 'released')
-    }
     this.update('runners', runner.id, {
       seen_at: Date.now(),
       ...(runner.state === 'refused' ? {} : { state: 'left' }),
     })
+    for (const row of this.rows())
+      if (row.runner === runner.id && Ledger.active(row)) await this.lose(row, 'released')
     this.ctx.waitUntil(this.tick())
     return { left: true }
   }

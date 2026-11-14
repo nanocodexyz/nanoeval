@@ -2878,3 +2878,36 @@ A standing runner ran as a service for a day against a deployed Worker, with the
 - A deployed Worker with this change, and a run made before it whose rows come back after it: the mark of such a run is still the one of its creation until a tick finds no row unclaimed, which is its next tick unless rows wait at that moment.
 - `starvedAt`: no lane holds a runner short of disk, lets every row be claimed and starves it again.
 - CI on GitHub.
+
+## 2026-11-14: a runner that is stopped is handed no row on its way out
+
+**The defect.** A runner that is stopped tells the run which rows it gives back (`leave`), and the run makes them `unclaimed`. A claim of the same runner was usually held by the run at that moment, since a runner with a free slot always holds one. Putting a row back wakes every held claim, the one of the runner that is leaving among them, and `leave` marked the runner as `left` only after it had put the rows back: the woken claim found its runner still `ready` and was answered with the row that had just come back. The runner logged the claim and exited. Three things followed.
+
+- The row was held by a claim that nothing served until its lease ended, 60 s by default, and that claim ended `expired` in the `claimed` phase.
+- It cost the row one of its `--claims`. With the default of 3, two restarts of a runner exhaust a row.
+- A runner keeps its rows by the id of the row, so the new claim took the place of the old one in what the runner held, and the loop that takes the slots down when a runner stops never saw the slot of the first claim. On krun slots its microVM outlived the runner.
+
+Met on the deployed Worker in 2 of 2 restarts with rows in flight: the second claim of the row began in the millisecond its first was released.
+
+**The rule.** A runner that leaves holds nothing afterwards and is handed nothing more.
+
+- `leave` in `worker/Run.ts` marks the runner as `left` first. A held claim asks again whether its runner is still ready when it is woken, as [Starting a run](DESIGN.md#starting-a-run) says, so it now answers with no rows. Then `leave` puts back every row that the ledger has with that runner, whether the runner named it or not: a claim that the run granted while the runner was already stopping, and whose answer the runner never read, goes back with the rest instead of waiting for its lease. `hello` has always done the same for a runner that comes back.
+- A runner that is stopping starts no row that a claim still answers, and says so in its log.
+- A runner keeps every slot it has brought up apart from the rows it holds, and takes all of them down when it stops.
+- When a claim hands a runner a row it already holds, the claim it held is over, since the run grants a row only after its last claim ended. The runner takes that slot down at once when no step of it is running, and a step that is running ends on the `410` of its next call, as before. The entry of 2026-11-13 on a turn that its session no longer has left this case under "Not verified": the slot of the older claim stayed up until the runner ended.
+
+**Order of a deploy.** The first point is the Worker's and is enough against the claim that nothing serves, with any runner. A runner with this change that meets a Worker without it starts no such row, and the row then waits for its lease as before: the Worker moves first.
+
+**Checked** on the same machine.
+
+- **The lane `stopped`** of the entry before this one, new in `ci.yml` on directory slots. It asks, beside what that entry lists, that the runner exits with status 0, that its directory holds no slot after it, that the claims of the held row are `released` in the `run` phase and `finished`, that the run lost one claim, and that the run is finished within one lease of the stop.
+- **Without the change**, with the change of the entry before: the lane failed after 76 s. The claims of the row were `released`, `expired` in the `claimed` phase and `finished`, and the log of the stopped runner has "claimed a00001" 67 ms after "stopping: releasing 1 attempts".
+- **With it**: the lane passed in 18 s, the run finished 3.3 s after the runner was stopped, and the log of the runner has no claim after it began to stop.
+- What ran on all six changes together is at the end of the last entry of this day.
+
+**Not verified.**
+
+- krun slots and a microVM that outlives its runner: the lane runs on directory slots in `ci.yml`, where a slot is a directory, and what the next entry ran on krun slots is there.
+- A row that the run hands again to a runner that holds its older claim with no step running: the code path is the one the lane's stopped runner would take if it were not stopping, and no lane makes a lease end under a runner that lives.
+- A runner without this change with a Worker that has it, and the other way round, on a deployment. Both orders are argued above.
+- CI on GitHub.

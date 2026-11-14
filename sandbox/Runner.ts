@@ -320,6 +320,7 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
     Store.remote({ base: base + '/blobs', token: options.config.token }),
   ]
   const work = new Map<string, Work>()
+  const up = new Set<Work>()
   const unpacking = new Map<string, Promise<void>>()
   const config = options.config
   const holdMs = Math.floor((config.leaseSec * 1000) / 3)
@@ -476,6 +477,7 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
     await output(slots.down(item.row.slot, marked ? 'remove' : 'keep'), env)
     if (marked) await forget(disk!.trim())
     item.watcher?.close()
+    up.delete(item)
     if (work.get(item.row.id) === item) work.delete(item.row.id)
     claimAt = 0
     frees++
@@ -1028,6 +1030,7 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
       next: 0,
     }
     work.set(item.row.id, item)
+    up.add(item)
     observe(item)
     log('resumed ' + item.row.id + ' in ' + item.stage)
   }
@@ -1168,7 +1171,12 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
               log('claims no more rows: ' + answer.drained)
             }
             for (const row of answer.rows) {
-              work.set(row.id, {
+              if (shared.stopping) {
+                log('not started ' + row.id + ': the runner is stopping')
+                continue
+              }
+              const earlier = work.get(row.id)
+              const item: Work = {
                 at: Date.now(),
                 busy: false,
                 changed: 0,
@@ -1180,8 +1188,15 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
                 round: 1,
                 row,
                 stage: 'prepare',
-              })
+              }
+              work.set(row.id, item)
+              up.add(item)
               log('claimed ' + row.id + ' ' + row.task.name)
+              if (earlier && !earlier.busy) {
+                log('lost ' + row.id + ': the run handed the row out again')
+                earlier.busy = true
+                void down(earlier, false).catch(() => {})
+              }
             }
             prefetch(answer.ahead)
             if (answer.rows.length || Date.now() - sentAt >= holdMs) next = 0
@@ -1221,7 +1236,7 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
     await call('/leave', { held: held(), runner: config.runner } satisfies Protocol.Leave).catch(
       () => {},
     )
-    for (const item of work.values()) await down(item, false).catch(() => {})
+    for (const item of [...up]) await down(item, false).catch(() => {})
   } else {
     await call('/leave', { held: [], runner: config.runner } satisfies Protocol.Leave).catch(
       () => {},
