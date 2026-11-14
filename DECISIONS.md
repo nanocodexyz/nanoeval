@@ -3477,3 +3477,24 @@ The command prints the id it took. When none fits it is refused before a run is 
 - `npm run lint`, `npm run check:types`, `npm test`.
 
 **Not verified.** A deployed Worker with many runs: the search reads the config and the status of each listed run of the eval version, newest first, until one fits. A lab, where `revision --baseline latest` would take the last run on the pins: not run, it needs a build. A run whose runners reported two hands is never a baseline by rule, which is intended and was only unit tested.
+
+## 2026-11-14: the summary carries tokens, cost, the judge and one line a task
+
+`status` printed outcomes and pass@k for an agent and left its tokens and cost to `compare`. The tokens and the cost of a judge were in the spend of a run and nowhere else: in a run with two agents and a judge the spend was $0.000560 and the agents came to $0.000112 and $0.000336, which is also what the exported job said the run cost, and nothing named the other $0.000112. A run did not say that it had reruns. A run of 89 tasks and 3 attempts printed 267 lines under its summary. And a run had two means: `mean reward 0.412` in `status`, 7 passed of the 17 attempts that were scored, and `metrics.mean` 0.2917 in `result.json`, 7 of all 24.
+
+**The rule.**
+
+- The line of an agent ends with the tokens and the cost of its own sessions, `input tokens 2,405 (1,480 cached), output tokens 259, cost $0.0022`, or `cost not known` where no session priced itself. An agent without usage, as the oracle, has no such part.
+- Attempts that were judged add one line for the run, `judge: 4 attempts judged, input tokens ..., cost ...`. `Result.summarize` sums the judge beside each agent, `compare` prints a column `Judge cost` and `compare --baseline` a row, only where a run had a judge, and `result.json` carries `stats.judge` with its trials, tokens and cost. Harbor's own totals, `n_input_tokens` to `cost_usd`, stay the agents': tools that read them were not given a figure that changes meaning.
+- A run that has reruns lists them under its first lines, with the command that reads the run as it stands after them.
+- One mean each, named where it is printed. `status` keeps the mean over scored attempts and says `of 17 scored` when that is not every attempt: it follows the rule of this repository that an error is never a score, as pass@k does. `result.json` keeps `metrics.mean` as Harbor defines it, a trial without a reward counted as 0, and `n_errored_trials` as Harbor counts them, with scored agent timeouts: the file is Harbor's format and its readers expect Harbor's figures. The README says both beside each other. Making them agree would have meant either scoring errors as 0 in `status` or writing a mean into Harbor's field that Harbor would not compute.
+- The list of attempts gives way to one line a task, `suite/two haiku 1/2 +1 errored (agent)`, when the output is a terminal and the summary is longer than it. The height is the terminal's own, not a number chosen here. `--rows` lists every attempt, `--tasks` prints the short form anywhere, and output that is not a terminal lists every attempt as before, so nothing that reads it changes.
+
+**Checked.**
+
+- `test/Summary.test.ts`: two agents with a judge, each line against sums by hand (two attempts of 1,000 input tokens at $0.0056 are 2,000 and $0.0112, four judged attempts of 10 tokens at $0.0028 are 40 and $0.0112), an agent whose sessions have no cost, a status from a Worker of an earlier commit, the reruns line, the short form with tasks that errored and that have not ended, and the choice between the forms by height. `test/Result.test.ts`: the sums of the judge and `stats.judge`, absent where nothing was judged. `test/Compare.test.ts`: the column and the row.
+- The judge lane on directory slots, read from its log: `right: ... cost $0.0001`, `wrong: ... cost $0.0003`, `judge: 4 attempts judged, input tokens 32 (0 cached), output tokens 16, cost $0.0001` and a spend of 0.00056, which is 0.000112 + 0.000336 + 0.000112.
+- On directory slots with the scripted model, the run of 8 tasks and 3 attempts: `mean reward 0.412 of 17 scored`, `input tokens 2,405 (1,480 cached), output tokens 259, cost $0.0022`, equal to the row of `compare` and to the sums by hand of an earlier entry, its two reruns named, and with `--tasks` eight lines such as `audit/t6 a 1/2 +1 errored (agent)` in place of 24.
+- `npm run lint`, `npm run check:types`, `npm test`.
+
+**Not verified.** A real terminal: the unit test passes the height in. A real judge. Whether a Harbor tool rejects a `result.json` with `stats.judge`: it is written only for runs with a judge, and `pass_at_k` is already there as a key Harbor does not have.

@@ -169,6 +169,13 @@ export function job(
   let input = 0
   let cached = 0
   let output = 0
+  const judge = {
+    cost_usd: null as number | null,
+    n_cache_tokens: 0,
+    n_input_tokens: 0,
+    n_output_tokens: 0,
+    n_trials: 0,
+  }
 
   for (const [agent, summary] of Object.entries(summaries)) {
     const own = attempts.filter((attempt) => attempt.agent.id === agent)
@@ -198,6 +205,12 @@ export function job(
     cached += summary.cachedTokens
     output += summary.outputTokens
     if (summary.costUsd !== null) cost = (cost ?? 0) + summary.costUsd
+    judge.n_cache_tokens += summary.judge.cachedTokens
+    judge.n_input_tokens += summary.judge.inputTokens
+    judge.n_output_tokens += summary.judge.outputTokens
+    judge.n_trials += summary.judge.attempts
+    if (summary.judge.costUsd !== null)
+      judge.cost_usd = (judge.cost_usd ?? 0) + summary.judge.costUsd
   }
 
   return {
@@ -218,6 +231,7 @@ export function job(
       n_cache_tokens: cached,
       n_output_tokens: output,
       cost_usd: cost,
+      ...(judge.n_trials ? { judge } : {}),
     },
   }
 }

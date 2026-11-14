@@ -223,6 +223,67 @@ test('the summary of an agent counts outcomes, tasks, reward and cost', () => {
   assert.equal(summary.tasks, 2)
   assert.ok(Math.abs(summary.meanReward! - 2 / 3) < 1e-9)
   assert.ok(Math.abs(summary.costUsd! - 0.0306) < 1e-9)
+  assert.equal(summary.scored, 3)
+  assert.deepEqual(summary.judge, {
+    attempts: 0,
+    cachedTokens: 0,
+    costUsd: null,
+    inputTokens: 0,
+    outputTokens: 0,
+  })
+})
+
+test('the tokens and cost of a judge are summed beside those of its agent, and exported as their own total', () => {
+  const judge = (costUsd: number | undefined) => ({
+    model: 'claude-haiku-4-5',
+    provider: 'claude' as const,
+    requests: 1,
+    usage: {
+      cacheWriteTokens: 0,
+      cachedTokens: 4,
+      costUsd,
+      inputTokens: 10,
+      modelCalls: 1,
+      outputTokens: 2,
+      toolCalls: 0,
+    },
+  })
+  const attempts = [
+    attempt({ id: 'a1', index: 1, judge: judge(0.0028) }),
+    attempt({ id: 'a2', index: 2, judge: judge(0.0028) }),
+    attempt({ id: 'a3', index: 3, judge: { ...judge(undefined), usage: null } }),
+    attempt({ id: 'a4', index: 4 }),
+  ]
+  const summary = Result.summarize(attempts)['haiku']!
+  assert.equal(summary.judge.attempts, 3)
+  assert.deepEqual(
+    [summary.judge.inputTokens, summary.judge.cachedTokens, summary.judge.outputTokens],
+    [20, 8, 4],
+  )
+  assert.ok(Math.abs(summary.judge.costUsd! - 0.0056) < 1e-12)
+  const own = Result.summarize([attempts[3]!])['haiku']!
+  assert.ok(Math.abs(summary.costUsd! - 4 * own.costUsd!) < 1e-12)
+  const stats = (rows: readonly Result.Attempt[]) =>
+    (
+      Harbor.job(rows, {
+        job: { finishedAt: 2000, id: 'job', name: 'job', startedAt: 1000 },
+        running: 0,
+        source: 'suite@1',
+        total: rows.length,
+      }) as { stats: Record<string, any> }
+    ).stats
+  const exported = stats(attempts)
+  assert.deepEqual(
+    [
+      exported['judge'].n_trials,
+      exported['judge'].n_input_tokens,
+      exported['judge'].n_cache_tokens,
+    ],
+    [3, 20, 8],
+  )
+  assert.ok(Math.abs(exported['judge'].cost_usd - 0.0056) < 1e-12)
+  assert.ok(Math.abs(exported['cost_usd'] - summary.costUsd!) < 1e-12)
+  assert.equal(stats([attempts[3]!])['judge'], undefined)
 })
 
 test('an attempt that errored is no trial of pass@k, and each pass@k says how many tasks it rates', () => {

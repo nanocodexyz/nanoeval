@@ -22,6 +22,8 @@ export type Arm = {
   failed: number
   harness: string
   inputTokens: number
+  judgeCostUsd: number | null
+  judged: number
   key: string
   metered: number
   model: string
@@ -152,6 +154,8 @@ export function arms(given: readonly Run[]): Arm[] {
             failed: 0,
             harness: harness(agent, run.nanocode),
             inputTokens: 0,
+            judgeCostUsd: null,
+            judged: 0,
             key: id,
             metered: 0,
             model: model(agent),
@@ -176,6 +180,11 @@ export function arms(given: readonly Run[]): Arm[] {
         arm.totalSec += (attempt.finishedAt - attempt.startedAt) / 1000
         entry.rows.add(row(attempt))
         entry.tasks.add(attempt.task.name)
+        if (attempt.judge) {
+          arm.judged++
+          if (attempt.judge.usage?.costUsd !== undefined)
+            arm.judgeCostUsd = (arm.judgeCostUsd ?? 0) + attempt.judge.usage.costUsd
+        }
         if (attempt.usage) {
           arm.metered++
           arm.cachedTokens += attempt.usage.cachedTokens
@@ -249,6 +258,7 @@ export function table(given: readonly Run[]): string {
     all.filter((other) => other.agent === arm.agent).length === 1
       ? arm.agent
       : arm.agent + ' of ' + arm.runs.map((id) => id.slice(0, 8)).join(' and ')
+  const judged = all.some((arm) => arm.judged)
   const summary = cells([
     [
       'Arm',
@@ -263,6 +273,7 @@ export function table(given: readonly Run[]): string {
       'Input tokens (cached)',
       'Output tokens',
       'Estimated cost',
+      ...(judged ? ['Judge cost'] : []),
     ],
     ...all.map((arm) => [
       title(arm),
@@ -282,6 +293,7 @@ export function table(given: readonly Run[]): string {
         (arm.costUsd === null || arm.priced === arm.attempts
           ? ''
           : ' for ' + arm.priced + ' of ' + arm.attempts),
+      ...(judged ? [arm.judged ? cost(arm.judgeCostUsd) : 'no judge'] : []),
     ]),
   ])
 
@@ -550,6 +562,15 @@ export function against(baseline: Side, run: Side): string {
               number(after.outputTokens),
             ],
             ['Cost', before ? cost(before.costUsd) : 'not run', cost(after.costUsd)],
+            ...(before?.judge.attempts || after.judge.attempts
+              ? [
+                  [
+                    'Judge cost',
+                    before ? cost(before.judge.costUsd) : 'not run',
+                    cost(after.judge.costUsd),
+                  ],
+                ]
+              : []),
           ]),
           '',
           ...(before

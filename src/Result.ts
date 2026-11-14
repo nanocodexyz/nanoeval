@@ -70,11 +70,19 @@ export type AgentSummary = {
   failed: number
   inputTokens: number
   cachedTokens: number
+  judge: {
+    attempts: number
+    cachedTokens: number
+    costUsd: number | null
+    inputTokens: number
+    outputTokens: number
+  }
   meanReward: number | null
   outputTokens: number
   passAtK: Record<string, number>
   passed: number
   rated: Record<string, number>
+  scored: number
   tasks: number
 }
 
@@ -102,11 +110,13 @@ export function summarize(attempts: readonly Attempt[]): Record<string, AgentSum
       failed: 0,
       inputTokens: 0,
       cachedTokens: 0,
+      judge: { attempts: 0, cachedTokens: 0, costUsd: null, inputTokens: 0, outputTokens: 0 },
       meanReward: null,
       outputTokens: 0,
       passAtK: {},
       passed: 0,
       rated: {},
+      scored: 0,
       tasks: 0,
     })
     summary.attempts++
@@ -117,6 +127,16 @@ export function summarize(attempts: readonly Attempt[]): Record<string, AgentSum
       summary.outputTokens += attempt.usage.outputTokens
       if (attempt.usage.costUsd !== undefined)
         summary.costUsd = (summary.costUsd ?? 0) + attempt.usage.costUsd
+    }
+    if (attempt.judge) {
+      summary.judge.attempts++
+      if (attempt.judge.usage) {
+        summary.judge.cachedTokens += attempt.judge.usage.cachedTokens
+        summary.judge.inputTokens += attempt.judge.usage.inputTokens
+        summary.judge.outputTokens += attempt.judge.usage.outputTokens
+        if (attempt.judge.usage.costUsd !== undefined)
+          summary.judge.costUsd = (summary.judge.costUsd ?? 0) + attempt.judge.usage.costUsd
+      }
     }
     ;((tasks[attempt.agent.id] ??= {})[attempt.task.name] ??= []).push(attempt)
   }
@@ -129,6 +149,7 @@ export function summarize(attempts: readonly Attempt[]): Record<string, AgentSum
       .flatMap((attempt) => (attempt.reward === null ? [] : [attempt.reward]))
     if (rewards.length)
       summary.meanReward = rewards.reduce((total, reward) => total + reward, 0) / rewards.length
+    summary.scored = rewards.length
     summary.tasks = groups.length
     const scored = groups.map((group) => group.filter((attempt) => attempt.outcome !== 'errored'))
     const trials = Math.max(...scored.map((group) => group.length))

@@ -459,3 +459,32 @@ test('a side is a run with its reruns, and two runs of the same rows are two arm
     /^\| Task \| one of old and again \| one of new \|$/m,
   )
 })
+
+test('the cost of a judge is a column of the table and a row of a comparison, where a run had one', () => {
+  const judged = (id: string, costUsd: number): Compare.Run => {
+    const run = side(id, { one: 'PF', two: 'PP' })
+    return {
+      ...run,
+      attempts: run.attempts.map((each) => ({
+        ...each,
+        judge: {
+          model: 'claude-haiku-4-5',
+          provider: 'claude' as const,
+          requests: 1,
+          usage: { ...usage, costUsd },
+        },
+      })),
+    }
+  }
+  const plain = side('plain', { one: 'PF', two: 'PP' })
+  const table = Compare.table([judged('old', 0.0028), plain])
+  assert.match(table, /\| Estimated cost \| Judge cost \|$/m)
+  assert.match(table, /^\| one of old \|.*\| \$0\.0112 \|$/m)
+  assert.match(table, /^\| one of plain \|.*\| no judge \|$/m)
+  assert.doesNotMatch(Compare.table([plain]), /Judge cost/)
+  assert.match(
+    Compare.against(judged('old', 0.0028), judged('new', 0.005)),
+    /^\| Judge cost \| \$0\.0112 \| \$0\.0200 \|$/m,
+  )
+  assert.doesNotMatch(Compare.against(plain, side('other', { one: 'PF', two: 'PP' })), /Judge cost/)
+})

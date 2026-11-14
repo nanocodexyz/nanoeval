@@ -261,7 +261,12 @@ const usage = `nanoeval <command>
             List the runs of the deployment, the newest first: id, state, counts, when it
             was created, its eval and its name. A run made by a Worker of a commit before
             this list existed is not in it.
-  status    --url URL --token T RUN
+  status    --url URL --token T RUN [--rows | --tasks]
+            Print the summary of a run: its eval and builds, the reruns it has, its counts and
+            spend, one line an agent with outcomes, mean reward, pass@k, tokens and cost, a
+            line for the judge where attempts were judged, and one line an attempt. On a
+            terminal too short for that, one line a task with its pass counts instead:
+            --rows lists every attempt, --tasks prints one line a task anywhere.
   timeline  --url URL --token T RUN
             Print where the time of a run went: every mark the run and its runners recorded,
             by its offset from the creation of the run, with the span it measured.
@@ -723,7 +728,38 @@ export async function exportJob(
   return job
 }
 
-export function summary(status: Record<string, any>): string {
+function used(row: {
+  cachedTokens: number
+  costUsd: number | null
+  inputTokens: number
+  outputTokens: number
+}): string {
+  return (
+    'input tokens ' +
+    Number(row.inputTokens).toLocaleString('en-US') +
+    ' (' +
+    Number(row.cachedTokens).toLocaleString('en-US') +
+    ' cached), output tokens ' +
+    Number(row.outputTokens).toLocaleString('en-US') +
+    ', cost ' +
+    (row.costUsd === null ? 'not known' : '$' + Number(row.costUsd).toFixed(4))
+  )
+}
+
+export function shown(
+  status: Record<string, any>,
+  input: { height?: number; rows: boolean; tasks: boolean },
+): string {
+  const full = summary(status)
+  if (input.rows) return full
+  if (input.tasks) return summary(status, { tasks: true })
+  return input.height !== undefined && full.split('\n').length > input.height
+    ? summary(status, { tasks: true }) +
+        '\n(one line a task so that it fits the screen: --rows lists every attempt)'
+    : full
+}
+
+export function summary(status: Record<string, any>, options: { tasks?: boolean } = {}): string {
   const cancelled = (status['attempts'] as Record<string, any>[]).filter(
     (attempt) => attempt['failure']?.kind === 'cancelled',
   ).length
@@ -825,7 +861,11 @@ export function summary(status: Record<string, any>): string {
         row.errored +
         (row.meanReward === null || row.meanReward === undefined
           ? ''
-          : ', mean reward ' + Number(row.meanReward).toFixed(3)) +
+          : ', mean reward ' +
+            Number(row.meanReward).toFixed(3) +
+            (row.scored === undefined || row.scored === row.attempts
+              ? ''
+              : ' of ' + row.scored + ' scored')) +
         ', ' +
         Object.entries(row.passAtK as Record<string, number>)
           .map(([k, value]) => {
@@ -841,20 +881,80 @@ export function summary(status: Record<string, any>): string {
                 : ' of ' + rated + (rated === 1 ? ' task' : ' tasks'))
             )
           })
-          .join(', '),
+          .join(', ') +
+        (row.inputTokens || row.outputTokens || row.costUsd !== null ? ', ' + used(row) : ''),
     )
+  const judges = Object.values(status['agents'] as Record<string, any>).flatMap((row) =>
+    row.judge?.attempts ? [row.judge] : [],
+  )
+  if (judges.length) {
+    const total = (name: string) => judges.reduce((sum, judge) => sum + Number(judge[name]), 0)
+    lines.push(
+      'judge: ' +
+        total('attempts') +
+        (total('attempts') === 1 ? ' attempt' : ' attempts') +
+        ' judged, ' +
+        used({
+          cachedTokens: total('cachedTokens'),
+          costUsd: judges.some((judge) => judge.costUsd !== null) ? total('costUsd') : null,
+          inputTokens: total('inputTokens'),
+          outputTokens: total('outputTokens'),
+        }) +
+        ', beside the agents and in the spend of the run',
+    )
+  }
   const start = Timeline.summary((status['start'] ?? {}) as Timeline.Start)
   if (start) lines.splice(3, 0, 'start: ' + start)
   if (status['eval'])
     lines.splice(1, 0, 'eval: ' + status['eval'].name + '@' + status['eval'].version)
   if (status['rerunOf'])
     lines.splice(2, 0, 'rerun of ' + status['rerunOf'].run + ' (' + status['rerunOf'].select + ')')
+  if (status['reruns']?.length)
+    lines.splice(
+      status['rerunOf'] ? 3 : 2,
+      0,
+      'reruns: ' +
+        (status['reruns'] as string[]).join(', ') +
+        ' (compare --with-reruns reads this run as it stands after them)',
+    )
   if (status['nanocode'])
     lines.splice(
       status['eval'] ? 2 : 1,
       0,
       'nanocode: ' + Pins.text(status['nanocode'] as Pins.Pins),
     )
+  if (options.tasks) {
+    const tasks = new Map<string, Record<string, any>[]>()
+    for (const attempt of status['attempts'] as Record<string, any>[]) {
+      const name = attempt['task'] + ' ' + attempt['agent']
+      tasks.set(name, [...(tasks.get(name) ?? []), attempt])
+    }
+    for (const [name, attempts] of tasks) {
+      const count = (outcome: string) =>
+        attempts.filter((attempt) => attempt['outcome'] === outcome).length
+      const errors = attempts.filter((attempt) => attempt['outcome'] === 'errored')
+      const open = attempts.filter((attempt) => !attempt['outcome'])
+      lines.push(
+        '  ' +
+          name +
+          ' ' +
+          (count('passed') + count('failed') || !errors.length
+            ? count('passed') + '/' + (count('passed') + count('failed'))
+            : '') +
+          (errors.length
+            ? (count('passed') + count('failed') ? ' +' : '') +
+              errors.length +
+              ' errored (' +
+              [...new Set(errors.map((attempt) => attempt['failure']?.kind ?? 'unknown'))]
+                .sort()
+                .join(', ') +
+              ')'
+            : '') +
+          (open.length ? ' +' + open.length + ' not ended' : ''),
+      )
+    }
+    return lines.join('\n')
+  }
   for (const attempt of status['attempts'] as Record<string, any>[])
     lines.push(
       '  ' +
@@ -1179,6 +1279,7 @@ async function main(lab?: Revision.Lab): Promise<void> {
       remove: { default: false, type: 'boolean' },
       report: { type: 'string' },
       rerun: { type: 'string' },
+      rows: { default: false, type: 'boolean' },
       root: { type: 'string' },
       run: { type: 'string' },
       runtime: { default: false, type: 'boolean' },
@@ -1204,6 +1305,7 @@ async function main(lab?: Revision.Lab): Promise<void> {
       subset: { multiple: true, type: 'string' },
       subsets: { type: 'string' },
       task: { multiple: true, type: 'string' },
+      tasks: { default: false, type: 'boolean' },
       template: { type: 'string' },
       'tick-ms': { default: '500', type: 'string' },
       token: { default: process.env['NANOEVAL_TOKEN'], type: 'string' },
@@ -1217,6 +1319,11 @@ async function main(lab?: Revision.Lab): Promise<void> {
     },
   })
   const [named, ...rest] = positionals
+  const screen = {
+    ...(process.stdout.isTTY ? { height: process.stdout.rows } : {}),
+    rows: values.rows,
+    tasks: values.tasks,
+  }
   const command = lab ? 'run' : named
   if (lab)
     Object.assign(values, {
@@ -2170,7 +2277,7 @@ async function main(lab?: Revision.Lab): Promise<void> {
       const gone = runner ? runner.exit() !== null : false
       const status = await api.status(created.id)
       if (status['state'] === 'finished') {
-        console.log(summary(status))
+        console.log(shown(status, screen))
         const results = baseline.length ? await api.results(created.id) : undefined
         const changes = results ? Compare.changes(baseline, results) : []
         if (results) {
@@ -2262,7 +2369,7 @@ async function main(lab?: Revision.Lab): Promise<void> {
     })
     return
   }
-  if (command === 'status') console.log(summary(await api.status(run)))
+  if (command === 'status') console.log(shown(await api.status(run), screen))
   if (command === 'timeline') {
     const timeline = await api.timeline(run)
     console.log(Timeline.table(timeline.marks, timeline.createdAt))
