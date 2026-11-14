@@ -45,6 +45,7 @@ const slotForward = process.env['NANOEVAL_E2E_SLOT_FORWARD']
 const network = (process.env['NANOEVAL_E2E_NETWORK'] ??
   Config.network({ backend })) as Config.Config['sandbox']['network']
 const tickMs = process.env['NANOEVAL_E2E_TICK_MS'] ?? '500'
+const firstByteMs = Number(process.env['NANOEVAL_E2E_FIRST_BYTE_MS'] ?? '0')
 const pollMs = Number(process.env['NANOEVAL_E2E_POLL_MS'] ?? '250')
 const storeKind = process.env['NANOEVAL_E2E_STORE'] ?? 'directory'
 const gateway = process.env['NANOEVAL_E2E_GATEWAY'] === '1'
@@ -558,6 +559,8 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
           response.writeHead(530, { 'content-type': 'text/plain' }).end('error code: 530')
           return
         }
+        if (firstByteMs > 0 && !body.fake_cli)
+          await new Promise((resolve) => setTimeout(resolve, firstByteMs))
         answered++
         response.writeHead(200, { 'content-type': 'text/event-stream' }).end(reply)
       } catch (error) {
@@ -1594,6 +1597,14 @@ async function main(): Promise<void> {
         )
       }
     }
+    if (firstByteMs > 0)
+      assert.equal(
+        scriptedCalls,
+        details.reduce((all, detail) => all + (detail['result']?.usage?.modelCalls ?? 0), 0),
+        'the model endpoint gets one request for each model call when its first byte is ' +
+          firstByteMs +
+          ' ms late',
+      )
     if (longCell) {
       assert.deepEqual(
         longCells.flatMap(

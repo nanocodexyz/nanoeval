@@ -3800,3 +3800,16 @@ Runs on dev-georgios (krun, private network): `a763f96d` (`rest-codex-retry`, a 
 
 **Not done.** The 30 s stalls are in the slot's way to the proxy, the guest's forward over vsock and the relay, not in the proxy: that is where to look next, and `run --verifier-cache` already keeps what uv downloads per task. `nanoeval-krun` should not panic when its output cannot be written. The retry needs the Worker of this commit, and `diskMb` a runtime built from it.
 
+
+## 2026-11-14: sessions send one request per model call
+
+`worker/Sessions.ts` passes `hedge: { cap_percent: 0 }` to `App.create`, and `package.json` moves from build-281c7dd to build-67dea25 (nanocode-ts 67dea25, the same nanocode a5d401e0c and WASM build), whose `App.create` takes `hedge`. Since nanocode-ts c1fe48c a session that names no hedge policy hedges a model request whose first byte is later than max(1.5 s, the model's p90) with one duplicate, up to 10% of the isolate's recent requests, and `App` named none, so every nanoeval session hedged. In run 16e15f9a (build-281c7dd, gpt-6-luna, nanox and nanoxd, 439 model calls) the `model.call.completed` events carry 47 dispatched hedges, of which the duplicate won 4, and 49 capped ones; each dispatched hedge resent the whole input on a second connection, 1,205,127 input tokens beside the 11,954,285 of the calls (10.1%), which the session's `cost_usd` counts and the ChatGPT plan pays. Run 0d6c29c9 (104 calls) has 10 hedges and 7.4%. An attempt's tokens and `modelCalls` come from the winners' `model.call.completed` events and were not inflated, but its cost and the model endpoint's requests were, and codex-cli and claude-code send one request per call. With the cap at 0 no duplicate is sent.
+
+The end-to-end test takes `NANOEVAL_E2E_FIRST_BYTE_MS`: the scripted model holds each reply that long, and the run must then have sent the model endpoint exactly one request for each model call of its attempts. CI runs the directory-slot lane with 2000 ms.
+
+Measured on dev-georgios (32 cores, Node 24.22.2), `NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_FIRST_BYTE_MS=2000`, tasks extract-todos, uppercase-message and write-greeting, 3 slots, 1 attempt, one run each:
+
+- before (bf18082, build-281c7dd): the scripted model got 18 requests for 12 model calls, and the assertion failed; the hedged `wrong` agent's cost was $0.0006 against $0.0005 with no hedge.
+- after (this change, build-67dea25): 12 requests for 12 model calls, `e2e passed: scripted-dir`, `wrong` $0.0005, `right` $0.0002 in both.
+
+Checked: `npm run lint`, `npm run check:types`.

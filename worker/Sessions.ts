@@ -143,6 +143,7 @@ export const nanocode = App.create<Env>({
       },
     }),
   hands: 'always',
+  hedge: { cap_percent: 0 },
   subscription: async (_account, env, provider) =>
     plan(env, provider) !== undefined ||
     (provider === 'claude' && (await Vault.unusable(env)) === undefined),
