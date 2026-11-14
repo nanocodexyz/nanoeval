@@ -7,6 +7,7 @@ import type * as Sandbox from './Sandbox.ts'
 import type * as Timeline from './Timeline.ts'
 import type * as Verdict from './Verdict.ts'
 
+export const version = 2
 export const handName = 'slot'
 export const artifactBytes = 4 * 1024 * 1024
 export const logBytes = 65_536
@@ -61,6 +62,8 @@ export type Heartbeat = { held: readonly Held[]; report: Report; runner: number 
 export type HeartbeatResponse = { ahead?: Ahead[]; finished: boolean; lost: string[] }
 
 export type Leave = { held: readonly Held[]; runner: number }
+
+export type Version = { commit: string | null; protocol: number }
 
 export type Yield = { runner: number }
 

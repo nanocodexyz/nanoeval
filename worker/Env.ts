@@ -14,6 +14,7 @@ export type Env = App.Env & {
   CHATGPT_RELAY_URL?: string
   CLAUDE_PLAN_URL?: string
   CLAUDE_CODE_OAUTH_TOKEN?: string
+  COMMIT?: string
   EVALS: DurableObjectNamespace
   HAND_LIST_MS: string
   HOLD_MS: string

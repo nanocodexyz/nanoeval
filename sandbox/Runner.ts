@@ -299,24 +299,7 @@ async function ask(
     }
     shared.stops.delete(stop)
     if (shared.stopping) {
-      if (answer?.state === 'assigned')
-        await fetch(
-          standing.url.replace(/\/+$/, '') + '/v1/runs/' + answer.config.run + '/runner/leave',
-          {
-            body: JSON.stringify({
-              held: [],
-              runner: answer.config.runner,
-            } satisfies Protocol.Leave),
-            headers: {
-              authorization: 'Bearer ' + answer.config.token,
-              'content-type': 'application/json',
-            },
-            method: 'POST',
-          },
-        ).then(
-          (response) => response.body?.cancel(),
-          () => {},
-        )
+      if (answer?.state === 'assigned') await decline({ ...answer.config, url: standing.url })
       break
     }
     if (answer?.state === 'assigned') return answer.config
@@ -332,6 +315,17 @@ async function ask(
   }
   if (!(await left)) await leave(standing)
   return undefined
+}
+
+async function decline(config: Config.Runner): Promise<void> {
+  await fetch(config.url.replace(/\/+$/, '') + '/v1/runs/' + config.run + '/runner/leave', {
+    body: JSON.stringify({ held: [], runner: config.runner } satisfies Protocol.Leave),
+    headers: { authorization: 'Bearer ' + config.token, 'content-type': 'application/json' },
+    method: 'POST',
+  }).then(
+    (response) => response.body?.cancel(),
+    () => {},
+  )
 }
 
 async function leave(standing: Standing): Promise<boolean> {
@@ -493,6 +487,16 @@ async function stand(
 }
 
 async function serve(options: Options & { config: Config.Runner }, shared: Shared): Promise<void> {
+  if (options.config.protocol !== Protocol.version) {
+    await decline(options.config)
+    throw new RefusedError(
+      'this runner speaks protocol ' +
+        Protocol.version +
+        ' with a Worker, and the Worker of the run speaks ' +
+        (options.config.protocol ?? 'the one before protocols had a number') +
+        ': move both to one commit, the Worker first',
+    )
+  }
   const serving: Serving = { rows: () => [], wake() {}, yield() {} }
   shared.serving.add(serving)
   try {

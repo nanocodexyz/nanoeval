@@ -2987,3 +2987,34 @@ Three of the defects of the day are one change, in the pool (`src/Pool.ts`, `wor
 - A guest that stops answering in a microVM that lives, which stays a `verifier` error when it happens under the verifier.
 - A runner from before this change with a Worker that has it, which behaves as before, and the other way round, which the entry after this one refuses.
 - CI on GitHub, where the lane is skipped.
+
+## 2026-11-14: a Worker and a runner say which protocol they speak
+
+**The defect.** Nothing could check that a runner and the Worker it serves are of commits that work together. `/health` answers `{"ok":true}`, a runner said nothing of itself, and the one rule there was, that the Worker moves first and the runtime archive with it, stood in one sentence of the entry of 2026-11-13. The entries of this day make it matter: a runner of this day enrols a second member in the pool, asks a run to end a held claim and gives back a row whose slot is gone, none of which a Worker from before knows.
+
+**The rule.** The calls between a runner and a Worker are a protocol with a number, `Protocol.version` in `src/Protocol.ts`, which a change raises when a runner of one side of it and a Worker of the other do not work together. It is 2 with this entry, and every commit before it is 1 without saying so.
+
+- **The Worker says it to whoever holds the token**: `GET /v1/version` answers `{"protocol":2,"commit":…}`. The commit is the variable `COMMIT`, which a deploy sets with `npx wrangler deploy --var COMMIT:$(git rev-parse HEAD)`, and null when it did not. `/health` stays as it is, without the token: a public address should say that it answers and not which commit, with which known defects, answers there.
+- **A run says it to its runners**: the configuration that every runner starts from, whether a sandbox, a person or the pool hands it over, carries the protocol of the Worker that made it. A runner that reads another number than its own, or none, leaves the run and exits with status 1 and both numbers, before it sets anything up. A runner in a sandbox has no token for `/v1/version`, and this needs none.
+- **A standing runner asks before it enrols**, so that no run is handed to a runner that would refuse it: `nanoeval runner --standing` ends with status 1 when the protocols differ or the Worker answers `404`, and prints both commits when they differ under one protocol, which is allowed.
+- **`nanoeval version`** prints both sides and exits with status 1 when they do not work together.
+
+**Why a number and not the commit.** Most commits change nothing between a runner and a Worker, and a runner that refused every other commit would stop for every deploy of a README. The runtime archive is also built to be the same bytes from the same sources, and a commit inside it would give every commit a new archive to publish. The commit is printed for people, the number decides.
+
+**Why refuse and not warn.** A runner of another protocol fails in the middle of a run, in whatever call the other side does not have, and what it leaves behind is claims that wait for their lease. Not starting is the outcome that costs nothing.
+
+**How a runner machine follows a deploy**, now in the README: the Worker first, with its commit; then the runtime archive, published again from that commit, for the runs that name one; then each runner machine moves its checkout to that commit and starts its runner again when it holds no row, since a runner that is stopped gives its rows back and each of them counts a claim. In between, a runner of protocol 1 keeps working with the Worker of protocol 2, less well: it serves one run at a time, and the pool closes its member when a run lasts longer than its notice, so that it exits when that run is done, see the entry on the pool.
+
+**Checked.**
+
+- Every lane now asks at its start that `/health` answers `{"ok":true}` and nothing else, that `/v1/version` answers `401` without the token and the lane's commit and `Protocol.version` with it. The plain lane on directory slots also starts a runner from a configuration of another protocol and asks for status 1 and the text. The plain lane passed 2 of 2 times with it.
+- The standing lanes start their runner through the question to `/v1/version`.
+- **A runner of this entry in front of a Worker of the commit before the changes of this day**, by hand on directory slots: `nanoeval runner --standing` ended with status 1 before it enrolled, with "worker: says no version, so it is of a commit before protocols had a number", its own protocol and commit, and "they do not work together: move both to one commit, the Worker first".
+- **A runner of the commit before the changes of this day in front of this Worker**, by hand with the `standing` lane on directory slots: it was handed two runs one after the other and both ended as they should, 6 rows each. The lane then fails where it asks that each run had a member of its own, which that runner does not enrol.
+
+**Not verified.**
+
+- `wrangler deploy --var` on Cloudflare: the variable was set through the file of variables that `wrangler dev` reads.
+- A runner of protocol 1 with this Worker for a run that lasts longer than its lease, where the pool closes its member while it serves: argued in the entry on the pool, and the two runs above were shorter.
+- Either pair on a deployment.
+- CI on GitHub.

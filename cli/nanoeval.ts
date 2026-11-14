@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import * as Fs from 'node:fs/promises'
 import * as Os from 'node:os'
 import * as Path from 'node:path'
@@ -21,7 +21,7 @@ import * as E2b from '../src/E2b.ts'
 import type * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
 import type * as Ledger from '../src/Ledger.ts'
-import type * as Protocol from '../src/Protocol.ts'
+import * as Protocol from '../src/Protocol.ts'
 import * as Sandbox from '../src/Sandbox.ts'
 import * as Task from '../src/Task.ts'
 import * as Timeline from '../src/Timeline.ts'
@@ -200,6 +200,11 @@ const usage = `nanoeval <command>
             slot.sh, the static launcher, guest and relay, and the pinned hand. With
             --publish, put it in the Worker's blob store and print the SHA-256 that
             run --runtime-blob takes.
+  version   --url URL --token T
+            Print the protocol and the commit of the Worker and of this checkout. A runner
+            and a Worker work together when their protocols are the same, and the command
+            exits with status 1 when they are not. A Worker names its commit when it was
+            deployed with --var COMMIT:$(git rev-parse HEAD).
   status    --url URL --token T RUN
   timeline  --url URL --token T RUN
             Print where the time of a run went: every mark the run and its runners recorded,
@@ -416,6 +421,15 @@ export function client(options: { token: string; url: string }) {
     },
     status: async (run: string) =>
       (await call('/v1/runs/' + run)).json() as Promise<Record<string, any>>,
+    version: async (): Promise<Protocol.Version | undefined> => {
+      const response = await fetch(base + '/v1/version', {
+        headers: { authorization: 'Bearer ' + options.token },
+      })
+      if (response.status === 404) return undefined
+      if (!response.ok)
+        throw new Error('/v1/version answered ' + response.status + ': ' + (await response.text()))
+      return (await response.json()) as Protocol.Version
+    },
     timeline: async (run: string) =>
       (await (await call('/v1/runs/' + run + '/timeline')).json()) as {
         createdAt: number
@@ -630,6 +644,42 @@ export function planSummary(claude: Record<string, any>): string {
       ' for its code: nanoeval plans complete --code CODE'
     )
   return 'claude plan: ' + claude['state'] + ': sign in with ' + Config.planSignIn
+}
+
+export function checkout(): string | undefined {
+  const head = spawnSync('git', [
+    '-C',
+    Path.resolve(import.meta.dirname, '..'),
+    'rev-parse',
+    'HEAD',
+  ])
+  return head.status === 0 ? head.stdout.toString().trim() : undefined
+}
+
+export function versions(worker: Protocol.Version | undefined): { agree: boolean; text: string } {
+  const commit = checkout()
+  return {
+    agree: worker?.protocol === Protocol.version,
+    text: [
+      worker
+        ? 'worker: protocol ' +
+          worker.protocol +
+          ', commit ' +
+          (worker.commit ?? 'not named: deploy it with --var COMMIT:$(git rev-parse HEAD)')
+        : 'worker: says no version, so it is of a commit before protocols had a number',
+      'this checkout: protocol ' +
+        Protocol.version +
+        ', commit ' +
+        (commit ?? 'not known: this is no git checkout'),
+      worker?.protocol !== Protocol.version
+        ? 'they do not work together: move both to one commit, the Worker first'
+        : worker.commit && commit && worker.commit !== commit
+          ? 'the commits differ and the protocol is the same'
+          : undefined,
+    ]
+      .filter(Boolean)
+      .join('\n'),
+  }
 }
 
 export function poolSummary(status: Record<string, any>): string {
@@ -1019,6 +1069,7 @@ async function main(): Promise<void> {
       'sandbox',
       'status',
       'timeline',
+      'version',
     ].includes(command)
   ) {
     console.log(usage)
@@ -1063,6 +1114,13 @@ async function main(): Promise<void> {
     if (action === 'complete') await api.planComplete(await code())
     if (action === 'sign-out') await api.planSignOut()
     console.log(planSummary((await api.plans()).claude))
+    return
+  }
+
+  if (command === 'version') {
+    const { agree, text } = versions(await api.version())
+    console.log(text)
+    process.exitCode = agree ? 0 : 1
     return
   }
 
@@ -1276,6 +1334,9 @@ async function main(): Promise<void> {
     await Fs.mkdir(home, { recursive: true })
     const leaseSec = Number(values['lease-sec'])
     const network = (values.network ?? Config.network({ backend })) as Config.Runner['network']
+    const worker = versions(await api.version())
+    if (!worker.agree) throw new Error(worker.text)
+    console.error(worker.text)
     const machine = crypto.randomUUID()
     const enroll = () =>
       api.standing({ backend, machine, network, noticeSec: leaseSec }, values.location)

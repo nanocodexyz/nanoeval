@@ -86,6 +86,7 @@ export type Runner = {
   oracle: boolean
   pollMs: number
   pool?: Protocol.Standing
+  protocol?: number
   ready?: true
   run: string
   runner: number

@@ -16,6 +16,7 @@ import * as Sandboxd from '../sandbox/Sandboxd.ts'
 import * as Store from '../sandbox/Store.ts'
 import * as Config from '../src/Config.ts'
 import type * as Eval from '../src/Eval.ts'
+import * as Protocol from '../src/Protocol.ts'
 import type * as Slot from '../src/Slot.ts'
 import * as Guest from './Guest.ts'
 import * as Krun from './Krun.ts'
@@ -703,6 +704,7 @@ async function main(): Promise<void> {
   const url = 'http://127.0.0.1:' + port
   const vars: Record<string, string> = {
     ACCESS_TOKEN: token,
+    COMMIT: 'the-commit-of-the-lane',
     LOCAL_SANDBOX_TOKEN: sandboxToken,
     LOCAL_SANDBOX_URL: sandboxd.url,
     TICK_MS: tickMs,
@@ -887,6 +889,30 @@ async function main(): Promise<void> {
   try {
     const unauthorized = await fetch(url + '/v1/runs', { body: '{}', method: 'POST' })
     assert.equal(unauthorized.status, 401)
+    assert.deepEqual(await (await fetch(url + '/health')).json(), { ok: true })
+    assert.equal((await fetch(url + '/v1/version')).status, 401, 'a version is not public')
+    assert.deepEqual(await client({ token, url }).version(), {
+      commit: 'the-commit-of-the-lane',
+      protocol: Protocol.version,
+    })
+    if (scenario === 'tasks' && backend === 'dir') {
+      const home = Path.join(out, 'runner-other-protocol')
+      Fs.mkdirSync(home, { recursive: true })
+      Fs.writeFileSync(
+        Path.join(home, 'runner.json'),
+        JSON.stringify({ protocol: Protocol.version + 1, run: Crypto.randomUUID(), url }),
+      )
+      const refused = spawnSync(
+        process.execPath,
+        [Path.resolve('cli/nanoeval.ts'), 'runner', '--config', Path.join(home, 'runner.json')],
+        { env: { ...process.env, NANOEVAL_CACHE: cache } },
+      )
+      assert.equal(refused.status, 1, 'a runner of another protocol than its Worker does not start')
+      assert.match(
+        refused.stderr.toString(),
+        /Runner\.RefusedError\]: this runner speaks protocol \d+ with a Worker, and the Worker of the run speaks \d+: /,
+      )
+    }
 
     const failures = scenario === 'failures'
     const cached = scenario === 'cache'

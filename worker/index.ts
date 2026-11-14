@@ -1,3 +1,4 @@
+import * as Protocol from '../src/Protocol.ts'
 import * as Blobs from './Blobs.ts'
 import { locations, type Env } from './Env.ts'
 import * as Evals from './Evals.ts'
@@ -27,6 +28,11 @@ export default {
       (resource === 'runs' && (path[1] === 'runner' || path[1] === 'model')) ||
       (resource === 'pool' && path[0] === 'members' && path.length === 3)
     if (!runner && !(await authorized(request, env))) return json({ error: 'unauthorized' }, 401)
+    if (resource === 'version')
+      return json({
+        commit: env.COMMIT || null,
+        protocol: Protocol.version,
+      } satisfies Protocol.Version)
     if (resource === 'evals') return Evals.route(request, env, path)
     if (resource === 'blobs') return Blobs.route(request, env, path)
     if (resource === 'plans') return Vault.route(request, { env, path })
