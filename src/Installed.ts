@@ -1,6 +1,7 @@
 import type * as Atif from './Atif.ts'
+import * as Slot from './Slot.ts'
 
-export type Kind = 'claude-code' | 'codex-cli'
+export type Kind = 'claude-code' | 'codex-cli' | 'nanocode-claude' | 'nanocode-codex'
 
 export type Agent = { kind: Kind; model: string; thinking?: string }
 
@@ -11,15 +12,23 @@ export type Binary = {
   url: string
 }
 
-export type Release = {
-  binaries: readonly Binary[]
-  entry: string
-  format: 'file' | 'tar.gz'
-  provider: 'claude' | 'codex'
-  version: string
-}
+export type Release =
+  | {
+      binaries: readonly Binary[]
+      entry: string
+      format: 'file' | 'tar.gz'
+      provider: 'claude' | 'codex'
+      source: 'release'
+      version: string
+    }
+  | { provider: 'claude' | 'codex'; source: 'runtime'; version: string }
 
-export const kinds: readonly Kind[] = ['claude-code', 'codex-cli']
+export const kinds: readonly Kind[] = [
+  'claude-code',
+  'codex-cli',
+  'nanocode-claude',
+  'nanocode-codex',
+]
 
 export const events = 'agent/events.jsonl'
 export const instruction = 'agent/instruction.md'
@@ -60,6 +69,7 @@ export const releases: Record<Kind, Release> = {
     entry: 'claude',
     format: 'file',
     provider: 'claude',
+    source: 'release',
     version: '2.1.318',
   },
   'codex-cli': {
@@ -80,9 +90,23 @@ export const releases: Record<Kind, Release> = {
     entry: 'bin/codex',
     format: 'tar.gz',
     provider: 'codex',
+    source: 'release',
     version: '0.166.0',
   },
+  'nanocode-claude': {
+    provider: 'claude',
+    source: 'runtime',
+    version: 'runtime-' + Slot.runtime.sha256.slice(0, 12),
+  },
+  'nanocode-codex': {
+    provider: 'codex',
+    source: 'runtime',
+    version: 'runtime-' + Slot.runtime.sha256.slice(0, 12),
+  },
 }
+
+export const anthropicMessagesUrl = 'NANOCODE_ANTHROPIC_MESSAGES_URL'
+export const anthropicApiKey = 'NANOCODE_ANTHROPIC_API_KEY'
 
 export function is(provider: string): provider is Kind {
   return (kinds as readonly string[]).includes(provider)
@@ -98,6 +122,40 @@ export function script(agent: Agent, options: { url: string }): string {
   if (!/^https?:\/\/[A-Za-z0-9.:[\]_/-]+$/.test(options.url))
     throw new Error('the model endpoint is not a plain http or https address: ' + options.url)
   const root = '"$NANOEVAL_AGENT_RT"/agents/' + agent.kind
+  const release = releases[agent.kind]
+  if (release.source === 'runtime') {
+    const harness = release.provider
+    return (
+      [
+        ...preamble,
+        'if [ -x "$NANOEVAL_AGENT_RT/ld.so" ]; then',
+        '  set -- "$NANOEVAL_AGENT_RT/ld.so" --library-path "$NANOEVAL_AGENT_RT/lib" "$NANOEVAL_AGENT_RT/nanocode"',
+        'else',
+        '  set -- "$NANOEVAL_AGENT_RT/nanocode"',
+        'fi',
+        'export NANOCODE_HOME="$NANOEVAL_AGENT_HOME" NANOCODE_NO_TEMPO_TOOLS=1',
+        ...(harness === 'codex'
+          ? [
+              'export NANOCODE_OPENAI_BASE_URL=' + quote(options.url),
+              'export NANOCODE_OPENAI_API_KEY="$' + tokenVariable + '"',
+            ]
+          : [
+              'export ' + anthropicMessagesUrl + '=' + quote(options.url + '/v1/messages'),
+              'export ' + anthropicApiKey + '="$' + tokenVariable + '"',
+            ]),
+        'prompt=$(cat)',
+        [
+          'exec "$@" exec',
+          '--ephemeral',
+          '--no-subagents',
+          '--harness ' + harness,
+          '-m ' + quote(agent.model),
+          ...(agent.thinking ? ['-t ' + quote(agent.thinking)] : []),
+          '-- "$prompt"',
+        ].join(' '),
+      ].join('\n') + '\n'
+    )
+  }
   if (agent.kind === 'codex-cli') {
     const provider =
       'model_providers.nanoeval={name="nanoeval", base_url="' +
@@ -110,7 +168,7 @@ export function script(agent: Agent, options: { url: string }): string {
         ...preamble,
         'export CODEX_HOME="$NANOEVAL_AGENT_HOME"',
         [
-          'exec ' + root + '/any/' + releases[agent.kind].entry,
+          'exec ' + root + '/any/' + release.entry,
           'exec',
           '--json',
           '--dangerously-bypass-approvals-and-sandbox',
@@ -193,6 +251,10 @@ export type Summary = {
 
 export function summarize(kind: Kind, stream: string): Summary {
   const summary: Summary = { costUsd: undefined, error: undefined, message: '', toolCalls: 0 }
+  if (releases[kind].source === 'runtime') {
+    summary.message = stream.trim()
+    return summary
+  }
   for (const line of lines(stream)) {
     if (kind === 'codex-cli') {
       const item = line['item']
@@ -240,8 +302,10 @@ export function trajectory(
     if (result) (target.observation ??= { results: [] }).results.push(result)
   }
   if (input.instruction !== undefined) step('user', input.instruction)
+  const runtime = releases[kind].source === 'runtime'
+  if (runtime && input.stream.trim()) step('agent', input.stream.trim()).model_name = model
 
-  for (const line of lines(input.stream)) {
+  for (const line of runtime ? [] : lines(input.stream)) {
     if (kind === 'codex-cli') {
       const item = line['item'] as Line | undefined
       if (line['type'] === 'thread.started') session = text(line['thread_id']) || session

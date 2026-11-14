@@ -61,7 +61,7 @@ export function create(options: create.Options) {
     agentFile: (slot: string, name: 'instruction.md' | 'run.sh' | 'token') =>
       home + '/slots/' + slot + '/agent/' + name,
     agentOutput: (slot: string) => home + '/slots/' + slot + '/agent.out',
-    agents: (kind: Installed.Kind, release: Installed.Release) =>
+    agents: (kind: Installed.Kind, release: Extract<Installed.Release, { source: 'release' }>) =>
       call(
         'agents',
         kind,

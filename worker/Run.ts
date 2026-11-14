@@ -1549,6 +1549,12 @@ export class Run extends DurableObject<Env> {
         status: 401,
       })
     const provider = Installed.releases[kind].provider
+    if (
+      Installed.releases[kind].source === 'runtime' &&
+      request.method === 'GET' &&
+      rest.join('/') === 'models'
+    )
+      return Response.json({ data: [{ id: this.agentOf(row).model, object: 'model' }] })
     const path = Proxy.route(provider, rest.join('/'))
     if (!path)
       return Model.refuse(request, {

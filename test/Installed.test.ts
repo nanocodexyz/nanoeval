@@ -74,7 +74,7 @@ test('an agent names a session harness or an installed command', () => {
   )
   assert.throws(
     () => Config.parse({ ...config, agents: [{ id: 'x', model: 'm', provider: 'cursor' }] }),
-    /provider must be one of claude, codex, oracle, claude-code, codex-cli/,
+    /provider must be one of claude, codex, oracle, claude-code, codex-cli, nanocode-claude, nanocode-codex/,
   )
   assert.throws(
     () => Config.parse({ ...config, judge: { model: 'gpt-6.1-sol', provider: 'codex-cli' } }),
@@ -115,6 +115,10 @@ test('an agent names a session harness or an installed command', () => {
 test('every pinned release names a checksum for each build it fetches', () => {
   for (const kind of Installed.kinds) {
     const release = Installed.releases[kind]
+    if (release.source === 'runtime') {
+      assert.equal(release.version, 'runtime-' + Slot.runtime.sha256.slice(0, 12))
+      continue
+    }
     assert.match(release.version, /^\d+\.\d+\.\d+$/)
     for (const binary of release.binaries) {
       assert.match(binary.sha256, /^[0-9a-f]{64}$/)
@@ -128,9 +132,11 @@ test('every pinned release names a checksum for each build it fetches', () => {
   }
 })
 
-function install(kind: Installed.Kind, libc: string): string {
+function install(kind: 'claude-code' | 'codex-cli', libc: string): string {
   const rt = Path.join(root, 'rt-' + kind + '-' + libc)
-  const entry = Path.join(rt, 'agents', kind, libc, Installed.releases[kind].entry)
+  const release = Installed.releases[kind]
+  assert.equal(release.source, 'release')
+  const entry = Path.join(rt, 'agents', kind, libc, release.entry)
   Fs.mkdirSync(Path.dirname(entry), { recursive: true })
   Fs.writeFileSync(
     entry,
@@ -236,6 +242,112 @@ test('the command of Claude Code is the build of the image and reads the endpoin
   assert.throws(
     () => Installed.script({ kind: 'codex-cli', model: 'm' }, { url: 'http://host/a"b' }),
     /not a plain http or https address/,
+  )
+})
+
+function runtime(withLoader: boolean): string {
+  const rt = Path.join(root, 'rt-nanocode-' + (withLoader ? 'loader' : 'plain'))
+  Fs.mkdirSync(Path.join(rt, 'lib'), { recursive: true })
+  const nanocode = [
+    '#!/bin/sh',
+    'printf "argument:%s\\n" "$@"',
+    'env | grep -E "^(NANOCODE|NANOEVAL_AGENT)" | sort',
+    '',
+  ].join('\n')
+  Fs.writeFileSync(Path.join(rt, 'nanocode'), nanocode, { mode: 0o755 })
+  if (withLoader)
+    Fs.writeFileSync(
+      Path.join(rt, 'ld.so'),
+      ['#!/bin/sh', 'printf "loader:%s %s\\n" "$1" "$2"', 'shift 2', 'exec "$@"', ''].join('\n'),
+      { mode: 0o755 },
+    )
+  return rt
+}
+
+test('the command of nanocode is the runtime of the slot and reads the endpoint from its variables', () => {
+  const args = (out: string) =>
+    out
+      .split('\n')
+      .filter((line) => line.startsWith('argument:'))
+      .map((line) => line.slice('argument:'.length))
+  const codex = run(
+    { kind: 'nanocode-codex', model: 'boundless/z-ai/glm-5.3-flash', thinking: 'high' },
+    runtime(true),
+  )
+  assert.match(codex, /^loader:--library-path .*rt-nanocode-loader\/lib$/m)
+  assert.deepEqual(args(codex), [
+    'exec',
+    '--ephemeral',
+    '--no-subagents',
+    '--harness',
+    'codex',
+    '-m',
+    'boundless/z-ai/glm-5.3-flash',
+    '-t',
+    'high',
+    '--',
+    "Write it's done.",
+  ])
+  assert.match(
+    codex,
+    /^NANOCODE_OPENAI_BASE_URL=http:\/\/127\.0\.0\.1:8787\/v1\/runs\/r\/model\/a00001$/m,
+  )
+  assert.match(codex, new RegExp('^NANOCODE_OPENAI_API_KEY=' + attemptToken + '$', 'm'))
+  assert.match(codex, /^NANOCODE_NO_TEMPO_TOOLS=1$/m)
+  assert.match(codex, /^NANOCODE_HOME=.*home-nanocode-codex$/m)
+  assert.equal(codex.split(attemptToken).length, 3, 'the token is in two variables and no argument')
+
+  const claude = run(
+    { kind: 'nanocode-claude', model: 'boundless/z-ai/glm-5.3-flash' },
+    runtime(false),
+  )
+  assert.doesNotMatch(claude, /^loader:/m)
+  assert.deepEqual(args(claude).slice(0, 5), [
+    'exec',
+    '--ephemeral',
+    '--no-subagents',
+    '--harness',
+    'claude',
+  ])
+  assert.ok(!args(claude).includes('-t'))
+  assert.match(
+    claude,
+    /^NANOCODE_ANTHROPIC_MESSAGES_URL=http:\/\/127\.0\.0\.1:8787\/v1\/runs\/r\/model\/a00001\/v1\/messages$/m,
+  )
+  assert.match(claude, new RegExp('^NANOCODE_ANTHROPIC_API_KEY=' + attemptToken + '$', 'm'))
+  assert.doesNotMatch(claude, /NANOCODE_OPENAI/)
+  assert.equal(Config.harness({ provider: 'nanocode-codex' }), 'installed')
+  assert.deepEqual(parseAgent('nc=nanocode-codex:boundless/z-ai/glm-5.3-flash:high'), {
+    id: 'nc',
+    model: 'boundless/z-ai/glm-5.3-flash',
+    provider: 'nanocode-codex',
+    thinking: 'high',
+  })
+})
+
+test('the output of nanocode is its final message and an ATIF trajectory', () => {
+  assert.deepEqual(Installed.summarize('nanocode-codex', 'Done.\n\n'), {
+    costUsd: undefined,
+    error: undefined,
+    message: 'Done.',
+    toolCalls: 0,
+  })
+  const trajectory = Installed.trajectory(
+    'nanocode-claude',
+    { instruction: 'Write the file.', stream: 'Done.\n', usage },
+    {
+      model: 'm',
+      name: 'nanocode-claude',
+      session: 's',
+      version: Installed.releases['nanocode-claude'].version,
+    },
+  )
+  assert.deepEqual(
+    trajectory.steps.map((step) => [step.source, step.message]),
+    [
+      ['user', 'Write the file.'],
+      ['agent', 'Done.'],
+    ],
   )
 })
 
@@ -892,6 +1004,7 @@ test('a slot installs a release of an agent only when its checksum matches', () 
           entry: 'claude',
           format: 'file',
           provider: 'claude',
+          source: 'release',
           version,
         }),
       ],

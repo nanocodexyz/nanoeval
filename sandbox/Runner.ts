@@ -908,10 +908,9 @@ async function attend(
     if (offline.length)
       await Fs.writeFile(slots.offlineFile(item.row.slot), offline.join('\n') + '\n')
     const cli = item.row.agent.cli
-    if (cli)
-      await timed(item, 'attempt.cli', () =>
-        shell(slots.agents(cli.kind, Installed.releases[cli.kind])),
-      )
+    const release = cli ? Installed.releases[cli.kind] : undefined
+    if (cli && release?.source === 'release')
+      await timed(item, 'attempt.cli', () => shell(slots.agents(cli.kind, release)))
     item.memoryMb = Admission.alone({
       availableMb: config.memoryMb === undefined ? await availableMb() : undefined,
       capacityMb: capacity.memoryMb,
