@@ -1,10 +1,26 @@
 #!/bin/sh
-out=${1:-network.checks}
+if [ $# -eq 0 ]; then
+  out=network.checks
+  reaches=$(cat reaches)
+else
+  out=$1
+  shift
+  reaches=$*
+fi
 
 probe() {
   name=$1
   shift
-  if timeout 6 "$@" >/dev/null 2>&1 </dev/null; then echo "$name yes"; else echo "$name no"; fi
+  until timeout 6 "$@" >/dev/null 2>&1 </dev/null; do
+    case " $reaches " in
+      *" $name "*) sleep 1 ;;
+      *)
+        echo "$name no"
+        return
+        ;;
+    esac
+  done
+  echo "$name yes"
 }
 
 probe internet wget -q -O /dev/null https://example.com/ >"$out.internet" &

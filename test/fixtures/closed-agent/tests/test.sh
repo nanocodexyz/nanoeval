@@ -1,7 +1,7 @@
 #!/bin/sh
 logs=${NANOEVAL_VERIFIER_LOGS:-/logs/verifier}
 mkdir -p "$logs"
-sh check.sh /tmp/verifier.checks
+sh check.sh /tmp/verifier.checks internet forward
 reward=1
 
 expect() {
