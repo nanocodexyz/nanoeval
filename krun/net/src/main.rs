@@ -16,7 +16,7 @@ use std::{
     thread,
 };
 
-use nanoeval_net::{forward, netlink};
+use nanoeval_net::{eprintln, forward, netlink};
 
 const READY: &str = "ready";
 const USAGE: &str = "usage: nanoeval-net <detach LOG <host|slot> ...|firewall|host SOCKET ALLOW|slot SOCKET TARGET... [-- COMMAND...]>";

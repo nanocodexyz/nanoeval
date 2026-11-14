@@ -3882,3 +3882,13 @@ The guest sees one CPU with AVX2, AVX-512 and FMA, and tesseract reports AVX512B
 
 **Not verified.** An attempt of the task with a model on these slots, and the ns backend, which takes the same file through the same `exec`.
 
+
+## 2026-11-14: `nanoeval-krun` and `nanoeval-net` do not panic when stderr cannot be written
+
+**The defect.** Six verifier errors of the E2B gate runs (entry "a verifier that could not install what its test.sh installs") were `nanoeval-krun exec` exiting 101 with its log cut at a multiple of 4,096 bytes: the disk under its output was full, its error path called `eprintln!`, and `eprintln!` panics when the write to stderr fails. On dev-georgios, with stderr on `/dev/full`, the deployed `nanoeval-krun bogus` and `nanoeval-net bogus` both exited 101 instead of reporting the usage error with 125.
+
+**The rule.** The two host binaries write their diagnostics with an `eprintln!` of their own, defined in `krun/host/src/main.rs` and exported by `krun/net/src/lib.rs`, which writes to stderr and drops a write error: a diagnostic that cannot be written is lost, and the exit code still says what happened. Every existing call site keeps its text. Output that is data, `println!` and the streams of `exec`, is unchanged and still fails when it cannot be written. The guest binary writes to the console of its microVM and is unchanged.
+
+**Checked** on dev-georgios: `krun/host/tests/stderr.rs` and `krun/net/tests/stderr.rs` run each binary with an unknown command and stderr on `/dev/full` and expect 125; the deployed binaries of `~/nc-live/runner/rt` exit 101 the same way. `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings` and `cargo test --locked` in `krun/`.
+
+**Release.** A runner machine takes it when its `NANOEVAL_KRUN` binaries are rebuilt from this commit.
