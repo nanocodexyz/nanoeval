@@ -552,12 +552,18 @@ async function registry(): Promise<Registry> {
   return 'said' in answered ? { kind: 'unreached', said: answered.said } : answered
 }
 
-async function login(kind: Login.Kind, file: string): Promise<string[]> {
-  if (!Fs.existsSync(file)) return []
+async function login(kind: Login.Kind, file: string | undefined): Promise<string[]> {
+  if (!file || !Fs.existsSync(file)) return []
   try {
     const found = await Login.login(kind, file)
     return [
-      file +
+      'the login file ' +
+        file +
+        ' of NANOEVAL_' +
+        kind.toUpperCase() +
+        '_LOGIN, for nanoeval revision alone (nanoeval worker takes it as --' +
+        kind +
+        '-login FILE)' +
         (found.expiresAt === undefined
           ? ''
           : found.expiresAt <= Date.now()
@@ -628,11 +634,8 @@ export async function gather(input: {
           }
         })
       : undefined,
-    login(
-      'claude',
-      env['NANOEVAL_CLAUDE_LOGIN'] ?? Path.join(Os.homedir(), '.claude', '.credentials.json'),
-    ),
-    login('codex', env['NANOEVAL_CODEX_LOGIN'] ?? Path.join(Os.homedir(), '.codex', 'auth.json')),
+    login('claude', env['NANOEVAL_CLAUDE_LOGIN']),
+    login('codex', env['NANOEVAL_CODEX_LOGIN']),
   ])
   const group = spawnSync('stat', ['-c', '%G', '/dev/kvm'], { encoding: 'utf8' })
   return {
