@@ -20,6 +20,7 @@ import * as Verdict from '../src/Verdict.ts'
 import * as Converter from './Converter.ts'
 import * as Disks from './Disks.ts'
 import * as Host from './Host.ts'
+import * as Memory from './Memory.ts'
 import * as Store from './Store.ts'
 
 export class GoneError extends Error {
@@ -57,7 +58,7 @@ export type Standing = {
 
 type Ready = { backend: Slot.Backend; capabilities: Sandbox.Capabilities }
 
-type Serving = { rows(): Work[]; wake(): void; yield(): void }
+type Serving = { ahead(): string[]; rows(): Work[]; wake(): void; yield(): void }
 
 type Shared = {
   entering: { enter(): void; serving: Serving }[]
@@ -123,7 +124,10 @@ async function phase(file: string): Promise<Slot.Phase> {
 
 async function availableMb(): Promise<number | undefined> {
   const found = /^MemAvailable:\s+(\d+) kB$/m.exec((await text('/proc/meminfo')) ?? '')
-  return found ? Math.floor(Number(found[1]) / 1024) : undefined
+  const limited = await Memory.limit(Memory.host)
+  const machine = found ? Math.floor(Number(found[1]) / 1024) : undefined
+  if (!limited) return machine
+  return Math.min(machine ?? limited.headroomMb, limited.headroomMb)
 }
 
 async function freeDiskMb(paths: readonly string[]): Promise<number> {
@@ -245,11 +249,14 @@ async function setup(input: {
       )
     await moved
   }
+  const probed = JSON.parse(await shell(slots.probe())) as Sandbox.Capabilities
+  const limited = await Memory.limit(Memory.host)
   return {
     backend,
     capabilities: {
-      ...(JSON.parse(await shell(slots.probe())) as Sandbox.Capabilities),
+      ...probed,
       hand: await placed,
+      memory_mb: Math.min(probed.memory_mb, limited?.limitMb ?? probed.memory_mb),
     },
   }
 }
@@ -513,7 +520,7 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
         ': move both to one commit, the Worker first',
     )
   }
-  const serving: Serving = { rows: () => [], wake() {}, yield() {} }
+  const serving: Serving = { ahead: () => [], rows: () => [], wake() {}, yield() {} }
   shared.serving.add(serving)
   try {
     await attend(options, { serving, shared })
@@ -707,7 +714,7 @@ async function attend(
         () => false,
       ))
     await output(slots.down(item.row.slot, marked ? 'remove' : 'keep'), env)
-    if (marked) await forget(disk!.trim())
+    if (marked) await Disks.forget(disk!.trim())
     item.watcher?.close()
     up.delete(item)
     if (work.get(item.row.id) === item) work.delete(item.row.id)
@@ -717,28 +724,35 @@ async function attend(
     for (const other of shared.serving) if (other !== serving) other.wake()
   }
 
-  const forget = async (prefix: string) => {
-    const gone = await Fs.stat(prefix + '.ext4').then(
-      () => false,
-      () => true,
-    )
-    if (gone)
-      for (const suffix of [mark, '.use', '.lock']) await Fs.rm(prefix + suffix, { force: true })
-    return gone
+  const needed = () =>
+    new Set([
+      ...everything().flatMap((item) =>
+        Eval.blobs(item.row.task, { solution: true }).map((blob) => blob.digest),
+      ),
+      ...[...shared.serving].flatMap((other) => other.ahead()),
+      ...[...unpacking.keys()].map((prefix) => Path.basename(prefix)),
+    ])
+
+  const drop = async (prefix: string) => {
+    await output(slots.drop(prefix), env)
+    return Disks.forget(prefix)
   }
 
-  const reclaim = async () => {
-    const held = new Set(
-      everything().flatMap((item) =>
-        item.row.task.environment.kind === 'disk' ? [item.row.task.environment.disk.digest] : [],
-      ),
-    )
-    const names = await Fs.readdir(Path.join(cache, 'disks')).catch(() => [] as string[])
-    for (const digest of Disks.idle(names, { held, mark })) {
-      const prefix = Path.join(cache, 'disks', digest)
-      await output(slots.drop(prefix), env)
-      if (await forget(prefix)) log('removed the disk ' + digest + ', which no row here uses')
+  const reclaim = async (floorMb: number) => {
+    const held = needed()
+    if (config.disks === 'remove') {
+      const names = await Fs.readdir(Path.join(cache, 'disks')).catch(() => [] as string[])
+      for (const digest of Disks.idle(names, { held, mark }))
+        if (await drop(Path.join(cache, 'disks', digest)))
+          log('removed the disk ' + digest + ', which no row here uses')
     }
+    await Disks.collect({
+      cache,
+      drop,
+      held,
+      log,
+      short: async () => (await freeDiskMb([cache])) < floorMb,
+    })
   }
 
   const finish = async (item: Work, body: Protocol.Finish) => {
@@ -820,6 +834,7 @@ async function attend(
   }
 
   const prefetch = (ahead: readonly Protocol.Ahead[] | undefined) => {
+    if (ahead) serving.ahead = () => ahead.map((environment) => environment.disk.digest)
     if (config.disks !== 'keep' || config.freeDiskMb !== undefined) return
     for (const environment of ahead ?? [])
       void ensureDisk(environment, reported).catch((error) =>
@@ -1335,7 +1350,11 @@ async function attend(
       capacity.slots +
       ' slots, ' +
       capacity.memoryMb +
-      ' MB, ' +
+      ' MB' +
+      (config.memoryMb === undefined
+        ? ' of the ' + capabilities.memory_mb + ' MB this runner may use'
+        : '') +
+      ', ' +
       backend +
       ' on the ' +
       config.network +
@@ -1442,11 +1461,10 @@ async function attend(
           if (shared.stopping || over) return
           let current = await load()
           if (
-            config.disks === 'remove' &&
             capacity.freeDiskMb !== undefined &&
             (current.freeDiskMb ?? 0) < capacity.freeDiskMb
           ) {
-            await reclaim()
+            await reclaim(capacity.freeDiskMb)
             current = await load()
           }
           const offer = Admission.offer(current, capacity)
@@ -1547,6 +1565,11 @@ async function attend(
     await call('/leave', { held: [], runner: config.runner } satisfies Protocol.Leave).catch(
       () => {},
     )
+    if (finished && !config.pool && !options.standing && !work.size) {
+      for (const name of ['setup.for', 'setup.status', 'setup.status.pid', 'rt'])
+        await Fs.rm(Path.join(home, name), { force: true, recursive: true })
+      log('removed the runtime of ' + home + ', whose run is finished')
+    }
   }
   log('runner ' + config.runner + ' left')
   if (fault !== undefined && !shared.stopping)

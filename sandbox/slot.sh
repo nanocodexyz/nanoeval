@@ -19,6 +19,7 @@ guarded='bus fs irq sys sysrq-trigger'
 subnet=10.213
 links=16384
 oserr=71
+vmm_mib=256
 side=''
 PATH=$PATH:/usr/sbin:/sbin
 umask 022
@@ -313,6 +314,15 @@ setup_ns() {
   if [ ! -s "$home/limits" ]; then printf 'nanoeval-slot: no cgroup v2 memory controller here, so ns slots run without CPU and memory limits\n' >&2; fi
 }
 
+setup_scope() {
+  rm -f "$home/scope"
+  if has systemd-run && systemd-run --user --scope --quiet --collect -p MemoryMax=infinity -- true >/dev/null 2>&1; then
+    printf 'systemd\n' >"$home/scope"
+  else
+    printf 'nanoeval-slot: no systemd user manager answers here, so each microVM runs in the control group of the runner, where a kill for memory can end the runner with it\n' >&2
+  fi
+}
+
 setup_private() {
   local backend=$1 helper
   forwards >/dev/null
@@ -382,7 +392,10 @@ cmd__setup() {
   "${run[@]}" --version
   mkdir -p "$krun"
   hosts >"$krun/hosts"
-  if [ "$backend" = krun ]; then setup_krun; fi
+  if [ "$backend" = krun ]; then
+    setup_krun
+    setup_scope
+  fi
   if [ "$backend" = ns ]; then setup_ns "$network"; fi
   if [ "$network" = private ]; then setup_private "$backend"; fi
   printf '%s\n' "$backend" >"$home/backend"
@@ -551,7 +564,9 @@ cmd__up() {
           if [ -s "$dir/offline" ]; then options+=(--gate net/open); fi
           while IFS= read -r forward; do options+=(--forward "$forward"); done <"$dir/forwards"
         fi
-        (cd "$dir" && exec "$krun/nanoeval-krun" vm --boot "$krun/boot" --rt "$rt" --io io --socket vm.sock --cpus "$vcpus" --memory-mib "$memory" --lower "$base.ext4" --upper upper.ext4 "${options[@]}") >"$dir/vm.log" 2>&1 </dev/null 8>&- &
+        local scope=()
+        if [ -s "$home/scope" ]; then scope=(systemd-run --user --scope --quiet --collect --unit "nanoeval-slot-$(key "$dir")" -p "MemoryMax=$((memory + vmm_mib))M" -p MemorySwapMax=0 --); fi
+        (cd "$dir" && printf '1000\n' >/proc/self/oom_score_adj && exec "${scope[@]}" "$krun/nanoeval-krun" vm --boot "$krun/boot" --rt "$rt" --io io --socket vm.sock --cpus "$vcpus" --memory-mib "$memory" --lower "$base.ext4" --upper upper.ext4 "${options[@]}") >"$dir/vm.log" 2>&1 </dev/null 8>&- &
         printf '%s\n' "$!" >"$dir/vm.pid"
       fi
       (cd "$dir" && exec tail --pid="$(cat "$dir/vm.pid")" -f /dev/null -s 0.01) >/dev/null 2>&1 </dev/null &
@@ -591,6 +606,7 @@ namespace() {
   fi
   (
     if [ -n "$cgroup" ]; then printf '%s\n' "$BASHPID" >"$cgroup/cgroup.procs"; fi
+    printf '1000\n' >/proc/self/oom_score_adj
     cd "$dir" && exec unshare "${options[@]}" bash "$self" _ns "$slot" "$base.mnt" "$network" "${forwards[@]}"
   ) >"$dir/vm.log" 2>&1 </dev/null &
   parent=$!

@@ -2201,10 +2201,9 @@ async function main(): Promise<void> {
       }
       assert.deepEqual(
         (await there('ls ' + disks)).split('\n').filter(Boolean).sort(),
-        ['other.ext4', 'other.run-other'],
-        'a runner short of disk removes a disk of its run that no row of it uses, and no other',
+        [],
+        'a runner short of disk removes every disk that no row of it uses, of its run and of others',
       )
-      await there('rm -f ' + disks + '/other.ext4 ' + disks + '/other.run-other')
       console.log('e2e passed: ' + label)
       return
     }

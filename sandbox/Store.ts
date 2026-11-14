@@ -308,7 +308,8 @@ async function obtain(
   input: { blob: Eval.Blob; file: string },
 ): Promise<string> {
   const file = input.file
-  const present = await FsPromises.stat(file).then(
+  const now = new Date()
+  const present = await FsPromises.utimes(file, now, now).then(
     () => true,
     () => false,
   )
