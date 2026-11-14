@@ -1570,6 +1570,72 @@ async function main(): Promise<void> {
     let besideStatus: Record<string, any> | undefined
     let besidePool: Record<string, any>[] | undefined
     const members = async () => (await api.pool())['members'] as Record<string, any>[]
+    const inspect = async (run: string) => {
+      const flying = ((await api.status(run))['attempts'] as Record<string, any>[]).filter(
+        (attempt) => attempt['phase'] === 'run',
+      )
+      const waiting: string[] = []
+      for (const row of flying) {
+        const read = await cli(['attempt', run, row['id'], 'agent/events.jsonl'])
+        assert.equal(read.code, 0, 'the events of a row that runs are read: ' + read.text)
+        const types = read.text
+          .trim()
+          .split('\n')
+          .map((line) => {
+            const entry = JSON.parse(line) as { event: { event?: { type: string }; type?: string } }
+            return entry.event.event?.type ?? entry.event.type
+          })
+        if (types.at(-1) === 'tool.result' && !types.includes('result')) {
+          waiting.push(row['id'])
+          console.log(
+            'shared: ' +
+              row['id'] +
+              ' gave ' +
+              types.length +
+              ' events while its model request was parked, the last a ' +
+              types.at(-1),
+          )
+        }
+      }
+      assert.equal(
+        waiting.length,
+        1,
+        'the events of the row whose model request is parked end with the result of its tool',
+      )
+      const [id] = waiting
+      const detail = await api.attempt(run, id!)
+      assert.equal(detail['attempt'].phase, 'run')
+      assert.equal(detail['result'], null)
+      assert.deepEqual(
+        detail['artifacts'],
+        ['agent/events.jsonl', 'agent/model-requests.jsonl', 'agent/trajectory.json'],
+        'a row that runs lists what can be read of it',
+      )
+      const trajectory = JSON.parse(await api.artifact(run, id!, 'agent/trajectory.json'))
+      assert.equal(trajectory.schema_version, 'ATIF-v1.7')
+      assert.equal(trajectory.final_metrics.extra.model_calls, 1)
+      const requests = (await api.artifact(run, id!, 'agent/model-requests.jsonl'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { status: number })
+      assert.deepEqual(
+        requests.map((request) => request.status),
+        [200],
+        'the model requests of a row that runs are the ones that were answered',
+      )
+      const absent = await cli(['attempt', run, id!, 'verifier/reward.txt'])
+      assert.equal(absent.code, 1)
+      assert.match(
+        absent.text,
+        /^nanoeval: the attempt is in the run phase and has no verifier\/reward\.txt yet: it has agent\/events\.jsonl, agent\/model-requests\.jsonl, agent\/trajectory\.json so far \(\S+ answered 404\)\n$/,
+        'what a row that runs does not have yet is refused in one line',
+      )
+      const unknown = Crypto.randomUUID()
+      assert.deepEqual(await cli(['status', unknown]), {
+        code: 1,
+        text: 'nanoeval: run not found (/v1/runs/' + unknown + ' answered 404)\n',
+      })
+    }
     const standingAlone = () =>
       waitFor('one member of the runner to stand by alone', async () => {
         const found = await members()
@@ -1804,6 +1870,7 @@ async function main(): Promise<void> {
           restarted = true
           besideStatus = other
           assert.equal(status['state'], 'running', 'the first run still has a row in flight')
+          await inspect(created.id)
           release()
         } else if (other['counts'].active > 0) {
           const found = await members()

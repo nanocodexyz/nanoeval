@@ -4409,3 +4409,28 @@ A deploy restarts every object at once since the entry before this one, which ma
 **Checked.** A unit test in `test/Opening.test.ts` runs the rule over leases that end one after another: the six creates, the end after `--setup-sec` and its message. On a 48-thread machine with KVM, held to 8 threads, from a fresh clone: `npm test`, 267 tests, all passed and none skipped, and every step of the directory-slot job, 41 of 41 in 8.2 min. The lanes of a gateway that sells no renewal and of a sandbox that ends sooner, which each hold one runner back until its sandbox has ended, passed in 33.6 s and 28.7 s, where they had taken 30.7 s and 26.3 s on that machine before this change: the second sandbox is opened one notice of 3 s after the first ended, not with the next tick.
 
 **Not verified.** The real gateway, and a run whose every lease ends under its bootstrap from start to end: the lanes hold one runner back, not all. The end named in seconds is read, not met.
+## 2026-11-14: a row is read while it runs
+
+`nanoeval attempt RUN ATTEMPT agent/events.jsonl` answered `404` for a row that was still running: the run writes the events and the trajectory of a row when the row ends, and the route served only what was written. An operator who watched a row sit in its agent phase could not tell a model stream that had stalled from a command that ran long until the row was over.
+
+**Found** on directory slots under local workerd, in the lane with the rows of two runs, whose scripted model holds the second request of one row: with that row in its `run` phase the command printed `nanoeval: artifact not found (/v1/runs/RUN/attempts/a00001/artifacts/agent%2Fevents.jsonl answered 404)` and exited 1, and `nanoeval attempt RUN a00001` listed no artifact.
+
+**The stack trace.** The report of this `404` came with a Node stack trace, and so did one of `nanoeval status` with a run id that does not exist. Both are from a command line older than the entry on refusals: the same two commands against a server that answers `404`, run from the commit before it, print the source line, a caret and the stack, and from this one `nanoeval: run not found (/v1/runs/ID answered 404)` and the line above. The unit test that runs the command had no case where a Worker answers, so it has one now for each.
+
+**The rule.**
+
+- A row that is running gives `agent/events.jsonl` and `agent/trajectory.json` from the session of its current claim, read when they are asked for and stored nowhere: the events so far, and the projection of them that the row keeps when it ends, made by the same code. The session is the one place that has them, and the run already reads it there when a row ends or is lost.
+- It gives `agent/model-requests.jsonl` from the requests the run recorded for it. A request is recorded when its response ends, so one that is in flight is not in it: the last event of the row says what it waits for, and its time since when.
+- What a runner uploaded is served as before, and `nanoeval attempt RUN ATTEMPT` lists the stored names and the ones read live together.
+- A name the row does not have yet is refused with what it has: `the attempt is in the run phase and has no verifier/reward.txt yet: it has agent/events.jsonl, agent/model-requests.jsonl, agent/trajectory.json so far`, `404`. A row that has ended answers `artifact not found` as before.
+- A session that does not answer is `502` with what it said. The read changes nothing: it is not the call of a runner, so a session that lost its turn is still found by the runner's next call, which puts the row back.
+- An installed agent has no session. Its row gives its model requests while it runs, and its stream once its command has ended and the runner uploaded it.
+
+**Checked.**
+
+- The lane above (`NANOEVAL_E2E_SCENARIO=shared`) reads the row while its model request is parked: the command exits 0 and prints 9 events, the last a `tool.result`; the row lists the three names; its trajectory is ATIF-v1.7 with one model call; its model requests are the one that was answered; `verifier/reward.txt` is refused in the one line above; and `nanoeval status` with a run id that does not exist prints `nanoeval: run not found (/v1/runs/ID answered 404)` and exits 1. Before the change the lane fails at the first of these with the `404` above.
+- The files a row keeps when it ends are made by the code that was there, moved: the lanes `tasks`, with and without installed agents, compare the model requests of every row with its events as before.
+- `test/Refusal.test.ts`: the command against a server that answers `404` for a run and for an artifact.
+- `npm run lint`, `npm run check:types`, `npm test`, `npm run dry-run`.
+
+**Not verified.** A deployed Worker. A session with hours of events: a read pages through all of them each time, as the end of a row does once. krun and ns slots, which the route does not see. A row in its `verify` or `judge` phase, whose session is still there: the same code path, not read in a lane.

@@ -99,6 +99,8 @@ type Lineage = {
   id: string
 }
 
+const agentEvents = 'agent/events.jsonl'
+const agentTrajectory = 'agent/trajectory.json'
 const judgeRequest = 'verifier/' + Judge.requestFile
 const judgeResponse = 'verifier/' + Judge.responseFile
 const judgeRequestId = 'judge'
@@ -301,9 +303,10 @@ export class Run extends DurableObject<Env> {
         const row = Ledger.get(this.sql, decodeURIComponent(parts[1]))
         if (!row) return json({ error: 'attempt not found' }, 404)
         if (parts[2] === 'artifacts' && parts[3]) {
-          const body = this.artifact(row.id, decodeURIComponent(parts[3]))
+          const name = decodeURIComponent(parts[3])
+          const body = this.artifact(row.id, name) ?? (await this.live(row, name))
           return body === undefined
-            ? json({ error: 'artifact not found' }, 404)
+            ? json({ error: this.absent(row, name) }, 404)
             : new Response(body as string | Uint8Array<ArrayBuffer>, {
                 headers: {
                   'content-type':
@@ -314,7 +317,7 @@ export class Run extends DurableObject<Env> {
               })
         }
         return json({
-          artifacts: this.artifactNames(row.id),
+          artifacts: [...new Set([...this.artifactNames(row.id), ...this.liveNames(row)])].sort(),
           attempt: this.view(row),
           claims: Ledger.claims(this.sql, row.id).map((claim) => ({
             claimedAt: claim.claimed_at,
@@ -959,6 +962,81 @@ export class Run extends DurableObject<Env> {
     return this.sql
       .all('SELECT DISTINCT name FROM artifacts WHERE attempt = ? ORDER BY name', attempt)
       .map((row) => row['name'] as string)
+  }
+
+  private requestLog(attempt: string): string | undefined {
+    const requests = this.sql.all(
+      'SELECT claim, at, path, ms, status, usage, refusal FROM model_requests WHERE attempt = ? ORDER BY id',
+      attempt,
+    )
+    return requests.length
+      ? requests
+          .map(
+            ({ refusal, ...request }) =>
+              JSON.stringify({
+                ...request,
+                ...(refusal === null ? {} : { refusal }),
+                usage: request['usage'] ? JSON.parse(request['usage'] as string) : null,
+              }) + '\n',
+          )
+          .join('')
+      : undefined
+  }
+
+  private projected(
+    row: Ledger.Attempt,
+    events: readonly Atif.SessionEvent[],
+  ): Record<string, string> {
+    return {
+      [agentEvents]: events.map((event) => JSON.stringify(event) + '\n').join(''),
+      [agentTrajectory]:
+        JSON.stringify(
+          Atif.fromEvents(events, {
+            model: this.agentOf(row).model,
+            name: 'nanocode',
+            session: row.session!,
+            version: Pins.text(this.pins()),
+          }),
+          null,
+          2,
+        ) + '\n',
+    }
+  }
+
+  private liveNames(row: Ledger.Attempt): string[] {
+    if (!Ledger.active(row)) return []
+    return [
+      ...(this.submitted(row) ? [agentEvents, agentTrajectory] : []),
+      ...(this.requestLog(row.id) === undefined ? [] : [modelRequests]),
+    ]
+  }
+
+  private async live(row: Ledger.Attempt, name: string): Promise<string | Uint8Array | undefined> {
+    if (!this.liveNames(row).includes(name)) return undefined
+    if (name === modelRequests) return this.requestLog(row.id)
+    try {
+      return this.projected(row, await Harness.events(this.env, row.session!, requestId))[name]
+    } catch (error) {
+      const ended = this.artifact(row.id, name)
+      if (ended !== undefined) return ended
+      throw new Refusal(
+        502,
+        'the session of the attempt did not give its events: ' + message(error),
+      )
+    }
+  }
+
+  private absent(row: Ledger.Attempt, name: string): string {
+    if (row.phase === 'done') return 'artifact not found'
+    const names = [...new Set([...this.artifactNames(row.id), ...this.liveNames(row)])].sort()
+    return (
+      'the attempt is in the ' +
+      row.phase +
+      ' phase and has no ' +
+      name +
+      ' yet' +
+      (names.length ? ': it has ' + names.join(', ') + ' so far' : '')
+    )
   }
 
   private view(row: Ledger.Attempt) {
@@ -2889,25 +2967,8 @@ export class Run extends DurableObject<Env> {
         const requested = Timeline.modelRequest(events)
         if (requested !== undefined)
           Timeline.add(this.sql, { at: requested, attempt: row.id, name: 'attempt.model' })
-        this.putArtifact(
-          row.id,
-          'agent/events.jsonl',
-          events.map((event) => JSON.stringify(event) + '\n').join(''),
-        )
-        this.putArtifact(
-          row.id,
-          'agent/trajectory.json',
-          JSON.stringify(
-            Atif.fromEvents(events, {
-              model: agent.model,
-              name: 'nanocode',
-              session,
-              version: Pins.text(this.pins()),
-            }),
-            null,
-            2,
-          ) + '\n',
-        )
+        for (const [name, body] of Object.entries(this.projected(row, events)))
+          this.putArtifact(row.id, name, body)
       } catch (error) {
         this.putArtifact(row.id, 'agent/events-error.txt', message(error))
       }
@@ -2932,7 +2993,7 @@ export class Run extends DurableObject<Env> {
       const instruction = this.textArtifact(row.id, Installed.instruction)
       this.putArtifact(
         row.id,
-        'agent/trajectory.json',
+        agentTrajectory,
         JSON.stringify(
           Installed.trajectory(
             kind,
@@ -2947,7 +3008,7 @@ export class Run extends DurableObject<Env> {
 
     if (end.collect !== false) {
       const requests = this.sql.all(
-        'SELECT claim, at, path, ms, status, usage, cost, refusal FROM model_requests WHERE attempt = ? ORDER BY id',
+        'SELECT claim, cost, path FROM model_requests WHERE attempt = ? ORDER BY id',
         row.id,
       )
       const priced = requests.filter(
@@ -2961,21 +3022,8 @@ export class Run extends DurableObject<Env> {
           ...usage,
           costUsd: priced.reduce((sum, request) => sum + (request['cost'] as number), 0),
         }
-      if (requests.length)
-        this.putArtifact(
-          row.id,
-          modelRequests,
-          requests
-            .map(
-              ({ cost: _, refusal, ...request }) =>
-                JSON.stringify({
-                  ...request,
-                  ...(refusal === null ? {} : { refusal }),
-                  usage: request['usage'] ? JSON.parse(request['usage'] as string) : null,
-                }) + '\n',
-            )
-            .join(''),
-        )
+      const log = this.requestLog(row.id)
+      if (log !== undefined) this.putArtifact(row.id, modelRequests, log)
     }
 
     const result: Result.Attempt = {

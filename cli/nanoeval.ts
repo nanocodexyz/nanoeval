@@ -275,6 +275,11 @@ const usage = `nanoeval <command>
             Print where the time of a run went: every mark the run and its runners recorded,
             by its offset from the creation of the run, with the span it measured.
   attempt   --url URL --token T RUN ATTEMPT [ARTIFACT]
+            Print a row of a run: its phase, its claims, its result once it has ended, and
+            the names of what can be read of it. With ARTIFACT, write that file to standard
+            output. A row that is still running gives agent/events.jsonl and
+            agent/trajectory.json as its session has them at that moment, and
+            agent/model-requests.jsonl with the model requests that were answered.
   export    --url URL --token T RUN --out DIR
             Write the run as a Harbor job directory, and print where.
   compare   --url URL --token T [--baseline RUN|latest]... [--with-reruns]

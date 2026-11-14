@@ -214,7 +214,7 @@ jobs:
           NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
           NANOEVAL_E2E_SLOTS: '3'
           NANOEVAL_E2E_ATTEMPTS: '1'
-      - name: End to end, directory slots, a standing runner with the rows of two runs in its slots
+      - name: End to end, directory slots, a standing runner with the rows of two runs in its slots, one of them read while it runs
         run: npm run e2e
         env:
           NANOEVAL_E2E_BACKEND: dir

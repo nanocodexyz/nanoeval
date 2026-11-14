@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import * as Http from 'node:http'
+import type { AddressInfo } from 'node:net'
 import * as Path from 'node:path'
 import { test } from 'node:test'
 import { refusal } from '../cli/nanoeval.ts'
@@ -43,4 +45,47 @@ test('the command prints a refusal as one line and exits 1', () => {
   assert.equal(missing.stderr, 'nanoeval: RUN is required\n')
   assert.equal(missing.status, 1)
   assert.equal(run('status').stderr, 'nanoeval: --token is required\n')
+})
+
+test('the command prints what a Worker answered 404 as one line and exits 1', async () => {
+  const cli = Path.resolve(import.meta.dirname, '../cli/nanoeval.ts')
+  const worker = Http.createServer((request, response) => {
+    response.writeHead(404, { 'content-type': 'application/json' }).end(
+      JSON.stringify({
+        error: request.url!.includes('/attempts/')
+          ? 'the attempt is in the claimed phase and has no agent/events.jsonl yet'
+          : 'run not found',
+      }),
+    )
+  })
+  await new Promise<void>((resolve) => worker.listen(0, '127.0.0.1', resolve))
+  const url = 'http://127.0.0.1:' + (worker.address() as AddressInfo).port
+  const run = (...words: string[]) =>
+    new Promise<{ status: number | null; stderr: string; stdout: string }>((resolve) => {
+      const child = spawn(process.execPath, [cli, ...words, '--url', url, '--token', 't'], {
+        env: { HOME: process.env['HOME'], PATH: process.env['PATH'] },
+      })
+      const said = { stderr: '', stdout: '' }
+      child.stderr.on('data', (chunk: Buffer) => (said.stderr += chunk.toString()))
+      child.stdout.on('data', (chunk: Buffer) => (said.stdout += chunk.toString()))
+      child.once('close', (status) => resolve({ status, ...said }))
+    })
+  const id = '0'.repeat(8) + '-0000-4000-8000-' + '0'.repeat(12)
+  try {
+    assert.deepEqual(await run('status', id), {
+      status: 1,
+      stderr: 'nanoeval: run not found (/v1/runs/' + id + ' answered 404)\n',
+      stdout: '',
+    })
+    assert.deepEqual(await run('attempt', id, 'a00001', 'agent/events.jsonl'), {
+      status: 1,
+      stderr:
+        'nanoeval: the attempt is in the claimed phase and has no agent/events.jsonl yet (/v1/runs/' +
+        id +
+        '/attempts/a00001/artifacts/agent%2Fevents.jsonl answered 404)\n',
+      stdout: '',
+    })
+  } finally {
+    worker.close()
+  }
 })
