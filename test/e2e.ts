@@ -1038,6 +1038,7 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
           return
         }
         const body = JSON.parse((await read(request)).toString())
+        if (scenario === 'runners') await released
         if (
           (planned && !planPays(request)) ||
           (loginLane && !loginPays(request, body.fake_cli === true))
@@ -2346,6 +2347,17 @@ async function main(): Promise<void> {
           mock!.release()
         }
       }
+      if (scenario === 'runners' && !restarted) {
+        const working = new Set(
+          (status['attempts'] as { phase: string; runner: number | null }[])
+            .filter((attempt) => !['claimed', 'done', 'unclaimed'].includes(attempt.phase))
+            .map((attempt) => attempt.runner),
+        )
+        if (runners.every((runner) => working.has(runnerId(runner.home) ?? null))) {
+          restarted = true
+          release()
+        }
+      }
       if (fleet && !restarted) {
         const first = (status['sandboxes'] as { runner: number; state: string }[]).find(
           (sandbox) => sandbox.state === 'ready',
@@ -2484,6 +2496,7 @@ async function main(): Promise<void> {
         'midturn',
         'restart',
         'resume',
+        'runners',
         'shared',
         'sooner',
         'stopped',
