@@ -542,8 +542,8 @@ cmd__up() {
       vcpus=$(awk -v cpus="$cpus" 'BEGIN { whole = int(cpus); print (whole < cpus ? whole + 1 : whole) }')
       printf '%s\n' "$base" >"$dir/disk"
       printf 'OMP_THREAD_LIMIT=%s\n' "$vcpus" >"$dir/cpus.env"
-      cp "$base.env" "$dir/image.env"
-      cp "$base.user" "$dir/user"
+      cat "$base.env" >"$dir/image.env"
+      cat "$base.user" >"$dir/user"
       workdir=$(cat "$base.workdir")
       printf '%s\n' "${workdir:-/}" >"$dir/workdir"
       local options=() forward
