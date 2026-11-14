@@ -667,6 +667,74 @@ test('the meter counts the searches and fetches a provider ran for a response', 
   assert.equal(responses.usage()?.webSearches, 2)
 })
 
+test('the meter keeps what a gateway paid for the web calls of a response, and counts other tools', () => {
+  const messages = Proxy.meter('claude')
+  messages.push(
+    'event: message_start\ndata: {"type":"message_start","message":{"model":"claude-haiku-5-5","usage":{"input_tokens":10,"output_tokens":1}}}\n\n' +
+      'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":30,"cost":0.026016,"server_tool_use":{"web_search_requests":2,"web_fetch_requests":1,"code_execution_requests":3},"web":{"calls":3,"paid":0.026,"wallet":0.026}}}\n\n',
+  )
+  const gateway = messages.usage()!
+  assert.equal(gateway.webUsd, 0.026)
+  assert.deepEqual(gateway.otherTools, { code_execution: 3 })
+  assert.deepEqual(Proxy.tools('claude', gateway, { listed: true }), {
+    calls: 6,
+    unpriced: 3,
+    usd: 0.026,
+  })
+
+  const responses = Proxy.meter('codex')
+  responses.push(
+    'event: response.completed\ndata: {"type":"response.completed","response":{"model":"gpt-6-luna","output":[{"type":"web_search_call"},{"type":"function_call"},{"type":"file_search_call"},{"type":"code_interpreter_call"},{"type":"web_search_call"}],"usage":{"input_tokens":12,"output_tokens":4,"cost":0.0241,"web":{"calls":2,"paid":0.024,"wallet":0}}}}\n\n',
+  )
+  const paid = responses.usage()!
+  assert.equal(paid.webSearches, 2)
+  assert.equal(paid.webUsd, 0.024)
+  assert.deepEqual(paid.otherTools, { code_interpreter: 1, file_search: 1 })
+})
+
+test('a tool the provider ran has the price its response names, else its list price, else none', () => {
+  const usage = {
+    cacheWriteTokens: 0,
+    cachedTokens: 0,
+    inputTokens: 10,
+    outputTokens: 4,
+    webFetches: 2,
+    webSearches: 3,
+  }
+  const listed = { listed: true }
+  assert.deepEqual(Proxy.tools('claude', usage, listed), { calls: 5, unpriced: 0, usd: 0.03 })
+  assert.deepEqual(
+    Proxy.tools('codex', { ...usage, webFetches: 0 }, listed),
+    { calls: 3, unpriced: 0, usd: 0.03 },
+    'a search of the Responses API at its list price',
+  )
+  assert.deepEqual(
+    Proxy.tools('codex', { ...usage, otherTools: { code_interpreter: 1, file_search: 4 } }, listed),
+    { calls: 10, unpriced: 3, usd: 0.04 },
+    'a fetch of the Responses API and a container have no price a call',
+  )
+  assert.deepEqual(
+    Proxy.tools('claude', { ...usage, costUsd: 0.5 }, listed),
+    { calls: 5, unpriced: 5 },
+    'a cost that names no web calls may hold them or not',
+  )
+  assert.deepEqual(
+    Proxy.tools('claude', { ...usage, costUsd: 0.5, webUsd: 0.036 }, listed),
+    { calls: 5, unpriced: 0, usd: 0.036 },
+    'what the endpoint paid is the price, and it is in the cost',
+  )
+  assert.deepEqual(Proxy.tools('claude', usage, { listed: false }), { calls: 5, unpriced: 5 })
+  assert.deepEqual(Proxy.tools('claude', { ...usage, webFetches: 0, webSearches: 0 }, listed), {
+    calls: 0,
+    unpriced: 0,
+  })
+  assert.deepEqual(
+    Proxy.tools('claude', { ...usage, webFetches: 2, webSearches: 0 }, listed),
+    { calls: 2, unpriced: 0, usd: 0 },
+    'a fetch costs its tokens and nothing a call, which is a price',
+  )
+})
+
 test('a refused payment is told apart: one that passes, and one that says the key is spent', () => {
   assert.equal(
     Proxy.refusal(

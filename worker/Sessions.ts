@@ -93,26 +93,32 @@ export const nanocode = App.create<Env>({
         const path =
           (session?.judge === undefined ? '' : 'judge/') +
           new URL(target).pathname.replace(/^\/+/, '')
-        const tell = async (body: Record<string, unknown>): Promise<{ pauseMs?: number }> => {
+        const tell = async (body: Record<string, unknown>): Promise<Meter.Admission> => {
           const answer = await env.RUNS.get(env.RUNS.idFromName(session!.run)).fetch(
             'https://run.internal/metered',
             { body: JSON.stringify({ ...session, ...body }), method: 'POST' },
           )
           if (!answer.ok) throw new Error('the run answered ' + answer.status)
-          return (await answer.json()) as { pauseMs?: number }
+          return (await answer.json()) as Meter.Admission
         }
         const hooks: Meter.Hooks = {
           ...(session
             ? {
+                admit: (waitedMs: number) => tell({ admit: { waitedMs } }).catch(() => ({})),
                 refused: (refused: Meter.Refused) =>
                   tell({ refused }).then(
                     (answer) => answer.pauseMs,
                     () => undefined,
                   ),
+                release: (flight: number) =>
+                  tell({ released: flight }).then(
+                    () => {},
+                    () => {},
+                  ),
               }
             : {}),
           settle: async (outcome) => {
-            if (session) await tell({ outcome, path }).catch(() => {})
+            if (session) await tell({ outcome, path, provider: name }).catch(() => {})
           },
         }
         const body = await request.arrayBuffer()

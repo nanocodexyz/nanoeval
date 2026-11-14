@@ -163,7 +163,15 @@ const tables = [
     usage TEXT,
     cost REAL,
     refusal TEXT,
-    searches INTEGER
+    searches INTEGER,
+    tools_usd REAL,
+    unpriced INTEGER
+  )`,
+  `CREATE TABLE IF NOT EXISTS model_flights (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    attempt TEXT NOT NULL,
+    claim INTEGER NOT NULL,
+    at INTEGER NOT NULL
   )`,
   ...Ledger.tables,
   ...Timeline.tables,
@@ -172,7 +180,14 @@ const tables = [
 const json = Storage.json
 const message = Storage.message
 
-type Settled = Proxy.Session & { outcome?: Meter.Outcome; path?: string; refused?: Meter.Refused }
+type Settled = Proxy.Session & {
+  admit?: { waitedMs: number }
+  outcome?: Meter.Outcome
+  path?: string
+  provider?: Proxy.Provider
+  refused?: Meter.Refused
+  released?: number
+}
 
 function detail(text: string): string {
   let found: unknown
@@ -234,6 +249,8 @@ export class Run extends DurableObject<Env> {
       ['model_requests', 'cost', 'REAL'],
       ['model_requests', 'refusal', 'TEXT'],
       ['model_requests', 'searches', 'INTEGER'],
+      ['model_requests', 'tools_usd', 'REAL'],
+      ['model_requests', 'unpriced', 'INTEGER'],
       ['runners', 'drained', 'TEXT'],
       ['runners', 'ends_at', 'INTEGER'],
     ]
@@ -643,19 +660,98 @@ export class Run extends DurableObject<Env> {
     const priced = new Set<string>()
     let total = 0
     for (const row of this.sql.all(
-      'SELECT attempt, SUM(cost) AS usd FROM model_requests WHERE cost IS NOT NULL GROUP BY attempt',
+      'SELECT attempt, SUM(COALESCE(cost, tools_usd, 0)) AS usd, COUNT(cost) AS priced FROM model_requests GROUP BY attempt',
     )) {
-      priced.add(row['attempt'] as string)
+      if (row['priced']) priced.add(row['attempt'] as string)
       total += row['usd'] as number
     }
     for (const row of this.rows())
       if (row.result && !priced.has(row.id)) {
         const result = JSON.parse(row.result) as Result.Attempt
-        total += (result.usage?.costUsd ?? 0) + (result.judge?.usage?.costUsd ?? 0)
+        total +=
+          (result.usage?.costUsd ?? 0) -
+          (result.usage?.toolsUsd ?? 0) +
+          (result.judge?.usage?.costUsd ?? 0)
       }
     for (const lost of Ledger.lostUsage(this.sql))
       if (!priced.has(lost.attempt)) total += (JSON.parse(lost.usage) as Atif.Usage).costUsd ?? 0
     return total
+  }
+
+  private flights(): number {
+    const flights = this.sql.all('SELECT id, attempt, claim FROM model_flights')
+    let held = 0
+    for (const flight of flights) {
+      const row = Ledger.get(this.sql, flight['attempt'] as string)
+      if (row && Ledger.active(row) && row.claims === flight['claim']) held++
+      else this.sql.run('DELETE FROM model_flights WHERE id = ?', flight['id'] as number)
+    }
+    return held
+  }
+
+  private largest(): number | undefined {
+    const seen = this.sql.all(
+      'SELECT COUNT(*) AS responses, MAX(COALESCE(cost, tools_usd, 0)) AS usd FROM model_requests WHERE usage IS NOT NULL',
+    )[0]!
+    return seen['responses'] ? (seen['usd'] as number) : undefined
+  }
+
+  private held(): boolean {
+    const limitUsd = this.config().budget.modelUsd
+    return (
+      limitUsd !== undefined &&
+      Budget.held({
+        flights: this.flights(),
+        largestUsd: this.largest(),
+        limitUsd,
+        spentUsd: this.modelSpent(),
+      })
+    )
+  }
+
+  private admit(input: { attempt: string; claim: number; waitedMs: number }): Meter.Admission {
+    const config = this.config()
+    const limitUsd = config.budget.modelUsd
+    if (limitUsd === undefined) return {}
+    const flights = this.flights()
+    const largestUsd = this.largest()
+    const spentUsd = this.modelSpent()
+    const admission = Budget.admit({
+      flights,
+      largestUsd,
+      limitUsd,
+      spentUsd,
+      waitMs: config.limits.leaseSec * 1000,
+      waitedMs: input.waitedMs,
+    })
+    if (admission.state === 'waiting') return { pauseMs: config.sandbox.pollMs }
+    if (admission.state === 'refused') {
+      if (!this.sql.all("SELECT id FROM timeline WHERE name = 'model.budget' LIMIT 1").length)
+        Timeline.add(this.sql, { at: Date.now(), name: 'model.budget' })
+      return {
+        refused:
+          'the model budget of $' +
+          limitUsd +
+          (admission.reason === 'spent'
+            ? ' is spent: the run recorded $' + spentUsd.toFixed(6)
+            : ' has $' +
+              (limitUsd - spentUsd).toFixed(6) +
+              ' left, and the ' +
+              flights +
+              (flights === 1 ? ' request' : ' requests') +
+              ' in flight may spend it: the largest response of the run cost $' +
+              largestUsd!.toFixed(6)),
+      }
+    }
+    this.sql.run(
+      'INSERT INTO model_flights (attempt, claim, at) VALUES (?, ?, ?)',
+      input.attempt,
+      input.claim,
+      Date.now(),
+    )
+    return {
+      flight: this.sql.all('SELECT MAX(id) AS id FROM model_flights')[0]!['id'] as number,
+    }
   }
 
   private payer(provider: 'claude' | 'codex'): Config.Payer | undefined {
@@ -726,13 +822,18 @@ export class Run extends DurableObject<Env> {
   private record(input: {
     attempt: string
     claim: number
+    listed: boolean
     outcome: Meter.Outcome
     path: string
+    provider: Proxy.Provider
   }): void {
     const { outcome } = input
     const usage = outcome.usage
+    const tools = usage ? Proxy.tools(input.provider, usage, { listed: input.listed }) : undefined
+    if (outcome.flight !== undefined)
+      this.sql.run('DELETE FROM model_flights WHERE id = ?', outcome.flight)
     this.sql.run(
-      'INSERT INTO model_requests (attempt, claim, at, path, ms, status, usage, cost, refusal, searches) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO model_requests (attempt, claim, at, path, ms, status, usage, cost, refusal, searches, tools_usd, unpriced) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       input.attempt,
       input.claim,
       outcome.at,
@@ -742,7 +843,9 @@ export class Run extends DurableObject<Env> {
       usage ? JSON.stringify(usage) : null,
       usage?.costUsd ?? null,
       outcome.refusal ?? null,
-      usage ? (usage.webFetches ?? 0) + (usage.webSearches ?? 0) : null,
+      tools ? tools.calls : null,
+      tools?.usd ?? null,
+      tools ? tools.unpriced : null,
     )
     const { refused, ...rest } = this.meta()!
     if (refused && outcome.status < 400) {
@@ -800,19 +903,29 @@ export class Run extends DurableObject<Env> {
     return new Refusal(410, text)
   }
 
-  private settled(body: Settled): { pauseMs?: number } {
+  private settled(body: Settled): Meter.Admission {
     if (typeof body?.attempt !== 'string' || !Ledger.get(this.sql, body.attempt))
       throw new Refusal(404, 'the run has no such attempt')
     if (body.refused) {
       const pauseMs = this.refuse(body.refused)
       return pauseMs === undefined ? {} : { pauseMs }
     }
+    if (body.admit)
+      return this.admit({
+        attempt: body.attempt,
+        claim: Number(body.claim),
+        waitedMs: Number(body.admit.waitedMs),
+      })
+    if (body.released !== undefined)
+      this.sql.run('DELETE FROM model_flights WHERE id = ?', Number(body.released))
     if (body.outcome && typeof body.path === 'string')
       this.record({
         attempt: body.attempt,
         claim: Number(body.claim),
+        listed: true,
         outcome: body.outcome,
         path: body.path,
+        provider: body.provider === 'codex' ? 'codex' : 'claude',
       })
     return {}
   }
@@ -1095,9 +1208,9 @@ export class Run extends DurableObject<Env> {
     const unpriced = this.sql.all(
       'SELECT COUNT(*) AS responses, COALESCE(SUM(searches), 0) AS searches FROM model_requests WHERE status = 200 AND usage IS NOT NULL AND cost IS NULL',
     )[0]!
-    const searches = this.sql.all('SELECT COALESCE(SUM(searches), 0) AS n FROM model_requests')[0]![
-      'n'
-    ] as number
+    const tools = this.sql.all(
+      'SELECT COALESCE(SUM(searches), 0) AS calls, COALESCE(SUM(unpriced), 0) AS unpriced, COALESCE(SUM(tools_usd), 0) AS usd FROM model_requests',
+    )[0]!
     return {
       agents: Result.summarize(results),
       attempts: rows.map((row) => ({
@@ -1154,11 +1267,15 @@ export class Run extends DurableObject<Env> {
         state: row.state,
       })),
       spend: {
+        ...(config.budget.modelUsd === undefined ? {} : { modelBudgetUsd: config.budget.modelUsd }),
         modelUsd: this.modelSpent(),
+        sandboxBudgetUsd: config.budget.sandboxUsd,
         sandboxUsd: this.spent(),
+        toolsUsd: tools['usd'] as number,
         uncostedAttempts: Result.uncosted(results),
         unpricedResponses: unpriced['responses'] as number,
-        webSearches: searches,
+        unpricedTools: tools['unpriced'] as number,
+        webSearches: tools['calls'] as number,
       },
       state: meta.finishedAt === null ? 'running' : 'finished',
       strandedAt: rows.some((row) => row.phase === 'unclaimed') ? (meta.strandedAt ?? null) : null,
@@ -1380,8 +1497,18 @@ export class Run extends DurableObject<Env> {
       })
     return Model.forward(this.env, {
       hooks: {
+        admit: async (waitedMs) => this.admit({ attempt: row.id, claim: row.claims, waitedMs }),
         refused: async (refused) => this.refuse(refused),
-        settle: (outcome) => this.record({ attempt: row.id, claim: row.claims, outcome, path }),
+        release: (flight) => void this.sql.run('DELETE FROM model_flights WHERE id = ?', flight),
+        settle: (outcome) =>
+          this.record({
+            attempt: row.id,
+            claim: row.claims,
+            listed: false,
+            outcome,
+            path,
+            provider,
+          }),
       },
       path,
       provider,
@@ -2493,7 +2620,7 @@ export class Run extends DurableObject<Env> {
       })
       return { finished: this.finished(), rows: [] }
     }
-    if (meta.cancelled || (await this.overBudget())) return idle(false)
+    if (meta.cancelled || (await this.overBudget()) || this.held()) return idle(false)
     const record = this.known(runner)
     if (this.sandboxes().some((row) => row.id === record.sandbox && row.state === 'ending'))
       return idle(true)
@@ -2877,6 +3004,19 @@ export class Run extends DurableObject<Env> {
       oomKills?: number
       reward: number | null
     }
+    const refusals = new Set(
+      this.sql
+        .all(
+          'SELECT DISTINCT refusal FROM model_requests WHERE attempt = ? AND claim = ? AND refusal IS NOT NULL',
+          row.id,
+          row.claims,
+        )
+        .map((request) => request['refusal'] as Proxy.Refusal),
+    )
+    const cut =
+      'the model budget of $' +
+      config.budget.modelUsd +
+      ' ended the row, which was refused a model request'
     if (body.verifier) {
       end = {
         ...Verdict.verifier({
@@ -2891,19 +3031,20 @@ export class Run extends DurableObject<Env> {
         ...(body.verifier.memoryMb === undefined ? {} : { memoryMb: body.verifier.memoryMb }),
         ...(body.verifier.oom ? { oomKills: body.verifier.oom } : {}),
       }
+      if (refusals.has('budget') && Result.outcome(end.reward, end.failure) !== 'passed')
+        end = {
+          ...end,
+          failure: {
+            at: now,
+            kind: 'budget',
+            message: cut + (end.failure ? ': ' + end.failure.message : ''),
+          },
+          reward: null,
+        }
       Ledger.update(this.sql, row.id, {
         timing: Ledger.mark(row.timing, 'verifier', { at: now, edge: 'finish' }),
       })
     } else if (body.failure) {
-      const refusals = new Set(
-        this.sql
-          .all(
-            'SELECT DISTINCT refusal FROM model_requests WHERE attempt = ? AND claim = ? AND refusal IS NOT NULL',
-            row.id,
-            row.claims,
-          )
-          .map((request) => request['refusal'] as Proxy.Refusal),
-      )
       const unpaid = refusals.has('plan') ? this.meta()!.refused : undefined
       end = {
         failure: {
@@ -2911,6 +3052,9 @@ export class Run extends DurableObject<Env> {
           ...body.failure,
           ...(body.failure.kind === 'agent' && refusals.has('spent')
             ? { kind: 'budget' as const }
+            : {}),
+          ...(body.failure.kind === 'agent' && refusals.has('budget')
+            ? { kind: 'budget' as const, message: cut + ': ' + body.failure.message }
             : {}),
           ...(unpaid?.plan ? { kind: 'environment' as const, message: unpaid.message } : {}),
         },
@@ -3039,7 +3183,7 @@ export class Run extends DurableObject<Env> {
 
     if (end.collect !== false) {
       const requests = this.sql.all(
-        'SELECT claim, cost, path FROM model_requests WHERE attempt = ? ORDER BY id',
+        'SELECT claim, cost, path, tools_usd FROM model_requests WHERE attempt = ? ORDER BY id',
         row.id,
       )
       const priced = requests.filter(
@@ -3048,11 +3192,22 @@ export class Run extends DurableObject<Env> {
           request['cost'] !== null &&
           !(request['path'] as string).startsWith('judge/'),
       )
+      const listed = requests
+        .filter(
+          (request) =>
+            request['claim'] === row.claims &&
+            request['cost'] === null &&
+            request['tools_usd'] !== null &&
+            !(request['path'] as string).startsWith('judge/'),
+        )
+        .reduce((sum, request) => sum + (request['tools_usd'] as number), 0)
       if (usage && !kind && priced.length)
         usage = {
           ...usage,
           costUsd: priced.reduce((sum, request) => sum + (request['cost'] as number), 0),
         }
+      else if (usage && !kind && usage.costUsd !== undefined && listed > 0)
+        usage = { ...usage, costUsd: usage.costUsd + listed, toolsUsd: listed }
       const log = this.requestLog(row.id)
       if (log !== undefined) this.putArtifact(row.id, modelRequests, log)
     }

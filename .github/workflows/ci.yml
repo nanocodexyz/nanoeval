@@ -336,6 +336,30 @@ jobs:
           NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
           NANOEVAL_E2E_SLOTS: '1'
           NANOEVAL_E2E_ATTEMPTS: '1'
+      - name: End to end, directory slots, a model budget that twelve rows running at once reach
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: budget
+          NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
+          NANOEVAL_E2E_SLOTS: '12'
+          NANOEVAL_E2E_ATTEMPTS: '4'
+      - name: End to end, directory slots, a model budget that rows running two at a time reach
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: budget
+          NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
+          NANOEVAL_E2E_SLOTS: '2'
+          NANOEVAL_E2E_ATTEMPTS: '4'
+      - name: End to end, directory slots, web searches at the list price of their provider, which spend the model budget
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: searches
+          NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
+          NANOEVAL_E2E_SLOTS: '1'
+          NANOEVAL_E2E_ATTEMPTS: '2'
       - name: End to end, directory slots, installed agents whose model endpoint answers 530 once
         run: npm run e2e
         env:

@@ -4732,3 +4732,68 @@ The entry on agents compared by what they are refused a comparison on any differ
 **Checked.** `test/Compare.test.ts`: the same payer with another transport, another host and another reported effort is paired, not refused, and the comparison prints the `DIFFERS` line and its verdict; an effort that was typed and differs is refused; the two arms of the entries above are still refused for their payer, and name the transport and the host with it. `test/Baseline.test.ts`: a run with another transport on the same payer fits. `npm run lint`, `npm run check:types`, and the unit tests of the six files this lane changed, 64 tests.
 
 **Not verified.** A revision of nanocode that changes a transport, through `nanoeval revision --baseline`: no such revision was built here. The whole of `npm test` and the lanes on this commit: the lane of the signed-in plan differs in its payer only, and no lane has two runs that differ in what their sessions report.
+## 2026-11-14: the model budget holds against the rows that run, and a tool the provider runs has a price
+
+**The defect.** A run of 24 tasks and 3 attempts through the gateway with `--model-budget-usd 3` stood at $3.39 while four of its rows still ran, and went on. The budget was read where rows are claimed: once the spend reached it no row started, and the 26 rows that waited ended as `budget` errors, which is all it promised. Nothing looked at it for a row that ran, and a row asks its model until its turn ends. The same run counted 162 web searches of its model, and `status` said of them only that they were in the spend "where a response reported them in its cost".
+
+**What the searches were.** The gateway runs the hosted web tools of both APIs itself, and since its change of 2026-11-12 it reports what it paid for them: `usage.web` with `calls`, `paid` and `wallet`, beside `usage.cost`, which holds the tokens and that amount. Read in its source, in the last usage of a streamed Messages response and of a Responses response. So the searches of a gateway run were in its spend and under its budget already: the first pass of the `claude-haiku-5-5` arm of this day recorded $1.8338, which is $1.45 of tokens and 32 searches at $0.012. What was missing there is the amount, which nanoeval never read. On a plan login or a key of a provider no response carries a cost, the spend is what nanocode estimates from tokens, and a search was in no figure: the `gpt-6-luna` arm of this day on a plan ran 14 that nothing priced.
+
+**The rule for the budget.** Every model request is admitted by its run before it is sent (`Budget.admit`), a session's in the egress and an installed agent's at its endpoint, and the run keeps what is with the provider (`model_flights`).
+
+- Spent: refused. The request is answered `402` by the run and never leaves.
+- Nothing in flight: admitted.
+- Else admitted while the spend and the largest cost a response of the run has had, once for each request in flight, are under the budget.
+- Else it waits, asks again every `--poll-ms` and is refused after a claim lease (`--lease-sec`, 60 s).
+- Before any response has ended nothing says what one costs, so one request is in flight, and a request that waited a claim lease for it goes on.
+
+A row that is refused a request ends as a `budget` error, with the refused request among the requests of its attempt: when its agent fails, as a session does on the `402`, and when its verifier does not pass it. A row that passes keeps its pass. No row is claimed while the requests in flight may spend what is left.
+
+What follows: at the last admission the spend and the reservations of the requests in flight were under the budget, so the run ends under the budget plus the cost of that last request, however many rows ask, when no request in flight costs more than its reservation. One that does adds what it cost above it.
+
+**Why the largest response, and how far it is true.** Replayed over the recorded requests of the first pass of that `claude-haiku-5-5` arm, 89 rows on 32 slots, 1,015 responses that cost $1.8338, the median $0.00066 and the largest $0.0389, with each row keeping the gaps between its requests and a wait moving what follows:
+
+| Budget | Rule before: spend, rows running when it was reached | Rule now: spend | Over | Rows that finished, were refused for lack of room, at a spent budget | Requests that waited, their time in all, the longest |
+| --- | --- | --- | --- | --- | --- |
+| $0.25 | $0.5482, 20 | $0.2555 | $0.0055 | 2, 23, 64 | 81, 1,042 s, 56.0 s |
+| $0.50 | $0.7419, 26 | $0.5045 | $0.0045 | 8, 18, 63 | 19, 407 s, 44.8 s |
+| $1.00 | $1.3789, 45 | $1.0092 | $0.0092 | 33, 6, 50 | 34, 299 s, 39.5 s |
+| $1.50 | $1.7256, 76 | $1.5063 | $0.0063 | 56, 30, 3 | 68, 1,266 s, 59.5 s |
+
+Each "over" is under the cost of the last request admitted, $0.0072 to $0.0253. In that pass a response cost more than every response before it 6 times in 1,015, and in the replay none of those was in flight at the last admission. In the second pass of the arm, 54 rows and 742 responses, one was, at a budget of $0.25: over by $0.0034, with $0.0031 of it above the reservation. A replay is not a run: a row that waits would also think later, and the rows the old rule let finish would have scored.
+
+**Rejected.**
+
+- The worst case of the request itself. It needs the prices of tokens, which are in the brain and not here. The gateway knows it: an unpaid request is answered `402` with the most the request can cost, the whole output limit and the input at the uncached rate. Asking that first would send every request twice, and that amount is tens of times what a response costs, so a run would wait where it has room. Not tried.
+- The largest response of the row that asks, in place of the run's. Replayed on the same requests it left $0.056 over a budget of $0.25 and $0.061 on the second pass: a row's next response is often its largest.
+- Waiting for room without an end. A response that never ends would hold every other row at the end of a budget while their agent timeouts run: a stream that stalled for 886 s was seen this week. A claim lease is how long a run waits for anything silent.
+- Refusing at once what has no room. The rows of a run start together, and all but one would end at their first request.
+- Ending the rows from the run when the budget is spent. A row in a tool call or in its verifier spends nothing, and one whose work is done passes.
+
+**The price of a tool.** `Proxy.tools` takes, for the tools a response says its provider ran: what the endpoint paid, `usage.web.paid`, which is in the cost already; for a response without a cost, the list price of a call, $0.01 a web search of the Messages and of the Responses API, nothing a web fetch of the Messages API, $0.0025 a file search, read on the pricing pages of both providers on this day; and otherwise none, counted as unpriced: a cost that names no web calls, a tool that is not sold by the call, a response of an installed agent, whose command reports its own cost. The list price is added to the spend as the response ends, so the budget sees it, and to the cost of the session's attempt. Three prices in this repository are the exception to having none: the estimate of a session is tokens alone, and nothing else knows these. A `web_search_call` of a Responses output that opened a page is counted as a search.
+
+`status` prints `spend: model $3.3900 of a budget of $3` and `web searches and other tools run by the model provider: 162, $1.9440 of the model spend`, with `, N unpriced: …` where a price is not known. A Worker of an earlier commit prints the line as it did.
+
+**The sandbox budget.** Read again for the same hole. A tick has one budget, loaded from the sum of `payments`, and every provider call of the tick, the renewals beside an open or a kill included, charges it before its paid request leaves. A unit test renews eight sandboxes at once on a budget with room for two: two are paid, six never carry the key. The spend passes the budget only by the fee of `terminate`, which is never refused. Nothing changed.
+
+**Checked.** On a machine with five cores and no KVM, at a load average of 13 to 17.
+
+- Unit tests: the rule case by case; a simulation of 1, 2, 12, 64 and 500 rows that ask at once, with one price, with a budget under one request, and with mixed prices whose largest comes first: the spend ends between the budget and the budget plus the largest request in each; with prices that grow, within the last request and what the requests in flight cost above their reservation; a first response slower than the claim lease lets the first request of each row go, which is the stated limit. The prices of tools, and what the meter reads from a response of the gateway and of a provider.
+- Lanes on directory slots with a scripted model that answers after one second: six requests a row, the first with a search the endpoint paid $0.012 for, $0.012456 and $0.000456 a response, twelve rows, a budget of $0.12.
+
+| Lane | Before | With the change |
+| --- | --- | --- |
+| Twelve rows at once | 72 responses for $0.176832, 12 requests with the model at once, every row finished and passed, and the lane fails | 14 responses for $0.126384, $0.006384 over; up to 9 requests at once; 0 rows passed and 12 ended as `budget` errors, none failed |
+| Two rows at a time | not run | 49 responses for $0.130344, $0.010344 over; 8 rows passed and 4 ended as `budget` errors, none failed. That run then failed on a sum of the lane itself, which counted the cost of the rows that passed twice; the sum was corrected and the lane was **not run again** |
+| Six rows one at a time, no cost in a response, searches at list price, a budget of $0.05 | not run | **not run**: the lane is written and in the workflow, and the machine was too busy to reach it |
+
+One run of each line. Lanes beside the change passed once each with it: tasks on directory slots, tasks and installed agents through the scripted gateway, a payment refused in passing for installed agents, a key that is spent, two leased sandboxes of which one dies, a Claude plan that pays, a session that lost its turn, and a judge.
+
+- `npm run lint`, `npm run check:types`, `npm test`: lint and types clean, and 291 unit tests, 287 passed and the 4 that need KVM skipped.
+
+**Not verified.**
+
+- A run with a real model, through the gateway or on a plan. `usage.web` is read from the source of the gateway and fits the amounts of the arm above; no response of the real gateway was read by this code.
+- What Claude Code and Codex CLI do with the `402`: the lanes of installed agents run a scripted command and were not run with a budget that is reached.
+- The cost of asking: one more request to the run for each model request. Not measured on a deployed Worker.
+- A session on a WebSocket, a ChatGPT plan login, passes no meter: its tokens count when its attempt ends, and its budget is the bound it was. A key of a provider whose responses name no cost is bounded request by request only in its searches.
+- A Worker that restarts with requests in flight: they stay in `model_flights` until their claim is over, which holds room that is free. Not exercised.

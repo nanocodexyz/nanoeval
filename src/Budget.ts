@@ -54,6 +54,46 @@ export declare namespace create {
   }
 }
 
+export type Admission =
+  | { state: 'admitted' }
+  | { reason: 'held' | 'spent'; state: 'refused' }
+  | { state: 'waiting' }
+
+export function held(input: held.Input): boolean {
+  return (
+    input.flights > 0 &&
+    input.largestUsd !== undefined &&
+    microUsd(input.spentUsd) + input.flights * microUsd(input.largestUsd) >=
+      microUsd(input.limitUsd)
+  )
+}
+
+export declare namespace held {
+  type Input = {
+    flights: number
+    largestUsd: number | undefined
+    limitUsd: number
+    spentUsd: number
+  }
+}
+
+export function admit(input: admit.Input): Admission {
+  if (microUsd(input.spentUsd) >= microUsd(input.limitUsd))
+    return { reason: 'spent', state: 'refused' }
+  if (!input.flights) return { state: 'admitted' }
+  const waits = input.waitedMs < input.waitMs
+  if (input.largestUsd === undefined) return { state: waits ? 'waiting' : 'admitted' }
+  if (!held(input)) return { state: 'admitted' }
+  return waits ? { state: 'waiting' } : { reason: 'held', state: 'refused' }
+}
+
+export declare namespace admit {
+  type Input = held.Input & {
+    waitMs: number
+    waitedMs: number
+  }
+}
+
 function microUsd(usd: number): number {
   return Math.round(usd * 1e6)
 }

@@ -23,6 +23,7 @@ import type * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
 import * as Pins from '../src/Pins.ts'
 import * as Protocol from '../src/Protocol.ts'
+import * as Proxy from '../src/Proxy.ts'
 import type * as Result from '../src/Result.ts'
 import * as Slot from '../src/Slot.ts'
 import * as Guest from './Guest.ts'
@@ -78,6 +79,11 @@ const capped = scenario === 'capped'
 const refusedPassing = scenario === 'refused'
 const spent = scenario === 'spent'
 const funded = scenario === 'funded'
+const budgeted = scenario === 'budget'
+const searching = scenario === 'searches'
+const budgetUsd = budgeted ? 0.12 : 0.05
+const budgetSteps = 5
+const webUsd = 0.012
 const unreached = scenario === 'unreached'
 const unreachedSeen = new Set<string>()
 const fleet = scenario === 'fleet'
@@ -202,6 +208,9 @@ function sse(events: [string, unknown][]): string {
 const longCells: { exec: string | undefined; received: string }[] = []
 const codexCells: (string[] | undefined)[] = []
 const codexExecs: (string | undefined)[] = []
+const budgetLog: { cost: number; search: boolean }[] = []
+let budgetFlying = 0
+let budgetPeak = 0
 const midturnRequests: { decision: string; digest: string; last: string; read: string }[] = []
 let killDue: number | undefined
 let scriptedCalls = 0
@@ -522,9 +531,57 @@ function pairwise(body: {
   ])
 }
 
+function paced(
+  messages: unknown,
+  solution: string,
+): { input: Record<string, unknown>; name: string } | undefined {
+  const done = (Array.isArray(messages) ? messages : [])
+    .flatMap((message: { content?: unknown }) =>
+      Array.isArray(message.content) ? (message.content as Record<string, any>[]) : [],
+    )
+    .filter((block) => block['type'] === 'tool_use' && block['name'] === 'exec').length
+  if (done >= budgetSteps) return undefined
+  const command = done === budgetSteps - 1 ? solution : 'echo step-' + (done + 1)
+  return {
+    input: {
+      code: 'await tools.exec_command({ cmd: ' + JSON.stringify(command) + ' }); text("done")',
+    },
+    name: 'exec',
+  }
+}
+
+function metered(body: { messages?: unknown; model?: string }): string {
+  const search = !JSON.stringify(body.messages ?? []).includes('"tool_use"')
+  const cost = budgeted
+    ? MockGateway.modelUsd['/v1/messages'] + (search ? webUsd : 0)
+    : search
+      ? 2 * Proxy.toolUsd.claude['web_search']!
+      : 0
+  budgetLog.push({ cost, search })
+  return scripted(
+    body,
+    budgeted ? cost : undefined,
+    !search
+      ? {}
+      : budgeted
+        ? {
+            server_tool_use: { web_fetch_requests: 0, web_search_requests: 1 },
+            web: { calls: 1, paid: webUsd, wallet: webUsd },
+          }
+        : {
+            server_tool_use: {
+              code_execution_requests: 1,
+              web_fetch_requests: 1,
+              web_search_requests: 2,
+            },
+          },
+  )
+}
+
 function scripted(
   body: { messages?: unknown; model?: string; tools?: { description?: string; name: string }[] },
   cost?: number,
+  used: Record<string, unknown> = {},
 ): string {
   const text = JSON.stringify(body.messages ?? [])
   const id = ++scriptedCalls
@@ -556,9 +613,11 @@ function scripted(
     })
   const call = midturn
     ? stepwise(body.messages, command!)
-    : answered
-      ? undefined
-      : { input: { code }, name: 'exec' }
+    : budgeted || searching
+      ? paced(body.messages, command!)
+      : answered
+        ? undefined
+        : { input: { code }, name: 'exec' }
   const block = call
     ? [
         { id: 'toolu_' + id, input: {}, name: call.name, type: 'tool_use' },
@@ -593,7 +652,7 @@ function scripted(
       {
         delta: { stop_reason: call ? 'tool_use' : 'end_turn', stop_sequence: null },
         type: 'message_delta',
-        usage: { ...(cost === undefined ? {} : { cost }), output_tokens: 4 },
+        usage: { ...(cost === undefined ? {} : { cost }), ...used, output_tokens: 4 },
       },
     ],
     ['message_stop', { type: 'message_stop' }],
@@ -709,11 +768,17 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
           throw new Error(
             'the request of the installed agent did not carry the credential of the run',
           )
+        if (budgeted) {
+          budgetPeak = Math.max(budgetPeak, ++budgetFlying)
+          await new Promise((resolve) => setTimeout(resolve, 1000)).finally(() => budgetFlying--)
+        }
         const reply = body.fake_cli
           ? fake(request.url!, body)
-          : codex && midturnPair
-            ? pairwise(body)
-            : scripted(body, turnLost ? MockGateway.modelUsd['/v1/messages'] : undefined)
+          : budgeted || searching
+            ? metered(body)
+            : codex && midturnPair
+              ? pairwise(body)
+              : scripted(body, turnLost ? MockGateway.modelUsd['/v1/messages'] : undefined)
         if (
           (shared || stopped || turnLost || underAgent) &&
           !parked &&
@@ -1262,6 +1327,8 @@ async function main(): Promise<void> {
                   midturn ||
                   packing ||
                   slotGone ||
+                  budgeted ||
+                  searching ||
                   model !== 'scripted'
                 ? [
                     {
@@ -1273,7 +1340,9 @@ async function main(): Promise<void> {
                         isolated ||
                         midturn ||
                         packing ||
-                        slotGone
+                        slotGone ||
+                        budgeted ||
+                        searching
                           ? 'right'
                           : 'nanocode',
                       model: realModel,
@@ -1370,7 +1439,7 @@ async function main(): Promise<void> {
           : isolated
             ? slots
             : attempts,
-      budget: { modelUsd: 1, sandboxUsd: gateway ? 1 : 0 },
+      budget: { modelUsd: budgeted || searching ? budgetUsd : 1, sandboxUsd: gateway ? 1 : 0 },
       eval: { name: evalName, version: version.digest },
       ...(judged ? { judge: { model: 'claude-haiku-4-5', provider: 'claude' as const } } : {}),
       ...(planned ? { payer: 'plan' as const } : {}),
@@ -2689,6 +2758,137 @@ async function main(): Promise<void> {
       for (const row of rows) assert.equal(row['claims'], 2, 'each row was retried once')
       assert.equal(status['lostClaims'], 0)
       assert.equal(unreachedSeen.size, rows.length)
+      await pass()
+      return
+    }
+
+    if (budgeted || searching) {
+      const rows = status['attempts'] as Record<string, any>[]
+      const errored = rows.filter((row) => row['outcome'] === 'errored')
+      const costs = budgetLog.map((entry) => entry.cost)
+      const answeredUsd = costs.reduce((all, usd) => all + usd, 0)
+      const largest = Math.max(...costs)
+      const searches = budgetLog.filter((entry) => entry.search).length
+      const passed = details.filter((detail) => detail['result'].outcome === 'passed')
+      const estimated = searching
+        ? passed.reduce((all, detail) => all + detail['result'].usage.costUsd - largest, 0)
+        : 0
+      console.log(
+        scenario +
+          ': budget $' +
+          budgetUsd +
+          ', ' +
+          costs.length +
+          ' responses of at most $' +
+          largest +
+          ' cost $' +
+          answeredUsd.toFixed(6) +
+          ', the run recorded $' +
+          Number(status['spend'].modelUsd).toFixed(6) +
+          ', at most ' +
+          budgetPeak +
+          ' requests were with the model at once, ' +
+          status['counts'].passed +
+          ' rows passed and ' +
+          errored.length +
+          ' ended for the budget',
+      )
+      assert.equal(status['counts'].failed, 0, 'no row that the budget ended is a failed attempt')
+      assert.equal(status['counts'].passed + errored.length, rows.length)
+      assert.ok(errored.length > 0, 'the rows ask for more than the budget')
+      for (const row of errored) assert.equal(row['failure'].kind, 'budget', row['failure'].message)
+      for (const row of errored.filter((entry) => entry['runner'] === null)) {
+        assert.equal(row['claims'], 0, 'a row that had not started is never claimed')
+        assert.equal(row['failure'].message, 'the model budget of $' + budgetUsd + ' is spent')
+      }
+      for (const row of errored.filter((entry) => entry['runner'] !== null)) {
+        assert.match(
+          row['failure'].message,
+          new RegExp(
+            '^the model budget of \\$' +
+              budgetUsd +
+              ' ended the row, which was refused a model request: ',
+          ),
+        )
+        const refused = (await api.artifact(created.id, row['id'], 'agent/model-requests.jsonl'))
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line))
+          .filter((entry) => entry.refusal === 'budget')
+        assert.ok(refused.length >= 1, 'the request that the run refused is with its attempt')
+        assert.ok(refused.every((entry) => entry.status === 402 && entry.usage === null))
+      }
+      assert.ok(answeredUsd >= budgetUsd, 'the budget is spent before a request is refused')
+      assert.ok(
+        answeredUsd < budgetUsd + largest + 1e-9,
+        'the run passed its budget of $' +
+          budgetUsd +
+          ' by $' +
+          (answeredUsd - budgetUsd).toFixed(6) +
+          ', more than the $' +
+          largest +
+          ' of one request',
+      )
+      assert.ok(
+        Math.abs(status['spend'].modelUsd - answeredUsd - estimated) < 1e-9,
+        'the spend is what the responses cost: ' + JSON.stringify(status['spend']),
+      )
+      assert.equal(status['spend'].modelBudgetUsd, budgetUsd)
+      assert.ok(
+        (await api.timeline(created.id)).marks.some((mark) => mark.name === 'model.budget'),
+        'the timeline says when the budget refused its first request',
+      )
+      assert.ok(
+        summary(status).includes(
+          'spend: model $' +
+            Number(status['spend'].modelUsd).toFixed(4) +
+            ' of a budget of $' +
+            budgetUsd,
+        ),
+      )
+      const tools = summary(status)
+        .split('\n')
+        .find((line) => line.startsWith('web searches and other tools run by the model provider: '))
+      if (budgeted) {
+        assert.equal(status['spend'].webSearches, searches)
+        assert.equal(status['spend'].unpricedTools, 0)
+        assert.ok(Math.abs(status['spend'].toolsUsd - searches * webUsd) < 1e-9)
+        assert.equal(
+          tools,
+          'web searches and other tools run by the model provider: ' +
+            searches +
+            ', $' +
+            (searches * webUsd).toFixed(4) +
+            ' of the model spend',
+        )
+        if (slots > 2) assert.ok(budgetPeak > 1, 'requests of several rows were in flight at once')
+      } else {
+        assert.equal(slots, 1, 'the searches scenario runs one row at a time')
+        assert.equal(
+          searches,
+          3,
+          'the searches of three rows, at their list price, spend the budget',
+        )
+        assert.equal(passed.length, 2)
+        for (const detail of passed) {
+          assert.equal(detail['result'].usage.toolsUsd, largest)
+          assert.ok(detail['result'].usage.costUsd > largest, 'tokens and searches are one cost')
+        }
+        assert.ok(estimated > 0, 'the sessions estimate their tokens')
+        assert.equal(status['spend'].webSearches, 4 * searches)
+        assert.equal(status['spend'].unpricedTools, searches)
+        assert.ok(Math.abs(status['spend'].toolsUsd - searches * largest) < 1e-9)
+        assert.equal(
+          tools,
+          'web searches and other tools run by the model provider: ' +
+            4 * searches +
+            ', $' +
+            (searches * largest).toFixed(4) +
+            ' of the model spend, ' +
+            searches +
+            ' unpriced: nothing says what they cost, or whether the cost of their response holds it',
+        )
+      }
       await pass()
       return
     }

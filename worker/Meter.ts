@@ -2,18 +2,25 @@ import * as Proxy from '../src/Proxy.ts'
 
 export type Outcome = {
   at: number
+  flight?: number
   ms: number
   refusal?: Proxy.Refusal
   status: number
   usage?: Proxy.Usage
 }
 
-export type Refused = { kind: Proxy.Refusal; text: string; tries: number }
+export type Refused = { kind: Exclude<Proxy.Refusal, 'budget'>; text: string; tries: number }
+
+export type Admission = { flight?: number; pauseMs?: number; refused?: string }
 
 export type Hooks = {
+  admit?(waitedMs: number): Promise<Admission>
   refused?(refusal: Refused): Promise<number | undefined>
+  release?(flight: number): void | Promise<void>
   settle(outcome: Outcome): void | Promise<void>
 }
+
+export const budgetError = 'model_budget'
 
 const hopHeaders = [
   'connection',
@@ -32,6 +39,39 @@ function kept(source: Headers): Headers {
 }
 
 export async function relay(input: relay.Input): Promise<Response> {
+  const { hooks } = input
+  const asked = Date.now()
+  let flight: number | undefined
+  while (hooks.admit) {
+    const admission = await hooks.admit(Date.now() - asked)
+    if (admission.refused !== undefined) {
+      await hooks.settle({ at: asked, ms: Date.now() - asked, refusal: 'budget', status: 402 })
+      return Response.json(
+        { error: { message: admission.refused, type: budgetError }, type: 'error' },
+        { status: 402 },
+      )
+    }
+    if (admission.pauseMs === undefined) {
+      flight = admission.flight
+      break
+    }
+    await new Promise((resolve) => setTimeout(resolve, admission.pauseMs))
+  }
+  const release = async () => {
+    if (flight !== undefined) await hooks.release?.(flight)
+  }
+  try {
+    return await forwarded(input, { flight, release })
+  } catch (error) {
+    await release()
+    throw error
+  }
+}
+
+async function forwarded(
+  input: relay.Input,
+  held: { flight: number | undefined; release(): Promise<void> },
+): Promise<Response> {
   const { hooks } = input
   for (let tries = 0; ; tries++) {
     const at = Date.now()
@@ -52,12 +92,20 @@ export async function relay(input: relay.Input): Promise<Response> {
         status: upstream.status,
       })
       const pauseMs = kind && hooks.refused ? await hooks.refused({ kind, text, tries }) : undefined
-      if (pauseMs === undefined) return new Response(text, { headers, status: upstream.status })
+      if (pauseMs === undefined) {
+        await held.release()
+        return new Response(text, { headers, status: upstream.status })
+      }
       await new Promise((resolve) => setTimeout(resolve, pauseMs))
       continue
     }
     if (!upstream.body) {
-      await hooks.settle({ at, ms: Date.now() - at, status: upstream.status })
+      await hooks.settle({
+        at,
+        ...(held.flight === undefined ? {} : { flight: held.flight }),
+        ms: Date.now() - at,
+        status: upstream.status,
+      })
       return new Response(null, { headers, status: upstream.status })
     }
     const meter = Proxy.meter(input.provider)
@@ -69,6 +117,7 @@ export async function relay(input: relay.Input): Promise<Response> {
       const usage = meter.usage()
       await hooks.settle({
         at,
+        ...(held.flight === undefined ? {} : { flight: held.flight }),
         ms: Date.now() - at,
         status: upstream.status,
         ...(usage ? { usage } : {}),

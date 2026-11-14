@@ -24,13 +24,22 @@ export type Usage = {
   costUsd?: number
   inputTokens: number
   model?: string
+  otherTools?: Record<string, number>
   outputTokens: number
   reasoningTokens?: number
   webFetches?: number
   webSearches?: number
+  webUsd?: number
 }
 
-export type Refusal = 'passing' | 'plan' | 'spent'
+export type Refusal = 'budget' | 'passing' | 'plan' | 'spent'
+
+export type Tools = { calls: number; unpriced: number; usd?: number }
+
+export const toolUsd: Record<Provider, Record<string, number>> = {
+  claude: { web_fetch: 0, web_search: 0.01 },
+  codex: { file_search: 0.0025, web_search: 0.01 },
+}
 
 export type Session = { attempt: string; claim: number; judge?: number; run: string }
 
@@ -97,7 +106,7 @@ export function token(headers: Headers): string | undefined {
   return headers.get('x-api-key') ?? undefined
 }
 
-export function refusal(body: string): Refusal | undefined {
+export function refusal(body: string): Exclude<Refusal, 'budget'> | undefined {
   let problem: { code?: unknown; type?: unknown } | null
   try {
     problem = JSON.parse(body) as { code?: unknown; type?: unknown } | null
@@ -185,6 +194,46 @@ function count(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
+export function tools(provider: Provider, usage: Usage, options: { listed: boolean }): Tools {
+  const used = Object.entries({
+    ...usage.otherTools,
+    web_fetch: usage.webFetches ?? 0,
+    web_search: usage.webSearches ?? 0,
+  }).filter(([, calls]) => calls > 0)
+  const calls = used.reduce((sum, [, n]) => sum + n, 0)
+  const web = (name: string) => name === 'web_fetch' || name === 'web_search'
+  if (usage.webUsd !== undefined)
+    return {
+      calls,
+      unpriced: used.reduce((sum, [name, n]) => sum + (web(name) ? 0 : n), 0),
+      usd: usage.webUsd,
+    }
+  if (usage.costUsd !== undefined) return { calls, unpriced: calls }
+  const listed = used.filter(([name]) => options.listed && toolUsd[provider][name] !== undefined)
+  return {
+    calls,
+    unpriced: calls - listed.reduce((sum, [, n]) => sum + n, 0),
+    ...(listed.length
+      ? {
+          usd:
+            listed.reduce(
+              (sum, [name, n]) => sum + n * Math.round(toolUsd[provider][name]! * 1e6),
+              0,
+            ) / 1e6,
+        }
+      : {}),
+  }
+}
+
+const hosted = ['code_interpreter_call', 'file_search_call', 'image_generation_call']
+
+function paid(used: Record<string, any>): number | undefined {
+  const web = used['web']
+  return typeof web === 'object' && web !== null && typeof web['paid'] === 'number'
+    ? count(web['paid'])
+    : undefined
+}
+
 export function meter(provider: Provider): {
   push(chunk: string): void
   usage(): Usage | undefined
@@ -198,21 +247,30 @@ export function meter(provider: Provider): {
       const response = value['response'] ?? value
       const used = response?.['usage']
       if (typeof used !== 'object' || used === null) return
-      const searches = Array.isArray(response['output'])
-        ? response['output'].filter((item: { type?: unknown }) => item?.type === 'web_search_call')
-            .length
-        : 0
+      const items: { type?: unknown }[] = Array.isArray(response['output'])
+        ? response['output']
+        : []
+      const searches = items.filter((item) => item?.type === 'web_search_call').length
+      const others: Record<string, number> = {}
+      for (const item of items)
+        if (typeof item?.type === 'string' && hosted.includes(item.type)) {
+          const name = item.type.slice(0, -'_call'.length)
+          others[name] = (others[name] ?? 0) + 1
+        }
+      const webUsd = paid(used)
       found = {
         cacheWriteTokens: count(used['input_tokens_details']?.['cache_write_tokens']),
         cachedTokens: count(used['input_tokens_details']?.['cached_tokens']),
         ...(typeof used['cost'] === 'number' ? { costUsd: count(used['cost']) } : {}),
         inputTokens: count(used['input_tokens']),
         ...(typeof response['model'] === 'string' ? { model: response['model'] } : {}),
+        ...(Object.keys(others).length ? { otherTools: others } : {}),
         outputTokens: count(used['output_tokens']),
         ...(typeof used['output_tokens_details']?.['reasoning_tokens'] === 'number'
           ? { reasoningTokens: count(used['output_tokens_details']['reasoning_tokens']) }
           : {}),
         ...(searches ? { webSearches: searches } : {}),
+        ...(webUsd === undefined ? {} : { webUsd }),
       }
       return
     }
@@ -230,14 +288,22 @@ export function meter(provider: Provider): {
     const model = typeof message['model'] === 'string' ? message['model'] : found?.model
     const cost = typeof used['cost'] === 'number' ? count(used['cost']) : found?.costUsd
     const tools = used['server_tool_use']
-    const fetches =
-      typeof tools === 'object' && tools !== null
-        ? count(tools['web_fetch_requests'])
-        : (found?.webFetches ?? 0)
-    const searches =
-      typeof tools === 'object' && tools !== null
-        ? count(tools['web_search_requests'])
-        : (found?.webSearches ?? 0)
+    const reported = typeof tools === 'object' && tools !== null
+    const fetches = reported ? count(tools['web_fetch_requests']) : (found?.webFetches ?? 0)
+    const searches = reported ? count(tools['web_search_requests']) : (found?.webSearches ?? 0)
+    const others = reported
+      ? Object.fromEntries(
+          Object.entries(tools as Record<string, unknown>).flatMap(([name, calls]) =>
+            name.endsWith('_requests') &&
+            name !== 'web_fetch_requests' &&
+            name !== 'web_search_requests' &&
+            count(calls) > 0
+              ? [[name.slice(0, -'_requests'.length), count(calls)]]
+              : [],
+          ),
+        )
+      : (found?.otherTools ?? {})
+    const webUsd = paid(used) ?? found?.webUsd
     found = {
       cacheWriteTokens: write,
       cachedTokens: cached,
@@ -247,10 +313,12 @@ export function meter(provider: Provider): {
           ? count(used['input_tokens']) + cached + write
           : (found?.inputTokens ?? 0),
       ...(model ? { model } : {}),
+      ...(Object.keys(others).length ? { otherTools: others } : {}),
       outputTokens:
         'output_tokens' in used ? count(used['output_tokens']) : (found?.outputTokens ?? 0),
       ...(fetches ? { webFetches: fetches } : {}),
       ...(searches ? { webSearches: searches } : {}),
+      ...(webUsd === undefined ? {} : { webUsd }),
     }
   }
   const line = (text: string) => {

@@ -167,6 +167,15 @@ const usage = `nanoeval <command>
             channel of the Worker's TEMPO_KEY opens with and each automatic top-up, in the
             key's token, when the run is created: size them for one hold of every model
             request the run may have in flight at once.
+            --model-budget-usd bounds the model spend of the run. Every model request is
+            admitted before it is sent: none once the budget is spent, and under it only
+            while the requests in flight, each taken to cost what the largest response of
+            the run did, leave room. A request without room waits, at most --lease-sec, and
+            is refused then. A row that is refused a request ends as a budget error, and so
+            does every row not yet started once the budget is spent. The run passes its
+            budget by less than one request. Where responses carry no cost, on a plan or a
+            key of a provider, the spend is what sessions estimate when their attempts end,
+            and only the provider's web searches, at list price, count request by request.
             With --disks remove, the default for --provider e2b and gateway, a runner removes
             each environment disk it unpacked once no row of the run needs it. With --free-disk-mb, a runner claims only while its
             machine has that much free disk, and prepares one environment at a time.
@@ -841,6 +850,9 @@ export function summary(status: Record<string, any>, options: { tasks?: boolean 
         .join(', '),
     'spend: model $' +
       Number(status['spend'].modelUsd).toFixed(4) +
+      (status['spend'].modelBudgetUsd === undefined
+        ? ''
+        : ' of a budget of $' + status['spend'].modelBudgetUsd) +
       (!status['key'] && status['spend'].unpricedResponses ? ' estimated from tokens' : '') +
       (status['spend'].uncostedAttempts
         ? ', without ' +
@@ -849,7 +861,10 @@ export function summary(status: Record<string, any>, options: { tasks?: boolean 
           ' whose model calls have no cost'
         : '') +
       ', sandboxes $' +
-      Number(status['spend'].sandboxUsd).toFixed(4),
+      Number(status['spend'].sandboxUsd).toFixed(4) +
+      (status['spend'].sandboxBudgetUsd
+        ? ' of a budget of $' + status['spend'].sandboxBudgetUsd
+        : ''),
   ]
   const usd = (value: unknown) => '$' + Number(value).toFixed(4)
   const offset = (at: unknown) =>
@@ -875,12 +890,23 @@ export function summary(status: Record<string, any>, options: { tasks?: boolean 
         status['spend'].unpricedResponses +
         ', so the recorded spend leaves them out',
     )
-  if (status['spend'].webSearches)
+  if (status['spend'].webSearches) {
+    const unpriced = Number(status['spend'].unpricedTools ?? 0)
     lines.push(
-      'web searches and fetches by the model provider: ' +
+      'web searches and other tools run by the model provider: ' +
         status['spend'].webSearches +
-        ', counted in the recorded spend only where a response reported them in its cost',
+        (status['spend'].toolsUsd === undefined
+          ? ', counted in the recorded spend only where a response reported them in its cost'
+          : (unpriced < status['spend'].webSearches
+              ? ', ' + usd(status['spend'].toolsUsd) + ' of the model spend'
+              : '') +
+            (unpriced
+              ? ', ' +
+                unpriced +
+                ' unpriced: nothing says what they cost, or whether the cost of their response holds it'
+              : '')),
     )
+  }
   if (status['payer'] === 'plan')
     lines.push(
       'payer: the Claude plan signed in on the Worker; nothing is charged per response, and the model spend is what the sessions estimate at list prices',

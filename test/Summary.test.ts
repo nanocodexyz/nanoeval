@@ -110,6 +110,32 @@ test('the spend says when it is an estimate and which attempts it leaves out', (
     spend({ uncostedAttempts: 2, unpricedResponses: 3 }, { start: {} }),
     'spend: model $0.5000, without 2 attempts whose model calls have no cost, sandboxes $0.0000',
   )
+  assert.equal(
+    spend({ modelBudgetUsd: 3, sandboxBudgetUsd: 4, sandboxUsd: 2.36 }),
+    'spend: model $0.5000 of a budget of $3, sandboxes $2.3600 of a budget of $4',
+  )
+  const tools = (fields: Record<string, unknown>) =>
+    summary({ ...status(results), spend: { modelUsd: 0.5, sandboxUsd: 0, ...fields } })
+      .split('\n')
+      .find((entry) => entry.startsWith('web searches'))
+  assert.equal(tools({}), undefined)
+  assert.equal(
+    tools({ toolsUsd: 1.944, unpricedTools: 0, webSearches: 162 }),
+    'web searches and other tools run by the model provider: 162, $1.9440 of the model spend',
+  )
+  assert.equal(
+    tools({ toolsUsd: 0.12, unpricedTools: 2, webSearches: 14 }),
+    'web searches and other tools run by the model provider: 14, $0.1200 of the model spend, 2 unpriced: nothing says what they cost, or whether the cost of their response holds it',
+  )
+  assert.equal(
+    tools({ toolsUsd: 0, unpricedTools: 9, webSearches: 9 }),
+    'web searches and other tools run by the model provider: 9, 9 unpriced: nothing says what they cost, or whether the cost of their response holds it',
+  )
+  assert.equal(
+    tools({ webSearches: 9 }),
+    'web searches and other tools run by the model provider: 9, counted in the recorded spend only where a response reported them in its cost',
+    'a Worker that prices none says so as before',
+  )
 })
 
 test('the summary names a cancelled run and keeps each row on one line', () => {

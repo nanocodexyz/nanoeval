@@ -68,6 +68,7 @@ export type Usage = {
   outputTokens: number
   reasoningTokens?: number
   toolCalls: number
+  toolsUsd?: number
 }
 
 export function fromEvents(
