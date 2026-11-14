@@ -135,17 +135,27 @@ export function summarize(attempts: readonly Attempt[]): Record<string, AgentSum
     for (let k = 1; k <= trials; k++) {
       const rated = scored.filter((group) => group.length >= k)
       summary.passAtK[String(k)] =
-        rated.reduce((total, group) => total + solved(group, k), 0) / rated.length
+        rated.reduce(
+          (total, group) =>
+            total +
+            passAt(
+              {
+                passed: group.filter((attempt) => attempt.outcome === 'passed').length,
+                scored: group.length,
+              },
+              k,
+            ),
+          0,
+        ) / rated.length
       summary.rated[String(k)] = rated.length
     }
   }
   return agents
 }
 
-function solved(scored: readonly Attempt[], k: number): number {
-  const missed = scored.filter((attempt) => attempt.outcome !== 'passed').length
+export function passAt(counts: { passed: number; scored: number }, k: number): number {
   let none = 1
   for (let drawn = 0; drawn < k && none > 0; drawn++)
-    none *= (missed - drawn) / (scored.length - drawn)
+    none *= (counts.scored - counts.passed - drawn) / (counts.scored - drawn)
   return 1 - none
 }

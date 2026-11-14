@@ -54,7 +54,8 @@ The table says what was run. "The first version" is the flow before the eval tab
 | What a refused command prints | Implemented, tested: one line on standard error, `nanoeval: ` and the message, with the route and the status behind what the Worker said, and exit status 1. Unit tests, one of which runs the command, and the lane `machine` on directory slots, whose runner ends with that line |
 | nanocode-ts harness sessions | Implemented, on nanocode-ts `build-7968b53`. Tested end to end under local workerd. A cell that names no yield runs for two minutes before it goes back to the model (`CELL_YIELD_MS`), where the protocol gives it 10 s: the plain lane on directory slots runs a cell of 12 s and asks that it ends in the exec that started it. Measured with a model on 20 tasks, one attempt each: 174 model calls where 10 s took 219, 9 `wait` calls where it took 29, 17 passed where 16 did. See [DECISIONS.md](DECISIONS.md#2026-11-13-a-cell-yields-after-two-minutes-set-by-the-brain) |
 | Installed agents (`codex-cli`, `claude-code`): the vendor's command line inside the slot, its model requests through an endpoint of the run that adds the credential | Implemented, tested: unit tests for the agent syntax, the commands, the credential swap and the usage meter, and end-to-end lanes with a scripted command on directory and krun slots (tasks, failure kinds, a restarted and a lost runner), on ns slots in a guest (tasks), and on krun slots whose tasks close the agent's network. Codex CLI 0.166.0 ran 6 Terminal-Bench 2.1 tasks on krun slots through a ChatGPT plan login beside a nanocode session on the same model: 6 passed for each, and it passed two fixtures in an Alpine image. The Claude Code 2.1.318 binaries ran on krun slots in an Alpine and a Debian image against a scripted Messages endpoint. Through the gateway, from a deployed Worker, both commands ran on ns slots in a sandbox the run leased, where the runner fetched their releases: Codex CLI 0.166.0 and Claude Code 2.1.318 each passed `fix-git` on a small model, and again at high effort on a large one. Those are the first answers Claude Code had from a real Messages endpoint, see [Deploy it](#deploy-it). Claude Code has not run with an Anthropic API key or a plan login: no valid login was at hand. See [DESIGN.md](DESIGN.md#installed-agents) |
-| `nanoeval compare RUN...`: the agents of one or more runs in one table | Implemented, tested. A row that a rerun in the table retried counts once, as its retry, and a run named twice counts once: unit tested, and read on a run of 24 rows with its two reruns on directory slots, see [DECISIONS.md](DECISIONS.md#2026-11-14-compare-counts-a-row-once-when-a-rerun-retried-it) |
+| `nanoeval compare RUN...`: the agents of one or more runs in one table | Implemented, tested. A row that a rerun in the table retried counts once, as its retry, and a run named twice counts once: unit tested, and read on a run of 24 rows with its two reruns on directory slots, see [DECISIONS.md](DECISIONS.md#2026-11-14-compare-counts-a-row-once-when-a-rerun-retried-it). Two runs that hold the same rows of one agent are two rows of the table: unit tested |
+| `nanoeval compare --baseline RUN... RUN...`: a run set against a baseline: the pass counts of every task that moved, pass@k over the tasks both sides rate, and a verdict that allows for noise | Implemented, unit tested against figures worked by hand, and read on directory slots with the scripted model: runs of 8 tasks and 3 attempts whose answers were planned, one against the other alone and with its two reruns, and two runs of one attempt. **Not run** with a real model, see [DECISIONS.md](DECISIONS.md#2026-11-14-a-comparison-says-what-the-numbers-support) |
 | `nanoeval revision`: a revision of nanocode and of nanocode-ts built and run on one machine with no release, see [Evaluating a nanocode commit](#evaluating-a-nanocode-commit) | Implemented, tested: unit tests for what is built from what is named, the name of a checkout with changes, a build tree moved between a branch, a commit and such a checkout, the lab's lock, the aliases of the Worker, the tasks to import and the credential check. Run for real on a Linux machine with KVM, krun slots: the commit of the pinned hand with nanocode-ts `2672c04` on its own nanocode, the nanocode and nanocode-ts masters of the day, and a checkout with an uncommitted change, each built by the command, then four Terminal-Bench 2.1 tasks with a scripted model that runs each task's solution through the hand, two attempts each, 8 of 8 passed on both revisions, and `gpt-6-luna` on two of the tasks, 2 of 2 on both. The plain lanes on krun and on directory slots passed on the builds of the masters. **Not run**: a package in an empty lab from start to end in one build, `--hand-profile dist`, `--nanocode-ts` as a checkout, ns and directory slots through the command, two labs at once, a `claude` agent with a model |
 | What a run ran on: the nanocode-ts build of its Worker and the hand of each runner, in `status`, `compare`, the trajectory and the Harbor result, and `compare --baseline` | Implemented, tested: unit tests, every end-to-end lane asks that its run names the build of its Worker and one hand, and three runs on three builds of nanocode-ts in one state were compared under one of them, each baseline read under the build of the run set against it. A runner that starts from the runtime archive names the release its archive was built with, which the lanes on that archive ask |
 | Local sandbox provider (`nanoeval sandboxd`) | Implemented, tested |
@@ -174,7 +175,7 @@ node cli/nanoeval.ts run --eval terminal-bench-2.1 --only fix-git --only regex-l
 node cli/nanoeval.ts compare RUN
 ```
 
-Give `compare` a run together with its reruns to read where the run stands after them: an attempt that a rerun in the table retried is left out, so each row counts once, as its latest retry, and the line of its run says how many were left out. Outcomes, time, tokens and cost are those of the attempts that stand.
+Give `compare` a run together with its reruns to read where the run stands after them: an attempt that a rerun in the table retried is left out, so each row counts once, as its latest retry, and the line of its run says how many were left out. Outcomes, time, tokens and cost are those of the attempts that stand. Two runs that hold the same rows of one agent are two measurements and get a row each, named by its run; runs that hold different rows, such as an eval split over two runs, share one.
 
 The first such run on a machine downloads the pinned release of the command into the cache and checks it against its SHA-256: an archive of 200 MB for Codex CLI, 517 MB unpacked, and 632 MB for the two builds of Claude Code. The task image is not changed, and the credential stays in the Worker: the command gets an address and a token that are good for that attempt only. Prompts and tools are each harness's own, see [DESIGN.md](DESIGN.md#installed-agents) for what such a comparison holds equal. A `codex-cli` agent has token counts and no cost estimate of its own, so `--model-budget-usd` bounds it only when the endpoint reports what it charged, as the gateway does.
 
@@ -267,9 +268,45 @@ luna: run RUN against the baseline BASELINE
 | Output tokens | 1,983 | 2,049 |
 | Cost | $0.0060 | $0.0068 |
 
-gained: none
 lost: none
-solved in both: 2, in neither: 0
+gained: none
+moved, within noise: none
+same on both sides: 2 tasks; solved on both sides: 2, on neither: 0
+verdict: no change beyond noise: of the 2 tasks scored on both sides 0 moved down and 0 up (p = 1.000 for worse, p = 1.000 for better)
+rule: lost, gained, regression and improvement are called when pass counts this far apart have a chance of 0.05 or less under no change (exact one-sided test, the verdict over all tasks together), so each is wrong for an unchanged agent at most 1 time in 20
+with these attempts no single task can be called, its chance cannot fall under 0.500: one task that flips is not evidence
+```
+
+**Reading a comparison.** The score of a task on a side is its passed attempts over its scored ones, and an attempt that errored is beside it, never in it. A task is `lost` or `gained` only when the chance of pass counts that far apart, were the two sides one agent, is 0.05 or less (Fisher's exact test, one-sided): with three attempts a side that is 3/3 against 0/3 and nothing less, and with one or two attempts no single task can be called, which the last line then says. Every other task whose rate changed is `moved, within noise`, with its chance. A task whose attempts all errored on a side has no verdict there and is not compared. The `verdict` asks the same of all tasks together, with the exact test stratified by task, so five tasks that each flip once in the same direction are a regression where none of them alone is. An agent that did not change is called a regression at most 1 time in 20, and each task is held to the same line by itself, so among many flaky tasks a single `lost` can be chance: gate on the verdict. pass@k is printed for each side, and again over the tasks both sides rate wherever those differ. `--baseline` may be repeated to give a baseline with its reruns, and a run named with its reruns is one side. Here a run of 8 tasks and 3 attempts against another, with a scripted model whose answers were planned:
+
+```
+a: run RUN against the baseline BASELINE
+
+|  | Baseline | Run |
+| --- | --- | --- |
+| nanocode | nanocode-ts build-7968b53, hand nanocode-cli-3f97ab0 | nanocode-ts build-7968b53, hand nanocode-cli-3f97ab0 |
+| Tasks | 8 | 8 |
+| Attempts | 24 | 24 |
+| Passed | 7 | 10 |
+| Failed | 10 | 11 |
+| Errored | 7 | 3 |
+| pass@1 | 41.7% of 6 tasks | 47.6% of 7 tasks |
+| pass@2 | 61.1% of 6 tasks | 52.4% of 7 tasks |
+| pass@3 | 60.0% of 5 tasks | 57.1% of 7 tasks |
+| pass@1 on the 6 tasks both sides rate | 41.7% | 38.9% |
+| pass@2 on the 6 tasks both sides rate | 61.1% | 44.4% |
+| pass@3 on the 5 tasks both sides rate | 60.0% | 40.0% |
+| Input tokens (cached) | 2,405 (1,480) | 2,925 (1,800) |
+| Output tokens | 259 | 315 |
+| Cost | $0.0022 | $0.0027 |
+
+lost: t1 (3/3 to 0/3, p = 0.050)
+gained: none
+moved, within noise: t2 (2/3 to 1/3, p = 0.500), t4 (1/3 to 3/3, p = 0.200), t6 (1/2 +1 errored to 3/3, p = 0.400)
+no verdict on a side, so not compared: err (3 errored to 3 errored), t5 (3 errored to 3/3)
+same on both sides: 2 tasks; solved on both sides: 3, on neither: 2
+verdict: no change beyond noise: of the 6 tasks scored on both sides 2 moved down and 2 up (p = 0.534 for worse, p = 0.768 for better)
+rule: lost, gained, regression and improvement are called when pass counts this far apart have a chance of 0.05 or less under no change (exact one-sided test, the verdict over all tasks together), so each is wrong for an unchanged agent at most 1 time in 20
 ```
 
 **What it takes**, measured on a machine with 32 cores whose load average was 66 to 100 from other work:

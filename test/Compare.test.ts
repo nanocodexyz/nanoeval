@@ -190,17 +190,27 @@ test('runs of one agent on different nanocode revisions are separate rows, and a
 
   const [change] = Compare.changes(baseline, run)
   assert.deepEqual(
+    change!.tasks.map((task) => [task.name, task.moved, task.chance]),
     [
-      change!.gained,
-      change!.lost,
-      change!.solved,
-      change!.neither,
-      change!.onlyRun,
-      change!.onlyBaseline,
+      ['added', 'only-run', undefined],
+      ['broken', 'down', 0.5],
+      ['dropped', 'only-baseline', undefined],
+      ['fixed', 'up', 0.5],
+      ['hard', 'same', undefined],
+      ['kept', 'down', 0.5],
     ],
-    [['fixed'], ['broken'], ['kept'], ['hard'], ['added'], ['dropped']],
   )
-  assert.deepEqual(change!.tasks['broken'], { baseline: '1/2', run: '0/2' })
+  assert.deepEqual(change!.tasks[1]!.baseline, { errored: 0, passed: 1, scored: 2 })
+  assert.deepEqual(change!.tasks[4]!.baseline, { errored: 1, passed: 0, scored: 1 })
+  assert.deepEqual(
+    [change!.overall.verdict, change!.overall.worse, change!.overall.better, change!.overall.tasks],
+    ['none', 0.5, 0.875, 4],
+  )
+  assert.deepEqual([change!.overall.down, change!.overall.up, change!.overall.same], [2, 1, 1])
+  assert.deepEqual(change!.common.rated, { '1': 4, '2': 3 })
+  assert.deepEqual(change!.common.baseline, { '1': 0.375, '2': 2 / 3 })
+  assert.deepEqual(change!.common.run, { '1': 0.25, '2': 2 / 3 })
+  assert.equal(Compare.regressed([change!], 'lost'), false)
 
   const against = Compare.against(baseline, run)
   assert.match(against, /^luna: run run-new against the baseline run-old$/m)
@@ -213,13 +223,31 @@ test('runs of one agent on different nanocode revisions are separate rows, and a
   assert.match(against, /^\| Errored \| 1 \| 0 \|$/m)
   assert.match(against, /^\| pass@1 \| 50\.0% \| 40\.0% \|$/m)
   assert.match(against, /^\| pass@2 \| 66\.7% of 3 tasks \| 60\.0% \|$/m)
+  assert.match(against, /^\| pass@1 on the 4 tasks both sides rate \| 37\.5% \| 25\.0% \|$/m)
+  assert.match(against, /^\| pass@2 on the 3 tasks both sides rate \| 66\.7% \| 66\.7% \|$/m)
   assert.match(against, /^\| Input tokens \(cached\) \| 2,700 \(900\) \| 3,000 \(1,000\) \|$/m)
   assert.match(against, /^\| Cost \| \$2\.2500 \| \$2\.5000 \|$/m)
-  assert.match(against, /^gained: fixed \(0\/2 to 1\/2\)$/m)
-  assert.match(against, /^lost: broken \(1\/2 to 0\/2\)$/m)
-  assert.match(against, /^solved in both: 1, in neither: 1$/m)
+  assert.match(against, /^lost: none$/m)
+  assert.match(against, /^gained: none$/m)
+  assert.match(
+    against,
+    /^moved, within noise: broken \(1\/2 to 0\/2, p = 0\.500\), fixed \(0\/2 to 1\/2, p = 0\.500\), kept \(2\/2 to 1\/2, p = 0\.500\)$/m,
+  )
+  assert.match(against, /^same on both sides: 1 task; solved on both sides: 1, on neither: 1$/m)
   assert.match(against, /^not in the baseline: added$/m)
   assert.match(against, /^only in the baseline: dropped$/m)
+  assert.match(
+    against,
+    /^verdict: no change beyond noise: of the 4 tasks scored on both sides 2 moved down and 1 up \(p = 0\.500 for worse, p = 0\.875 for better\)$/m,
+  )
+  assert.match(
+    against,
+    /^rule: lost, gained, regression and improvement are called when .* at most 1 time in 20$/m,
+  )
+  assert.match(
+    against,
+    /^with these attempts no single task can be called, its chance cannot fall under 0\.167: one task that flips is not evidence$/m,
+  )
 
   const other: Compare.Run = {
     ...run,
@@ -228,6 +256,7 @@ test('runs of one agent on different nanocode revisions are separate rows, and a
     ],
   }
   assert.match(Compare.against(baseline, other), /^\| Attempts \| not run \| 1 \|$/m)
+  assert.match(Compare.against(baseline, other), /^the baseline has no agent sol$/m)
 })
 
 test('a row that a rerun retried counts once, as its retry, and a run named twice counts once', () => {
@@ -277,4 +306,156 @@ test('a row that a rerun retried counts once, as its retry, and a run named twic
   assert.match(table, /run run-2 \(again\): finished, bench@0123456789ab, 2 attempts ended\n/)
   assert.match(table, /\| one \| passed 1 min 0 s \|/)
   assert.match(table, /\| two \| errored \(agent\) 1 min 0 s \|/)
+})
+
+const one = { id: 'one', model: 'm', provider: 'claude' as const }
+
+function side(id: string, tasks: Record<string, string>, retries?: string): Compare.Run {
+  let n = 0
+  return {
+    attempts: Object.entries(tasks).flatMap(([task, outcomes]) =>
+      [...outcomes].map((letter, at) => ({
+        ...attempt(one, {
+          n: ++n,
+          outcome: letter === 'P' ? 'passed' : letter === 'F' ? 'failed' : 'errored',
+          task,
+          usage: null,
+        }),
+        id: id + '-' + task + '-' + (at + 1),
+        index: at + 1,
+        ...(retries
+          ? { retryOf: { attempt: retries + '-' + task + '-' + (at + 1), run: retries } }
+          : {}),
+      })),
+    ),
+    eval: { name: 'bench', version: '0123456789abcdef' },
+    id,
+    name: id,
+    state: 'finished',
+  }
+}
+
+test('three attempts a side: a task is lost only when its counts say so, and an error is no verdict', () => {
+  const baseline = side('old', {
+    broken: 'PPP',
+    dropped: 'PPP',
+    fixed: 'FFF',
+    flaky: 'PPF',
+    kept: 'PPP',
+    shaky: 'PPE',
+    unread: 'PPF',
+  })
+  const run = side('new', {
+    added: 'PPP',
+    broken: 'FFF',
+    fixed: 'PPP',
+    flaky: 'PFF',
+    kept: 'PPP',
+    shaky: 'PEE',
+    unread: 'EEE',
+  })
+  const [change] = Compare.changes(baseline, run)
+  assert.deepEqual(
+    change!.tasks.map((task) => [task.name, task.moved, task.chance]),
+    [
+      ['added', 'only-run', undefined],
+      ['broken', 'lost', 1 / 20],
+      ['dropped', 'only-baseline', undefined],
+      ['fixed', 'gained', 1 / 20],
+      ['flaky', 'down', 1 / 2],
+      ['kept', 'same', undefined],
+      ['shaky', 'same', undefined],
+      ['unread', 'unscored', undefined],
+    ],
+  )
+  assert.equal(change!.overall.tasks, 5)
+  assert.ok(Math.abs(change!.overall.worse - 0.5) < 1e-12)
+  assert.ok(Math.abs(change!.overall.better - (0.5 + 2484 / 8000)) < 1e-12)
+  assert.equal(change!.overall.verdict, 'none')
+  assert.equal(change!.overall.floor, 1 / 20)
+  assert.equal(Compare.regressed([change!], 'regression'), false)
+  assert.equal(Compare.regressed([change!], 'lost'), true)
+
+  const against = Compare.against(baseline, run)
+  assert.match(against, /^lost: broken \(3\/3 to 0\/3, p = 0\.050\)$/m)
+  assert.match(against, /^gained: fixed \(0\/3 to 3\/3, p = 0\.050\)$/m)
+  assert.match(against, /^moved, within noise: flaky \(2\/3 to 1\/3, p = 0\.500\)$/m)
+  assert.match(against, /^no verdict on a side, so not compared: unread \(2\/3 to 3 errored\)$/m)
+  assert.match(against, /^same on both sides: 2 tasks; solved on both sides: 3, on neither: 0$/m)
+  assert.match(against, /^\| pass@1 \| 76\.2% \| 72\.2% of 6 tasks \|$/m)
+  assert.match(against, /^\| pass@1 on the 5 tasks both sides rate \| 73\.3% \| 66\.7% \|$/m)
+  assert.match(against, /^\| pass@3 on the 4 tasks both sides rate \| 75\.0% \| 75\.0% \|$/m)
+  assert.match(
+    against,
+    /^verdict: no change beyond noise: of the 5 tasks scored on both sides 2 moved down and 1 up \(p = 0\.500 for worse, p = 0\.810 for better\)$/m,
+  )
+  assert.doesNotMatch(against, /no single task can be called/)
+})
+
+test('one attempt a side: no task is called, and five that flip one way are a regression', () => {
+  const tasks = (outcomes: string) =>
+    Object.fromEntries([...outcomes].map((letter, at) => ['t' + (at + 1), letter]))
+  const baseline = side('old', tasks('PPPPPPF'))
+  const [five] = Compare.changes(baseline, side('new', tasks('FFFFFPF')))
+  assert.deepEqual([five!.overall.verdict, five!.overall.worse], ['regression', 1 / 32])
+  assert.equal(five!.tasks.filter((task) => task.moved === 'lost').length, 0)
+  assert.equal(five!.tasks.filter((task) => task.moved === 'down').length, 5)
+  assert.equal(Compare.regressed([five!], 'regression'), true)
+  const against = Compare.against(baseline, side('new', tasks('FFFFFPF')))
+  assert.match(against, /^lost: none$/m)
+  assert.match(
+    against,
+    /^verdict: regression: of the 7 tasks scored on both sides 5 moved down and 0 up \(p = 0\.031 for worse, p = 1\.000 for better\)$/m,
+  )
+  assert.match(against, /cannot fall under 0\.500: one task that flips is not evidence$/m)
+  const [four] = Compare.changes(baseline, side('new', tasks('FFFFPPF')))
+  assert.deepEqual([four!.overall.verdict, four!.overall.worse], ['none', 1 / 16])
+  const [mixed] = Compare.changes(baseline, side('new', tasks('FFFFPPP')))
+  assert.deepEqual([mixed!.overall.verdict, mixed!.overall.worse], ['none', 6 / 32])
+  const [up] = Compare.changes(side('new', tasks('FFFFFPF')), baseline)
+  assert.deepEqual([up!.overall.verdict, up!.overall.better], ['improvement', 1 / 32])
+})
+
+test('a side is a run with its reruns, and two runs of the same rows are two arms', () => {
+  const first = side('old', { one: 'PPF', two: 'EEE' })
+  const rerun: Compare.Run = {
+    ...side('again', { two: 'PPP' }, 'old'),
+  }
+  const second = side('new', { one: 'PPF', two: 'PPP' })
+  const [alone] = Compare.changes(first, second)
+  assert.deepEqual(
+    alone!.tasks.map((task) => task.moved),
+    ['same', 'unscored'],
+  )
+  const [both] = Compare.changes([first, rerun], second)
+  assert.deepEqual(
+    both!.tasks.map((task) => [task.moved, task.baseline]),
+    [
+      ['same', { errored: 0, passed: 2, scored: 3 }],
+      ['same', { errored: 0, passed: 3, scored: 3 }],
+    ],
+  )
+  assert.deepEqual(
+    [both!.baseline!.attempts, both!.baseline!.passed, both!.baseline!.errored],
+    [6, 5, 0],
+  )
+  assert.match(
+    Compare.against([first, rerun], second),
+    /^one: run new against the baseline old with again$/m,
+  )
+  assert.deepEqual(
+    Compare.lineages([second, first, rerun]).map((runs) => runs.map((run) => run.id)),
+    [['new'], ['old', 'again']],
+  )
+  assert.deepEqual(
+    Compare.arms([first, rerun, second]).map((arm) => [arm.runs, arm.attempts, arm.passed]),
+    [
+      [['old', 'again'], 6, 5],
+      [['new'], 6, 5],
+    ],
+  )
+  assert.match(
+    Compare.table([first, rerun, second]),
+    /^\| Task \| one of old and again \| one of new \|$/m,
+  )
 })

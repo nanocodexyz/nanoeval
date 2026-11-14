@@ -3370,3 +3370,36 @@ Every command that was refused ended in an uncaught rejection: Node printed the 
 **Checked.** Unit tests in `test/Refusal.test.ts`, one of which runs the command. The refusals above read again. `npm run lint`, `npm run check:types`, `npm test`, and the plain lane and the lane `machine` on directory slots, whose runner exits with what its machine said.
 
 **Not verified.** A runner in a leased sandbox, whose log is where its last words go: it now ends with one line where it had a stack.
+
+## 2026-11-14: a comparison says what the numbers support
+
+`compare --baseline` printed `gained` and `lost` for a task as "some attempt passed on one side and none on the other". With a few attempts a task that passes half the time changes sides by chance, an attempt that errored counted as one that did not pass, the pass@k of the two sides was over each side's own tasks, and nothing said how sure the answer was.
+
+**Found** on directory slots under local workerd with a scripted model whose answer to each attempt was planned, 8 tasks and 3 attempts a side.
+
+- A run cancelled after 10 of its 24 rows, against the same run left to finish: `lost: t2 (2/3 to 0/3), t4 (1/3 to 0/3)`. Each of the two tasks had one scored attempt in the cancelled run, which failed, and two rows that never ran.
+- Two runs of the same agent on the same builds, 3 tasks and 2 attempts against 8 tasks and 3: `compare` put them in one row of 30 attempts, and `pass@1 41.7% of 6 tasks` stood beside `50.0%` of 3 other tasks.
+
+**The rule.**
+
+- A side is a run with the reruns named beside it, each row once, as `compare` counts them. `--baseline` may be given several times, and the runs given after the options are taken apart into a run with its reruns each.
+- The score of a task on a side is its passed attempts over its scored ones, `2/3`, with the errored ones beside it, `0/1 +2 errored`. A task with no scored attempt on a side has no verdict there and is not compared: it is listed as such and left out of the verdict.
+- pass@k is printed for each side as its summary prints it, and again over the tasks that both sides rate at that k wherever the two differ, so a figure is never set against one over other tasks.
+- A task is `lost` or `gained` when Fisher's exact test of its two pass counts, one-sided, gives 0.05 or less: the chance, if the attempts of both sides came from one pass rate, that the passes fall this unevenly or more. Otherwise a task whose rate changed is `moved, within noise`, with that chance printed. Three attempts a side reach 0.05 only as 3/3 against 0/3, four reach 0.014, and one or two cannot reach it at all (0.5 and 0.167), which the output then says: one task that flips is not evidence.
+- The verdict is the same test over all tasks together: the passes of the run summed over the tasks both sides scored, against the exact distribution of that sum when each task keeps its own total of passes (the test stratified by task, of which the sign test is the case of one attempt a side). It is a `regression` or an `improvement` at 0.05 or less in that direction, else `no change beyond noise`, with both chances printed.
+- The error rate: an agent that did not change is called a regression in at most 1 comparison of 20, and an improvement in at most 1 of 20. Each task is held to the same line by itself, with no correction for the number of tasks, so over many flaky tasks a false `lost` is expected now and then (at three attempts at most 1.6 % a task, the chance of 3/3 against 0/3 at a pass rate of one half), and the verdict is the line to gate on. The tests are exact and conservative: the true rates are lower with few attempts.
+- What it assumes: the attempts of a task on a side are independent and share a pass rate. A cache or a seed that ties attempts together breaks that, and so does a task whose outcome depends on the machine.
+- In the table of `compare`, runs of one agent on one revision share a row only while they hold different rows: two runs of the same task and attempt number are two measurements and get a row each, named by its run. A run and its reruns are one row, as before.
+
+**Why not an interval around pass@k.** An interval for each side says how well each is known, and two intervals that overlap are not a test of their difference. The question of a comparison is whether the difference is more than chance, and the paired test answers it with the tasks as their own controls, which is where most of the variance is.
+
+**Why not a correction over tasks.** With three attempts a side no single task could then be called at all. The overall verdict already answers for the whole comparison at one error rate, and the task lines say which tasks to read.
+
+**Checked.**
+
+- `test/Stats.test.ts`: the chances of single tasks against counts of the ways by hand (3/3 against 0/3 is 1 of 20, 2/3 against 1/3 is 10 of 20, 5/5 against 1/5 is 6 of 252, unequal sides), the test over tasks against the sign test (5 flips one way 1 of 32, 4 flips 1 of 16, 3 against 1 5 of 16), and two tasks whose joint figure is 52 of 400.
+- `test/Compare.test.ts`: three attempts a side with a task lost, one gained, one moved, one that errored on a side and tasks only one side ran; one attempt a side where five flips are a regression and four are not; a baseline with its rerun; pass@k over the tasks both sides rate; two runs of the same rows as two rows of the table.
+- On directory slots with the scripted model, a run of 8 tasks and 3 attempts against one whose plan broke one task, lowered one and raised two: `lost: t1 (3/3 to 0/3, p = 0.050)`, `moved, within noise: t2 (2/3 to 1/3, p = 0.500), t4 (1/3 to 3/3, p = 0.200), t6 (1/2 +1 errored to 3/3, p = 0.400)`, two tasks not compared, pass@1 41.7 % against 38.9 % on the 6 tasks both sides rate, and `no change beyond noise` at 0.534 for worse and 0.768 for better: every count by hand from the rows, the two chances of the verdict by a separate enumeration of all outcomes. The same run against the baseline with its two reruns, where the reruns had passed every retried row of two tasks: `regression` at 0.010, which is 1/20 times 4/20 by hand. Two runs of 6 tasks and one attempt where five tasks flipped down: no task called, `regression` at 0.031, and the line that one flip is not evidence. The cancelled run of the first finding now reads `moved, within noise: t2 (2/3 to 0/1 +2 errored, p = 0.500)`.
+- `npm run lint`, `npm run check:types`, `npm test`.
+
+**Not verified.** A real model, where the assumption of independent attempts is the open question. Runs of many tasks: the test was read on 8 tasks here and on fixtures. Agents are matched by their id, so a comparison of two models has to give them one id.

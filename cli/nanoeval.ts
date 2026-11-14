@@ -247,12 +247,18 @@ const usage = `nanoeval <command>
   attempt   --url URL --token T RUN ATTEMPT [ARTIFACT]
   export    --url URL --token T RUN --out DIR
             Write the run as a Harbor job directory, and print where.
-  compare   --url URL --token T [--baseline RUN] RUN...
+  compare   --url URL --token T [--baseline RUN]... RUN...
             Print one table of the agents of these runs: attempts, outcomes, time, tokens and
             estimated cost per agent, and the outcome of every task per agent. Runs of one
-            agent on different nanocode revisions are separate rows. With --baseline, each
-            run is also set against that run, agent by agent: attempts, pass@k, tokens, cost,
-            and the tasks it solves that the baseline does not and the reverse.
+            agent on different nanocode revisions are separate rows, and so are runs that
+            hold the same rows; a run and its reruns are one row. With --baseline, each run
+            (with the reruns of it that are named) is also set against the baseline, which
+            is every run named with --baseline taken together, agent by agent: attempts,
+            pass@k, also over the tasks both sides scored where those differ, tokens, cost,
+            the pass counts of every task that moved, and a verdict. A task is lost or
+            gained, and the verdict a regression or an improvement, only when pass counts
+            that far apart have a chance of 0.05 or less under no change; otherwise a task
+            moved within noise. A task whose attempts all errored on a side is not compared.
   revision  [--nanocode REV|DIR|pinned] [--nanocode-ts REV|DIR|pinned] [--sdk REV|DIR|pinned]
             [--lab DIR] [--hand-profile release] [--nanocode-repository URL|DIR]
             [--nanocode-ts-repository URL|DIR] [--build-only] [--baseline RUN]
@@ -956,7 +962,7 @@ async function main(lab?: Revision.Lab): Promise<void> {
       'attach-sec': { default: '60', type: 'string' },
       attempts: { type: 'string' },
       backend: { type: 'string' },
-      baseline: { type: 'string' },
+      baseline: { multiple: true, type: 'string' },
       'build-only': { default: false, type: 'boolean' },
       'ca-bundle': { type: 'string' },
       cache: { type: 'string' },
@@ -1766,7 +1772,7 @@ async function main(lab?: Revision.Lab): Promise<void> {
   if (command === 'run') {
     if (values.oracle && values.agent?.length)
       throw new Error('--oracle runs no model: leave out --agent')
-    const baseline = lab && values.baseline ? await api.results(values.baseline) : undefined
+    const baseline = await Promise.all((values.baseline ?? []).map((id) => api.results(id)))
     if (lab && !values.task?.length && !values.rerun) {
       const name = required(values.eval, 'eval').split('@')[0]!
       const held = (await api.evals()).evals.some((entry) => entry.name === name)
@@ -1910,16 +1916,20 @@ async function main(lab?: Revision.Lab): Promise<void> {
       const status = await api.status(created.id)
       if (status['state'] === 'finished') {
         console.log(summary(status))
-        if (lab) {
+        if (baseline.length) {
           const results = await api.results(created.id)
-          if (baseline)
-            process.stdout.write(
-              '\n' + Compare.table([baseline, results]) + '\n' + Compare.against(baseline, results),
-            )
+          process.stdout.write(
+            '\n' +
+              Compare.table([...baseline, results]) +
+              '\n' +
+              Compare.against(baseline, results),
+          )
+        }
+        if (lab) {
           await lab.record({
             agents: status['agents'],
             at: new Date().toISOString(),
-            ...(baseline ? { baseline: baseline.id } : {}),
+            ...(baseline.length ? { baseline: baseline[0]!.id } : {}),
             counts: status['counts'],
             eval: status['eval'],
             id: created.id,
@@ -1955,10 +1965,14 @@ async function main(lab?: Revision.Lab): Promise<void> {
   const run = required(rest[0], 'RUN')
   if (command === 'compare') {
     const runs = await Promise.all(rest.map((id) => api.results(id)))
-    const baseline = values.baseline ? await api.results(values.baseline) : undefined
+    const baseline = await Promise.all((values.baseline ?? []).map((id) => api.results(id)))
     process.stdout.write(
-      Compare.table(baseline ? [baseline, ...runs] : runs) +
-        (baseline ? runs.map((result) => '\n' + Compare.against(baseline, result)).join('') : ''),
+      Compare.table([...baseline, ...runs]) +
+        (baseline.length
+          ? Compare.lineages(runs)
+              .map((side) => '\n' + Compare.against(baseline, side))
+              .join('')
+          : ''),
     )
     return
   }
