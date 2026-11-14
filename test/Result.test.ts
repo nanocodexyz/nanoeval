@@ -148,6 +148,41 @@ test('a tool call whose input is plain text is an object in the trajectory, as H
   )
 })
 
+test('a turn that is run again counts the cost of its request once', () => {
+  const call = (seq: number, index: number) =>
+    agentEvent(seq, 'model.call.completed', {
+      call_index: index,
+      usage: { input_tokens: 10, output_tokens: 1 },
+    })
+  const prompt = (seq: number, request: string) =>
+    agentEvent(seq, 'input.accepted', { input: 'Go.', kind: 'prompt', request_id: request })
+  const again = [
+    prompt(1, 'attempt'),
+    agentEvent(2, 'run.started', { model: 'gpt-6-luna' }),
+    call(3, 1),
+    call(4, 2),
+    agentEvent(5, 'run.failed', { cost_usd: 0.02, model_calls: 2 }),
+    prompt(6, 'attempt'),
+    agentEvent(7, 'run.started', { model: 'gpt-6-luna' }),
+    call(8, 3),
+    agentEvent(9, 'run.failed', { cost_usd: 0.03, model_calls: 3 }),
+    prompt(10, 'attempt'),
+    agentEvent(11, 'run.started', { model: 'gpt-6-luna' }),
+    agentEvent(12, 'run.failed', { cost_usd: 0.03, model_calls: 3 }),
+  ]
+  const usage = Atif.usage(again)
+  assert.equal(usage.modelCalls, 3)
+  assert.equal(usage.costUsd, 0.03, 'a run end reports the cost of its request so far')
+  const next = [
+    ...again,
+    prompt(13, 'another'),
+    agentEvent(14, 'run.started', { model: 'gpt-6-luna' }),
+    call(15, 1),
+    agentEvent(16, 'run.completed', { cost_usd: 0.01, model_calls: 1 }),
+  ]
+  assert.equal(Atif.usage(next).costUsd, 0.03 + 0.01, 'a second request adds its own cost')
+})
+
 test('usage is absent cost, not zero cost, when no run reports one', () => {
   assert.equal(Atif.usage(events.slice(0, 5)).costUsd, undefined)
 })

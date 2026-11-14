@@ -88,6 +88,7 @@ export type Usage = {
 type Thread = {
   accepted: Set<string>
   calls: Map<string, Step>
+  costs: Map<string, number>
   current: Step | undefined
   extra: Record<string, unknown>
   held: Map<number, string>
@@ -96,6 +97,7 @@ type Thread = {
   latest: Step | undefined
   model: string | undefined
   parent: number | undefined
+  request: string | undefined
   role: string | undefined
   session: string
   spawned: Map<number, Observation>
@@ -162,6 +164,7 @@ function thread(id: number | undefined): Thread {
   return {
     accepted: new Set(),
     calls: new Map(),
+    costs: new Map(),
     current: undefined,
     extra: {},
     held: new Map(),
@@ -170,6 +173,7 @@ function thread(id: number | undefined): Thread {
     latest: undefined,
     model: undefined,
     parent: undefined,
+    request: undefined,
     role: undefined,
     session: '',
     spawned: new Map(),
@@ -238,6 +242,8 @@ function apply(thread: Thread, entry: { at: number; event: AgentEvent }): void {
   switch (event.type) {
     case 'input.accepted': {
       flush(thread, at)
+      if (payload['kind'] === 'prompt' && typeof payload['request_id'] === 'string')
+        thread.request = payload['request_id']
       const item =
         payload['kind'] === 'prompt' && typeof payload['request_id'] === 'string'
           ? payload['request_id'] + ':prompt'
@@ -348,7 +354,8 @@ function apply(thread: Thread, entry: { at: number; event: AgentEvent }): void {
     case 'run.failed':
       flush(thread, at)
       if (typeof payload['cost_usd'] !== 'number') break
-      thread.usage.costUsd = (thread.usage.costUsd ?? 0) + payload['cost_usd']
+      thread.costs.set(thread.request ?? '', payload['cost_usd'])
+      thread.usage.costUsd = [...thread.costs.values()].reduce((total, cost) => total + cost, 0)
       thread.unpriced = 0
       break
   }
