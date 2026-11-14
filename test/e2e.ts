@@ -19,6 +19,7 @@ import * as Runner from '../sandbox/Runner.ts'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
 import * as Store from '../sandbox/Store.ts'
 import type * as Atif from '../src/Atif.ts'
+import type * as Branch from '../src/Branch.ts'
 import * as Compare from '../src/Compare.ts'
 import * as Config from '../src/Config.ts'
 import type * as Eval from '../src/Eval.ts'
@@ -83,6 +84,8 @@ const alone = scenario === 'alone'
 const cancelled = scenario === 'cancelled'
 const capped = scenario === 'capped'
 const direct = scenario === 'direct'
+const branching = scenario === 'branches'
+const branchRequests: { check: boolean; done: boolean }[] = []
 const subagent = scenario === 'subagent'
 const subagentKills: Record<string, string> = { child: 'step-child', parent: 'step-parent' }
 const subagentKill = subagent ? subagentKills[killAt] : undefined
@@ -351,10 +354,37 @@ function responses(
   const id = ++scriptedCalls
   const solution = solutions.find(([marker]) => text.includes(marker))
   if (!solution) throw new Error('the scripted model has no solution for this prompt')
+  const checking = branching
+    ? input.findLastIndex(
+        (item) => item['role'] === 'user' && JSON.stringify(item).includes('SELF-CHECK: PASS if'),
+      )
+    : -1
+  const checked =
+    checking === -1
+      ? undefined
+      : input
+          .slice(checking + 1)
+          .findLast((item) =>
+            ['custom_tool_call_output', 'function_call_output'].includes(item['type']),
+          )?.['output']
   const code =
-    'await tools.exec_command({ cmd: ' +
-    JSON.stringify(solution[1]) +
-    ' }); text("cell tools: " + JSON.stringify(ALL_TOOLS.map((tool) => tool.name)))'
+    checking !== -1
+      ? 'const result = await tools.exec_command({ cmd: ' +
+        JSON.stringify(
+          '[ "$(cat greeting.txt)" = \'hello from nanoeval\' ] && echo check-$((40 + 2))-pass || echo check-$((40 + 2))-fail',
+        ) +
+        ' }); text(JSON.stringify(result))'
+      : 'await tools.exec_command({ cmd: ' +
+        JSON.stringify(
+          branching
+            ? 'case "$PWD" in *-b2/*) test -f README.md && ' +
+                solution[1] +
+                ' ;; *) ' +
+                solution[2] +
+                ' ;; esac'
+            : solution[1],
+        ) +
+        ' }); text("cell tools: " + JSON.stringify(ALL_TOOLS.map((tool) => tool.name)))'
   const tools = [
     ...(body.tools ?? []),
     ...input.flatMap((item) => (item['type'] === 'additional_tools' ? item['tools'] : [])),
@@ -381,32 +411,44 @@ function responses(
           : ((output ?? []) as { text?: string }[]).map((part) => part.text ?? '').join(''),
       tools,
     })
-  const item =
-    output !== undefined
+  const finished = checking === -1 ? output !== undefined : checked !== undefined
+  if (branching) branchRequests.push({ check: checking !== -1, done: finished })
+  const item = finished
+    ? {
+        content: [
+          {
+            annotations: [],
+            text:
+              checking === -1
+                ? 'The task is complete.'
+                : JSON.stringify(checked).includes('check-42-pass')
+                  ? 'The greeting is right.\nSELF-CHECK: PASS'
+                  : 'The greeting is wrong.\nSELF-CHECK: FAIL',
+            type: 'output_text',
+          },
+        ],
+        id: 'msg_' + id,
+        role: 'assistant',
+        status: 'completed',
+        type: 'message',
+      }
+    : plain
       ? {
-          content: [{ annotations: [], text: 'The task is complete.', type: 'output_text' }],
-          id: 'msg_' + id,
-          role: 'assistant',
+          arguments: JSON.stringify({ cmd: solution[1] + '; echo direct-$((40 + 2))' }),
+          call_id: 'call_' + id,
+          id: 'fc_' + id,
+          name: 'exec_command',
           status: 'completed',
-          type: 'message',
+          type: 'function_call',
         }
-      : plain
-        ? {
-            arguments: JSON.stringify({ cmd: solution[1] + '; echo direct-$((40 + 2))' }),
-            call_id: 'call_' + id,
-            id: 'fc_' + id,
-            name: 'exec_command',
-            status: 'completed',
-            type: 'function_call',
-          }
-        : {
-            call_id: 'call_' + id,
-            id: 'ctc_' + id,
-            input: code,
-            name: 'exec',
-            status: 'completed',
-            type: 'custom_tool_call',
-          }
+      : {
+          call_id: 'call_' + id,
+          id: 'ctc_' + id,
+          input: code,
+          name: 'exec',
+          status: 'completed',
+          type: 'custom_tool_call',
+        }
   const response = {
     created_at: 0,
     id: 'resp_' + id,
@@ -1089,7 +1131,7 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
             ? metered(body)
             : codex && midturnPair
               ? pairwise(body)
-              : codex && direct
+              : codex && (direct || branching)
                 ? responses(body)
                 : scripted(body, turnLost ? MockGateway.modelUsd['/v1/messages'] : undefined)
         if (
@@ -1320,7 +1362,7 @@ async function main(): Promise<void> {
     ...((model === 'scripted' || installed || scenario === 'judge') && !mock && !loginLane
       ? { ANTHROPIC_API_KEY: 'scripted' }
       : {}),
-    ...((direct || installed || midturnPair) && upstream.url && !mock && !loginLane
+    ...((direct || branching || installed || midturnPair) && upstream.url && !mock && !loginLane
       ? { OPENAI_API_KEY: 'scripted-openai', OPENAI_BASE_URL: upstream.url }
       : {}),
     ...(model === 'anthropic' ? { ANTHROPIC_API_KEY: process.env['ANTHROPIC_API_KEY']! } : {}),
@@ -1591,7 +1633,7 @@ async function main(): Promise<void> {
       )
     )
       throw new Error('the ' + scenario + ' scenario runs on the scripted model')
-    if ((direct || subagent) && (backend !== 'dir' || gateway))
+    if ((direct || branching || subagent) && (backend !== 'dir' || gateway))
       throw new Error('the ' + scenario + ' scenario runs on directory slots, without the gateway')
     if (midturn && (backend !== 'dir' || !midturnKills[killAt]))
       throw new Error(
@@ -1616,7 +1658,7 @@ async function main(): Promise<void> {
     const lost = 'tasks/write-greeting'
     const directories = judged
       ? ['final-answer', 'judged-answer'].map((name) => Path.join('test/fixtures', name))
-      : alone || direct || midturn || subagent
+      : alone || branching || direct || midturn || subagent
         ? [Path.join('tasks', 'write-greeting')]
         : packing
           ? ['extract-todos', 'uppercase-message', 'write-greeting'].map((name) =>
@@ -1677,55 +1719,57 @@ async function main(): Promise<void> {
               ]
             : midturnPair
               ? [{ id: 'right', model: 'gpt-right', provider: 'codex' }]
-              : direct
-                ? [
-                    { id: 'cells', model: 'gpt-right', provider: 'codex' },
-                    {
-                      id: 'direct',
-                      model: 'gpt-right',
-                      orchestration: 'direct' as const,
-                      provider: 'codex',
-                    },
-                  ]
-                : alone ||
-                    cached ||
-                    closed ||
-                    failures ||
-                    isolated ||
-                    midturn ||
-                    packing ||
-                    slotGone ||
-                    subagent ||
-                    budgeted ||
-                    searching ||
-                    model !== 'scripted'
+              : branching
+                ? [{ branches: 3, id: 'branched', model: 'gpt-right', provider: 'codex' }]
+                : direct
                   ? [
+                      { id: 'cells', model: 'gpt-right', provider: 'codex' },
                       {
-                        id:
-                          alone ||
-                          cached ||
-                          closed ||
-                          failures ||
-                          isolated ||
-                          midturn ||
-                          packing ||
-                          slotGone ||
-                          subagent ||
-                          budgeted ||
-                          searching
-                            ? 'right'
-                            : 'nanocode',
-                        model: subagent ? 'claude-haiku-5-5' : realModel,
-                        provider: 'claude',
-                        ...(subagent ? { thinking: 'low' } : {}),
+                        id: 'direct',
+                        model: 'gpt-right',
+                        orchestration: 'direct' as const,
+                        provider: 'codex',
                       },
                     ]
-                  : [
-                      gateway
-                        ? { id: 'right', model: 'gpt-right', provider: 'codex' }
-                        : { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
-                      { id: 'wrong', model: 'claude-sonnet-4-6', provider: 'claude' },
-                    ]
+                  : alone ||
+                      cached ||
+                      closed ||
+                      failures ||
+                      isolated ||
+                      midturn ||
+                      packing ||
+                      slotGone ||
+                      subagent ||
+                      budgeted ||
+                      searching ||
+                      model !== 'scripted'
+                    ? [
+                        {
+                          id:
+                            alone ||
+                            cached ||
+                            closed ||
+                            failures ||
+                            isolated ||
+                            midturn ||
+                            packing ||
+                            slotGone ||
+                            subagent ||
+                            budgeted ||
+                            searching
+                              ? 'right'
+                              : 'nanocode',
+                          model: subagent ? 'claude-haiku-5-5' : realModel,
+                          provider: 'claude',
+                          ...(subagent ? { thinking: 'low' } : {}),
+                        },
+                      ]
+                    : [
+                        gateway
+                          ? { id: 'right', model: 'gpt-right', provider: 'codex' }
+                          : { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
+                        { id: 'wrong', model: 'claude-sonnet-4-6', provider: 'claude' },
+                      ]
 
     const api = client({ token, url })
     const store = blobStore(storeKind === 'r2' ? 'r2' : storeRoot, { token, url })
@@ -1863,6 +1907,7 @@ async function main(): Promise<void> {
       agents,
       attempts:
         alone ||
+        branching ||
         cached ||
         closed ||
         direct ||
@@ -2586,23 +2631,30 @@ async function main(): Promise<void> {
         'an attempt whose session called a model has its calls and tokens: ' +
           JSON.stringify(usage),
       )
-      const trajectory = JSON.parse(await read('agent/trajectory.json')) as Atif.Trajectory
+      const trajectories: Atif.Trajectory[] = []
+      for (const name of artifacts.filter((name) =>
+        /^agent\/(branch-[0-9]+\/)?trajectory\.json$/.test(name),
+      ))
+        trajectories.push(JSON.parse(await read(name)) as Atif.Trajectory)
       const every = (all: Atif.Trajectory): Atif.Step[] => [
         ...all.steps,
         ...(all.subagent_trajectories ?? []).flatMap(every),
       ]
-      const steps = every(trajectory).filter((step) => step.source === 'agent')
+      const steps = trajectories.flatMap(every).filter((step) => step.source === 'agent')
       assert.equal(
         steps.length,
         usage.modelCalls,
-        'one agent step for each model call, of the session and of its subagents',
+        'one agent step for each model call, of the session, of its subagents and of every branch',
       )
       assert.ok(
         steps.every((step) => step.metrics),
         'every agent step has the tokens of its model call',
       )
-      assert.equal(trajectory.final_metrics.extra.model_calls, usage.modelCalls)
-      if (scenario === 'tasks' || midturn || subagent) {
+      assert.equal(
+        trajectories.reduce((all, one) => all + one.final_metrics.extra.model_calls, 0),
+        usage.modelCalls,
+      )
+      if (scenario === 'tasks' || branching || midturn || subagent) {
         const sum = (field: string) =>
           answered.reduce((all: number, entry) => all + entry.usage[field], 0)
         assert.deepEqual(
@@ -3778,6 +3830,49 @@ async function main(): Promise<void> {
       })
       assert.equal(refused.status, 400)
       assert.match(await refused.text(), /no failed attempt to rerun/)
+      await pass()
+      return
+    }
+
+    if (branching) {
+      const detail = details[0]!
+      assert.equal(details.length, 1)
+      assert.equal(detail['attempt'].outcome, 'passed', JSON.stringify(detail['attempt'].failure))
+      const read = (name: string) => api.artifact(created.id, detail['attempt'].id, name)
+      const record = JSON.parse(await read('agent/branches.json')) as Branch.Record
+      assert.equal(record.chosen, 2, 'the only branch whose self-check passed is kept')
+      assert.deepEqual(
+        record.branches.map((branch) =>
+          branch.state === 'completed' ? branch.verdict : branch.state,
+        ),
+        ['fail', 'fail', 'pass'],
+      )
+      assert.equal(
+        branchRequests.length,
+        12,
+        'each of 3 branches asks twice to work and twice to check',
+      )
+      assert.equal(branchRequests.filter((request) => request.check).length, 6)
+      const usage = detail['result'].usage as Atif.Usage
+      assert.equal(usage.modelCalls, 12, 'the usage of the attempt counts every branch')
+      assert.equal(usage.inputTokens, 12 * 100)
+      assert.equal(usage.outputTokens, 12 * 7)
+      for (const index of [0, 1]) {
+        assert.match(await read('agent/branch-' + index + '/trajectory.json'), /SELF-CHECK: FAIL/)
+      }
+      assert.match(await read('agent/trajectory.json'), /SELF-CHECK: PASS/)
+      assert.match(await read('verifier/test-stdout.txt'), /greeting.txt is correct/)
+      console.log(
+        'branches: 3 branches forked from one slot, branch ' +
+          record.chosen +
+          ' kept by its self-check and verified alone; usage ' +
+          usage.modelCalls +
+          ' model calls, ' +
+          usage.inputTokens +
+          ' input and ' +
+          usage.outputTokens +
+          ' output tokens across every branch',
+      )
       await pass()
       return
     }

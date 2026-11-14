@@ -35,7 +35,10 @@ test('the command prints a refusal as one line and exits 1', () => {
     })
   const there = ['--url', 'http://127.0.0.1:9', '--token', 't']
   const agent = run('run', ...there, '--eval', 'samples', '--agent', 'bad')
-  assert.equal(agent.stderr, 'nanoeval: an agent is ID=HARNESS:MODEL[:THINKING], not bad\n')
+  assert.equal(
+    agent.stderr,
+    'nanoeval: an agent is ID=HARNESS:MODEL[:THINKING][:branches=N], not bad\n',
+  )
   assert.equal(agent.status, 1)
   const option = run('run', '--tag', 'x')
   assert.equal(option.stderr.trim().split('\n').length, 1)

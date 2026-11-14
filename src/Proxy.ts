@@ -41,7 +41,13 @@ export const toolUsd: Record<Provider, Record<string, number>> = {
   codex: { file_search: 0.0025, web_search: 0.01 },
 }
 
-export type Session = { attempt: string; claim: number; judge?: number; run: string }
+export type Session = {
+  attempt: string
+  branch?: number
+  claim: number
+  judge?: number
+  run: string
+}
 
 export const oauthBeta = 'oauth-2025-04-20'
 export const relaySecretHeader = 'x-nanocode-relay-secret'
@@ -122,10 +128,13 @@ export function refusal(body: string): Exclude<Refusal, 'budget'> | undefined {
 }
 
 export function session(name: string): Session | undefined {
-  const match = /^([0-9a-f-]{36})-(a[0-9]+)-([0-9]+)(?:-judge-([0-9]+))?$/.exec(name)
+  const match = /^([0-9a-f-]{36})-(a[0-9]+)-([0-9]+)(?:-judge-([0-9]+)|-branch-([0-9]+))?$/.exec(
+    name,
+  )
   if (!match) return undefined
   return {
     attempt: match[2]!,
+    ...(match[5] === undefined ? {} : { branch: Number(match[5]) }),
     claim: Number(match[3]),
     ...(match[4] === undefined ? {} : { judge: Number(match[4]) }),
     run: match[1]!,

@@ -495,11 +495,12 @@ export function parseAgent(text: string): Config.Agent {
   const match = new RegExp(
     '^([^=]+)=(' +
       ['claude', 'codex-direct', 'codex', ...Installed.kinds].join('|') +
-      ')(\\+preflight)?:([^:]+)(?::([a-z]+))?$',
+      ')(\\+preflight)?:([^:]+)(?::([a-z]+))?(?::branches=([0-9]+))?$',
   ).exec(text)
-  if (!match) throw new Error('an agent is ID=HARNESS:MODEL[:THINKING], not ' + text)
+  if (!match) throw new Error('an agent is ID=HARNESS:MODEL[:THINKING][:branches=N], not ' + text)
   const direct = match[2] === 'codex-direct'
   return {
+    ...(match[6] ? { branches: Number(match[6]) } : {}),
     id: match[1]!,
     model: match[4]!,
     ...(direct ? { orchestration: 'direct' as const } : {}),
@@ -682,7 +683,8 @@ export function agentText(agent: Config.Agent): string {
     (agent.preflight ? '+preflight' : '') +
     ':' +
     agent.model +
-    (agent.thinking ? ':' + agent.thinking : '')
+    (agent.thinking ? ':' + agent.thinking : '') +
+    (agent.branches ? ':branches=' + agent.branches : '')
   )
 }
 

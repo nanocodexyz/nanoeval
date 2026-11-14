@@ -741,3 +741,60 @@ test(
     assert.deepEqual(Krun.machines(root), [])
   },
 )
+
+test('a dir slot forks into branches that start from what its workspace held and verify alone', async () => {
+  const provider = Local.create({ token, url: server.url })
+  const created = await provider.create({ metadata: {}, template: undefined, timeoutSec: 60 })
+  const sandbox = provider.connect(created.handle)
+  const slots = Slot.create({ home: created.handle.home })
+  const home = created.handle.home
+  await Sandbox.run(sandbox, 'mkdir -p ' + Sandbox.quote(home + '/slots/trunk'))
+  await sandbox.write(slots.script, script)
+  const task = await loadTask('tasks/extract-todos', { solution: true })
+  await sandbox.write(
+    slots.taskFile('trunk'),
+    Tar.pack(
+      Object.entries(task.files).map(([path, data]) => ({
+        data: Bytes.fromBase64(data),
+        executable: task.executable.includes(path),
+        path,
+      })),
+    ),
+  )
+  await assert.rejects(Sandbox.run(sandbox, slots.fork('trunk', 'trunk-b1')), /is not up/)
+  await Sandbox.run(
+    sandbox,
+    slots.up('trunk', { backend: 'dir', cpus: 1, memoryMb: 256, network: 'host', storageMb: 1024 }),
+  )
+  const status = async () => Slot.parseStatus(await Sandbox.run(sandbox, slots.status()))
+  assert.equal(await wait(async () => (await status()).slots['trunk']!.up), 'exit:0')
+  await Sandbox.run(
+    sandbox,
+    'echo before-the-fork > ' + Sandbox.quote(home + '/slots/trunk/work/state'),
+  )
+  for (const branch of ['trunk-b1', 'trunk-b2'])
+    await Sandbox.run(sandbox, slots.fork('trunk', branch))
+  for (const branch of ['trunk-b1', 'trunk-b2']) {
+    assert.equal(await wait(async () => (await status()).slots[branch]!.up), 'exit:0')
+    assert.equal(
+      await Sandbox.run(sandbox, 'cat ' + Sandbox.quote(home + '/slots/' + branch + '/work/state')),
+      'before-the-fork\n',
+    )
+    assert.equal(
+      await Sandbox.run(sandbox, 'cat ' + Sandbox.quote(home + '/slots/' + branch + '/workdir')),
+      home + '/slots/' + branch + '/work\n',
+    )
+  }
+  await Sandbox.run(sandbox, slots.solve('trunk-b2', 30))
+  assert.equal(await wait(async () => (await status()).slots['trunk-b2']!.solve), 'exit:0')
+  for (const slot of ['trunk', 'trunk-b1', 'trunk-b2']) {
+    await Sandbox.run(sandbox, slots.verify(slot, 30))
+    await wait(async () => (await status()).slots[slot]!.verify)
+  }
+  const after = await status()
+  assert.deepEqual(
+    ['trunk', 'trunk-b1', 'trunk-b2'].map((slot) => after.slots[slot]!.reward),
+    [0, 0, 1],
+  )
+  await provider.kill(created.handle)
+})

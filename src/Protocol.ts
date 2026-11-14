@@ -38,7 +38,7 @@ export type ClaimRequest = {
 }
 
 export type Claimed = {
-  agent: { cli?: Installed.Agent; id: string; oracle: boolean; preflight?: true }
+  agent: { branches?: number; cli?: Installed.Agent; id: string; oracle: boolean; preflight?: true }
   claim: string
   id: string
   leaseUntil: number
@@ -71,6 +71,8 @@ export type Yielded = { yielded: boolean }
 
 export type Session = { name: string; token: string; url: string }
 
+export type Hand = { branch?: number }
+
 export type Endpoint = { token: string; url: string }
 
 export type Ask = { facts?: string; instruction?: string; waitMs?: number }
@@ -88,10 +90,10 @@ export type Next =
 
 export type Agent =
   | { state: 'attached'; timeoutSec: number }
-  | { message: string; state: 'completed' }
+  | { branch?: number; message: string; state: 'completed' }
   | { error: string; state: 'failed' }
   | { detached: boolean; state: 'running' }
-  | { state: 'timeout' }
+  | { branch?: number; state: 'timeout' }
   | { state: 'waiting' }
 
 export type Judgement =

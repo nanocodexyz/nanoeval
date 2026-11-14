@@ -1,3 +1,4 @@
+import * as Branch from './Branch.ts'
 import * as Eval from './Eval.ts'
 import * as Installed from './Installed.ts'
 import type * as Ledger from './Ledger.ts'
@@ -16,6 +17,7 @@ export class UnsupportedError extends Error {
 export type Backend = Slot.Backend | 'auto'
 
 export type Agent = {
+  branches?: number
   id: string
   model: string
   orchestration?: Orchestration
@@ -207,7 +209,14 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude' && provider !== 'codex')
         fail(agent.id + ' has a preflight, which only claude and codex sessions take')
     }
+    if (agent.branches !== undefined) {
+      if (!Branch.valid(agent.branches))
+        fail(agent.id + ' branches into a whole number of at least two sessions')
+      if (provider !== 'claude' && provider !== 'codex')
+        fail(agent.id + ' branches, and only a claude or codex session can')
+    }
     return {
+      ...(agent.branches === undefined ? {} : { branches: agent.branches }),
       id: agent.id,
       model: agent.model,
       ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),

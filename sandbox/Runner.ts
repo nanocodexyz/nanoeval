@@ -4,6 +4,7 @@ import * as Fs from 'node:fs/promises'
 import * as Path from 'node:path'
 import * as Admission from '../src/Admission.ts'
 import * as Bootstrap from '../src/Bootstrap.ts'
+import * as Branch from '../src/Branch.ts'
 import * as Config from '../src/Config.ts'
 import * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
@@ -71,7 +72,7 @@ type Shared = {
   unpacking: Map<string, Promise<void>>
 }
 
-type Stage = 'agent' | 'attach' | 'cli' | 'judge' | 'prepare' | 'solve' | 'up' | 'verify'
+type Stage = 'agent' | 'attach' | 'cli' | 'fork' | 'judge' | 'prepare' | 'solve' | 'up' | 'verify'
 
 type Work = {
   at: number
@@ -119,6 +120,13 @@ function output(command: string, env: NodeJS.ProcessEnv): Promise<Sandbox.Output
 
 async function text(file: string): Promise<string | undefined> {
   return Fs.readFile(file, 'utf8').catch(() => undefined)
+}
+
+async function exists(path: string): Promise<boolean> {
+  return Fs.stat(path).then(
+    () => true,
+    () => false,
+  )
 }
 
 async function phase(file: string): Promise<Slot.Phase> {
@@ -726,6 +734,9 @@ async function attend(
         () => true,
         () => false,
       ))
+    for (const slot of branchSlots(item))
+      if (slot !== item.row.slot && (await exists(Path.join(home, 'slots', slot))))
+        await output(slots.down(slot, 'keep'), env)
     await output(slots.down(item.row.slot, marked ? 'remove' : 'keep'), env)
     if (marked) await Disks.forget(disk!.trim())
     item.watcher?.close()
@@ -1017,6 +1028,43 @@ async function attend(
     await Fs.writeFile(file, content)
   }
 
+  const attachHand = async (item: Work, input: { index: number; session: Protocol.Session }) => {
+    const slot = Branch.slot(item.row.slot, input.index)
+    const file = Path.join(home, 'slots', slot, 'token')
+    await Fs.writeFile(file, input.session.token + '\n', { mode: 0o600 })
+    try {
+      await timed(item, 'attempt.hand', () =>
+        shell(
+          slots.hand(slot, { name: input.session.name, url: input.session.url }) +
+            ' < ' +
+            Sandbox.quote(file),
+        ),
+      )
+    } finally {
+      await Fs.rm(file, { force: true })
+    }
+  }
+
+  const branchSlots = (item: Work) =>
+    item.row.agent.branches
+      ? Branch.indexes(item.row.agent.branches).map((index) =>
+          Branch.slot(Branch.base(item.row.slot), index),
+        )
+      : [item.row.slot]
+
+  const keep = async (item: Work, branch: number | undefined) => {
+    if (!item.row.agent.branches) return
+    const chosen = Branch.slot(Branch.base(item.row.slot), branch ?? 0)
+    for (const slot of branchSlots(item))
+      if (slot !== chosen && (await exists(Path.join(home, 'slots', slot))))
+        await output(slots.down(slot, 'keep'), env)
+    if (chosen === item.row.slot) return
+    item.watcher?.close()
+    item.row = { ...item.row, slot: chosen }
+    observe(item)
+    log('kept the branch ' + chosen + ' of ' + item.row.id)
+  }
+
   const startVerifier = async (item: Work, solve?: { code: number }) => {
     const task = item.row.task
     await rowCall(item, 'verify', solve ? { solve } : {})
@@ -1121,19 +1169,54 @@ async function attend(
         }
         item.marks.push({ at: item.at, ms: now - item.at, name: 'attempt.up' })
         if (item.row.agent.cli) return startCli(item, item.row.agent.cli)
-        const session = (item.session ??= await rowCall<Protocol.Session>(item, 'session'))
-        const file = Path.join(target, 'token')
-        await Fs.writeFile(file, session.token + '\n', { mode: 0o600 })
-        try {
-          await timed(item, 'attempt.hand', () =>
-            shell(
-              slots.hand(item.row.slot, { name: session.name, url: session.url }) +
-                ' < ' +
-                Sandbox.quote(file),
+        if (item.row.agent.branches) {
+          for (const index of Branch.indexes(item.row.agent.branches).slice(1))
+            await shell(slots.fork(item.row.slot, Branch.slot(item.row.slot, index)))
+          return move(item, 'fork')
+        }
+        item.session ??= await rowCall<Protocol.Session>(item, 'session')
+        await attachHand(item, { index: 0, session: item.session })
+        return move(item, 'attach')
+      }
+      case 'fork': {
+        const forks = Branch.indexes(item.row.agent.branches!).slice(1)
+        const codes = await Promise.all(
+          forks.map(async (index) =>
+            Slot.exit(
+              await phase(Path.join(home, 'slots', Branch.slot(item.row.slot, index), 'up.status')),
             ),
+          ),
+        )
+        const failed = codes.findIndex((code) => code !== undefined && code !== 0)
+        if (failed !== -1) {
+          const branch = Branch.slot(item.row.slot, forks[failed]!)
+          const upLog = await shell(slots.log(branch, 'up', Protocol.logBytes))
+          if (codes[failed] === Slot.machineExit) throw new MachineError(upLog.trim().slice(-2000))
+          await upload(item, 'environment.log', upLog)
+          return fail(
+            item,
+            'environment',
+            'the branch ' +
+              branch +
+              ' failed to fork with exit code ' +
+              codes[failed] +
+              ': ' +
+              upLog.slice(-2000),
           )
-        } finally {
-          await Fs.rm(file, { force: true })
+        }
+        if (codes.includes(undefined)) {
+          const setupSec = Math.max(task.setupTimeoutSec ?? 0, config.limits.setupSec)
+          if (elapsed > setupSec * 1000)
+            return fail(item, 'environment', 'the branches did not fork within ' + setupSec + ' s')
+          return pending(item)
+        }
+        item.marks.push({ at: item.at, ms: now - item.at, name: 'attempt.fork' })
+        for (const index of Branch.indexes(item.row.agent.branches!)) {
+          const session = await rowCall<Protocol.Session>(item, 'session', {
+            branch: index,
+          } satisfies Protocol.Hand)
+          if (index === 0) item.session = session
+          await attachHand(item, { index, session })
         }
         return move(item, 'attach')
       }
@@ -1191,6 +1274,7 @@ async function attend(
         const state = await asked
         if (state.state === 'completed' || state.state === 'timeout') {
           item.message = state.state === 'completed' ? state.message : ''
+          await keep(item, state.branch)
           return startVerifier(item)
         }
         if (state.state === 'failed') {
@@ -1323,11 +1407,14 @@ async function attend(
     }
   const { backend, capabilities } = shared.ready
   prefetch(config.ahead)
-  const others = new Set(everything().map((item) => item.row.slot))
+  const others = new Set(everything().flatMap((item) => branchSlots(item)))
   serving.rows = () => [...work.values()]
   for (const name of await Fs.readdir(Path.join(home, 'slots'))) {
     if (others.has(name)) continue
     const saved = await text(Path.join(home, 'slots', name, 'row.json'))
+    const forked = await text(Path.join(home, 'slots', name, 'fork'))
+    if (!saved && forked && (await exists(Path.join(home, 'slots', forked.trim(), 'row.json'))))
+      continue
     if (!saved) {
       await output(slots.down(name, 'keep'), env)
       continue
@@ -1404,10 +1491,13 @@ async function attend(
     return {
       ...(capacity.freeDiskMb === undefined ? {} : { freeDiskMb: await freeDiskMb([home, cache]) }),
       memoryMb: rows.reduce(
-        (total, item) => total + Admission.clamp(item.row.task.resources.memoryMb, capacity),
+        (total, item) =>
+          total +
+          Admission.clamp(item.row.task.resources.memoryMb, capacity) *
+            (item.row.agent.branches ?? 1),
         0,
       ),
-      running: rows.length,
+      running: rows.reduce((total, item) => total + (item.row.agent.branches ?? 1), 0),
       starting: rows.filter((item) => item.stage === 'prepare' || item.stage === 'up').length,
     }
   }

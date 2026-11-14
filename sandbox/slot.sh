@@ -202,7 +202,7 @@ cmd_probe() {
   if [ -f "$rt/trust" ]; then ca_bundle=true; fi
   if [ -n "${NANOEVAL_SLOT_ENV:-}" ]; then slot_env=true; fi
   if [ -n "${NANOEVAL_SLOT_FORWARD:-}" ]; then slot_forward=true; fi
-  printf '{"arch":"%s","backend":"%s","bwrap":%s,"ca_bundle":%s,"cgroup":%s,"cpus":%s,"kernel":"%s","krun":%s,"kvm":%s,"memory_mb":%s,"network":"%s","ns":%s,"slot_env":%s,"slot_forward":%s,"userns":%s}\n' \
+  printf '{"arch":"%s","backend":"%s","bwrap":%s,"ca_bundle":%s,"cgroup":%s,"cpus":%s,"fork":true,"kernel":"%s","krun":%s,"kvm":%s,"memory_mb":%s,"network":"%s","ns":%s,"slot_env":%s,"slot_forward":%s,"userns":%s}\n' \
     "$(uname -m)" "$(cat "$home/backend" 2>/dev/null || printf none)" "$bwrap" "$ca_bundle" "$cgroup" "$cpus" "$(uname -r)" "$microvm" "$kvm" "$memory" "$(cat "$home/network" 2>/dev/null || printf none)" "$ns" "$slot_env" "$slot_forward" "$userns"
 }
 
@@ -498,6 +498,51 @@ cmd_drop() {
   drop_disk "$base" || true
 }
 
+cmd_fork() {
+  local slot=$1 branch=$2
+  valid "$slot"
+  valid "$branch"
+  local dir=$home/slots/$slot to=$home/slots/$branch
+  [ "$(state "$dir/up.status")" = exit:0 ] || die "slot $slot is not up"
+  [ "$(state "$dir/hand.status")" = none ] || die "slot $slot forks before its hand starts"
+  case $(state "$to/up.status") in
+    running | exit:0) return 0 ;;
+  esac
+  side=machine
+  trap fault EXIT
+  mkdir -p "$to"
+  spawn "$to/up.status" "$to/up.log" bash "$self" _fork "$slot" "$branch"
+}
+
+cmd__fork() {
+  local slot=$1 branch=$2
+  local dir=$home/slots/$slot to=$home/slots/$branch archive name args=()
+  side=machine
+  trap fault EXIT
+  mapfile -t args <"$dir/up.args"
+  for archive in "$dir"/*.tar; do
+    [ -f "$archive" ] || continue
+    cp "$archive" "$to/"
+  done
+  for name in env offline solution.env verifier.cache verifier.env; do
+    if [ -f "$dir/$name" ]; then cp "$dir/$name" "$to/$name"; fi
+  done
+  case $(cat "$dir/backend") in
+    krun | ns)
+      mapfile -t options < <(guest_options "$dir")
+      vm "$dir" exec "${options[@]}" --user 0 -- sync
+      cp --reflink=auto --sparse=always "$dir/upper.ext4" "$to/upper.ext4"
+      : >"$to/forked"
+      ;;
+  esac
+  cmd__up "$branch" "${args[@]:1}"
+  if [ "$(cat "$dir/backend")" = dir ]; then
+    rm -rf "$to/work"
+    cp -a --reflink=auto "$dir/work" "$to/work"
+  fi
+  printf '%s\n' "$slot" >"$to/fork"
+}
+
 cmd_tools() {
   mkdir -p "$rt"
   if [ -c /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then setup_krun; else launcher_files; fi
@@ -508,6 +553,7 @@ cmd__up() {
   local dir=$home/slots/$slot archive
   side=machine
   trap fault EXIT
+  printf '%s\n' "$@" >"$dir/up.args"
   rm -rf "$dir/task" "$dir/verifier"
   mkdir -p "$dir/task" "$dir/verifier"
   side=task
@@ -552,7 +598,7 @@ cmd__up() {
       printf '%s\n' "${workdir:-/}" >"$dir/workdir"
       local options=() forward
       : >"$dir/vm.log"
-      format "$dir/upper.ext4" "$storage"
+      if [ ! -f "$dir/forked" ]; then format "$dir/upper.ext4" "$storage"; fi
       side=machine
       if [ "$backend" = ns ]; then
         mkdir -p "$dir/ctl/io"
@@ -1089,10 +1135,10 @@ cmd_file() {
 }
 
 command=${1:-}
-[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|tools|agents|up|hand|preflight|agent|solve|verify|gone|down|drop|destroy|prune|status|log|files|file> ...'
+[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|tools|agents|up|fork|hand|preflight|agent|solve|verify|gone|down|drop|destroy|prune|status|log|files|file> ...'
 shift
 case $command in
-  probe | setup | _setup | tools | agents | up | _up | _ns | drop | _drop | hand | _hand | preflight | agent | _agent | solve | _solve | verify | _verify | gone | down | destroy | prune | status | log | files | file)
+  probe | setup | _setup | tools | agents | up | _up | fork | _fork | _ns | drop | _drop | hand | _hand | preflight | agent | _agent | solve | _solve | verify | _verify | gone | down | destroy | prune | status | log | files | file)
     "cmd_$command" "$@"
     ;;
   *) die "unknown command: $command" ;;
