@@ -18,6 +18,7 @@ import * as Converter from '../sandbox/Converter.ts'
 import * as Runner from '../sandbox/Runner.ts'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
 import * as Store from '../sandbox/Store.ts'
+import type * as Atif from '../src/Atif.ts'
 import * as Compare from '../src/Compare.ts'
 import * as Config from '../src/Config.ts'
 import type * as Eval from '../src/Eval.ts'
@@ -62,7 +63,11 @@ const label =
     '-' +
     backend +
     (scenario === 'tasks' ? '' : '-' + scenario) +
-    (scenario === 'midturn' || (scenario === 'gone' && killAt === 'agent') ? '-' + killAt : '') +
+    (scenario === 'midturn' ||
+    (scenario === 'gone' && killAt === 'agent') ||
+    (scenario === 'subagent' && killAt !== 'cell')
+      ? '-' + killAt
+      : '') +
     (storeKind === 'directory' ? '' : '-' + storeKind) +
     (process.env['NANOEVAL_E2E_RUNTIME'] === '1' ? '-runtime' : '') +
     (gateway ? '-gateway' : '')
@@ -78,6 +83,10 @@ const alone = scenario === 'alone'
 const cancelled = scenario === 'cancelled'
 const capped = scenario === 'capped'
 const direct = scenario === 'direct'
+const subagent = scenario === 'subagent'
+const subagentKills: Record<string, string> = { child: 'step-child', parent: 'step-parent' }
+const subagentKill = subagent ? subagentKills[killAt] : undefined
+const subagentTask = 'SUBAGENT-TASK: write greeting.txt as the instruction of the task says.'
 const refusedPassing = scenario === 'refused'
 const spent = scenario === 'spent'
 const funded = scenario === 'funded'
@@ -234,6 +243,7 @@ let budgetFlying = 0
 let budgetPeak = 0
 const midturnRequests: { decision: string; digest: string; last: string; read: string }[] = []
 const directRequests: { output: string; tools: readonly string[] }[] = []
+const subagentRequests: { child: boolean; decision: string }[] = []
 let killDue: number | undefined
 let scriptedCalls = 0
 let answered = 0
@@ -411,6 +421,63 @@ function responses(
     ['response.output_item.done', { item, output_index: 0, type: 'response.output_item.done' }],
     ['response.completed', { response, type: 'response.completed' }],
   ])
+}
+
+function family(view: {
+  calls: readonly string[]
+  outputs: readonly string[]
+  prompts: readonly string[]
+  solution: string
+}): { child: boolean; code?: string } {
+  const child =
+    view.prompts.some((prompt) => prompt.includes(subagentTask)) &&
+    !view.calls.some((call) => call.includes(subagentTask))
+  const call = (tool: string, input: unknown) =>
+    'const result = await tools.' +
+    tool +
+    '(' +
+    JSON.stringify(input) +
+    '); text(JSON.stringify(result))'
+  const run = (cmd: string, mark: string) =>
+    call('exec_command', {
+      cmd:
+        cmd +
+        '; echo ' +
+        mark +
+        ' >> steps.log' +
+        (subagentKill === mark ? '; sleep ' + midturnSleepSec : ''),
+      yield_time_ms: 2 * midturnSleepSec * 1000,
+    })
+  const steps = child
+    ? [
+        ['exec_command', run(view.solution, subagentKills['child']!)],
+        ['submit_result', call('submit_result', { output: 'child done' })],
+      ]
+    : [
+        [
+          'spawn_agent',
+          call('spawn_agent', {
+            harness: null,
+            model: null,
+            output_contract: { kind: 'string' },
+            reasoning_mode: null,
+            role: 'worker',
+            task: subagentTask,
+            thinking: 'low',
+          }),
+        ],
+        [
+          'wait_agent',
+          call('wait_agent', {
+            agent_ids: [Number(/"agent_id":\s*(\d+)/.exec(view.outputs.join('\n'))?.[1])],
+            timeout_ms: 100_000,
+          }),
+        ],
+        ['exec_command', run('cat greeting.txt', subagentKills['parent']!)],
+      ]
+  const step = steps[view.calls.length]
+  subagentRequests.push({ child, decision: step?.[0] ?? 'final' })
+  return { child, ...(step ? { code: step[1]! } : {}) }
 }
 
 function stepwise(
@@ -660,13 +727,46 @@ function scripted(
       exec: body.tools?.find((tool) => tool.name === 'exec')?.description,
       received: JSON.stringify(Array.isArray(body.messages) ? body.messages.at(-1) : null),
     })
-  const call = midturn
-    ? stepwise(body.messages, command!)
-    : budgeted || searching
-      ? paced(body.messages, command!)
-      : answered
-        ? undefined
-        : { input: { code }, name: 'exec' }
+  const blocks = (Array.isArray(body.messages) ? body.messages : []).flatMap(
+    (message: { content?: unknown; role?: string }): Record<string, any>[] =>
+      typeof message.content === 'string'
+        ? [{ role: message.role, text: message.content, type: 'text' }]
+        : ((message.content ?? []) as Record<string, any>[]).map((block) => ({
+            ...block,
+            role: message.role,
+          })),
+  )
+  const kin = subagent
+    ? family({
+        calls: blocks
+          .filter((block) => block['type'] === 'tool_use')
+          .map((block) => JSON.stringify(block['input'])),
+        outputs: blocks
+          .filter((block) => block['type'] === 'tool_result')
+          .map((block) =>
+            typeof block['content'] === 'string'
+              ? block['content']
+              : ((block['content'] ?? []) as { text?: string }[])
+                  .map((part) => part.text ?? '')
+                  .join(''),
+          ),
+        prompts: blocks
+          .filter((block) => block['type'] === 'text' && block['role'] === 'user')
+          .map((block) => String(block['text'])),
+        solution: command!,
+      })
+    : undefined
+  const call = kin
+    ? kin.code === undefined
+      ? undefined
+      : { input: { code: kin.code }, name: 'exec' }
+    : midturn
+      ? stepwise(body.messages, command!)
+      : budgeted || searching
+        ? paced(body.messages, command!)
+        : answered
+          ? undefined
+          : { input: { code }, name: 'exec' }
   const block = call
     ? [
         { id: 'toolu_' + id, input: {}, name: call.name, type: 'tool_use' },
@@ -688,7 +788,9 @@ function scripted(
           stop_reason: null,
           stop_sequence: null,
           type: 'message',
-          usage: { input_tokens: 8, output_tokens: 0 },
+          usage: kin?.child
+            ? { cache_read_input_tokens: 12, input_tokens: 30, output_tokens: 0 }
+            : { input_tokens: 8, output_tokens: 0 },
         },
         type: 'message_start',
       },
@@ -701,7 +803,11 @@ function scripted(
       {
         delta: { stop_reason: call ? 'tool_use' : 'end_turn', stop_sequence: null },
         type: 'message_delta',
-        usage: { ...(cost === undefined ? {} : { cost }), ...used, output_tokens: 4 },
+        usage: {
+          ...(cost === undefined ? {} : { cost }),
+          ...used,
+          output_tokens: kin?.child ? 6 : 4,
+        },
       },
     ],
     ['message_stop', { type: 'message_stop' }],
@@ -1461,8 +1567,8 @@ async function main(): Promise<void> {
       )
     )
       throw new Error('the ' + scenario + ' scenario runs on the scripted model')
-    if (direct && (backend !== 'dir' || gateway))
-      throw new Error('the direct scenario runs on directory slots, without the gateway')
+    if ((direct || subagent) && (backend !== 'dir' || gateway))
+      throw new Error('the ' + scenario + ' scenario runs on directory slots, without the gateway')
     if (midturn && (backend !== 'dir' || !midturnKills[killAt]))
       throw new Error(
         'the midturn scenario runs on directory slots, with NANOEVAL_E2E_KILL cell, model, pair or wait',
@@ -1486,7 +1592,7 @@ async function main(): Promise<void> {
     const lost = 'tasks/write-greeting'
     const directories = judged
       ? ['final-answer', 'judged-answer'].map((name) => Path.join('test/fixtures', name))
-      : alone || direct || midturn
+      : alone || direct || midturn || subagent
         ? [Path.join('tasks', 'write-greeting')]
         : packing
           ? ['extract-todos', 'uppercase-message', 'write-greeting'].map((name) =>
@@ -1565,6 +1671,7 @@ async function main(): Promise<void> {
                     midturn ||
                     packing ||
                     slotGone ||
+                    subagent ||
                     budgeted ||
                     searching ||
                     model !== 'scripted'
@@ -1579,12 +1686,14 @@ async function main(): Promise<void> {
                           midturn ||
                           packing ||
                           slotGone ||
+                          subagent ||
                           budgeted ||
                           searching
                             ? 'right'
                             : 'nanocode',
-                        model: realModel,
+                        model: subagent ? 'claude-haiku-5-5' : realModel,
                         provider: 'claude',
+                        ...(subagent ? { thinking: 'low' } : {}),
                       },
                     ]
                   : [
@@ -1672,7 +1781,15 @@ async function main(): Promise<void> {
     const config: Config.Config = {
       agents,
       attempts:
-        alone || cached || closed || direct || failures || midturn || packing || slotGone
+        alone ||
+        cached ||
+        closed ||
+        direct ||
+        failures ||
+        midturn ||
+        packing ||
+        slotGone ||
+        subagent
           ? 1
           : isolated
             ? slots
@@ -2193,8 +2310,9 @@ async function main(): Promise<void> {
         lostAt = Date.now()
         release()
       }
-      if (midturn && !restarted) {
-        const marks = midturnKills[killAt]!.marks
+      if ((midturn || subagentKill) && !restarted) {
+        const kill = midturnKills[subagentKill ? 'cell' : killAt]!
+        const marks = subagentKill ? [subagentKill] : kill.marks
         if (
           marks &&
           killDue === undefined &&
@@ -2203,7 +2321,7 @@ async function main(): Promise<void> {
             return marks.every((mark) => steps.includes(mark))
           })
         )
-          killDue = Date.now() + midturnKills[killAt]!.ms
+          killDue = Date.now() + kill.ms
         if (killDue !== undefined && Date.now() >= killDue) {
           restarted = true
           await stop(worker, 'SIGKILL')
@@ -2357,15 +2475,23 @@ async function main(): Promise<void> {
         'an attempt whose session called a model has its calls and tokens: ' +
           JSON.stringify(usage),
       )
-      const trajectory = JSON.parse(await read('agent/trajectory.json'))
-      const steps = trajectory.steps.filter((step: { source: string }) => step.source === 'agent')
-      assert.equal(steps.length, usage.modelCalls, 'one agent step for each model call')
+      const trajectory = JSON.parse(await read('agent/trajectory.json')) as Atif.Trajectory
+      const every = (all: Atif.Trajectory): Atif.Step[] => [
+        ...all.steps,
+        ...(all.subagent_trajectories ?? []).flatMap(every),
+      ]
+      const steps = every(trajectory).filter((step) => step.source === 'agent')
+      assert.equal(
+        steps.length,
+        usage.modelCalls,
+        'one agent step for each model call, of the session and of its subagents',
+      )
       assert.ok(
-        steps.every((step: { metrics?: object }) => step.metrics),
+        steps.every((step) => step.metrics),
         'every agent step has the tokens of its model call',
       )
       assert.equal(trajectory.final_metrics.extra.model_calls, usage.modelCalls)
-      if (scenario === 'tasks' || midturn) {
+      if (scenario === 'tasks' || midturn || subagent) {
         const sum = (field: string) =>
           answered.reduce((all: number, entry) => all + entry.usage[field], 0)
         assert.deepEqual(
@@ -3508,6 +3634,10 @@ async function main(): Promise<void> {
         names('exec_command').every((request) => !request.tools.includes('exec')),
         'no session is given both exec and the tools of the hand',
       )
+      assert.ok(
+        directRequests.every((request) => !request.tools.includes('spawn_agent')),
+        'a codex session is given no tool that starts a subagent',
+      )
       assert.deepEqual(
         directRequests.flatMap((request) =>
           request.tools.includes('exec_command') && request.output ? [request.output] : [],
@@ -3525,6 +3655,99 @@ async function main(): Promise<void> {
           ' and the model of the other ' +
           names('exec')[0]!.tools.join(', '),
       )
+      await pass()
+      return
+    }
+
+    if (subagent) {
+      const row = details[0]!
+      const asked = (child: boolean) =>
+        subagentRequests
+          .filter((request) => request.child === child)
+          .map((request) => request.decision)
+      console.log(
+        'subagent: the model of the session was asked ' +
+          asked(false).join(', ') +
+          ' and the model of its subagent ' +
+          asked(true).join(', ') +
+          (subagentKill
+            ? ', and the Worker was killed after ' +
+              subagentKill +
+              ' and answered again after ' +
+              (backAt! - lostAt!) +
+              ' ms'
+            : ''),
+      )
+      assert.equal(row['attempt'].outcome, 'passed', JSON.stringify(row['attempt'].failure))
+      const usage = row['result'].usage as Atif.Usage
+      assert.equal(
+        usage.modelCalls,
+        answered,
+        'the model calls of the row are the requests the model endpoint answered',
+      )
+      const trajectory = JSON.parse(
+        await api.artifact(created.id, row['attempt'].id, 'agent/trajectory.json'),
+      ) as Atif.Trajectory
+      const [child, ...others] = trajectory.subagent_trajectories ?? []
+      assert.ok(child && !others.length, 'the trajectory holds the one subagent of the session')
+      assert.match(child.steps[0]!.message, new RegExp(subagentTask))
+      assert.deepEqual(
+        trajectory.steps.flatMap((step) =>
+          (step.observation?.results ?? []).flatMap((result) =>
+            result.subagent_trajectory_ref
+              ? [
+                  step.tool_calls?.find((call) => call.tool_call_id === result.source_call_id)
+                    ?.function_name,
+                  ...result.subagent_trajectory_ref.map((ref) => ref.trajectory_id),
+                ]
+              : [],
+          ),
+        ),
+        ['spawn_agent', child.trajectory_id],
+        'the result of the call that started the subagent names its trajectory',
+      )
+      const cost = (part: Atif.Trajectory) => part.final_metrics.total_cost_usd
+      assert.equal(usage.costUsd, cost(trajectory))
+      assert.ok(
+        cost(child)! > 0 && cost(trajectory)! > cost(child)!,
+        'the cost of a session is its own and that of its subagent',
+      )
+      if (subagentKill) {
+        assert.ok(restarted, 'the Worker was killed during the run')
+        assert.equal(status['lostClaims'], 0, 'the claim of the row outlives the Worker')
+      } else {
+        assert.deepEqual(
+          [asked(false), asked(true)],
+          [
+            ['spawn_agent', 'wait_agent', 'exec_command', 'final'],
+            ['exec_command', 'submit_result', 'final'],
+          ],
+        )
+        assert.deepEqual(
+          [
+            usage.modelCalls,
+            usage.inputTokens,
+            usage.cachedTokens,
+            usage.outputTokens,
+            usage.toolCalls,
+          ],
+          [4 + 3, 4 * 8 + 3 * 42, 3 * 12, 4 * 4 + 3 * 6, 6 + 4],
+          'the usage of the session is its four model calls and the three of its subagent',
+        )
+        assert.deepEqual(
+          [trajectory, child].map((part) => [
+            part.steps.map((step) => step.source).join(' '),
+            part.final_metrics.extra.model_calls,
+            part.final_metrics.extra.tool_calls,
+            part.final_metrics.total_steps,
+          ]),
+          [
+            ['user agent agent agent agent', 7, 10, 5],
+            ['user agent agent agent', 3, 4, 4],
+          ],
+          'the steps of the subagent are under its own trajectory, and the totals of the session count them',
+        )
+      }
       await pass()
       return
     }
