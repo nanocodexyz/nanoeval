@@ -717,6 +717,29 @@ test('a login file that cannot be replaced whole is refused before its refresh t
 })
 
 test(
+  'a login that root refreshes stays the file of its owner, and so do the locks beside it',
+  { skip: process.getuid?.() !== 0 },
+  async () => {
+    const endpoint = issuer('codex')
+    const path = file('codex', { endsAt: now - hour })
+    const owner = { gid: 65_534, uid: 65_534 }
+    Fs.chownSync(Path.dirname(path), owner.uid, owner.gid)
+    Fs.chownSync(path, owner.uid, owner.gid)
+    const result = await Login.refresh('codex', {
+      fetch: endpoint.fetch,
+      now: () => now,
+      path,
+      withinMs: early,
+    })
+    assert.equal(result.outcome, 'refreshed')
+    for (const name of Fs.readdirSync(Path.dirname(path))) {
+      const stat = Fs.statSync(Path.join(Path.dirname(path), name))
+      assert.deepEqual({ gid: stat.gid, uid: stat.uid }, owner, name)
+    }
+  },
+)
+
+test(
   'a login whose directory cannot be written is used as it is and never asked for',
   { skip: process.getuid?.() === 0 },
   async () => {

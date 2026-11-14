@@ -162,8 +162,25 @@ export async function login(kind: Kind, path: string): Promise<Login> {
   return { expiresAt, headers }
 }
 
+async function own(handle: Fs.FileHandle, owner: { gid: number; uid: number }): Promise<void> {
+  if (process.geteuid?.() !== 0) return
+  const made = await handle.stat()
+  if (made.uid !== owner.uid || made.gid !== owner.gid) await handle.chown(owner.uid, owner.gid)
+}
+
 async function flock(files: readonly string[]): Promise<Release> {
-  for (const file of files) await (await Fs.open(file, 'a', 0o600)).close()
+  for (const file of files) {
+    const made = await Fs.open(file, 'ax', 0o600).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'EEXIST') throw error
+      return undefined
+    })
+    if (!made) continue
+    try {
+      await own(made, await Fs.stat(Path.dirname(file)))
+    } finally {
+      await made.close()
+    }
+  }
   const child = spawn(
     'flock',
     [...files.flatMap((file) => ['flock', file]).slice(1), 'sh', '-c', 'echo held && exec cat'],
@@ -380,7 +397,9 @@ function format(text: string, value: unknown): string {
   return JSON.stringify(value, null, indent) + (text.endsWith('\n') ? '\n' : '')
 }
 
-async function replaceable(path: string): Promise<{ mode: number; target: string }> {
+async function replaceable(
+  path: string,
+): Promise<{ gid: number; mode: number; target: string; uid: number }> {
   const target = await Fs.realpath(path)
   const stat = await Fs.stat(target)
   if (stat.nlink > 1)
@@ -392,11 +411,11 @@ async function replaceable(path: string): Promise<{ mode: number; target: string
   } catch {
     throw new LoginError(path + ' cannot be replaced: its directory is not writable')
   }
-  return { mode: stat.mode & 0o777, target }
+  return { gid: stat.gid, mode: stat.mode & 0o777, target, uid: stat.uid }
 }
 
 async function replace(path: string, text: string): Promise<void> {
-  const { mode, target } = await replaceable(path)
+  const { gid, mode, target, uid } = await replaceable(path)
   const staged = Path.join(
     Path.dirname(target),
     '.' + Path.basename(target) + '.' + Crypto.randomBytes(6).toString('hex') + '.tmp',
@@ -405,6 +424,7 @@ async function replace(path: string, text: string): Promise<void> {
     const handle = await Fs.open(staged, 'wx', mode)
     try {
       await handle.writeFile(text)
+      await own(handle, { gid, uid })
       await handle.sync()
     } finally {
       await handle.close()
