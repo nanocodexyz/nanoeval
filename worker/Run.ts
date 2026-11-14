@@ -1193,8 +1193,9 @@ export class Run extends DurableObject<Env> {
   }
 
   private absent(row: Ledger.Attempt, name: string): string {
-    if (row.phase === 'done') return 'artifact not found'
     const names = [...new Set([...this.artifactNames(row.id), ...this.liveNames(row)])].sort()
+    if (row.phase === 'done')
+      return 'the attempt has no ' + name + (names.length ? ': it has ' + names.join(', ') : '')
     return (
       'the attempt is in the ' +
       row.phase +

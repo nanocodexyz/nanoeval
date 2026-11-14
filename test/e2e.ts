@@ -3627,6 +3627,27 @@ async function main(): Promise<void> {
         }
         assert.ok(estimated > 0, 'the sessions estimate their tokens')
         assert.equal(status['spend'].uncostedAttempts, 0)
+        const unclaimed = details.find((detail) => detail['attempt'].claims === 0)!
+        assert.ok(passed[0]!['artifacts'].includes('verifier/reward.txt'))
+        assert.deepEqual(unclaimed['artifacts'], [])
+        for (const detail of [passed[0]!, unclaimed]) {
+          const names = (detail['artifacts'] as string[]).join(', ')
+          assert.deepEqual(
+            await cli(['attempt', created.id, detail['attempt'].id, 'verifier/none.txt']),
+            {
+              code: 1,
+              text:
+                'nanoeval: the attempt has no verifier/none.txt' +
+                (names && ': it has ' + names) +
+                ' (/v1/runs/' +
+                created.id +
+                '/attempts/' +
+                detail['attempt'].id +
+                '/artifacts/verifier%2Fnone.txt answered 404)\n',
+            },
+            'a finished attempt says which artifacts it has when it is asked for one it lacks',
+          )
+        }
         assert.equal(status['spend'].webSearches, 4 * searches)
         assert.equal(status['spend'].unpricedTools, searches)
         assert.ok(Math.abs(status['spend'].toolsUsd - searches * largest) < 1e-9)
