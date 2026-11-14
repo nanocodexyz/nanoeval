@@ -19,6 +19,7 @@ import * as Sandboxd from '../sandbox/Sandboxd.ts'
 import * as Store from '../sandbox/Store.ts'
 import * as Config from '../src/Config.ts'
 import type * as Eval from '../src/Eval.ts'
+import * as Installed from '../src/Installed.ts'
 import * as Pins from '../src/Pins.ts'
 import * as Protocol from '../src/Protocol.ts'
 import type * as Result from '../src/Result.ts'
@@ -146,6 +147,7 @@ const fakeUsage = {
     inputTokens: 100,
     modelCalls: 1,
     outputTokens: 7,
+    reasoningTokens: 3,
     toolCalls: 1,
   },
 }
@@ -240,6 +242,7 @@ function fake(
                     input_tokens: 100,
                     input_tokens_details: { cached_tokens: 40 },
                     output_tokens: 7,
+                    output_tokens_details: { reasoning_tokens: 3 },
                   },
                 },
                 type: 'response.completed',
@@ -334,7 +337,7 @@ function responses(
       input_tokens: 100,
       input_tokens_details: { cached_tokens: 40 },
       output_tokens: 7,
-      output_tokens_details: { reasoning_tokens: 0 },
+      output_tokens_details: { reasoning_tokens: 3 },
       total_tokens: 107,
     },
   }
@@ -2503,6 +2506,10 @@ async function main(): Promise<void> {
         'a run that does not ask for the plan leaves a signed-in plan alone',
       )
       assert.ok(claudePlan.keyed >= 2 * total, 'the key of the Worker pays for it')
+      assert.deepEqual(await api.routes(), {
+        claude: { payer: 'key', through: 'base' },
+        codex: null,
+      })
 
       claudePlan.down = true
       const third = await api.create({ ...config, name: config.name + '-revoked' })
@@ -2932,6 +2939,63 @@ async function main(): Promise<void> {
         ? undefined
         : await Runner.hand(process.env)
     if (placed) assert.equal(pins.hands[0], placed, 'the hand is the one of this run')
+    const paid = planned
+      ? { payer: 'plan' }
+      : mock
+        ? { payer: 'gateway' }
+        : model === 'codex-plan'
+          ? { payer: 'login', through: 'relay' }
+          : model === 'claude-plan'
+            ? { payer: 'login' }
+            : model === 'anthropic'
+              ? { payer: 'key' }
+              : { payer: 'key', through: 'base' }
+    for (const agent of agents) {
+      const row = status['agents'][agent.id] as Result.AgentSummary
+      if (agent.provider === 'oracle') {
+        assert.deepEqual(row.routes, [], 'an oracle reaches no model')
+        continue
+      }
+      assert.equal(
+        row.routes.length,
+        1,
+        'the attempts of ' +
+          agent.id +
+          ' reached their model one way: ' +
+          JSON.stringify(row.routes),
+      )
+      const { effort, host, transport, ...payer } = row.routes[0]!
+      assert.deepEqual(payer, paid, 'the run records who paid for the model of ' + agent.id)
+      assert.ok(
+        summary(status).includes('\nmodel route of ' + agent.id + ': '),
+        'the summary says how the model of ' + agent.id + ' was reached',
+      )
+      const scriptedModel = model === 'scripted' || installed
+      if (Installed.is(agent.provider))
+        assert.deepEqual(
+          [effort, host, transport],
+          [undefined, undefined, undefined],
+          'an installed agent has no session that reports its transport',
+        )
+      else if (scriptedModel) {
+        assert.equal(
+          transport,
+          agent.provider === 'claude' ? 'messages_sse' : 'responses_https_sse',
+          'the run records the transport the sessions of ' + agent.id + ' reported',
+        )
+        assert.equal(host, agent.provider === 'claude' ? undefined : 'api.openai.com')
+        assert.equal(typeof effort, 'string', 'the run records the effort of ' + agent.id)
+      }
+      const calls = details
+        .filter((detail) => detail['result']?.agent.id === agent.id)
+        .reduce((all, detail) => all + (detail['result'].usage?.modelCalls ?? 0), 0)
+      if (scriptedModel)
+        assert.equal(
+          row.reasoningTokens,
+          agent.provider === 'codex' || agent.provider === 'codex-cli' ? 3 * calls : null,
+          'the reasoning tokens of ' + agent.id + ' are those its model calls reported',
+        )
+    }
     if (!attached && !fleet && !turnLost && !lapse)
       assert.equal(peak, Math.min(slots, total), 'the sandbox fills every slot')
     if (cached) {

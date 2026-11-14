@@ -1,4 +1,5 @@
 import * as Proxy from '../src/Proxy.ts'
+import * as Route from '../src/Route.ts'
 import type { Env } from './Env.ts'
 import * as Meter from './Meter.ts'
 import { plan } from './Sessions.ts'
@@ -26,6 +27,17 @@ export function credential(env: Env, provider: Proxy.Provider): Proxy.Credential
         : {}),
     }
   return Proxy.key(env, provider)
+}
+
+export function paid(
+  env: Env,
+  input: { plan: boolean; provider: Proxy.Provider },
+): Route.Paid | undefined {
+  return Route.paid({
+    gateway: env.TEMPO_KEY,
+    held: credential(env, input.provider),
+    plan: input.plan,
+  })
 }
 
 export async function forward(env: Env, input: forward.Input): Promise<Response> {

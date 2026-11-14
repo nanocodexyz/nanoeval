@@ -25,6 +25,7 @@ export type Usage = {
   inputTokens: number
   model?: string
   outputTokens: number
+  reasoningTokens?: number
   webFetches?: number
   webSearches?: number
 }
@@ -208,6 +209,9 @@ export function meter(provider: Provider): {
         inputTokens: count(used['input_tokens']),
         ...(typeof response['model'] === 'string' ? { model: response['model'] } : {}),
         outputTokens: count(used['output_tokens']),
+        ...(typeof used['output_tokens_details']?.['reasoning_tokens'] === 'number'
+          ? { reasoningTokens: count(used['output_tokens_details']['reasoning_tokens']) }
+          : {}),
         ...(searches ? { webSearches: searches } : {}),
       }
       return

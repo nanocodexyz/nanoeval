@@ -718,6 +718,7 @@ test('the meter reads the usage of a response from its events, however they are 
       inputTokens: 300,
       model: 'gpt-6.1-sol',
       outputTokens: 20,
+      reasoningTokens: 5,
     })
   }
 

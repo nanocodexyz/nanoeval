@@ -23,6 +23,7 @@ import * as Protocol from '../src/Protocol.ts'
 import * as Proxy from '../src/Proxy.ts'
 import * as Result from '../src/Result.ts'
 import * as Retry from '../src/Retry.ts'
+import * as Route from '../src/Route.ts'
 import type * as Runs from '../src/Runs.ts'
 import * as Sandbox from '../src/Sandbox.ts'
 import * as SqlSetup from '../src/Sql.ts'
@@ -1269,6 +1270,24 @@ export class Run extends DurableObject<Env> {
     return this.config().agents.find((candidate) => candidate.id === row.agent)!
   }
 
+  private route(
+    row: Ledger.Attempt,
+    reported: ReturnType<typeof Route.reported>,
+  ): Route.Route | undefined {
+    const agent = this.agentOf(row)
+    if (agent.provider === 'oracle' || !['judge', 'run', 'verify'].includes(row.phase))
+      return undefined
+    return {
+      ...Model.paid(this.env, {
+        plan: this.config().payer === 'plan',
+        provider: Installed.is(agent.provider)
+          ? Installed.releases[agent.provider].provider
+          : agent.provider,
+      }),
+      ...reported,
+    }
+  }
+
   private installed(row: Ledger.Attempt): Installed.Kind | undefined {
     const provider = this.agentOf(row).provider
     return Installed.is(provider) ? provider : undefined
@@ -1316,6 +1335,8 @@ export class Run extends DurableObject<Env> {
       total.inputTokens += usage.inputTokens
       total.modelCalls++
       total.outputTokens += usage.outputTokens
+      if (usage.reasoningTokens !== undefined)
+        total.reasoningTokens = (total.reasoningTokens ?? 0) + usage.reasoningTokens
       costs.push(usage.costUsd)
     }
     if (costs.length && costs.every((cost) => cost !== undefined))
@@ -2968,10 +2989,12 @@ export class Run extends DurableObject<Env> {
     }
 
     let usage: Atif.Usage | null = null
+    let reported: ReturnType<typeof Route.reported> = {}
     if (submitted) {
       try {
         const events = await Harness.events(this.env, session, requestId)
         usage = Atif.usage(events)
+        reported = Route.reported(events)
         const requested = Timeline.modelRequest(events)
         if (requested !== undefined)
           Timeline.add(this.sql, { at: requested, attempt: row.id, name: 'attempt.model' })
@@ -3034,6 +3057,7 @@ export class Run extends DurableObject<Env> {
       if (log !== undefined) this.putArtifact(row.id, modelRequests, log)
     }
 
+    const route = this.route(row, reported)
     const result: Result.Attempt = {
       agent,
       ...(row.claims > 1 ? { claims: row.claims } : {}),
@@ -3054,6 +3078,7 @@ export class Run extends DurableObject<Env> {
       outcome: Result.outcome(end.reward, end.failure),
       ...(row.origin ? { retryOf: JSON.parse(row.origin) as Ledger.Origin } : {}),
       reward: end.reward,
+      ...(route ? { route } : {}),
       sandbox:
         row.runner === null
           ? null

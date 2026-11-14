@@ -145,6 +145,10 @@ export function trial(attempt: Result.Attempt, options: trial.Options): Record<s
                 ? {
                     cache_write_input_tokens: usage.cacheWriteTokens,
                     model_calls: usage.modelCalls,
+                    ...(usage.reasoningTokens === undefined
+                      ? {}
+                      : { reasoning_tokens: usage.reasoningTokens }),
+                    ...(attempt.route ? { route: attempt.route } : {}),
                     session: attempt.session,
                     tool_calls: usage.toolCalls,
                   }
@@ -230,6 +234,8 @@ export function job(
         },
       ],
       pass_at_k: summary.passAtK,
+      reasoning_tokens: summary.reasoningTokens,
+      routes: summary.routes,
       reward_stats: { reward: rewards },
       exception_stats: errors,
     }

@@ -1,8 +1,10 @@
 import * as Protocol from '../src/Protocol.ts'
+import type * as Route from '../src/Route.ts'
 import type * as Runs from '../src/Runs.ts'
 import * as Blobs from './Blobs.ts'
 import { locations, type Env } from './Env.ts'
 import * as Evals from './Evals.ts'
+import * as Model from './Model.ts'
 import * as PoolObject from './Pool.ts'
 import { Run } from './Run.ts'
 import { AgentSession, authorized, nanocode } from './Sessions.ts'
@@ -34,6 +36,11 @@ export default {
         commit: env.COMMIT || null,
         protocol: Protocol.version,
       } satisfies Protocol.Version)
+    if (resource === 'routes')
+      return json({
+        claude: Model.paid(env, { plan: false, provider: 'claude' }) ?? null,
+        codex: Model.paid(env, { plan: false, provider: 'codex' }) ?? null,
+      } satisfies Route.Deployment)
     if (resource === 'evals') return Evals.route(request, env, path)
     if (resource === 'blobs') return Blobs.route(request, env, path)
     if (resource === 'plans') return Vault.route(request, { env, path })

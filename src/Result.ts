@@ -1,5 +1,6 @@
 import type * as Atif from './Atif.ts'
 import type * as Installed from './Installed.ts'
+import * as Route from './Route.ts'
 
 export type FailureKind =
   | 'agent'
@@ -43,6 +44,7 @@ export type Attempt = {
   outcome: 'errored' | 'failed' | 'passed'
   retryOf?: { attempt: string; run: string }
   reward: number | null
+  route?: Route.Route
   sandbox: {
     backend: string
     id: number
@@ -82,6 +84,8 @@ export type AgentSummary = {
   passAtK: Record<string, number>
   passed: number
   rated: Record<string, number>
+  reasoningTokens: number | null
+  routes: Route.Route[]
   scored: number
   tasks: number
 }
@@ -135,6 +139,8 @@ export function summarize(attempts: readonly Attempt[]): Record<string, AgentSum
       passAtK: {},
       passed: 0,
       rated: {},
+      reasoningTokens: null,
+      routes: [],
       scored: 0,
       tasks: 0,
     })
@@ -144,6 +150,8 @@ export function summarize(attempts: readonly Attempt[]): Record<string, AgentSum
       summary.inputTokens += attempt.usage.inputTokens
       summary.cachedTokens += attempt.usage.cachedTokens
       summary.outputTokens += attempt.usage.outputTokens
+      if (typeof attempt.usage.reasoningTokens === 'number')
+        summary.reasoningTokens = (summary.reasoningTokens ?? 0) + attempt.usage.reasoningTokens
       if (attempt.usage.costUsd !== undefined)
         summary.costUsd = (summary.costUsd ?? 0) + attempt.usage.costUsd
     }
@@ -168,6 +176,7 @@ export function summarize(attempts: readonly Attempt[]): Record<string, AgentSum
       .flatMap((attempt) => (attempt.reward === null ? [] : [attempt.reward]))
     if (rewards.length)
       summary.meanReward = rewards.reduce((total, reward) => total + reward, 0) / rewards.length
+    summary.routes = Route.distinct(groups.flat().map((attempt) => attempt.route))
     summary.scored = rewards.length
     summary.tasks = groups.length
     const scored = groups.map((group) => group.filter((attempt) => attempt.outcome !== 'errored'))

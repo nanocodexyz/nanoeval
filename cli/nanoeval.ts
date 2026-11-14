@@ -25,6 +25,7 @@ import type * as Ledger from '../src/Ledger.ts'
 import * as Pins from '../src/Pins.ts'
 import * as Protocol from '../src/Protocol.ts'
 import * as Result from '../src/Result.ts'
+import * as Route from '../src/Route.ts'
 import type * as Runs from '../src/Runs.ts'
 import * as Sandbox from '../src/Sandbox.ts'
 import * as Slot from '../src/Slot.ts'
@@ -267,8 +268,9 @@ const usage = `nanoeval <command>
             was created, its eval and its name. A run made by a Worker of a commit before
             this list existed is not in it.
   status    --url URL --token T RUN [--rows | --tasks]
-            Print the summary of a run: its eval and builds, the reruns it has, its counts and
-            spend, one line an agent with outcomes, mean reward, pass@k, tokens and cost, a
+            Print the summary of a run: its eval and builds, who paid for the model of each
+            agent and how its sessions reached it, the reruns it has, its counts and spend,
+            one line an agent with outcomes, mean reward, pass@k, tokens and cost, a
             line for the judge where attempts were judged, and one line an attempt. On a
             terminal too short for that, one line a task with its pass counts instead:
             --rows lists every attempt, --tasks prints one line a task anywhere.
@@ -669,6 +671,15 @@ export function client(options: { token: string; url: string }) {
       ).json() as Promise<Record<string, any>>,
     results: async (run: string) =>
       (await (await call('/v1/runs/' + run + '/results')).json()) as Compare.Run,
+    routes: async (): Promise<Route.Deployment | undefined> => {
+      const response = await fetch(base + '/v1/routes', {
+        headers: { authorization: 'Bearer ' + options.token },
+      })
+      if (response.status === 404) return undefined
+      if (!response.ok)
+        throw new Error('/v1/routes answered ' + response.status + ': ' + (await response.text()))
+      return (await response.json()) as Route.Deployment
+    },
     runs: async (limit?: number) =>
       (await (await call('/v1/runs' + (limit === undefined ? '' : '?limit=' + limit))).json()) as {
         runs: Runs.Listed[]
@@ -738,12 +749,16 @@ export async function exportJob(
   return job
 }
 
-function used(row: {
-  cachedTokens: number
-  costUsd: number | null
-  inputTokens: number
-  outputTokens: number
-}): string {
+function used(
+  row: {
+    cachedTokens: number
+    costUsd: number | null
+    inputTokens: number
+    outputTokens: number
+    reasoningTokens?: number | null
+  },
+  reasoning = false,
+): string {
   return (
     'input tokens ' +
     Number(row.inputTokens).toLocaleString('en-US') +
@@ -751,6 +766,15 @@ function used(row: {
     Number(row.cachedTokens).toLocaleString('en-US') +
     ' cached), output tokens ' +
     Number(row.outputTokens).toLocaleString('en-US') +
+    (reasoning
+      ? ' (' +
+        (row.reasoningTokens === undefined
+          ? 'reasoning ' + Route.unrecorded
+          : row.reasoningTokens === null
+            ? 'reasoning not reported'
+            : Number(row.reasoningTokens).toLocaleString('en-US') + ' reasoning') +
+        ')'
+      : '') +
     ', cost ' +
     (row.costUsd === null ? 'not known' : '$' + Number(row.costUsd).toFixed(4))
   )
@@ -915,7 +939,7 @@ export function summary(status: Record<string, any>, options: { tasks?: boolean 
                 : ' of ' + rated + (rated === 1 ? ' task' : ' tasks'))
             )
           }),
-          ...(row.inputTokens || row.outputTokens || row.costUsd !== null ? [used(row)] : []),
+          ...(row.inputTokens || row.outputTokens || row.costUsd !== null ? [used(row, true)] : []),
         ]
           .map((part) => ', ' + part)
           .join(''),
@@ -953,12 +977,16 @@ export function summary(status: Record<string, any>, options: { tasks?: boolean 
         (status['reruns'] as string[]).join(', ') +
         ' (compare --with-reruns reads this run as it stands after them)',
     )
-  if (status['nanocode'])
-    lines.splice(
-      status['eval'] ? 2 : 1,
-      0,
-      'nanocode: ' + Pins.text(status['nanocode'] as Pins.Pins),
-    )
+  lines.splice(
+    status['eval'] ? 2 : 1,
+    0,
+    ...(status['nanocode'] ? ['nanocode: ' + Pins.text(status['nanocode'] as Pins.Pins)] : []),
+    ...Object.entries(status['agents'] as Record<string, any>).flatMap(([agent, row]) =>
+      row.routes === undefined || row.routes.length
+        ? ['model route of ' + agent + ': ' + Route.text(row.routes as Route.Route[] | undefined)]
+        : [],
+    ),
+  )
   if (options.tasks) {
     const tasks = new Map<string, Record<string, any>[]>()
     for (const attempt of status['attempts'] as Record<string, any>[]) {

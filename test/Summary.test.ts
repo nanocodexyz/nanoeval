@@ -160,11 +160,11 @@ test('the line of an agent carries its tokens and cost, and the judge has a line
   const lines = summary(status(results)).split('\n')
   assert.equal(
     lines.find((entry) => entry.startsWith('haiku: ')),
-    'haiku: passed 1/2, errored 0, mean reward 0.500, pass@1 50.0%, input tokens 2,000 (800 cached), output tokens 100, cost $0.0112',
+    'haiku: passed 1/2, errored 0, mean reward 0.500, pass@1 50.0%, input tokens 2,000 (800 cached), output tokens 100 (reasoning not reported), cost $0.0112',
   )
   assert.equal(
     lines.find((entry) => entry.startsWith('sol: ')),
-    'sol: passed 2/2, errored 0, mean reward 1.000, pass@1 100.0%, input tokens 2,000 (800 cached), output tokens 100, cost $0.0336',
+    'sol: passed 2/2, errored 0, mean reward 1.000, pass@1 100.0%, input tokens 2,000 (800 cached), output tokens 100 (reasoning not reported), cost $0.0336',
   )
   assert.equal(
     lines.find((entry) => entry.startsWith('judge: ')),
@@ -175,7 +175,7 @@ test('the line of an agent carries its tokens and cost, and the judge has a line
   ).split('\n')
   assert.equal(
     unpriced.find((entry) => entry.startsWith('haiku: ')),
-    'haiku: passed 1/1, errored 0, mean reward 1.000, pass@1 100.0%, input tokens 1,000 (400 cached), output tokens 50, cost not known',
+    'haiku: passed 1/1, errored 0, mean reward 1.000, pass@1 100.0%, input tokens 1,000 (400 cached), output tokens 50 (reasoning not reported), cost not known',
   )
   assert.equal(
     unpriced.find((entry) => entry.startsWith('judge: ')),
@@ -187,7 +187,7 @@ test('the line of an agent carries its tokens and cost, and the judge has a line
         status([{ ...row('one', 1, 'errored'), usage: { ...usage(0), costUsd: undefined } }]),
       ),
     ),
-    'haiku: passed 0/1, errored 1, input tokens 1,000 (400 cached), output tokens 50, cost not known',
+    'haiku: passed 0/1, errored 1, input tokens 1,000 (400 cached), output tokens 50 (reasoning not reported), cost not known',
   )
   assert.equal(line(summary(status([row('one', 1, 'errored')]))), 'haiku: passed 0/1, errored 1')
   const older = status([row('one', 1, 'passed')])
@@ -233,6 +233,75 @@ test('an attempt that was scored after its agent timed out says so in words, and
     '  suite/one haiku 2/3 (2 after the agent timeout)',
     '  suite/two haiku 1 errored (agent_timeout) +1 not ended',
   ])
+})
+
+test('the summary says how the model of each agent was paid for and reached, and its reasoning tokens', () => {
+  const usage = {
+    cacheWriteTokens: 0,
+    cachedTokens: 400,
+    costUsd: 0.01,
+    inputTokens: 1000,
+    modelCalls: 2,
+    outputTokens: 500,
+    reasoningTokens: 320,
+    toolCalls: 1,
+  }
+  const route = {
+    effort: 'medium',
+    host: 'chatgpt.com',
+    payer: 'login' as const,
+    through: 'relay' as const,
+    transport: 'responses_websocket_v2',
+  }
+  const luna = { id: 'luna', model: 'gpt-6-luna', provider: 'codex' as const }
+  const results = [
+    { ...row('one', 1, 'passed'), agent: luna, route, usage },
+    { ...row('two', 1, 'failed'), agent: luna, route, usage },
+    { ...row('three', 1, 'errored'), agent: luna },
+    { ...row('one', 1, 'passed'), route: { payer: 'key' as const, transport: 'messages_sse' } },
+  ]
+  const recorded = {
+    ...status(results),
+    eval: { name: 'suite', version: 'abc' },
+    nanocode: { hands: ['nanocode-cli-1234567'], harness: 'nanocode-ts build-abcdef0' },
+  }
+  assert.deepEqual(summary(recorded).split('\n').slice(0, 5), [
+    'run run-1 (example): finished, cancelled with 1 row not finished',
+    'eval: suite@abc',
+    'nanocode: nanocode-ts build-abcdef0, hand nanocode-cli-1234567',
+    'model route of luna: a plan login through the relay, responses_websocket_v2 to chatgpt.com, effort medium',
+    'model route of haiku: the provider key, messages_sse',
+  ])
+  assert.equal(
+    summary(recorded)
+      .split('\n')
+      .find((entry) => entry.startsWith('luna: ')),
+    'luna: passed 1/3, errored 1, mean reward 0.500 of 2 scored, pass@1 50.0% of 2 tasks, input tokens 2,000 (800 cached), output tokens 1,000 (640 reasoning), cost $0.0200',
+  )
+
+  const older = status(results)
+  delete older['agents'].luna.routes
+  delete older['agents'].luna.reasoningTokens
+  delete older['agents'].haiku.routes
+  assert.deepEqual(summary(older).split('\n').slice(1, 3), [
+    'model route of luna: not recorded',
+    'model route of haiku: not recorded',
+  ])
+  assert.equal(
+    summary(older)
+      .split('\n')
+      .find((entry) => entry.startsWith('luna: ')),
+    'luna: passed 1/3, errored 1, mean reward 0.500 of 2 scored, pass@1 50.0% of 2 tasks, input tokens 2,000 (800 cached), output tokens 1,000 (reasoning not recorded), cost $0.0200',
+  )
+  const solved = status([
+    { ...row('one', 1, 'passed'), agent: { id: 'oracle', model: 'solution', provider: 'oracle' } },
+  ])
+  assert.equal(
+    summary(solved)
+      .split('\n')
+      .some((entry) => entry.startsWith('model route')),
+    false,
+  )
 })
 
 test('a run names its reruns, and a run too long for the screen is one line a task', () => {

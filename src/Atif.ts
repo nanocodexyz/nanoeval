@@ -20,7 +20,12 @@ export type Trajectory = {
     total_cached_tokens: number
     total_cost_usd?: number
     total_steps: number
-    extra: { cache_write_input_tokens: number; model_calls: number; tool_calls: number }
+    extra: {
+      cache_write_input_tokens: number
+      model_calls: number
+      reasoning_tokens?: number
+      tool_calls: number
+    }
   }
 }
 
@@ -61,6 +66,7 @@ export type Usage = {
   inputTokens: number
   modelCalls: number
   outputTokens: number
+  reasoningTokens?: number
   toolCalls: number
 }
 
@@ -130,6 +136,9 @@ export function fromEvents(
             cache_write_input_tokens: count(details['cache_write_tokens']),
             call_index: payload['call_index'],
             duration_ns: payload['duration_ns'],
+            ...(typeof used['output_tokens_details']?.['reasoning_tokens'] === 'number'
+              ? { reasoning_tokens: used['output_tokens_details']['reasoning_tokens'] }
+              : {}),
             status: payload['status'],
             time_to_first_event_ns: payload['time_to_first_event_ns'],
             time_to_first_output_ns: payload['time_to_first_output_ns'],
@@ -188,6 +197,9 @@ export function fromEvents(
       extra: {
         cache_write_input_tokens: totals.cacheWriteTokens,
         model_calls: totals.modelCalls,
+        ...(totals.reasoningTokens === undefined
+          ? {}
+          : { reasoning_tokens: totals.reasoningTokens }),
         tool_calls: totals.toolCalls,
       },
     },
@@ -220,6 +232,8 @@ export function sum(usages: readonly Usage[]): Usage {
     total.inputTokens += usage.inputTokens
     total.modelCalls += usage.modelCalls
     total.outputTokens += usage.outputTokens
+    if (usage.reasoningTokens !== undefined)
+      total.reasoningTokens = (total.reasoningTokens ?? 0) + usage.reasoningTokens
     total.toolCalls += usage.toolCalls
   }
   return total
@@ -249,6 +263,9 @@ export function usage(events: readonly SessionEvent[]): Usage {
       totals.outputTokens += count(used['output_tokens'])
       totals.cachedTokens += count(details['cached_tokens'])
       totals.cacheWriteTokens += count(details['cache_write_tokens'])
+      const reasoning = used['output_tokens_details']?.['reasoning_tokens']
+      if (typeof reasoning === 'number')
+        totals.reasoningTokens = (totals.reasoningTokens ?? 0) + count(reasoning)
     }
     if (event.type === 'tool.call' && !called.has(String(payload['call_id']))) {
       called.add(String(payload['call_id']))

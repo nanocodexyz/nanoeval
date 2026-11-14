@@ -523,6 +523,56 @@ test('an agent timeout that kept its reward is exported as a scored trial, with 
   for (const n of [3, 4, 5]) assert.ok(!('agent_timeout' in trial(n).agent_result.metadata))
 })
 
+test('the summary and the exported job carry the route and the reasoning tokens of an agent', () => {
+  const route = {
+    effort: 'medium',
+    host: 'api.openai.com',
+    payer: 'gateway' as const,
+    transport: 'responses_https_sse',
+  }
+  const reasoned = (id: string, reasoningTokens: number) => {
+    const base = attempt({ id, index: Number(id.slice(1)), route })
+    return { ...base, usage: { ...base.usage!, reasoningTokens } }
+  }
+  const attempts = [
+    reasoned('a1', 40),
+    reasoned('a2', 2),
+    attempt({ id: 'a3', index: 3, outcome: 'errored', reward: null, usage: null }),
+  ]
+  const summary = Result.summarize(attempts)['haiku']!
+  assert.equal(summary.reasoningTokens, 42)
+  assert.deepEqual(summary.routes, [route])
+  const plain = Result.summarize([attempt({ id: 'a1' })])['haiku']!
+  assert.equal(plain.reasoningTokens, null)
+  assert.deepEqual(plain.routes, [])
+  const mixed = Result.summarize([
+    reasoned('a1', 1),
+    attempt({ id: 'a2', route: { payer: 'login', transport: 'responses_websocket_v2' } }),
+  ])['haiku']!
+  assert.deepEqual(mixed.routes, [route, { payer: 'login', transport: 'responses_websocket_v2' }])
+
+  const files = Harbor.files({
+    artifacts: {},
+    attempts,
+    job: {
+      finishedAt: 3000,
+      id: '0b1f5a3e-6c1d-4f0a-9d2e-7a8b9c0d1e2f',
+      name: 'example',
+      startedAt: 500,
+    },
+    running: 0,
+    source: 'example',
+    total: 3,
+    version: '0.1.0',
+  })
+  const trial = JSON.parse(files['one__haiku__2/result.json']!)
+  assert.equal(trial.agent_result.metadata.reasoning_tokens, 2)
+  assert.deepEqual(trial.agent_result.metadata.route, route)
+  const job = JSON.parse(files['result.json']!)
+  assert.equal(job.stats.evals['haiku__example'].reasoning_tokens, 42)
+  assert.deepEqual(job.stats.evals['haiku__example'].routes, [route])
+})
+
 test('admission needs a free slot and memory at once, and clamps oversized tasks', () => {
   const capacity = { memoryMb: 1024, slots: 2 }
   assert.ok(Admission.admits({ memoryMb: 0, running: 0 }, capacity, 512))
