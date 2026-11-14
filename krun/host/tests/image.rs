@@ -2,19 +2,29 @@ use std::{
     collections::BTreeMap,
     env, fs,
     fs::{OpenOptions, Permissions},
-    io::Write,
-    os::unix::fs::{MetadataExt, PermissionsExt},
+    io::{Read, Write},
+    os::unix::{
+        fs::{MetadataExt, PermissionsExt},
+        net::{UnixListener, UnixStream},
+    },
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 use flate2::{Compression, write::GzEncoder};
 use sha2::{Digest, Sha256};
 use tar::{Builder, EntryType, Header};
 
+const ANSWER: Duration = Duration::from_secs(10);
+const BUSYBOX: &str = "/usr/bin/busybox";
+const ELF_PROGRAM_INTERPRETER: u32 = 3;
 const HEX: &[u8; 16] = b"0123456789abcdef";
 const KRUN: &str = env!("CARGO_BIN_EXE_nanoeval-krun");
 const SIZE_MB: &str = "64";
+const STALL: Duration = Duration::from_secs(30);
+const STREAM_BYTES: usize = 64 * 1024 * 1024;
 
 type Tree = BTreeMap<String, Vec<String>>;
 
@@ -46,6 +56,32 @@ fn hex(bytes: &[u8]) -> String {
 
 fn digest(bytes: &[u8]) -> String {
     format!("sha256:{}", hex(&Sha256::digest(bytes)))
+}
+
+fn busybox() -> Option<Vec<u8>> {
+    let program = fs::read(BUSYBOX).ok()?;
+    let field = |at: usize, width: usize| {
+        let mut bytes = [0; 8];
+        bytes[..width].copy_from_slice(&program[at..at + width]);
+        usize::try_from(u64::from_le_bytes(bytes)).unwrap()
+    };
+    let (table, size, count) = (field(32, 8), field(54, 2), field(56, 2));
+    let interpreted =
+        (0..count).any(|index| field(table + index * size, 4) == ELF_PROGRAM_INTERPRETER as usize);
+    (!interpreted).then_some(program)
+}
+
+fn finished(mut child: Child, within: Duration) -> Option<Output> {
+    let deadline = Instant::now() + within;
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    Some(child.wait_with_output().unwrap())
 }
 
 fn guest() -> Vec<u8> {
@@ -253,12 +289,8 @@ impl Lab {
         gzip.write_all(&lower).unwrap();
         let gzip = gzip.finish().unwrap();
         let zstd = zstd::encode_all(upper.as_slice(), 3).unwrap();
-        let architecture = match env::consts::ARCH {
-            "aarch64" => "arm64",
-            _ => "amd64",
-        };
         let config = serde_json::json!({
-            "architecture": architecture,
+            "architecture": Self::architecture(),
             "config": {
                 "Cmd": ["/bin/guest", "oom-kills"],
                 "Env": ["PATH=/bin", "GREETING=hello"],
@@ -271,7 +303,18 @@ impl Lab {
                 "type": "layers",
             },
         });
-        let config = serde_json::to_vec(&config).unwrap();
+        self.reference(
+            &config,
+            &[
+                ("application/vnd.oci.image.layer.v1.tar+gzip", &gzip),
+                ("application/vnd.oci.image.layer.v1.tar+zstd", &zstd),
+                ("application/vnd.oci.image.layer.v1.tar", &last),
+            ],
+        )
+    }
+
+    fn reference(&self, config: &serde_json::Value, layers: &[(&str, &[u8])]) -> String {
+        let config = serde_json::to_vec(config).unwrap();
         let described = |media: &str, bytes: &[u8]| {
             serde_json::json!({
                 "digest": self.blob(bytes),
@@ -281,16 +324,57 @@ impl Lab {
         };
         let manifest = serde_json::json!({
             "config": described("application/vnd.oci.image.config.v1+json", &config),
-            "layers": [
-                described("application/vnd.oci.image.layer.v1.tar+gzip", &gzip),
-                described("application/vnd.oci.image.layer.v1.tar+zstd", &zstd),
-                described("application/vnd.oci.image.layer.v1.tar", &last),
-            ],
+            "layers": layers
+                .iter()
+                .map(|(media, bytes)| described(media, bytes))
+                .collect::<Vec<_>>(),
             "mediaType": "application/vnd.oci.image.manifest.v1+json",
             "schemaVersion": 2,
         });
         let manifest = self.blob(&serde_json::to_vec(&manifest).unwrap());
         format!("registry.invalid/synthetic@{manifest}")
+    }
+
+    fn architecture() -> &'static str {
+        match env::consts::ARCH {
+            "aarch64" => "arm64",
+            _ => "amd64",
+        }
+    }
+
+    fn answers_during(&self, within: Duration) -> (usize, Option<String>, Instant) {
+        let stalled = Instant::now();
+        let mut answers = 0;
+        let unanswered = loop {
+            if stalled.elapsed() >= within {
+                break None;
+            }
+            let ping = self.spawn(&[
+                "exec",
+                "--socket",
+                "vm.sock",
+                "--",
+                "/bin/guest",
+                "oom-kills",
+            ]);
+            match finished(ping, ANSWER) {
+                Some(answer) if answer.status.success() && answer.stdout == b"0\n" => answers += 1,
+                answer => break Some(format!("{answer:?}")),
+            }
+            thread::sleep(Duration::from_secs(1));
+        };
+        (answers, unanswered, stalled)
+    }
+
+    fn spawn(&self, arguments: &[&str]) -> Child {
+        Command::new(KRUN)
+            .current_dir(&self.home)
+            .args(arguments)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap()
     }
 
     fn krun(&self, arguments: &[&str]) -> Output {
@@ -350,7 +434,7 @@ impl Lab {
             .collect()
     }
 
-    fn start(&self, disk: &str) -> Child {
+    fn start(&self, disk: &str, more: &[&str]) -> Child {
         let upper = self.home.join("upper.ext4");
         fs::File::create(&upper)
             .unwrap()
@@ -371,6 +455,7 @@ impl Lab {
             .args(["vm", "--boot", "boot", "--lower", disk])
             .args(["--upper", "upper.ext4", "--socket", "vm.sock"])
             .args(["--cpus", "1", "--memory-mib", "256"])
+            .args(more)
             .stdin(Stdio::null())
             .stdout(log.try_clone().unwrap())
             .stderr(log)
@@ -556,7 +641,7 @@ fn an_image_becomes_a_disk_that_boots() {
 
     a_packed_disk_is_restored(&lab);
 
-    let mut machine = lab.start("restored.ext4");
+    let mut machine = lab.start("restored.ext4", &[]);
     let ran = lab.krun(&[
         "exec",
         "--socket",
@@ -662,4 +747,115 @@ fn a_dockerfile_builds_on_an_image_without_a_shell() {
     assert!(!tree.contains_key("mnt"));
 
     a_broken_dockerfile_is_refused(&lab, &reference);
+}
+
+fn a_stalled_stream_arrives_in_full(stream: &mut UnixStream, forward: &str) {
+    let mut announced = vec![0; forward.len() + 1];
+    stream.read_exact(&mut announced).unwrap();
+    assert_eq!(announced, format!("{forward}\n").as_bytes());
+    let mut buffer = vec![0; 1024 * 1024];
+    let mut received = 0;
+    while received < STREAM_BYTES {
+        let length = stream.read(&mut buffer).unwrap();
+        assert!(length > 0, "the stream ended after {received} bytes");
+        assert!(buffer[..length].iter().all(|byte| *byte == 0));
+        received += length;
+    }
+    assert_eq!(received, STREAM_BYTES);
+    stream.set_read_timeout(Some(ANSWER)).unwrap();
+    let ended = stream.read(&mut buffer);
+    assert!(matches!(ended, Ok(0)), "the stream did not end: {ended:?}");
+}
+
+#[test]
+fn a_host_reader_that_stalls_leaves_every_other_connection_answering() {
+    if let Some(reason) = missing() {
+        eprintln!("skipped: it needs {reason}");
+        return;
+    }
+    let Some(busybox) = busybox() else {
+        eprintln!("skipped: it needs a statically linked {BUSYBOX}");
+        return;
+    };
+    let guest = guest();
+    let lab = Lab::new("stall", &guest);
+    let root = layer(&[
+        Entry::directory("bin/"),
+        Entry {
+            mode: 0o755,
+            ..Entry::file("bin/busybox", &busybox)
+        },
+        Entry {
+            mode: 0o755,
+            ..Entry::file("bin/guest", &guest)
+        },
+    ]);
+    let config = serde_json::json!({
+        "architecture": Lab::architecture(),
+        "config": {"Cmd": ["/bin/guest", "oom-kills"], "Env": ["PATH=/bin"]},
+        "os": "linux",
+        "rootfs": {"diff_ids": [digest(&root)], "type": "layers"},
+    });
+    let reference = lab.reference(
+        &config,
+        &[("application/vnd.oci.image.layer.v1.tar", &root)],
+    );
+    lab.built(&["--ref", &reference]);
+    let relay = UnixListener::bind(lab.home.join("relay.sock")).unwrap();
+    let mut machine = lab.start("disk.ext4", &["--relay", "relay.sock"]);
+
+    let forward = "127.0.0.1:7000";
+    let send = format!(
+        "/bin/busybox head -c {STREAM_BYTES} /dev/zero | /bin/busybox nc {}",
+        forward.replace(':', " ")
+    );
+    let mut writer = lab.spawn(&[
+        "exec",
+        "--socket",
+        "vm.sock",
+        "--forward",
+        forward,
+        "--",
+        "/bin/busybox",
+        "sh",
+        "-c",
+        &send,
+    ]);
+    let (mut stream, _) = relay.accept().unwrap();
+
+    let (answers, unanswered, stalled) = lab.answers_during(STALL);
+    let still_writing = writer.try_wait().unwrap().is_none();
+    if unanswered.is_some() || !still_writing {
+        let _ = writer.kill();
+        let _ = machine.kill();
+        let _ = machine.wait();
+    }
+    assert!(
+        unanswered.is_none(),
+        "exec {answers} answered, then {:?} after {:?} of the stall: {unanswered:?}",
+        stalled.elapsed(),
+        ANSWER
+    );
+    assert!(answers > 0);
+    assert!(
+        still_writing,
+        "the writer ended while nothing read its stream"
+    );
+
+    a_stalled_stream_arrives_in_full(&mut stream, forward);
+    drop(stream);
+    let ping = lab.spawn(&[
+        "exec",
+        "--socket",
+        "vm.sock",
+        "--",
+        "/bin/guest",
+        "oom-kills",
+    ]);
+    let answer = finished(ping, ANSWER).expect("exec did not answer after the stream was read");
+    assert_eq!(answer.stdout, b"0\n");
+    let _ = writer.kill();
+    let _ = writer.wait();
+    assert!(lab.krun(&["stop", "--socket", "vm.sock"]).status.success());
+    assert!(machine.wait().unwrap().success());
 }
