@@ -4012,3 +4012,38 @@ What the lane no longer does: end a sandbox under a row in any phase it happened
 **To tighten.** nanocode-ts `ac29d32` with nanocode `67e6a187d` records the request for the hand before the row, and a call that never left is dispatched when the turn resumes. No release that this repository pins has it. When the pin carries it, no attempt of this lane may have an unknown outcome: the set `cut` in `test/e2e.ts` goes, with `interrupted`, and the lane asks that every right attempt passed and that every trajectory has a tool call.
 
 **Measured.** With the change, on directory slots, on a 5-core machine without KVM at a load average of 11 to 12: a copy of the lane that kills the Worker 0, 30 and 80 ms after the first answer of the model, in place of the moment a row is active, passed 2 of 2 runs each. Every one of the six printed that the kill cut a tool call of 0 of 8 attempts. The window was not met on that machine, also not when the kill was aimed at it, so the change is not shown on a run that meets the window: the two runs that did are the failures above, on the 48-thread machine, before it.
+
+## 2026-11-14: a lease is renewed while a sandbox is closed
+
+The entry on a lease that is renewed while a runner starts fixed one wait of a tick. The lanes that lease sandboxes for 3 s still failed now and then on a busy machine: a sandbox ended as `lapsed` where the lane asks that every sandbox was terminated, or a run counted three sandboxes where two were expected.
+
+**The defect.** A tick does one thing after another, and renews leases in one of its steps. Three other steps end a sandbox and wait for the provider to have killed it: the one that closes a sandbox with no row left, the one that fails a sandbox whose runner stopped or whose renewal was refused, and the one that closes a sandbox whose lease is over. While a tick waited for such a kill no lease of the run was renewed, as it was while a runner started. A renewal leaves a lease between one and two lease times long, so with leases of 3 s a kill and what else the tick did had about 3 s before the next lease was over, and the tick after it found that lease ended, closed the sandbox and took its rows. A renewal that was refused made it worse inside one pass: the sandbox was killed before the leases after it in the table were renewed.
+
+Read from the timeline of a run of the lane with two leased sandboxes, before this change, on a 5-core machine that other work kept at a load average of 27. The run renewed the lease of its last busy sandbox, 3 s long, and 1.8 s later began to kill the other sandbox, which had no row left. The scripted gateway answered that kill after 3,389 ms. The renewal that followed came 9 ms before the end of the lease by the run's own record, the gateway had ended the sandbox, answered `404`, and the sandbox ended as `failed` where the lane asks `closed`. In another run there the kill of an idle sandbox took 4.3 s with its price, the lease of the busy one ran out during it, and the tick after it closed that sandbox as one whose lease had ended and took its row: the gateway counted it as `lapsed`.
+
+For real a lease is 300 s and is renewed with 60 s left, so a kill would have to take a minute. The lanes lease for 3 s to end in seconds, and a kill through the scripted gateway takes that long when the machine is busy: it ends a runner and removes its directory.
+
+**The rule.** A kill that a tick waits for is attended like the start of a runner: the run renews once every tick period while it waits, one renewal at a time, and goes on when the last one was answered.
+
+- A sandbox is written as `closed` or `failed` before its kill is asked for, so a renewal that runs meanwhile does not renew what is being killed. An idle sandbox was written as closed only after the kill.
+- A renewal reads a sandbox again before it asks and after it was answered. What a kill decided meanwhile stands: a sandbox that was closed or failed is not renewed, not moved back to `ready`, and a renewal that was refused for it is not counted as a second failure.
+- A pass of renewals renews first and kills afterwards: a sandbox whose renewal was refused is written as failed at once, and killed when every lease of the pass was asked for. When the pass ran beside a kill or a start, it is killed when that has ended.
+- The steps that go through the sandboxes read each one again when they come to it, because a kill they waited for may have let a renewal change it.
+
+**Checked.** The lanes that lease sandboxes for 3 s, on directory slots, on the 5-core machine without KVM while other work kept it at a load average of 15 to 27. One run of each line.
+
+| | Before | With the change |
+| --- | --- | --- |
+| Two leased sandboxes of which one dies | failed 2 of 4: a kill of 3.4 s and one of 4.3 s, each with the lease of the other sandbox over at its end | passed 4 of 4 |
+| A sandbox kept warm for a second run | passed 3 of 3 | passed 3 of 3 |
+| Model requests whose payment is refused in passing | passed 2 of 2 | passed 3 of 3 |
+
+The "before" of the first line is the lane as it was, with its race against its rows, which a machine this slow does not lose: both failures are the lease. The other two lanes passed before the change as well, in the few runs there were: on this machine they say that the change breaks neither, and nothing more.
+
+On the 32-core machine at a load average of 60 to 90, with the change: the three lanes passed 6 of 6, 3 of 3 and 3 of 3, and the lane with tasks through the gateway 2 of 2. Before the change the same lanes passed there, 6 of 6, 4 of 4 and 4 of 4, the last two with the whole process tree of the lane held to half a CPU (`systemd-run --scope -p CPUQuota=50%`): a quota did not make a kill slow there, a machine with five cores and four times as many runnable processes did.
+
+**Not verified.**
+
+- A real gateway and a deployed Worker, as in the entry on a lease renewed while a runner starts.
+- The other waits of a tick: a row that is taken away halts its session and reads its events before the tick goes on, and the pool is asked about a sandbox that is kept. Neither was seen to take long, and neither is attended.
+- A runner or a standing member that a busy machine keeps silent for longer than a lease is lost, as the protocol says, and the lanes with leases of 3 s then fail for the machine and not for the code. No lease was made longer to hide it.

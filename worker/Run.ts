@@ -205,6 +205,7 @@ class Refusal extends Error {
 }
 
 export class Run extends DurableObject<Env> {
+  private attended = false
   private readonly creating = new Set<number>()
   private readonly cursors = new Map<string, number>()
   private readonly holds = Hold.create()
@@ -1453,7 +1454,8 @@ export class Run extends DurableObject<Env> {
 
   private async advanceSandboxes(provider: Sandbox.Provider): Promise<void> {
     const config = this.config()
-    for (const row of this.sandboxes()) {
+    for (const { id } of this.sandboxes()) {
+      const row = this.sandboxes().find((candidate) => candidate.id === id)!
       if (row.state === 'creating' && !this.creating.has(row.id)) {
         this.update('sandboxes', row.id, {
           error:
@@ -1502,6 +1504,11 @@ export class Run extends DurableObject<Env> {
     row: SandboxRow,
     error: string,
   ): Promise<void> {
+    this.fail(row, error)
+    await this.discard(provider, { ...row, error })
+  }
+
+  private fail(row: SandboxRow, error: string): void {
     this.update('sandboxes', row.id, { error, state: 'failed' })
     if (row.runner !== null) {
       const runner = this.runners().find((candidate) => candidate.id === row.runner)
@@ -1509,8 +1516,14 @@ export class Run extends DurableObject<Env> {
         this.update('runners', runner.id, { error, state: 'lost' })
     }
     this.setMeta({ ...this.meta()!, sandboxFailures: this.meta()!.sandboxFailures + 1 })
-    if (row.handle) await provider.kill(JSON.parse(row.handle) as Sandbox.Handle).catch(() => {})
-    await this.forget(row, error)
+  }
+
+  private async discard(provider: Sandbox.Provider, row: SandboxRow): Promise<void> {
+    if (row.handle) {
+      const handle = JSON.parse(row.handle) as Sandbox.Handle
+      await this.renewing(provider, () => provider.kill(handle).catch(() => {}))
+    }
+    await this.forget(row, row.error ?? undefined)
   }
 
   private async forget(row: Pick<SandboxRow, 'member'>, error?: string): Promise<void> {
@@ -1925,7 +1938,8 @@ export class Run extends DurableObject<Env> {
         .filter((runner) => runner.drained !== null)
         .map((runner) => runner.id),
     )
-    for (const record of this.sandboxes()) {
+    for (const { id } of this.sandboxes()) {
+      const record = this.sandboxes().find((candidate) => candidate.id === id)!
       if (record.state !== 'ready' && record.state !== 'ending') continue
       if (waiting && !(record.runner !== null && drained.has(record.runner))) continue
       if (rows.some((row) => Ledger.active(row) && row.runner === record.runner)) continue
@@ -1951,9 +1965,9 @@ export class Run extends DurableObject<Env> {
           continue
         }
       }
+      this.update('sandboxes', record.id, { state: 'closed' })
       try {
-        await provider.kill(handle)
-        this.update('sandboxes', record.id, { state: 'closed' })
+        await this.renewing(provider, () => provider.kill(handle))
       } catch (error) {
         this.update('sandboxes', record.id, { error: message(error), state: 'failed' })
       }
@@ -1963,14 +1977,18 @@ export class Run extends DurableObject<Env> {
   }
 
   private async renewing<T>(provider: Sandbox.Provider, work: () => Promise<T>): Promise<T> {
+    if (this.attended) return work()
+    this.attended = true
     let ended = false
     let renewal: Promise<void> | undefined
+    const failed: SandboxRow[] = []
     const renewals = async () => {
       while (!ended) {
         await new Promise((resolve) => setTimeout(resolve, Number(this.env.TICK_MS)))
         if (ended) return
-        renewal = this.renew(provider).catch((error) =>
-          console.error('nanoeval renewal failed', message(error)),
+        renewal = this.leases(provider).then(
+          (rows) => void failed.push(...rows),
+          (error) => console.error('nanoeval renewal failed', message(error)),
         )
         await renewal
       }
@@ -1981,14 +1999,28 @@ export class Run extends DurableObject<Env> {
     } finally {
       ended = true
       await renewal
+      this.attended = false
+      for (const row of failed) await this.discard(provider, row)
     }
   }
 
   private async renew(provider: Sandbox.Provider): Promise<void> {
-    if (!provider.renew) return
+    for (const row of await this.leases(provider)) await this.discard(provider, row)
+  }
+
+  private async leases(provider: Sandbox.Provider): Promise<SandboxRow[]> {
+    if (!provider.renew) return []
     const config = this.config()
-    for (const record of this.sandboxes()) {
-      if (!['creating', 'ending', 'ready', 'starting'].includes(record.state)) continue
+    const failed: SandboxRow[] = []
+    const leased = (id: number) => {
+      const row = this.sandboxes().find((candidate) => candidate.id === id)
+      return row && ['creating', 'ending', 'ready', 'starting'].includes(row.state)
+        ? row
+        : undefined
+    }
+    for (const { id } of this.sandboxes()) {
+      const record = leased(id)
+      if (!record) continue
       if (record.paid_until === null || record.expires_at === null) continue
       const left = record.paid_until - Date.now()
       if (left <= 0 || left > config.limits.leaseSec * 1000) continue
@@ -2009,15 +2041,19 @@ export class Run extends DurableObject<Env> {
           { ...(JSON.parse(record.handle!) as Sandbox.Handle), paidUntil: record.paid_until },
           seconds,
         )
-        const runner = this.runners().find((candidate) => candidate.id === record.runner)
-        this.update('sandboxes', record.id, {
+        const current = leased(id)
+        if (!current) continue
+        const runner = this.runners().find((candidate) => candidate.id === current.runner)
+        this.update('sandboxes', id, {
           error: null,
           paid_until: renewed.paidUntil,
-          ...(record.state === 'ending'
+          ...(current.state === 'ending'
             ? { state: runner?.state === 'ready' ? 'ready' : 'starting' }
             : {}),
         })
       } catch (error) {
+        const current = leased(id)
+        if (!current) continue
         const unsold =
           error instanceof Budget.ExceededError ||
           (error instanceof Gateway.RefusedError && error.status !== 404) ||
@@ -2025,17 +2061,22 @@ export class Run extends DurableObject<Env> {
         const passing =
           error instanceof Gateway.RefusedError && (error.status === 429 || error.status >= 500)
         if (unsold)
-          this.update('sandboxes', record.id, {
+          this.update('sandboxes', id, {
             error: message(error),
             ...(passing ? {} : { state: 'ending' }),
           })
-        else await this.failSandbox(provider, record, message(error))
+        else {
+          this.fail(current, message(error))
+          failed.push({ ...current, error: message(error) })
+        }
       }
     }
+    return failed
   }
 
   private async lapse(provider: Sandbox.Provider): Promise<void> {
-    for (const record of this.sandboxes()) {
+    for (const { id } of this.sandboxes()) {
+      const record = this.sandboxes().find((candidate) => candidate.id === id)!
       if (!['ending', 'ready', 'starting'].includes(record.state)) continue
       const paid = record.paid_until ?? Infinity
       const lifetime = record.expires_at ?? Infinity
@@ -2049,8 +2090,10 @@ export class Run extends DurableObject<Env> {
       })
       if (record.runner !== null)
         this.update('runners', record.runner, { error: reason, state: 'left' })
-      if (record.handle)
-        await provider.kill(JSON.parse(record.handle) as Sandbox.Handle).catch(() => {})
+      if (record.handle) {
+        const handle = JSON.parse(record.handle) as Sandbox.Handle
+        await this.renewing(provider, () => provider.kill(handle).catch(() => {}))
+      }
       await this.forget(record, reason)
     }
   }
