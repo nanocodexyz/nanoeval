@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import * as Fs from 'node:fs'
+import * as Http from 'node:http'
+import type { AddressInfo } from 'node:net'
 import * as Os from 'node:os'
 import * as Path from 'node:path'
 import { after, before, test } from 'node:test'
@@ -274,18 +276,242 @@ test('a branch, a commit and a checkout with uncommitted changes become the same
 
 test('one evaluation holds a lab, and a second waits until it is released', async () => {
   const lab = Path.join(directory, 'lab')
-  const first = await Revision.hold(lab, () => assert.fail('the lab was free'))
-  let waited = false
+  const free = { waiting: () => assert.fail('the lab was free'), what: 'free' }
+  const first = await Revision.hold(lab, { ...free, what: 'first' })
+  let waited: readonly Revision.Ticket[] | undefined
   let second: Revision.Held | undefined
-  const pending = Revision.hold(lab, () => {
-    waited = true
+  const pending = Revision.hold(lab, {
+    waiting: (ahead) => {
+      waited = ahead
+    },
+    what: 'second',
   }).then((held) => {
     second = held
   })
   while (!waited) await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.deepEqual(
+    waited.map((ticket) => [ticket.what, ticket.pid]),
+    [['first', process.pid]],
+  )
   assert.equal(second, undefined)
   await first.release()
   await pending
   await second!.release()
-  await (await Revision.hold(lab, () => assert.fail('the lab was released'))).release()
+  await (await Revision.hold(lab, free)).release()
+  assert.deepEqual(Fs.readdirSync(Path.join(lab, 'queue')), ['gate'])
+})
+
+test('evaluations take a lab in the order in which they asked for it, and one that died is passed over', async () => {
+  const lab = Path.join(directory, 'lab-queue')
+  const first = await Revision.hold(lab, { waiting: () => assert.fail('free'), what: 'a' })
+  const order: string[] = []
+  const pending: Promise<void>[] = []
+  for (const [at, what] of ['b', 'c', 'd', 'e'].entries()) {
+    let ahead: string[] | undefined
+    pending.push(
+      Revision.hold(lab, {
+        waiting: (tickets) => {
+          ahead = tickets.map((ticket) => ticket.what)
+        },
+        what,
+      }).then(async (held) => {
+        order.push(what)
+        await new Promise((resolve) => setTimeout(resolve, 30))
+        await held.release()
+      }),
+    )
+    while (!ahead) await new Promise((resolve) => setTimeout(resolve, 10))
+    assert.deepEqual(ahead, ['a', 'b', 'c', 'd'].slice(0, at + 1))
+  }
+  await first.release()
+  await Promise.all(pending)
+  assert.deepEqual(order, ['b', 'c', 'd', 'e'])
+
+  Fs.writeFileSync(Path.join(lab, 'queue', '7.json'), JSON.stringify({ pid: 1, what: 'died' }))
+  const next = await Revision.hold(lab, {
+    waiting: () => assert.fail('nobody holds it'),
+    what: 'f',
+  })
+  assert.deepEqual(Fs.readdirSync(Path.join(lab, 'queue')).sort(), ['8.json', 'gate'])
+  await next.release()
+})
+
+test('progress is one stamped line a phase and a row counter, and nothing when it is quiet', () => {
+  const counts = { active: 2, errored: 0, failed: 0, passed: 0, total: 9, unclaimed: 7 }
+  const later = { active: 2, errored: 0, failed: 1, passed: 1, total: 9, unclaimed: 5 }
+  let now = 1_000
+  const written: string[] = []
+  const options = { now: () => now, write: (text: string) => void written.push(text) }
+  const plain = Revision.progress({ ...options, live: false, quiet: false })
+  plain.line('hand: building')
+  now += 61_000
+  plain.line('worker: starting')
+  plain.rows(counts)
+  plain.rows(counts)
+  now += 14_500
+  plain.rows(later)
+  plain.settle()
+  assert.deepEqual(written, [
+    '[0:00] hand: building\n',
+    '[1:01] worker: starting\n',
+    '[1:01] rows: 0 of 9 ended, 2 running, 7 waiting\n',
+    '[1:15] rows: 2 of 9 ended (1 passed, 1 failed, 0 errored), 2 running, 5 waiting\n',
+  ])
+
+  written.length = 0
+  now = 0
+  const live = Revision.progress({ ...options, live: true, quiet: false })
+  live.rows(counts)
+  now = 2_000
+  live.rows(counts)
+  live.line('runner: gone')
+  live.rows(later)
+  live.settle()
+  live.settle()
+  const erase = '\r\u001b[K'
+  assert.deepEqual(written, [
+    erase + '[0:00] rows: 0 of 9 ended, 2 running, 7 waiting',
+    erase + '[0:02] rows: 0 of 9 ended, 2 running, 7 waiting',
+    erase + '[0:02] runner: gone\n',
+    erase + '[0:02] rows: 2 of 9 ended (1 passed, 1 failed, 0 errored), 2 running, 5 waiting',
+    '\n',
+  ])
+
+  written.length = 0
+  const quiet = Revision.progress({ ...options, live: true, quiet: true })
+  quiet.line('hand: building')
+  quiet.rows(counts)
+  quiet.settle()
+  assert.deepEqual(written, [])
+  assert.equal(Revision.clock(3_725_999), '62:05')
+})
+
+test('a nanocode whose hand a slot cannot start is refused when it is named', async () => {
+  const origin = repository('nanocode-old')
+  const old = git(origin, 'rev-parse', 'HEAD')
+  Fs.writeFileSync(
+    Path.join(origin, 'src', 'cli.rs'),
+    'Argument::flag("x").long("own-processes")\n',
+  )
+  git(origin, 'add', '.')
+  git(origin, 'commit', '--quiet', '-m', 'second')
+  const tree = Path.join(directory, 'tree-old')
+  const at = (spec: string) => Revision.resolve(spec, { repository: origin, tree })
+  await Revision.startable(tree, await at('master'))
+  await assert.rejects(Revision.startable(tree, await at(old)), {
+    message:
+      'nanocode ' +
+      old.slice(0, 12) +
+      ' cannot be the hand of a slot: a slot starts its hand with --own-processes, so that a command that exhausts the memory of the slot ends alone, and nanocode knows that option from 5f8b457de on. A hand without it ends at once and every row is an error: name a revision from 5f8b457de on',
+    name: 'Revision.SourceError',
+  })
+  const checkout = Path.join(directory, 'checkout-old')
+  git(directory, 'clone', '--quiet', origin, checkout)
+  git(checkout, 'checkout', '--quiet', '--detach', old)
+  Fs.writeFileSync(Path.join(checkout, 'src', 'one.rs'), 'flag own-processes\n')
+  await Revision.startable(tree, await at(checkout))
+})
+
+test('the lab remembers the settings of its runs, and the latest quick run on the pinned builds is the standard of the next', async () => {
+  const lab = Path.join(directory, 'lab-recorded')
+  assert.deepEqual(await Revision.recorded(lab), [])
+  const pins = { hand: 'nanocode-cli-1234567', harness: 'nanocode-ts build-abcdef0' }
+  const pinned = { hands: [pins.hand], harness: pins.harness }
+  const settings = {
+    agents: [{ id: 'luna', model: 'gpt-6-luna', provider: 'codex' as const }],
+    attempts: 3,
+    modelUsd: 1,
+    slots: 2,
+  }
+  const runs: Revision.Recorded[] = [
+    { eval: { name: 'bench', version: 'a' }, id: 'old', nanocode: pinned },
+    { eval: { name: 'bench', version: 'a' }, id: 'pins', nanocode: pinned, quick: true, settings },
+    {
+      eval: { name: 'bench', version: 'a' },
+      id: 'again',
+      nanocode: pinned,
+      quick: true,
+      rerun: true,
+      settings,
+    },
+    {
+      cancelled: true,
+      eval: { name: 'bench', version: 'a' },
+      id: 'stopped',
+      nanocode: pinned,
+      quick: true,
+      settings,
+    },
+    { eval: { name: 'bench', version: 'a' }, id: 'plain', nanocode: pinned, settings },
+    {
+      eval: { name: 'bench', version: 'b' },
+      id: 'built',
+      nanocode: { hands: ['nanocode 0123456789ab'], harness: pins.harness },
+      quick: true,
+      settings,
+    },
+    { eval: { name: 'other', version: 'c' }, id: 'other', nanocode: pinned, quick: true, settings },
+  ]
+  Fs.mkdirSync(lab, { recursive: true })
+  Fs.writeFileSync(
+    Path.join(lab, 'runs.jsonl'),
+    runs.map((run) => JSON.stringify(run) + '\n').join(''),
+  )
+  const read = await Revision.recorded(lab)
+  assert.deepEqual(read, runs)
+  assert.equal(Revision.standard(read, { eval: 'bench', pins })?.id, 'pins')
+  assert.equal(Revision.standard(read.slice(0, 1), { eval: 'bench', pins }), undefined)
+  assert.equal(Revision.standard(read, { eval: 'none', pins }), undefined)
+  assert.deepEqual(Revision.quick, { attempts: 3, eval: 'terminal-bench-2.1', subset: 'quick' })
+})
+
+test('a served lab answers reads from the Worker of the evaluation that runs, and refuses a write', async () => {
+  const lab = Path.join(directory, 'lab-served')
+  Fs.mkdirSync(lab, { recursive: true })
+  const seen: string[] = []
+  const worker = Http.createServer((request, response) => {
+    seen.push(request.method + ' ' + request.url + ' ' + request.headers.authorization)
+    response.writeHead(request.url === '/v1/runs/none' ? 404 : 200, {
+      'content-type': 'application/json',
+    })
+    response.end(JSON.stringify({ url: request.url }))
+  })
+  await new Promise<void>((resolve) => worker.listen(0, '127.0.0.1', resolve))
+  const url = 'http://127.0.0.1:' + (worker.address() as AddressInfo).port
+  Fs.writeFileSync(Path.join(lab, 'worker.wanted'), JSON.stringify({ pid: process.pid }))
+  const lines: string[] = []
+  const served = await Revision.serve({
+    lab,
+    log: (line) => void lines.push(line),
+    logins: {},
+    pollMs: 10,
+  })
+  const ask = (path: string, init: RequestInit = {}) =>
+    fetch(served.url + path, { ...init, headers: { authorization: 'Bearer t' } })
+  const none = await ask('/v1/runs')
+  assert.equal(none.status, 503)
+  assert.equal(none.headers.get('retry-after'), '1')
+  assert.match(await none.text(), /no Worker answers for the lab at this moment/)
+  Fs.writeFileSync(Path.join(lab, 'worker.json'), JSON.stringify({ pid: process.pid, url }))
+  const read = await ask('/v1/runs?limit=2')
+  assert.equal(read.status, 200)
+  assert.deepEqual(await read.json(), { url: '/v1/runs?limit=2' })
+  assert.equal((await ask('/v1/runs/none')).status, 404)
+  assert.equal((await ask('/v1/blobs/abc', { method: 'HEAD' })).status, 200)
+  for (const method of ['POST', 'DELETE', 'PUT']) {
+    const refused = await ask('/v1/runs/one/cancel', { method })
+    assert.equal(refused.status, 405)
+    assert.match(await refused.text(), new RegExp('the lab is served to be read: ' + method))
+  }
+  assert.deepEqual(seen, [
+    'GET /v1/runs?limit=2 Bearer t',
+    'GET /v1/runs/none Bearer t',
+    'HEAD /v1/blobs/abc Bearer t',
+  ])
+  Fs.writeFileSync(Path.join(lab, 'worker.json'), JSON.stringify({ pid: 2 ** 22 + 1, url }))
+  assert.equal((await ask('/v1/runs')).status, 503)
+  await served.close()
+  await new Promise<void>((resolve) => worker.close(() => resolve()))
+  assert.deepEqual(lines, [])
+  assert.equal(Fs.readFileSync(Path.join(lab, 'token'), 'utf8').trim().length, 64)
 })

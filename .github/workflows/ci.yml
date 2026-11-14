@@ -653,6 +653,32 @@ jobs:
             output/e2e/**/status.json
             output/e2e/**/harbor
 
+  e2e-revision:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: End to end, directory slots, nanoeval revision on a lab, its progress, its queue, a served lab, a quick check and a build that falls back
+        run: node test/revision.ts
+      - name: End to end, directory slots, nanoeval watch over nanoeval revision
+        run: node test/revision.ts watch
+      - name: Keep the logs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-output-revision
+          path: |
+            output/revision/**/*.log
+            output/revision/**/runs.jsonl
+            output/revision/**/watch.jsonl
+
   krun:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

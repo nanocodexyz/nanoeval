@@ -4798,3 +4798,162 @@ One run of each line. Lanes beside the change passed once each with it: tasks on
 - A session on a WebSocket, a ChatGPT plan login, passes no meter: its tokens count when its attempt ends, and its budget is the bound it was. A key of a provider whose responses name no cost is bounded request by request only in its searches.
 - A Worker that restarts with requests in flight. Each row of `model_flights` names the object that admitted it, and an object that starts again counts none of the rows of the one before it: kept, they would have held room that is free for as long as each claim lasts, and a deploy restarts every object at once. A unit test of that rule; a restart during a run with a budget was not exercised. A request that a session's egress still has with the provider across the restart is not reserved until it ends, so the bound is looser by those requests once.
 - An upstream body that fails in the middle of a stream may end without the request being settled; its row of `model_flights` then stays until its claim is over and holds room that is free. Not exercised.
+## 2026-11-14: `nanoeval revision` says what it is doing
+
+The command printed the two lines of a build, the line of its Worker, the import and "run ID: N attempts", and then nothing until the summary. What it was doing was in three log files of the lab. On a machine with 5 cores under load, a run of three sample tasks at three attempts on directory slots with a scripted model whose first reply takes 4 s printed nothing for 44 s before the line of the Worker and nothing for 49 s between the line of the run and the summary. A package in an empty lab builds for about 900 s with one line at its start.
+
+**The rule.** Standard error gets one line for each phase, with the time since the command began in front: the fetch of each revision, the build of the hand, each step of the build of the package (`npm ci`, `cargo fetch`, `scripts/build.mjs`, `npm run build:ts`, the dependencies of the package), the start of the Worker and its address, the import, the start of the runner. While the run goes on, the rows: how many ended, with what outcome, how many run and how many wait, as a new line each time one of those numbers changes, or as one line rewritten in place every two seconds where standard error is a terminal. `--quiet` prints none of it. Standard output is unchanged, and so is everything a script reads: the watcher reads no text of the command.
+
+The same run after the change, the times of the machine in front:
+
+```
+09:29:05 [0:00] worker: starting under local workerd on the state in LAB/worker
+09:29:13 [0:08] worker: http://127.0.0.1:32891, log in LAB/logs/worker.log
+09:29:13 [0:08] import: 3 task directories
+09:29:14 run RUN: 9 attempts of local@59cb6b725a72
+09:29:14 [0:09] runner: started on the rows of the run, log in LAB/logs/runner-RUN.log
+09:29:14 [0:09] rows: 0 of 9 ended, 0 running, 9 waiting
+09:29:22 [0:17] rows: 0 of 9 ended, 2 running, 7 waiting
+09:29:33 [0:28] rows: 2 of 9 ended (2 passed, 0 failed, 0 errored), 2 running, 5 waiting
+09:30:10 [1:05] rows: 9 of 9 ended (9 passed, 0 failed, 0 errored), 0 running, 0 waiting
+```
+
+**Rejected.** A progress bar or a percentage: rows take from seconds to an hour each, so a share of rows says nothing about the time left. A line every N seconds where nothing changed: a log would fill with the same line, and the interval would be a number nobody measured. The time of each phase at its end instead of the clock at its start: a phase that hangs would then print nothing, which is the defect.
+
+**Checked.** A unit test of the lines and their clock, of the counter in a file (a line a change) and on a terminal (one line rewritten, erased before another line), and of `--quiet`. The lane of the entry below reads the lines of the Worker, the import, the runner, both builds and the rows from the command itself, and nothing but the baseline's line from a command with `--quiet`.
+
+**Not verified.** The line on a real terminal was read by nobody: the test asks for the bytes. The steps of the package build were read from a build of two small local repositories, not of nanocode-ts.
+
+## 2026-11-14: evaluations take a lab in the order they were started, and name a baseline before it exists
+
+Several `nanoeval revision` commands in one lab waited on `flock`, and the kernel gives a lock that is freed to whichever waiter it wakes first. Reproduced on the commit before this change, on directory slots with a scripted model: four commands started half a second apart behind a running one got the lab first, third, second and fourth. And `--baseline` took the id of a run, which an evaluation that waits behind its baseline's evaluation cannot know: three revisions to compare meant three commands typed one after another, each after reading the id the one before printed.
+
+**The queue.** An evaluation takes a ticket before it waits: a file `queue/N.json` in the lab, N one more than the highest there, written under a lock that is held for that moment only, and it holds a lock on its ticket for as long as it lives. It then waits for the lock of every ticket with a lower number, in order, removes each when it gets it, and takes the lock of the lab. So the order is the order of the tickets, a command that was killed while it waited frees its ticket with its last process and is passed over, and nothing is polled. The line that says an evaluation waits names what is ahead: "lab: waiting in LAB for 2 evaluations that came first: nanocode 0a9ed13f2337 (process 4711), nanocode pinned, the-name (process 4712)".
+
+**The names of a baseline.** `--baseline` takes, beside an id and `latest`:
+
+- `previous`: the run before this one. It is the newest finished run of the eval, on any builds, that is not a rerun, was not cancelled, has the agents of this run, paid for and reached as they are, and holds at least one of its tasks unchanged.
+- a revision, as `--nanocode` takes it, or `pinned`: the newest such run whose one hand is that revision. A commit, a branch or a tag is resolved in the lab's build tree, a directory is read as a checkout with its changes, so the name a revision was built under is the name that finds its run.
+
+Each is looked up when the evaluation has the lab, after the evaluations ahead of it ended, which is what makes the names useful to a command that waits. Anything that is not `latest`, `previous` or the id of a run is a revision, in `nanoeval revision` only: `run` and `compare` have no lab to resolve it in. The command prints the run it took and its builds.
+
+**Rejected.** A `--after RUN` option that waits for another run: it still needs an id. Tickets named by time: two commands in one millisecond, and clocks that step. A daemon that owns the lab: every command of this repository ends when its work does. Holding the lab's lock in ticket order by passing a token through a pipe: the kernel's lock on a file is released when its holder dies, which a token is not.
+
+**Checked.**
+
+- Unit tests: five holders started in a row get the lab in that order, each told who is ahead; a ticket whose holder is gone is removed and not waited for; the tickets are gone when the holders are; the rule for `previous` and for a revision, and the search and its refusal for each.
+- The lane starts three evaluations as fast as their tickets appear, the second and third with `--baseline previous`: the lab recorded the runs in the order of the commands, the second against the first and the third against the second, and each printed the run it took. A later command names a checkout with changes as its baseline and is set against the run of that checkout.
+
+**Not verified.** Evaluations queued for hours, a machine that restarts with tickets in the lab (their locks are gone with their holders, so they are passed over, which was tested with one ticket), a lab on a network file system, where `flock` is not this lock, and two machines on one lab.
+
+## 2026-11-14: a lab is read while evaluations run in it
+
+`revision --serve` took the lab's lock, so it waited for every evaluation, and an evaluation waited for it. A run of an hour could be read only from the log of its runner, and a served lab left running stopped every evaluation and the watcher. Reproduced on directory slots: started twelve seconds into an evaluation, the command printed "waiting for another evaluation in LAB" and nothing else until it was killed.
+
+**The rule.** A served lab is one address that forwards reads to whichever Worker has the tables of the lab at that moment, and it takes no ticket and no lock of the lab.
+
+- The tables have one writer. Whoever runs a Worker on them holds `worker.lock` and writes its address to `worker.json`.
+- An evaluation writes `worker.wanted` before it asks for that lock, for its own Worker on the built package, and removes it when its Worker stopped.
+- `revision --serve` keeps a Worker of its own, on the pinned package, only while `worker.wanted` names no live process: it stops it, or gives up starting it, when an evaluation asks, and starts one again when the lab is left alone, which includes the minutes an evaluation spends building.
+- The served address answers `GET` and `HEAD` from the Worker that `worker.json` names, its own or the evaluation's, with the token of the lab, which both Workers take. Anything else is answered 405, and the moment between two Workers 503 with `retry-after`.
+
+So `runs`, `status`, `compare`, `attempt` and `export` work at one address across the Workers of many evaluations, and nothing that changes a run goes through it.
+
+**Rejected.** A second Worker on the tables beside the one of the evaluation: two workerd processes on one SQLite file. Printing the address of the evaluation's Worker: it changes with each evaluation and ends with it, and it takes writes. A copy of the tables for the served Worker: the run under way is not in a copy. Holding a request until a Worker is there: a build takes a quarter of an hour, and a client that waits that long has no line to print.
+
+**Checked.**
+
+- A unit test against a stand-in Worker: reads are forwarded with their authorization, a 404 stays a 404, `POST`, `PUT` and `DELETE` are refused, no Worker and a Worker whose process is gone are 503.
+- The lane keeps one served lab for its whole length: it lists the runs of an empty lab from the served command's own Worker, reads a run that is under way and its status while the first row waits for its model, is refused a cancel, reads the same run finished after the evaluation's Worker stopped, lists eight runs at the end and runs `compare` through it. The served command answered from a Worker of its own 7, 11 and 16 s after it started, in three runs of the lane.
+
+**Not verified.** A served lab beside an evaluation on krun slots or with a model, a served lab that is killed with SIGKILL while its own Worker runs (its lock is freed, its workerd may live on and must be stopped by hand), two served labs on one lab, and a client that streams: the answer is read whole and then sent.
+
+## 2026-11-14: a nanocode that a slot cannot start is refused when it is named
+
+`nanoeval revision` built any revision of nanocode and ran it, and every row of a revision before `5f8b457de` ended as an error. The cause is the entry of 2026-11-12 on a command that exhausts a slot's memory: `sandbox/slot.sh` starts the hand with `--own-processes`, which nanocode has from that commit on. A hand of an earlier commit prints the usage of `hand` and exits, the session waits for a hand that never dials in, and the row is an environment error after the build of the hand had taken its minutes. Checked with a hand built two days before that commit: `nanocode hand --help` names no such option.
+
+**The rule.** When a revision of nanocode is named as the hand, the command looks for the option in the sources of that commit, `git grep` for `own-processes` in the lab's build tree, or in the uncommitted change of a checkout, and refuses the revision before it builds anything: "nanocode 0123456789ab cannot be the hand of a slot: a slot starts its hand with --own-processes, so that a command that exhausts the memory of the slot ends alone, and nanocode knows that option from 5f8b457de on. A hand without it ends at once and every row is an error: name a revision from 5f8b457de on".
+
+**Why refused and not supported.** Leaving the option out for an old hand would run it as the entry of 2026-11-12 measured: a command that exhausts memory takes the hand with it and the row waits 30 s for an outcome that is unknown. Rows of such a hand would be compared with rows of a hand that has the option, as if the revisions differed in what they solve. A revision that old also speaks an older protocol with the brain. The sources are asked, not the ancestry of the commit: a fork or a branch that carries the option is accepted, and the two local repositories of the lane are no descendants of nanocode's history.
+
+**Checked.** A unit test over a repository with a commit before the option, one with it, and a checkout of the first whose uncommitted change adds it. In the lane the command for the earlier commit exits with 1 and that line, with no hand and no build tree output in the lab.
+
+**Not verified.** The refusal against nanocode's own repository: its commits were read (`bin/nanocode/src/cli.rs` names the option from `5f8b457de` on), the command was not run against them. A package built on a nanocode that old is not refused: only the hand is started by a slot.
+
+## 2026-11-14: a baseline of another version of an eval is compared on the tasks both hold
+
+A lab imports the tasks a run names, and each import makes a version of its eval. `--baseline latest` looked for a run "of the same eval and the same version digest", so a baseline from before any import was never found, and a comparison with a baseline named by its id set tasks side by side by their names, whatever each version held under a name. Reproduced on the commit before this change: a lab ran three sample tasks, a fourth was imported, and `--baseline latest` for a run of one of the first three was refused, "no finished run of samples@a8862a3a8052 on nanocode-ts build-f3aa94f, hand nanocode-cli-3f97ab0 holds this task with a: of the runs listed, 1 without these tasks": the run that held the task was of the version before and was not among the runs listed.
+
+**The rule.** The unit of a comparison is the task, and a task is the same on both sides when its digest in the version of each run is the same: the digest covers its instruction, its tests, its solution, its limits and its environment as it was converted.
+
+- `compare`, `run --baseline` and `revision --baseline` read the entries of each run's eval version and compare the tasks whose digests agree. A task with one name and two digests is left out of the verdict and of the pass@k "on the tasks both sides rate", and named: "left out, the task is another in the eval version of the baseline: write-greeting". Tasks that only one side ran are named as before.
+- `--baseline latest` takes a run of any version of the eval that holds every task of the run at the same digest. A run that holds a task of that name at another digest is counted in the refusal as "with another version of these tasks".
+- A result read without its entries, in a test or from an older caller, is compared by the checksum of the task's files, which every attempt carries.
+
+**Rejected.** The checksum alone: it is the task's files and not the environment that was converted from them, and a second import of one task on another day can convert another image. Refusing a baseline of another version: that is the defect. A version that only grows by its new tasks staying "the same version": a version is its digest, and a reader verifies it.
+
+**Checked.**
+
+- Unit tests: a comparison with a task that changed, one only the baseline has and one only the run has, by digests and by checksums; the rule of `latest` with a run of another version that holds the tasks unchanged, and with one that holds a task at another digest.
+- In the lane the lab's eval gets a second version, one task with a changed instruction and one new task. A run of those two against a run of the first version, named by its id, names the changed task as left out, the new one as not in the baseline and the two others as only in the baseline. A run of the two unchanged tasks with `--baseline latest` takes a run of the first version on the pinned builds, past a newer run of the second version that does not hold them.
+
+**Not verified.** A deployed Worker with many versions: each run of the search costs one more read, of the entries of its version, once a version. Two imports of one dataset whose environments converted differently, which is the case the digest is for: no such pair was at hand.
+
+## 2026-11-14: a package that does not build on its nanocode is built on the one it names
+
+The two branches the watcher follows move apart: on 2026-11-14 nanocode-ts master did not compile on nanocode master for some hours, and the watcher recorded `build failed` for two pairs of heads in a row and would have for every commit until the branches fit again. It went on only because the installed watcher called a script in place of `nanoeval revision` that tried a failed build again with `--sdk pinned`. That script was in no repository and had no test.
+
+**The rule.** `revision --sdk-fallback pinned` is what the script did, in the command. When the package of a nanocode-ts revision does not build on the nanocode it was given, it is built on the nanocode that revision names itself, `sdk-revision.json`. The command says so on standard error, with the log of the build that failed. The failure is written beside the packages of the lab, so the next command for the same pair, the run after a `--build-only`, goes to the fallback at once and builds nothing twice. Without the option a failure is as it was, and a remembered failure is tried again.
+
+The hand is still the one of the nanocode that was named, so such a run tests the new hand with the brain of an older nanocode, and says so wherever a run says what it ran on: "nanocode-ts A on nanocode B, hand nanocode C". The watcher needs one line, `options = ["--sdk-fallback", "pinned"]` in `[revision]`, and now records the builds of every evaluation in `watch.jsonl`, from the version each trial of the job names, and says in its line when the package was built on another nanocode than the hand.
+
+**Rejected.** The fallback as the default: a pair that does not build is a finding, and whoever evaluates one revision by hand wants the compiler's error. A fallback in the watcher: it would have to read the text of the command, which it does not. A retry of the failed build on every call: the build of a package takes minutes before it fails.
+
+**Checked.**
+
+- In the lane, over two local repositories that stand in for nanocode and nanocode-ts, the second with the build steps of a package that fail on one commit of the first: without the option the command ends with the error of the build, with it the package is built on the nanocode the revision names and the variables of `--build-only` name that pair, and the same command again builds nothing and prints the same variables. The three commands took 23 s, 7 s and 1 s.
+- Unit tests: the watcher records the versions its rows name, once each, and says a pair apart only when the nanocode of the package and of the hand differ.
+- The watch lane passes the option to every call of the command with both sides pinned, where it does nothing, and reads the build of the baseline from `watch.jsonl`.
+
+**Not verified.** The option on nanocode and nanocode-ts themselves: the pair of that morning was evaluated by the script, once, before the option existed. Whether a new hand always speaks to the brain of the nanocode that nanocode-ts names is not known: a change of their protocol would show as rows that error, which the watcher records as incomplete, not as a score.
+
+## 2026-11-14: `revision --quick`: did this change break anything
+
+The shortest evaluation of a change took a command of six options and the id of a baseline from an earlier command, and what to run was left to whoever typed it.
+
+**The rule.** `nanoeval revision --quick` fills in what such a command needs and nothing it was told:
+
+- the eval `terminal-bench-2.1` and its subset `quick` in `subsets.json`, unless `--eval`, `--subset`, `--only`, `--only-file` or `--limit` say otherwise,
+- three attempts a task, unless `--attempts` does,
+- on the pinned builds, with `--agent`: that run, which the lab records as a quick run with its agents, its judge, its model budget and its slots,
+- with a revision: the agents, the judge, the model budget and the slots of the latest quick run of that eval on the pinned builds that the lab recorded, unless they are named, that run as the baseline unless `--baseline` names another, and `--fail-on regression` unless `--fail-on` names another gate.
+
+So `nanoeval revision --quick --nanocode .` in a checkout builds what changed, runs 18 rows and exits with 0 when nothing moved beyond noise and with 3 on a regression. A lab without a quick run on the pinned builds refuses a revision before it builds anything, with the command that makes one. The login files can be named once for a shell, `NANOEVAL_CLAUDE_LOGIN` and `NANOEVAL_CODEX_LOGIN`, so the command needs no credential option either.
+
+**Why three attempts and these six tasks.** With three attempts a side, a task is called lost only at 3 of 3 against 0 of 3, and the verdict over all tasks needs several that move one way. Tasks that an agent solves half the time move by chance and say nothing at this size. The six of `quick` are those `gpt-6-luna` solved 10, 11, 11, 12, 12 and 12 times of 12 on two accepted revisions in the runs of the watcher on 2026-11-14: `fix-code-vulnerability`, `fix-git`, `git-leak-recovery`, `code-from-image`, `nginx-request-logging` and `openssl-selfsigned-cert`. Each asks for another part of the hand: a multi-file edit, git, a service, an image as input, certificates and files. `smoke` keeps its four tasks, one of which passed 8 times of 12 there.
+
+**Why the baseline is the latest quick run and not `latest`.** `latest` is the newest run on the pins that holds the tasks, which in a lab is often a run of one attempt made for another question. The quick run on the pins was made with the settings a quick revision repeats, so both sides have three attempts and one budget, and it is found in the lab's own record before anything is built.
+
+**What it costs.** Measured on the lane: directory slots, a scripted model, three sample tasks, three slots, a machine with 5 cores. The quick run on the pinned builds took 25 s, and the quick run of a checkout with changes 26 s from the command to its exit status, the build of its hand included, which is a crate of ten lines there. Each was 9 rows, 144 input and 72 output tokens, $0.00005 at list prices: the scripted model's numbers, which say what the command adds and nothing about a model. With a model it was not run. The watcher's last cycle before this entry, ten tasks at three attempts of `gpt-6-luna` on krun slots, was 30 rows for $0.0688 at list prices, 2.9 million input tokens of which 2.6 million cached: at that rate the 18 rows of a quick run are about $0.04, and the build of a checkout with one changed file took 165 s for the hand in the measurements of the entry on the command.
+
+**Rejected.** A default agent: which model an evaluation spends on is the operator's, and the first quick run says it once. A default model budget: a limit comes from a measurement or from whoever pays. Running the baseline inside the command when the lab has none: it would spend on the pins, unasked, in a command about a revision.
+
+**Checked.**
+
+- Unit tests: what a lab remembers of a run, and which run is the standard of the next quick one: the latest that is quick, on the pinned builds, of that eval, no rerun and not cancelled.
+- In the lane, on directory slots with a scripted model and a subsets file of three sample tasks: the quick run on the pinned builds, 9 rows; `--quick` on a checkout with an uncommitted and an untracked change, whose hand is built with cargo, with no agent named: the agent, the budget and the slots of the first, 9 of 9 passed, "no change beyond noise", exit 0; the same again with a model that fails every task, against the run of that checkout: "regression", exit 3.
+
+**Not verified.** `--quick` with a model, on krun slots, and on `terminal-bench-2.1`: the six tasks were not imported or run through `--subset quick` here, and their pass counts are another machine's, with one model. How often an unchanged revision is called a regression at this size follows from the test, at most 1 time in 20, and was not measured.
+
+## 2026-11-14: the lanes of `nanoeval revision` and `nanoeval watch`
+
+The command had unit tests and runs by hand, and the scripted model those runs used was in no repository. `test/revision.ts` is a lane for it: the command itself, in a lab of its own, on directory slots, with a scripted model that answers a sample task's instruction with its solution or, when the lane says so, with a wrong one.
+
+- `node test/revision.ts`: a served lab kept for the whole lane; a first run that imports three sample tasks; three evaluations queued behind each other; a nanocode that is refused; a package that falls back; a checkout with changes whose hand is built by cargo and run; a regression; an eval with a second version. The hand of the checkout is a crate of ten lines that starts the pinned hand with the arguments it was given, so the command builds, places and names a hand of its own and the rows still run a real one.
+- `node test/revision.ts watch`: `nanoeval watch` over the command, both sides pinned: a baseline of three attempts, then the same pair on demand with a model that fails, which the watcher calls a regression after its rerun, with exit status 1.
+
+Both are steps of a sixth job of the workflow, `e2e-revision`, which needs cargo and no KVM. The workflow has 95 `run` steps where it had 92.
+
+**Measured.** On a machine with 5 cores and no KVM, beside other work. `node test/revision.ts` passed in 196 s: 13 commands, 240 s between them since three of them wait for each other. The first run with its import 11 s, the three queued evaluations 25, 41 and 59 s from their start, the refusal 1.5 s, the three builds of the fallback 23, 7 and 1 s, the two quick runs of the checkout 26 and 18 s, the two runs over the second version of the eval 16 and 11 s, `compare` through the served lab 0.9 s. `node test/revision.ts watch` passed in 96 s: 29 s for the baseline and 66 s for the pair on demand, which is two runs. A run of the first lane an hour earlier took 23 minutes to its tenth command, of which 21 were spent waiting for the one build slot that this machine gives cargo: the lane calls cargo six times. `npm run lint`, `npm run check:types` and `npm test`: 264 tests, 260 passed and the 4 that need KVM skipped.
+
+**Not verified.** The lanes on a hosted runner, and on a machine whose cargo is older than the lock file version 4 that the lane writes. The lanes do not run on krun or ns slots.

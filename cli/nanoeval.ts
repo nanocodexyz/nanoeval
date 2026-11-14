@@ -323,16 +323,18 @@ const usage = `nanoeval <command>
             records none of this is compared with a warning.
             --baseline latest is the latest finished run on the pinned builds that holds the
             tasks and agents of the runs named and was paid for and reached as they were, as
-            for run. --with-reruns adds to every run named, and to the baseline, the reruns
-            it has.
+            for run, in whichever version of the eval holds those tasks unchanged. A task
+            that is another task in the eval version of the baseline is left out and named.
+            --with-reruns adds to every run named, and to the baseline, the reruns it has.
             --fail-on makes the exit status a gate, as for run: 3 for a regression (or, with
             lost, a lost task) of any of the runs, 4 with any-failure when an attempt of the
             runs that stands failed or errored, 0 otherwise.
   revision  [--nanocode REV|DIR|pinned] [--nanocode-ts REV|DIR|pinned] [--sdk REV|DIR|pinned]
-            [--lab DIR] [--hand-profile release] [--nanocode-repository URL|DIR]
-            [--nanocode-ts-repository URL|DIR] [--build-only] [--baseline RUN]
-            [--claude-login FILE] [--codex-login FILE]
-            (--serve [--port N] | --eval NAME [--only ID]... [--limit N] | --task DIR...)
+            [--sdk-fallback pinned] [--lab DIR] [--hand-profile release]
+            [--nanocode-repository URL|DIR] [--nanocode-ts-repository URL|DIR] [--build-only]
+            [--baseline RUN|latest|previous|REV|DIR|pinned]... [--claude-login FILE]
+            [--codex-login FILE] [--quiet]
+            (--serve [--port N] | --quick | --eval NAME [--only ID]... [--limit N] | --task DIR...)
             (--agent ID=HARNESS:MODEL[:THINKING]... | --oracle) and the other options of run
             Evaluate a revision of nanocode on this machine without a release: build the hand
             from --nanocode (a commit, branch or tag of the repository, or a checkout with
@@ -349,13 +351,33 @@ const usage = `nanoeval <command>
             the package for a change that only the hand runs. Without --nanocode the hand is
             the pinned one, and without both nothing is built: that run is the baseline of
             the pins. Builds are kept by revision in the lab, so a revision is built once.
-            One evaluation runs in a lab at a time and a second waits for it. The model
-            credential is the one nanoeval worker takes: the variables of this command, or
-            --claude-login and --codex-login. --limit counts in the tasks the lab holds.
+            A nanocode from before 5f8b457de is refused when it is named: its hand does not
+            know --own-processes, which a slot starts it with. With --sdk-fallback pinned, a
+            package that does not build on the nanocode it is given is built on the one its
+            nanocode-ts revision names itself, and the command and the run say so.
+            One evaluation runs in a lab at a time, and the others wait in the order in
+            which they were started. --baseline also takes previous, the run before this
+            one in the lab, and a revision as --nanocode takes it (or pinned), the latest
+            run on that hand: both are looked up when this evaluation has the lab, so an
+            evaluation that waits names one that has not run yet. A baseline of another
+            version of the lab's eval is compared on the tasks both hold unchanged, and
+            the others are named. The model credential is the one nanoeval worker takes:
+            the variables of this command, or --claude-login and --codex-login, or
+            NANOEVAL_CLAUDE_LOGIN and NANOEVAL_CODEX_LOGIN. --limit counts in the tasks the
+            lab holds. Standard error gets one line a phase with the time since the command
+            began, and the count of rows that ended while the run goes on: --quiet leaves
+            both out.
+            --quick is "did this change break anything": the subset quick of
+            terminal-bench-2.1 in subsets.json (or --eval, --subset, --only), 3 attempts a
+            task, the agents, model budget and slots of the latest quick run on the pinned
+            builds that this lab recorded unless they are named, that run as the baseline,
+            and --fail-on regression: 0 when nothing moved beyond noise, 3 on a regression.
+            Without --nanocode it makes that run on the pinned builds, with nothing to build.
             --build-only builds and prints the variables that make nanoeval worker, nanoeval
-            runner and npm run e2e use the builds. --serve builds and runs nothing: it holds
-            the lab and serves its state with the pinned package until it is interrupted, so
-            that runs, status, compare, attempt and export read the runs of the lab.
+            runner and npm run e2e use the builds. --serve builds and runs nothing: it
+            answers runs, status, compare, attempt and export for the lab until it is
+            interrupted, to be read only, from the Worker of the evaluation that runs or
+            else from one of its own on the pinned package, and holds no evaluation up.
   cancel    --url URL --token T RUN
   prune     [--dry-run] [--cache DIR]
             On this machine, remove the cached environment disks that no slot is using and
@@ -462,8 +484,31 @@ function subsetsFile(named: string | undefined): string {
 
 type Api = ReturnType<typeof client>
 
+const digested = new Map<string, Promise<Record<string, string>>>()
+
+function digests(
+  api: Api,
+  reference: { name: string; version: string },
+): Promise<Record<string, string>> {
+  const key = reference.name + '@' + reference.version
+  let found = digested.get(key)
+  if (!found) {
+    found = api
+      .eval(key)
+      .then((held) => Object.fromEntries(held.entries.map((entry) => [entry.name, entry.digest])))
+    digested.set(key, found)
+  }
+  return found
+}
+
+async function results(api: Api, id: string): Promise<Compare.Run> {
+  const run = await api.results(id)
+  return { ...run, digests: await digests(api, run.eval) }
+}
+
 async function candidate(api: Api, id: string): Promise<Baseline.Candidate> {
   const [config, status] = await Promise.all([api.config(id), api.status(id)])
+  const held = await digests(api, status['eval'])
   return {
     cancelled: Boolean(status['cancelled']),
     eval: status['eval'],
@@ -475,7 +520,11 @@ async function candidate(api: Api, id: string): Promise<Baseline.Candidate> {
     nanocode: status['nanocode'] ?? { hands: [], harness: null },
     rerun: Boolean(config.rerun),
     state: status['state'],
-    tasks: [...new Set((status['attempts'] as { task: string }[]).map((attempt) => attempt.task))],
+    tasks: Object.fromEntries(
+      [...new Set((status['attempts'] as { task: string }[]).map((attempt) => attempt.task))].map(
+        (name) => [name, held[name] ?? ''],
+      ),
+    ),
   }
 }
 
@@ -490,37 +539,45 @@ async function withReruns(api: Api, ids: readonly string[]): Promise<string[]> {
   return found
 }
 
+export async function pins(): Promise<{ hand: string; harness: string }> {
+  const manifest = JSON.parse(
+    await Fs.readFile(Path.join(import.meta.dirname, '..', 'package.json'), 'utf8'),
+  ) as { dependencies: Record<string, string> }
+  return {
+    hand: Pins.release(Slot.runtime.release),
+    harness: Pins.pinned(manifest.dependencies['nanocode-ts']!),
+  }
+}
+
 async function baselines(
   api: Api,
   input: {
+    hand?: ((revision: string) => Promise<string>) | undefined
     named: readonly string[]
     reruns: boolean
-    wanted: () => Promise<Omit<Baseline.Wanted, 'pins'>>
+    wanted: () => Promise<Omit<Baseline.Wanted, 'rule'>>
   },
 ): Promise<Compare.Run[]> {
   const ids: string[] = []
   for (const name of input.named) {
-    if (name !== Baseline.rule) {
+    const kind = Baseline.named(name)
+    if (kind === 'id' || (kind === 'revision' && !input.hand)) {
       ids.push(name)
       continue
     }
-    const manifest = JSON.parse(
-      await Fs.readFile(Path.join(import.meta.dirname, '..', 'package.json'), 'utf8'),
-    ) as { dependencies: Record<string, string> }
-    const wanted = {
+    const wanted: Baseline.Wanted = {
       ...(await input.wanted()),
-      pins: {
-        hand: Pins.release(Slot.runtime.release),
-        harness: Pins.pinned(manifest.dependencies['nanocode-ts']!),
-      },
+      rule:
+        kind === 'latest'
+          ? { kind, pins: await pins() }
+          : kind === 'previous'
+            ? { kind }
+            : { hand: await input.hand!(name), kind },
     }
     const listed = (await api.runs()).runs.filter(
-      (run) =>
-        run.state === 'finished' &&
-        run.eval.name === wanted.eval.name &&
-        run.eval.version === wanted.eval.version,
+      (run) => run.state === 'finished' && run.eval.name === wanted.eval.name,
     )
-    const found = await Baseline.latest(wanted, {
+    const found = await Baseline.find(wanted, {
       ids: listed.map((run) => run.id),
       read: (id) => candidate(api, id),
     })
@@ -530,14 +587,8 @@ async function baselines(
     console.error(
       'baseline: ' +
         found.id +
-        ', the latest finished run of ' +
-        wanted.eval.name +
-        '@' +
-        wanted.eval.version.slice(0, 12) +
-        ' on ' +
-        Pins.text(found.nanocode) +
-        ' that holds these tasks with ' +
-        wanted.members.map((member) => member.label).join(' and ') +
+        ', ' +
+        Baseline.said(wanted, found) +
         (unpaid.length
           ? '. Who pays for the model of ' +
             unpaid.map((member) => member.label).join(' and ') +
@@ -549,7 +600,18 @@ async function baselines(
     ids.push(found.id)
   }
   const all = input.reruns ? await withReruns(api, ids) : ids
-  return Promise.all(all.map((id) => api.results(id)))
+  return Promise.all(all.map((id) => results(api, id)))
+}
+
+export function agentText(agent: Config.Agent): string {
+  return (
+    agent.id +
+    '=' +
+    (agent.orchestration === 'direct' ? agent.provider + '-direct' : agent.provider) +
+    ':' +
+    agent.model +
+    (agent.thinking ? ':' + agent.thinking : '')
+  )
 }
 
 export type Gate = 'any-failure' | 'lost' | 'regression'
@@ -1338,7 +1400,10 @@ export function blobStore(
     : Store.directory(Path.resolve(name ?? Store.defaultRoot()))
 }
 
-async function main(lab?: Revision.Lab): Promise<void> {
+async function main(
+  lab?: Revision.Lab,
+  given: { hand?: (revision: string) => Promise<string>; values?: Record<string, unknown> } = {},
+): Promise<void> {
   const { positionals, tokens, values } = parseArgs({
     allowPositionals: true,
     tokens: true,
@@ -1405,6 +1470,8 @@ async function main(lab?: Revision.Lab): Promise<void> {
       'relay-url-file': { type: 'string' },
       publish: { default: false, type: 'boolean' },
       pushed: { type: 'string' },
+      quick: { default: false, type: 'boolean' },
+      quiet: { default: false, type: 'boolean' },
       remove: { default: false, type: 'boolean' },
       report: { type: 'string' },
       rerun: { type: 'string' },
@@ -1418,6 +1485,7 @@ async function main(lab?: Revision.Lab): Promise<void> {
       'sandbox-token': { default: process.env['NANOEVAL_SANDBOX_TOKEN'], type: 'string' },
       'sandbox-url': { type: 'string' },
       sdk: { type: 'string' },
+      'sdk-fallback': { type: 'string' },
       serve: { default: false, type: 'boolean' },
       'sandbox-timeout-sec': { type: 'string' },
       sandboxes: { default: '1', type: 'string' },
@@ -1455,8 +1523,10 @@ async function main(lab?: Revision.Lab): Promise<void> {
     tasks: values.tasks,
   }
   const command = lab ? 'run' : named
+  if (values.quick && command !== 'revision' && !lab)
+    throw new Error('--quick is an option of nanoeval revision')
   if (lab)
-    Object.assign(values, {
+    Object.assign(values, given.values, {
       backend: values.backend ?? 'krun',
       sandboxes: '0',
       token: lab.token,
@@ -1623,22 +1693,158 @@ async function main(lab?: Revision.Lab): Promise<void> {
   }
 
   if (command === 'revision') {
+    const claude = values['claude-login'] ?? process.env['NANOEVAL_CLAUDE_LOGIN']
+    const codex = values['codex-login'] ?? process.env['NANOEVAL_CODEX_LOGIN']
     const logins = {
-      ...(values['claude-login'] ? { claude: Path.resolve(values['claude-login']) } : {}),
-      ...(values['codex-login'] ? { codex: Path.resolve(values['codex-login']) } : {}),
+      ...(claude ? { claude: Path.resolve(claude) } : {}),
+      ...(codex ? { codex: Path.resolve(codex) } : {}),
     }
     const directory = Path.resolve(values.lab ?? Revision.defaultLab())
-    const log = (line: string) => console.error(line)
-    if (!values['build-only'] && !values.serve)
+    const progress = Revision.progress({
+      live: Boolean(process.stderr.isTTY),
+      now: Date.now,
+      quiet: values.quiet,
+      write: (text) => void process.stderr.write(text),
+    })
+    const log = progress.line
+    const pollMs = Number(values['poll-ms'] ?? '250')
+    if (values['sdk-fallback'] !== undefined && values['sdk-fallback'] !== Revision.pinned)
+      throw new Error(
+        '--sdk-fallback takes pinned, the nanocode that the nanocode-ts revision names itself, not ' +
+          values['sdk-fallback'],
+      )
+    if (values.serve) {
+      const served = await Revision.serve({
+        lab: directory,
+        log,
+        logins,
+        pollMs,
+        ...(values.port ? { port: Number(values.port) } : {}),
+      })
+      for (const signal of ['SIGINT', 'SIGTERM'] as const)
+        process.once(signal, () => void served.close().then(() => process.exit(1)))
+      console.log(
+        'the lab is served to be read until this command is interrupted, beside the evaluations that run in it: NANOEVAL_URL=' +
+          served.url +
+          ' NANOEVAL_TOKEN=$(cat ' +
+          Path.join(directory, 'token') +
+          ')',
+      )
+      await new Promise(() => {})
+    }
+    const quick: Record<string, unknown> = {}
+    if (values.quick) {
+      const refused = (['build-only', 'rerun', 'task'] as const).filter((name) =>
+        Array.isArray(values[name]) ? values[name].length : values[name],
+      )
+      if (refused.length)
+        throw new Error(
+          '--quick picks the tasks, the attempts and the baseline of a new run: leave out --' +
+            refused.join(' and --'),
+        )
+      const name = (values.eval ?? Revision.quick.eval).split('@')[0]!
+      const planned = Revision.plan({
+        ...(values.nanocode ? { nanocode: values.nanocode } : {}),
+        ...(values['nanocode-ts'] ? { nanocodeTs: values['nanocode-ts'] } : {}),
+        ...(values.sdk ? { sdk: values.sdk } : {}),
+      })
+      const builds = planned.hand !== undefined || planned.package !== undefined
+      const latest = Revision.standard(await Revision.recorded(directory), {
+        eval: name,
+        pins: await pins(),
+      })
+      const once =
+        'nanoeval revision --quick --agent ID=HARNESS:MODEL makes one, with nothing to build'
+      Object.assign(quick, {
+        attempts: values.attempts ?? String(Revision.quick.attempts),
+        eval: values.eval ?? Revision.quick.eval,
+      })
+      if (
+        !values.only?.length &&
+        !values['only-file']?.length &&
+        !values.subset?.length &&
+        !values.limit
+      )
+        quick['subset'] = [Revision.quick.subset]
+      if (builds && !values.baseline?.length) {
+        if (!latest)
+          throw new Error(
+            '--quick sets a revision against the latest quick run of ' +
+              name +
+              ' on the pinned builds, and this lab has none: ' +
+              once,
+          )
+        quick['baseline'] = [latest.id]
+      }
+      if (builds && !values['fail-on']?.length) quick['fail-on'] = ['regression']
+      if (!values.oracle && !values.agent?.length) {
+        const settings = latest?.settings
+        if (!settings)
+          throw new Error(
+            '--quick without --agent takes the agents of the latest quick run of ' +
+              name +
+              ' on the pinned builds, and this lab has none: ' +
+              once,
+          )
+        if (settings.agents.some((agent) => agent.provider === 'oracle')) quick['oracle'] = true
+        else quick['agent'] = settings.agents.map(agentText)
+        if (!values.judge && settings.judge)
+          quick['judge'] =
+            settings.judge.provider +
+            ':' +
+            settings.judge.model +
+            (settings.judge.thinking ? ':' + settings.judge.thinking : '')
+        if (!values['model-budget-usd'] && settings.modelUsd !== undefined)
+          quick['model-budget-usd'] = String(settings.modelUsd)
+        if (!values.slots) quick['slots'] = String(settings.slots)
+      }
+      Object.assign(values, quick)
+      log(
+        'quick: ' +
+          name +
+          ', ' +
+          (quick['subset'] ? 'the subset ' + Revision.quick.subset : 'the tasks named') +
+          ', ' +
+          values.attempts +
+          ' attempts a task, ' +
+          (values.oracle ? 'the solutions' : (values.agent ?? []).join(' and ')) +
+          (values.baseline?.length
+            ? ', against ' +
+              values.baseline
+                .map((id) =>
+                  id === latest?.id ? id + ', the latest quick run on the pinned builds' : id,
+                )
+                .join(' and ')
+            : '') +
+          (values['fail-on']?.length ? ', exit 3 on ' + values['fail-on'].join(' or ') : ''),
+      )
+    }
+    if (!values['build-only'])
       Revision.credentials({
         agents: values.oracle ? [] : (values.agent ?? []).map(parseAgent),
         ...(values.judge ? { judge: parseJudge(values.judge) } : {}),
         logins,
         variables: process.env,
       })
-    const held = await Revision.hold(directory, () =>
-      log('waiting for another evaluation in ' + directory),
-    )
+    const held = await Revision.hold(directory, {
+      waiting: (ahead) =>
+        log(
+          ahead.length
+            ? 'lab: waiting in ' +
+                directory +
+                ' for ' +
+                ahead.length +
+                (ahead.length === 1 ? ' evaluation' : ' evaluations') +
+                ' that came first: ' +
+                ahead.map((ticket) => ticket.what + ' (process ' + ticket.pid + ')').join(', ')
+            : 'lab: waiting for another command that holds ' + directory,
+        ),
+      what:
+        'nanocode ' +
+        (values.nanocode ?? Revision.pinned) +
+        (values.name ? ', ' + values.name : '') +
+        (values['build-only'] ? ', build only' : ''),
+    })
     let opened: Revision.Lab | undefined
     const end = async () => {
       await opened?.close()
@@ -1647,24 +1853,6 @@ async function main(lab?: Revision.Lab): Promise<void> {
     for (const signal of ['SIGINT', 'SIGTERM'] as const)
       process.once(signal, () => void end().then(() => process.exit(1)))
     try {
-      if (values.serve) {
-        opened = await Revision.open({
-          builds: {},
-          lab: directory,
-          log,
-          logins,
-          pollMs: Number(values['poll-ms'] ?? '250'),
-          ...(values.port ? { port: Number(values.port) } : {}),
-        })
-        console.log(
-          'the lab is served until this command is interrupted: NANOEVAL_URL=' +
-            opened.url +
-            ' NANOEVAL_TOKEN=$(cat ' +
-            Path.join(directory, 'token') +
-            ')',
-        )
-        await new Promise(() => {})
-      }
       const bundle = values['ca-bundle'] ?? process.env['NANOEVAL_CA_BUNDLE']
       const builds = await Revision.build({
         ...(bundle ? { caBundle: Path.resolve(bundle) } : {}),
@@ -1678,19 +1866,27 @@ async function main(lab?: Revision.Lab): Promise<void> {
           nanocodeTs: values['nanocode-ts-repository'],
         },
         ...(values.sdk ? { sdk: values.sdk } : {}),
+        ...(values['sdk-fallback'] ? { sdkFallback: true } : {}),
       })
       if (values['build-only']) {
         console.log(Revision.environment(builds))
         return
       }
-      opened = await Revision.open({
-        builds,
-        lab: directory,
-        log,
-        logins,
-        pollMs: Number(values['poll-ms'] ?? '250'),
+      opened = await Revision.open({ builds, lab: directory, logins, pollMs, progress })
+      await main(opened, {
+        hand: async (revision) =>
+          revision === Revision.pinned
+            ? (await pins()).hand
+            : Pins.hand(
+                (
+                  await Revision.resolve(revision, {
+                    repository: values['nanocode-repository'],
+                    tree: Path.join(directory, 'source', 'nanocodex'),
+                  })
+                ).id,
+              ),
+        values: quick,
       })
-      await main(opened)
     } finally {
       await end()
     }
@@ -1975,7 +2171,7 @@ async function main(lab?: Revision.Lab): Promise<void> {
       cases: source,
       dataset: target.dataset,
       layers: Path.resolve(values.layers ?? Converter.defaultLayers(cache)),
-      log: (line) => console.error(line),
+      log: (line) => (lab ? lab.progress.line(line) : console.error(line)),
       name: target.name,
       policy,
       source: target.source,
@@ -2254,6 +2450,14 @@ async function main(lab?: Revision.Lab): Promise<void> {
             ' with these tasks, and import knows no dataset of that name: name --task DIR or one of nanoeval datasets',
         )
       if (wanted && dataset)
+        lab.progress.line(
+          'import: ' +
+            (wanted.only ? wanted.only.length + ' tasks' : 'the tasks') +
+            ' of ' +
+            name +
+            ' that the lab does not hold yet',
+        )
+      if (wanted && dataset)
         await imported(dataset.cases({ ...wanted, store: sources }), {
           dataset: dataset.name,
           name,
@@ -2265,6 +2469,7 @@ async function main(lab?: Revision.Lab): Promise<void> {
     let only = values.only
     if (parent) reference = parent.eval
     else if (values.task?.length) {
+      lab?.progress.line('import: ' + values.task.length + ' task directories')
       const result = await imported(Import.directories(values.task), {
         ...Import.local,
         name: values.eval ?? Import.local.name,
@@ -2385,26 +2590,27 @@ async function main(lab?: Revision.Lab): Promise<void> {
         },
       })
     const baseline = await baselines(api, {
+      hand: given.hand,
       named: values.baseline ?? [],
       reruns: values['with-reruns'],
       wanted: async () => {
         if (parent)
           throw new Error(
-            '--baseline ' +
-              Baseline.rule +
-              ' reads the selection of a new run: name the baseline of a rerun by its id',
+            'a baseline by rule reads the selection of a new run: name the baseline of a rerun by its id',
           )
         const found = await api.eval(
           reference.name + (reference.version ? '@' + reference.version : ''),
         )
         return {
-          eval: { name: reference.name, version: found.version.digest },
+          eval: { name: reference.name },
           members: asked(),
           not: [],
-          tasks: Eval.select(found.entries, {
-            ...(config.limit === undefined ? {} : { limit: config.limit }),
-            ...(config.only?.length ? { only: config.only } : {}),
-          }).map((entry) => entry.name),
+          tasks: Object.fromEntries(
+            Eval.select(found.entries, {
+              ...(config.limit === undefined ? {} : { limit: config.limit }),
+              ...(config.only?.length ? { only: config.only } : {}),
+            }).map((entry) => [entry.name, entry.digest]),
+          ),
         }
       },
     })
@@ -2431,18 +2637,20 @@ async function main(lab?: Revision.Lab): Promise<void> {
     for (;;) {
       const gone = runner ? runner.exit() !== null : false
       const status = await api.status(created.id)
+      lab?.progress.rows(status['counts'])
       if (status['state'] === 'finished') {
+        lab?.progress.settle()
         console.log(shown(status, screen))
-        const results = baseline.length ? await api.results(created.id) : undefined
-        const changes = results ? Compare.changes(baseline, results) : []
+        const ended = baseline.length ? await results(api, created.id) : undefined
+        const changes = ended ? Compare.changes(baseline, ended) : []
         const refusal = values.unlike
           ? undefined
           : Compare.unlike(changes.map((change) => change.pair))
-        if (results) {
+        if (ended) {
           process.stdout.write(
             '\n' +
-              Compare.table([...baseline, results]) +
-              (refusal ? '' : '\n' + Compare.against(baseline, results)),
+              Compare.table([...baseline, ended]) +
+              (refusal ? '' : '\n' + Compare.against(baseline, ended)),
           )
         }
         if (lab) {
@@ -2453,8 +2661,18 @@ async function main(lab?: Revision.Lab): Promise<void> {
             counts: status['counts'],
             eval: status['eval'],
             id: created.id,
+            cancelled: Boolean(status['cancelled']),
             name: config.name,
             nanocode: status['nanocode'],
+            quick: values.quick,
+            rerun: Boolean(config.rerun),
+            settings: {
+              agents: config.agents,
+              attempts: config.attempts,
+              ...(config.judge ? { judge: config.judge } : {}),
+              ...(config.budget.modelUsd === undefined ? {} : { modelUsd: config.budget.modelUsd }),
+              slots: config.sandbox.slots,
+            } satisfies Revision.Settings,
             spend: status['spend'],
           })
         }
@@ -2492,18 +2710,23 @@ async function main(lab?: Revision.Lab): Promise<void> {
         '--fail-on ' + [...on].join(',') + ' needs a baseline: name one with --baseline',
       )
     const runs = await Promise.all(
-      (values['with-reruns'] ? await withReruns(api, rest) : rest).map((id) => api.results(id)),
+      (values['with-reruns'] ? await withReruns(api, rest) : rest).map((id) => results(api, id)),
     )
     const baseline = await baselines(api, {
       named: values.baseline ?? [],
       reruns: values['with-reruns'],
       wanted: async () => ({
-        eval: runs[0]!.eval,
+        eval: { name: runs[0]!.eval.name },
         members: Compare.members(Compare.standing(runs)),
         not: runs.map((result) => result.id),
-        tasks: [
-          ...new Set(runs.flatMap((result) => result.attempts.map((attempt) => attempt.task.name))),
-        ],
+        tasks: Object.fromEntries(
+          runs.flatMap((result) =>
+            result.attempts.map((attempt) => [
+              attempt.task.name,
+              result.digests?.[attempt.task.name] ?? '',
+            ]),
+          ),
+        ),
       }),
     })
     const sides = baseline.length ? Compare.lineages(runs) : []

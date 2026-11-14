@@ -885,3 +885,74 @@ test('the table names the route and the reasoning tokens of each arm, and a reru
     '| luna of run-2 | nanocode | codex:gpt-6-luna | a plan login through the relay, responses_websocket_v2 to chatgpt.com, effort medium | 1 | 1 | 0 | 0 | 1 min 0 s | 1 min 30 s | 300 (100) | 20 (50) | not known |',
   )
 })
+
+test('a task that is another task in the eval version of the baseline is left out, and said', () => {
+  const luna = { id: 'luna', model: 'gpt-6-luna', provider: 'codex' as const }
+  const side = (
+    id: string,
+    version: string,
+    tasks: Record<
+      string,
+      { checksum?: string; digest?: string; outcome: Result.Attempt['outcome'] }
+    >,
+  ): Compare.Run => ({
+    attempts: Object.entries(tasks).map(([task, held], at) => ({
+      ...attempt(luna, { n: at + 1, outcome: held.outcome, task, usage }),
+      task: { checksum: held.checksum ?? 'c', name: 'bench/' + task },
+    })),
+    ...(Object.values(tasks).some((held) => held.digest)
+      ? {
+          digests: Object.fromEntries(
+            Object.entries(tasks).map(([task, held]) => ['bench/' + task, held.digest ?? 'd']),
+          ),
+        }
+      : {}),
+    eval: { name: 'bench', version },
+    id,
+    name: id,
+    state: 'finished',
+  })
+  const before = side('base', 'aaaa', {
+    gone: { outcome: 'passed' },
+    kept: { digest: 'd-kept', outcome: 'passed' },
+    rebuilt: { digest: 'd-old', outcome: 'passed' },
+  })
+  const after = side('next', 'bbbb', {
+    kept: { digest: 'd-kept', outcome: 'failed' },
+    more: { outcome: 'passed' },
+    rebuilt: { digest: 'd-new', outcome: 'failed' },
+  })
+  const [change] = Compare.changes(before, after)
+  assert.deepEqual(
+    change!.tasks.map((task) => [task.name, task.moved]),
+    [
+      ['gone', 'only-baseline'],
+      ['kept', 'down'],
+      ['more', 'only-run'],
+      ['rebuilt', 'changed'],
+    ],
+  )
+  assert.equal(change!.overall.tasks, 1)
+  const text = Compare.against(before, after)
+  assert.match(text, /left out, the task is another in the eval version of the baseline: rebuilt\n/)
+  assert.match(text, /not in the baseline: more\n/)
+  assert.match(text, /only in the baseline: gone\n/)
+  assert.match(text, /of the 1 task scored on both sides 1 moved down and 0 up/)
+
+  const [plain] = Compare.changes(
+    side('base', 'aaaa', { one: { checksum: 'c1', outcome: 'passed' } }),
+    side('next', 'bbbb', { one: { checksum: 'c2', outcome: 'passed' } }),
+  )
+  assert.deepEqual(
+    plain!.tasks.map((task) => task.moved),
+    ['changed'],
+  )
+  const [same] = Compare.changes(
+    side('base', 'aaaa', { one: { checksum: 'c1', outcome: 'passed' } }),
+    side('next', 'bbbb', { one: { checksum: 'c1', outcome: 'passed' } }),
+  )
+  assert.deepEqual(
+    same!.tasks.map((task) => task.moved),
+    ['same'],
+  )
+})

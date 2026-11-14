@@ -6,6 +6,7 @@ import * as Stats from './Stats.ts'
 
 export type Run = {
   attempts: readonly Result.Attempt[]
+  digests?: Readonly<Record<string, string>>
   eval: { name: string; version: string }
   id: string
   name: string
@@ -61,6 +62,7 @@ export type Pair = {
 export type Score = { errored: number; passed: number; scored: number }
 
 export type Moved =
+  | 'changed'
   | 'down'
   | 'gained'
   | 'lost'
@@ -631,9 +633,33 @@ function scores(attempts: readonly Result.Attempt[]): Map<string, Score> {
   return tasks
 }
 
+function versions(runs: readonly Run[]): Map<string, { checksum: string; digest?: string }> {
+  const tasks = new Map<string, { checksum: string; digest?: string }>()
+  for (const run of runs)
+    for (const attempt of run.attempts) {
+      const digest = run.digests?.[attempt.task.name]
+      if (!tasks.has(attempt.task.name))
+        tasks.set(attempt.task.name, {
+          checksum: attempt.task.checksum,
+          ...(digest === undefined ? {} : { digest }),
+        })
+    }
+  return tasks
+}
+
 export function changes(baseline: Side, run: Side): Change[] {
-  const left = members(side(baseline))
-  const right = members(side(run))
+  const sides = { baseline: side(baseline), run: side(run) }
+  const left = members(sides.baseline)
+  const right = members(sides.run)
+  const held = { baseline: versions(sides.baseline), run: versions(sides.run) }
+  const differs = (name: string) => {
+    const one = held.baseline.get(name)
+    const other = held.run.get(name)
+    if (!one || !other) return false
+    return one.digest !== undefined && other.digest !== undefined
+      ? one.digest !== other.digest
+      : one.checksum !== other.checksum
+  }
   return right.map((member) => {
     const { found, pair } = match(member, { baseline: left, run: right })
     const paired = found.flatMap((each) => each.attempts)
@@ -652,6 +678,7 @@ export function changes(baseline: Side, run: Side): Change[] {
       }
       if (!was) change.moved = 'only-run'
       else if (!is) change.moved = 'only-baseline'
+      else if (differs(name)) change.moved = 'changed'
       else if (!was.scored || !is.scored) change.moved = 'unscored'
       else {
         both.push({ baseline: was, run: is })
@@ -937,6 +964,12 @@ export function against(baseline: Side, run: Side): string {
                   scored.filter((task) => task.baseline!.passed && task.run!.passed).length +
                   ', on neither: ' +
                   scored.filter((task) => !task.baseline!.passed && !task.run!.passed).length,
+                ...(names('changed').length
+                  ? [
+                      'left out, the task is another in the eval version of the baseline: ' +
+                        names('changed').join(', '),
+                    ]
+                  : []),
                 ...(names('only-run').length
                   ? ['not in the baseline: ' + names('only-run').join(', ')]
                   : []),

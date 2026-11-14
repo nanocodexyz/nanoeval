@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from 'node:child_process'
 import * as Crypto from 'node:crypto'
 import * as Fs from 'node:fs/promises'
+import * as Http from 'node:http'
 import * as Net from 'node:net'
 import * as Os from 'node:os'
 import * as Path from 'node:path'
@@ -8,6 +9,7 @@ import type * as Dataset from '../datasets/Dataset.ts'
 import type * as Config from '../src/Config.ts'
 import * as Installed from '../src/Installed.ts'
 import * as Pins from '../src/Pins.ts'
+import type * as Runs from '../src/Runs.ts'
 
 export class BuildError extends Error {
   override name = 'Revision.BuildError'
@@ -26,6 +28,10 @@ export class SourceError extends Error {
 }
 
 export const pinned = 'pinned'
+
+export const ownProcesses = { option: '--own-processes', since: '5f8b457de' }
+
+export const quick = { attempts: 3, eval: 'terminal-bench-2.1', subset: 'quick' }
 
 export const keys = {
   claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'TEMPO_KEY'],
@@ -55,6 +61,34 @@ export type Source = {
 
 export type Built = { cached: boolean; label: string; path: string; seconds: number }
 
+export type Progress = {
+  line(text: string): void
+  rows(counts: Runs.Counts): void
+  settle(): void
+}
+
+export type Ticket = { at: string; file: string; n: number; pid: number; what: string }
+
+export type Served = { close(): Promise<void>; url: string }
+
+export type Settings = {
+  agents: readonly Config.Agent[]
+  attempts: number
+  judge?: Config.Judge
+  modelUsd?: number
+  slots: number
+}
+
+export type Recorded = {
+  cancelled?: boolean
+  eval?: { name: string; version: string }
+  id: string
+  nanocode?: Pins.Pins
+  quick?: boolean
+  rerun?: boolean
+  settings?: Settings
+}
+
 export type Builds = { hand?: Built; package?: Built }
 
 export type Held = { release(): Promise<void> }
@@ -65,6 +99,7 @@ export type Lab = {
   builds: Builds
   close(): Promise<void>
   directory: string
+  progress: Progress
   record(entry: Record<string, unknown>): Promise<void>
   runner(run: string, env: Record<string, string>): Promise<Runner>
   token: string
@@ -75,6 +110,93 @@ export function defaultLab(env: Record<string, string | undefined> = process.env
   return (
     env['NANOEVAL_LAB'] ??
     Path.join(env['XDG_DATA_HOME'] ?? Path.join(Os.homedir(), '.local', 'share'), 'nanoeval', 'lab')
+  )
+}
+
+export function clock(ms: number): string {
+  const seconds = Math.floor(ms / 1000)
+  return Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0')
+}
+
+export function rowsLine(counts: Runs.Counts): string {
+  const ended = counts.passed + counts.failed + counts.errored
+  return (
+    'rows: ' +
+    ended +
+    ' of ' +
+    counts.total +
+    ' ended' +
+    (ended
+      ? ' (' +
+        counts.passed +
+        ' passed, ' +
+        counts.failed +
+        ' failed, ' +
+        counts.errored +
+        ' errored)'
+      : '') +
+    ', ' +
+    counts.active +
+    ' running, ' +
+    counts.unclaimed +
+    ' waiting'
+  )
+}
+
+export function progress(options: {
+  live: boolean
+  now(): number
+  quiet: boolean
+  write(text: string): void
+}): Progress {
+  const started = options.now()
+  const erase = '\r\u001b[K'
+  let open = false
+  let shown: string | undefined
+  const stamp = () => '[' + clock(options.now() - started) + '] '
+  return {
+    line: (text) => {
+      if (options.quiet) return
+      options.write((open ? erase : '') + stamp() + text + '\n')
+      open = false
+    },
+    rows: (counts) => {
+      if (options.quiet) return
+      const text = rowsLine(counts)
+      if (options.live) {
+        options.write(erase + stamp() + text)
+        open = true
+      } else if (text !== shown) options.write(stamp() + text + '\n')
+      shown = text
+    },
+    settle: () => {
+      if (open) options.write('\n')
+      open = false
+    },
+  }
+}
+
+export async function recorded(lab: string): Promise<Recorded[]> {
+  const text = await Fs.readFile(Path.join(lab, 'runs.jsonl'), 'utf8').catch(() => '')
+  return text
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Recorded)
+}
+
+export function standard(
+  runs: readonly Recorded[],
+  wanted: { eval: string; pins: { hand: string; harness: string } },
+): Recorded | undefined {
+  return runs.findLast(
+    (run) =>
+      run.quick &&
+      !run.cancelled &&
+      !run.rerun &&
+      run.eval?.name === wanted.eval &&
+      run.nanocode?.harness === wanted.pins.harness &&
+      run.nanocode.hands.length === 1 &&
+      run.nanocode.hands[0] === wanted.pins.hand,
   )
 }
 
@@ -252,19 +374,74 @@ async function flock(file: string, wait: boolean): Promise<ChildProcess | undefi
   return held ? child : undefined
 }
 
-export async function hold(lab: string, waiting: () => void): Promise<Held> {
-  await Fs.mkdir(lab, { recursive: true })
-  const file = Path.join(lab, 'lock')
-  let child = await flock(file, false)
-  if (!child) {
-    waiting()
-    child = await flock(file, true)
+async function free(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return
+  const ended = new Promise<void>((resolve) => child.once('close', () => resolve()))
+  child.stdin!.end()
+  await ended
+}
+
+async function tickets(queue: string): Promise<Ticket[]> {
+  const found: Ticket[] = []
+  for (const name of await Fs.readdir(queue)) {
+    const n = /^(\d+)\.json$/.exec(name)?.[1]
+    if (n === undefined) continue
+    const file = Path.join(queue, name)
+    const said = await Fs.readFile(file, 'utf8').then(
+      (text) => JSON.parse(text || '{}') as Partial<Ticket>,
+      () => ({}) as Partial<Ticket>,
+    )
+    found.push({ at: said.at ?? '', file, n: Number(n), pid: said.pid ?? 0, what: said.what ?? '' })
   }
-  const ended = new Promise<void>((resolve) => child!.once('close', () => resolve()))
+  return found.sort((left, right) => left.n - right.n)
+}
+
+export async function hold(
+  lab: string,
+  options: { waiting(ahead: readonly Ticket[]): void; what: string },
+): Promise<Held> {
+  const queue = Path.join(lab, 'queue')
+  await Fs.mkdir(queue, { recursive: true })
+  const gate = (await flock(Path.join(queue, 'gate'), true))!
+  let ahead: Ticket[]
+  let file: string
+  let ticket: ChildProcess
+  try {
+    ahead = await tickets(queue)
+    file = Path.join(queue, (ahead.at(-1)?.n ?? 0) + 1 + '.json')
+    await Fs.writeFile(
+      file,
+      JSON.stringify({ at: new Date().toISOString(), pid: process.pid, what: options.what }) + '\n',
+    )
+    ticket = (await flock(file, true))!
+  } finally {
+    await free(gate)
+  }
+  const live: Ticket[] = []
+  for (const earlier of ahead) {
+    const left = await flock(earlier.file, false)
+    if (!left) live.push(earlier)
+    else {
+      await free(left)
+      await Fs.rm(earlier.file, { force: true })
+    }
+  }
+  if (live.length) options.waiting(live)
+  for (const earlier of live) {
+    await free((await flock(earlier.file, true))!)
+    await Fs.rm(earlier.file, { force: true })
+  }
+  const lock = Path.join(lab, 'lock')
+  let child = await flock(lock, false)
+  if (!child) {
+    if (!live.length) options.waiting([])
+    child = await flock(lock, true)
+  }
   return {
     release: async () => {
-      child!.stdin!.end()
-      await ended
+      await free(child!)
+      await free(ticket)
+      await Fs.rm(file, { force: true })
     },
   }
 }
@@ -335,6 +512,39 @@ export async function sync(tree: string, source: Source): Promise<void> {
     })
 }
 
+export async function startable(tree: string, source: Source): Promise<void> {
+  const child = spawn(
+    'git',
+    [
+      '-C',
+      tree,
+      'grep',
+      '--quiet',
+      '--fixed-strings',
+      '-e',
+      ownProcesses.option.slice(2),
+      source.commit,
+    ],
+    { stdio: 'ignore' },
+  )
+  const found = await new Promise<boolean>((done) => {
+    child.once('error', () => done(false))
+    child.once('close', (code) => done(code === 0))
+  })
+  if (found || source.dirty?.patch.includes(ownProcesses.option.slice(2))) return
+  throw new SourceError(
+    'nanocode ' +
+      source.id +
+      ' cannot be the hand of a slot: a slot starts its hand with ' +
+      ownProcesses.option +
+      ', so that a command that exhausts the memory of the slot ends alone, and nanocode knows that option from ' +
+      ownProcesses.since +
+      ' on. A hand without it ends at once and every row is an error: name a revision from ' +
+      ownProcesses.since +
+      ' on',
+  )
+}
+
 async function cached(directory: string): Promise<Built | undefined> {
   const text = await Fs.readFile(Path.join(directory, 'build.json'), 'utf8').catch(() => undefined)
   if (text === undefined) return undefined
@@ -393,8 +603,11 @@ export async function build(options: build.Options): Promise<Builds> {
   const nanocode = (spec: string) =>
     resolve(spec, { repository: options.repositories.nanocode, tree: trees.nanocode })
 
+  if (planned.hand !== undefined)
+    log('hand: reading nanocode ' + planned.hand + ' from ' + options.repositories.nanocode)
   const source = planned.hand === undefined ? undefined : await nanocode(planned.hand)
   if (source) {
+    await startable(trees.nanocode, source)
     const directory = Path.join(lab, 'hands', source.id + '-' + options.profile)
     builds.hand = await cached(directory)
     if (builds.hand) log('hand: ' + builds.hand.label + ', built before in ' + directory)
@@ -442,6 +655,12 @@ export async function build(options: build.Options): Promise<Builds> {
   }
 
   if (planned.package) {
+    log(
+      'harness: reading nanocode-ts ' +
+        planned.package.nanocodeTs +
+        ' from ' +
+        options.repositories.nanocodeTs,
+    )
     const host = await resolve(planned.package.nanocodeTs, {
       repository: options.repositories.nanocodeTs,
       tree: trees.nanocodeTs,
@@ -450,52 +669,99 @@ export async function build(options: build.Options): Promise<Builds> {
     const own = JSON.parse(
       await Fs.readFile(Path.join(trees.nanocodeTs, 'sdk-revision.json'), 'utf8'),
     ) as { revision: string }
-    const sdk =
-      planned.package.sdk === undefined
-        ? await nanocode(own.revision)
-        : planned.package.sdk === planned.hand
-          ? source!
-          : await nanocode(planned.package.sdk)
-    const key = host.id + '-on-' + sdk.id
-    const directory = Path.join(lab, 'packages', key)
-    builds.package = await cached(directory)
-    if (builds.package) log('harness: ' + builds.package.label + ', built before in ' + directory)
-    else {
+    const pack = async (sdk: Source): Promise<Built> => {
+      const key = host.id + '-on-' + sdk.id
+      const directory = Path.join(lab, 'packages', key)
+      const before = await cached(directory)
+      if (before) {
+        log('harness: ' + before.label + ', built before in ' + directory)
+        return before
+      }
       const file = Path.join(logs, 'package-' + key + '.log')
       log(
         'harness: building nanocode-ts ' + host.id + ' on nanocode ' + sdk.id + ', log in ' + file,
       )
       const started = Date.now()
       const tree = trees.nanocodeTs
+      await sync(tree, host)
       await sync(trees.nanocode, sdk)
       const env = {
         ...process.env,
         ...(options.caBundle ? { NODE_EXTRA_CA_CERTS: options.caBundle } : {}),
       }
+      log('harness: npm ci')
       await run('npm', ['ci', '--ignore-scripts'], { cwd: tree, env, log: file })
       if (sdk.commit !== own.revision || sdk.dirty) {
         await Fs.writeFile(
           Path.join(tree, 'sdk-revision.json'),
           JSON.stringify({ ...own, revision: sdk.id }, null, 2) + '\n',
         )
+        log('harness: cargo fetch, the lock of its crates for nanocode ' + sdk.id)
         await run('cargo', ['fetch'], { cwd: tree, env, log: file })
       }
       await Fs.rm(Path.join(tree, 'dist'), { force: true, recursive: true })
+      log('harness: scripts/build.mjs, the WebAssembly modules')
       await run(process.execPath, ['scripts/build.mjs'], { cwd: tree, env, log: file })
+      log('harness: npm run build:ts')
       await run('npm', ['run', 'build:ts'], { cwd: tree, env, log: file })
       await Fs.rm(directory, { force: true, recursive: true })
       await Fs.mkdir(directory, { recursive: true })
       for (const name of ['package.json', 'package-lock.json'])
         await Fs.copyFile(Path.join(tree, name), Path.join(directory, name))
+      log('harness: npm ci --omit=dev, the dependencies of the package')
       await run('npm', ['ci', '--omit=dev', '--ignore-scripts'], { cwd: directory, env, log: file })
       await Fs.cp(Path.join(tree, 'dist'), Path.join(directory, 'dist'), { recursive: true })
-      builds.package = await finish(directory, {
+      const built = await finish(directory, {
         label: Pins.harness({ nanocode: sdk.id, nanocodeTs: host.id }),
         path: '.',
         seconds: Math.round((Date.now() - started) / 1000),
         sources: { nanocode: sdk, nanocodeTs: host },
       })
-      log('harness: built in ' + builds.package.seconds + ' s')
+      log('harness: built in ' + built.seconds + ' s')
+      return built
+    }
+    const sdk =
+      planned.package.sdk === undefined
+        ? await nanocode(own.revision)
+        : planned.package.sdk === planned.hand
+          ? source!
+          : await nanocode(planned.package.sdk)
+    const fallback = options.sdkFallback && sdk.commit !== own.revision
+    const failed = Path.join(lab, 'packages', host.id + '-on-' + sdk.id + '.failed.json')
+    const said = fallback
+      ? await Fs.readFile(failed, 'utf8').then(
+          (text) => (JSON.parse(text) as { log: string }).log,
+          () => undefined,
+        )
+      : undefined
+    let unbuilt = said
+    if (said === undefined)
+      try {
+        builds.package = await pack(sdk)
+      } catch (error) {
+        if (!fallback || !(error instanceof BuildError)) throw error
+        unbuilt = Path.join(logs, 'package-' + host.id + '-on-' + sdk.id + '.log')
+        await Fs.mkdir(Path.dirname(failed), { recursive: true })
+        await Fs.writeFile(
+          failed,
+          JSON.stringify({ at: new Date().toISOString(), log: unbuilt }) + '\n',
+        )
+      }
+    if (unbuilt !== undefined) {
+      const named = await nanocode(own.revision)
+      log(
+        'harness: nanocode-ts ' +
+          host.id +
+          ' does not build on nanocode ' +
+          sdk.id +
+          ' (' +
+          unbuilt +
+          '), so it is built on nanocode ' +
+          named.id +
+          ', the one it names itself: the rows run the brain of that nanocode' +
+          (source ? ' with the hand of ' + source.id : ''),
+      )
+      builds.package = await pack(named)
     }
   }
   return builds
@@ -511,6 +777,7 @@ export declare namespace build {
     profile: string
     repositories: { nanocode: string; nanocodeTs: string }
     sdk?: string
+    sdkFallback?: boolean
   }
 }
 
@@ -556,19 +823,47 @@ async function stop(child: ChildProcess): Promise<void> {
   await exited
 }
 
-export async function open(options: open.Options): Promise<Lab> {
-  const { builds, lab, log } = options
+async function secret(lab: string): Promise<string> {
   const file = Path.join(lab, 'token')
   if (!(await exists(file)))
     await Fs.writeFile(file, Crypto.randomBytes(32).toString('hex') + '\n', { mode: 0o600 })
-  const token = (await Fs.readFile(file, 'utf8')).trim()
+  return (await Fs.readFile(file, 'utf8')).trim()
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function noted(file: string): Promise<{ pid: number; url?: string } | undefined> {
+  const said = await Fs.readFile(file, 'utf8').then(
+    (text) => JSON.parse(text) as { pid: number; url?: string },
+    () => undefined,
+  )
+  return said && alive(said.pid) ? said : undefined
+}
+
+async function worker(options: {
+  builds: Builds
+  lab: string
+  logins: { claude?: string; codex?: string }
+  pollMs: number
+  state: ChildProcess
+  token: string
+  unwanted?(): Promise<boolean>
+}): Promise<{ log: string; stop(): Promise<void>; url: string } | undefined> {
+  const { builds, lab } = options
   const logs = Path.join(lab, 'logs')
   await Fs.mkdir(logs, { recursive: true })
-  const port = options.port ?? (await freePort())
+  const port = await freePort()
   const url = 'http://127.0.0.1:' + port
-  const workerLog = Path.join(logs, 'worker.log')
-  const output = await Fs.open(workerLog, 'a')
-  const worker = spawn(
+  const log = Path.join(logs, 'worker.log')
+  const output = await Fs.open(log, 'a')
+  const child = spawn(
     process.execPath,
     [
       cli,
@@ -586,13 +881,59 @@ export async function open(options: open.Options): Promise<Lab> {
         ...process.env,
         NANOEVAL_NANOCODE_TS: builds.package?.path ?? '',
         NANOEVAL_NANOCODE_TS_REVISION: builds.package?.label ?? '',
-        NANOEVAL_TOKEN: token,
+        NANOEVAL_TOKEN: options.token,
         NANOEVAL_URL: url,
       },
       stdio: ['ignore', output.fd, output.fd],
     },
   )
   await output.close()
+  const note = Path.join(lab, 'worker.json')
+  const end = async () => {
+    await stop(child)
+    await Fs.rm(note, { force: true })
+    await free(options.state)
+  }
+  for (;;) {
+    const healthy = await fetch(url + '/health').then(
+      (response) => response.ok,
+      () => false,
+    )
+    if (healthy) break
+    if (child.exitCode !== null || child.signalCode !== null) {
+      await end()
+      throw new BuildError('the Worker did not start:\n' + (await tail(log)))
+    }
+    if (await options.unwanted?.()) {
+      await end()
+      return undefined
+    }
+    await new Promise((resolve) => setTimeout(resolve, options.pollMs))
+  }
+  await Fs.writeFile(note, JSON.stringify({ pid: process.pid, url }) + '\n')
+  return { log, stop: end, url }
+}
+
+export async function open(options: open.Options): Promise<Lab> {
+  const { builds, lab, progress } = options
+  const log = progress.line
+  const token = await secret(lab)
+  const logs = Path.join(lab, 'logs')
+  const wanted = Path.join(lab, 'worker.wanted')
+  await Fs.writeFile(wanted, JSON.stringify({ pid: process.pid }) + '\n')
+  log('worker: starting under local workerd on the state in ' + Path.join(lab, 'worker'))
+  const served = (await worker({
+    builds,
+    lab,
+    logins: options.logins,
+    pollMs: options.pollMs,
+    state: (await flock(Path.join(lab, 'worker.lock'), true))!,
+    token,
+  }).catch(async (error: unknown) => {
+    await Fs.rm(wanted, { force: true })
+    throw error
+  }))!
+  const { url } = served
   const home = Path.join(lab, 'runner')
   const runners: ChildProcess[] = []
   const sweep = async () => {
@@ -605,27 +946,20 @@ export async function open(options: open.Options): Promise<Lab> {
     }).catch((error: Error) => log('the slots in ' + home + ' were not removed: ' + error.message))
   }
   const close = async () => {
+    progress.settle()
     for (const runner of runners) {
       await stop(runner)
       await sweep()
     }
-    await stop(worker)
+    await served.stop()
+    await Fs.rm(wanted, { force: true })
   }
-  for (;;) {
-    const healthy = await fetch(url + '/health').then(
-      (response) => response.ok,
-      () => false,
-    )
-    if (healthy) break
-    if (worker.exitCode !== null || worker.signalCode !== null)
-      throw new BuildError('the Worker did not start:\n' + (await tail(workerLog)))
-    await new Promise((resolve) => setTimeout(resolve, options.pollMs))
-  }
-  log('worker: ' + url + ' on the state in ' + Path.join(lab, 'worker') + ', log in ' + workerLog)
+  log('worker: ' + url + ', log in ' + served.log)
   return {
     builds,
     close,
     directory: lab,
+    progress,
     record: (entry) => Fs.appendFile(Path.join(lab, 'runs.jsonl'), JSON.stringify(entry) + '\n'),
     runner: async (run, env) => {
       const runnerLog = Path.join(logs, 'runner-' + run + '.log')
@@ -649,6 +983,7 @@ export async function open(options: open.Options): Promise<Lab> {
       )
       await out.close()
       runners.push(child)
+      log('runner: started on the rows of the run, log in ' + runnerLog)
       return {
         exit: () => child.exitCode ?? (child.signalCode ? 1 : null),
         log: runnerLog,
@@ -659,9 +994,123 @@ export async function open(options: open.Options): Promise<Lab> {
   }
 }
 
+export async function serve(options: serve.Options): Promise<Served> {
+  const { lab, log } = options
+  await Fs.mkdir(lab, { recursive: true })
+  const token = await secret(lab)
+  let closed = false
+  let own: { stop(): Promise<void>; url: string } | undefined
+  const wanted = async () => (await noted(Path.join(lab, 'worker.wanted'))) !== undefined
+  const target = async () => own?.url ?? (await noted(Path.join(lab, 'worker.json')))?.url
+  const settle = async () => {
+    if (own && (await wanted())) {
+      const mine = own
+      own = undefined
+      await mine.stop()
+      log('an evaluation took the lab: its Worker answers from here on')
+      return
+    }
+    if (own || (await wanted())) return
+    const state = await flock(Path.join(lab, 'worker.lock'), false)
+    if (!state) return
+    if (closed || (await wanted())) {
+      await free(state)
+      return
+    }
+    own = await worker({
+      builds: {},
+      lab,
+      logins: options.logins,
+      pollMs: options.pollMs,
+      state,
+      token,
+      unwanted: async () => closed || (await wanted()),
+    })
+    if (own) log('no evaluation runs in the lab: a Worker of its own answers, ' + own.url)
+  }
+  const refuse = (response: Http.ServerResponse, status: number, error: string) =>
+    response
+      .writeHead(status, {
+        'content-type': 'application/json',
+        ...(status === 503 ? { 'retry-after': '1' } : {}),
+      })
+      .end(JSON.stringify({ error }) + '\n')
+  const server = Http.createServer((request, response) => {
+    void (async () => {
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        refuse(
+          response,
+          405,
+          'the lab is served to be read: ' +
+            request.method +
+            ' is refused, an evaluation is started with nanoeval revision',
+        )
+        return
+      }
+      const base = await target()
+      if (!base) {
+        refuse(
+          response,
+          503,
+          'no Worker answers for the lab at this moment, between two evaluations: ask again',
+        )
+        return
+      }
+      const answer = await fetch(base + request.url, {
+        headers: request.headers.authorization
+          ? { authorization: request.headers.authorization }
+          : {},
+        method: request.method,
+      })
+      const headers: Record<string, string> = {}
+      for (const name of ['content-length', 'content-type']) {
+        const value = answer.headers.get(name)
+        if (value !== null) headers[name] = value
+      }
+      response.writeHead(answer.status, headers)
+      response.end(request.method === 'HEAD' ? undefined : Buffer.from(await answer.arrayBuffer()))
+    })().catch((error: Error) => {
+      if (!response.headersSent)
+        refuse(response, 503, 'the Worker of the lab did not answer: ' + error.message)
+      else response.destroy()
+    })
+  })
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(options.port ?? 0, '127.0.0.1', resolve)
+  })
+  const url = 'http://127.0.0.1:' + (server.address() as Net.AddressInfo).port
+  const loop = (async () => {
+    while (!closed) {
+      await settle().catch((error: Error) =>
+        log('the lab has no Worker of its own: ' + error.message),
+      )
+      await new Promise((resolve) => setTimeout(resolve, options.pollMs))
+    }
+  })()
+  return {
+    close: async () => {
+      closed = true
+      await loop
+      await own?.stop()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    },
+    url,
+  }
+}
+
 export declare namespace open {
   type Options = {
     builds: Builds
+    lab: string
+    logins: { claude?: string; codex?: string }
+    pollMs: number
+    progress: Progress
+  }
+}
+
+export declare namespace serve {
+  type Options = {
     lab: string
     log(line: string): void
     logins: { claude?: string; codex?: string }

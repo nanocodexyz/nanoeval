@@ -83,6 +83,7 @@ export type Row = {
   outcome: 'errored' | 'failed' | 'passed'
   outputTokens: number
   task: string
+  version?: string
 }
 
 export type Purpose = 'build' | 'confirm' | 'errored' | 'main'
@@ -155,6 +156,7 @@ export type Evaluation = {
   agents: Record<string, string>
   attempts: number
   baseline: string | null
+  builds?: string[]
   changes: Change[]
   covers?: { nanocode: number; nanocodeTs: number }
   culprit?: Culprit
@@ -189,6 +191,7 @@ export type Phase =
 
 export type Intent = {
   baseline: string | null
+  builds?: string[]
   confirm: Key[]
   errors: Record<string, number>
   id: string
@@ -498,6 +501,7 @@ export function rows(job: { result: unknown; trials: readonly unknown[] }): Row[
     const errored =
       typeof reward !== 'number' || (failure && failure['exception_type'] !== 'AgentTimeoutError')
     const usage = trial['agent_result'] as Record<string, any> | null
+    const version = trial['agent_info']?.['version']
     return {
       agent: agentId,
       cachedTokens: Number(usage?.['n_cache_tokens'] ?? 0),
@@ -511,6 +515,7 @@ export function rows(job: { result: unknown; trials: readonly unknown[] }): Row[
       outcome: errored ? 'errored' : reward === 1 ? 'passed' : 'failed',
       outputTokens: Number(usage?.['n_output_tokens'] ?? 0),
       task,
+      ...(typeof version === 'string' ? { version } : {}),
     }
   })
 }
@@ -518,11 +523,13 @@ export function rows(job: { result: unknown; trials: readonly unknown[] }): Row[
 const letters = { errored: 'e', failed: 'f', passed: 'p' } as const
 
 export function record(
-  into: { errors: Record<string, number>; marks: Marks; usage: Usage },
+  into: { builds?: string[]; errors: Record<string, number>; marks: Marks; usage: Usage },
   found: readonly Row[],
 ): { charged: 'recorded' | 'reserved'; usd: number } {
   let priced = true
   let usd = 0
+  const builds = new Set([...(into.builds ?? []), ...found.flatMap((row) => row.version ?? [])])
+  if (builds.size) into.builds = [...builds].sort()
   for (const row of [...found].sort((left, right) => left.index - right.index)) {
     const tasks = (into.marks[row.agent] ??= {})
     tasks[row.task] = (tasks[row.task] ?? '') + letters[row.outcome]
@@ -857,6 +864,7 @@ export function conclude(
     agents: Object.fromEntries(request.agents.map((id) => [id, current[id]!])),
     attempts: request.attempts,
     baseline: intent.baseline,
+    ...(intent.builds?.length ? { builds: intent.builds } : {}),
     changes,
     ...(request.covers ? { covers: request.covers } : {}),
     ...(input.culprit ? { culprit: input.culprit } : {}),
@@ -1162,6 +1170,18 @@ export function now(): string {
   return new Date().toISOString().replace(/\.\d+Z$/, 'Z')
 }
 
+export function apart(build: string): string | undefined {
+  const found = /^nanocode-ts (\S+) on nanocode (\S+), hand nanocode (\S+)$/.exec(build)
+  return found && found[2] !== found[3]
+    ? 'nanocode-ts ' +
+        found[1] +
+        ' ran as built on nanocode ' +
+        found[2] +
+        ', with the hand of ' +
+        found[3]
+    : undefined
+}
+
 export function sentence(line: Evaluation): string {
   const lost = moves(line, 'lost')
   const gained = moves(line, 'gained')
@@ -1187,6 +1207,7 @@ export function sentence(line: Evaluation): string {
       (gained.length ? ', gained ' + gained.join(', ') : '') +
       (moved.length ? ', within noise ' + moved.join(', ') : ''),
     ...(line.detail ? [line.detail] : []),
+    ...(line.builds ?? []).flatMap((build) => apart(build) ?? []),
     ...(line.culprit ? [blame(line.culprit)] : []),
     ...Object.entries(line.summary).map(
       ([id, summary]) =>

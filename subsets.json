@@ -1,5 +1,13 @@
 {
   "terminal-bench-2.1": {
+    "quick": [
+      "code-from-image",
+      "fix-code-vulnerability",
+      "fix-git",
+      "git-leak-recovery",
+      "nginx-request-logging",
+      "openssl-selfsigned-cert"
+    ],
     "smoke": ["cancel-async-tasks", "fix-git", "git-leak-recovery", "openssl-selfsigned-cert"]
   }
 }

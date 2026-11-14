@@ -907,3 +907,46 @@ test('the scoreboard and the line of a verdict say what was lost, what it cost a
   )
   assert.match(text, /\| gamma \| 4\/4 \| 2\/2 pp \|  \| 4\/4 \| 0\/4 ffff \| lost \(p 0.014\) \|/)
 })
+
+test('an evaluation names the builds its rows ran on, and says when the package was built on another nanocode than the hand', () => {
+  const rows = Watch.rows(job([attempt({ agent: 'sonnet', index: 1, mark: 'p', task: 'alpha' })]))
+  const built = 'nanocode-ts 177b460accae on nanocode 0762d8433e0b, hand nanocode 54c9ead97ff5'
+  const into: {
+    builds?: string[]
+    errors: Record<string, number>
+    marks: Watch.Marks
+    usage: Watch.Usage
+  } = { errors: {}, marks: {}, usage: {} }
+  Watch.record(
+    into,
+    rows.map(({ version: _, ...row }) => row),
+  )
+  assert.equal(into.builds, undefined)
+  Watch.record(into, rows)
+  assert.deepEqual(into.builds, ['v'])
+  Watch.record(
+    into,
+    rows.map((row) => ({ ...row, index: 2, version: built })),
+  )
+  Watch.record(
+    into,
+    rows.map((row) => ({ ...row, index: 3, version: built })),
+  )
+  assert.deepEqual(into.builds, [built, 'v'])
+  assert.equal(
+    Watch.apart(built),
+    'nanocode-ts 177b460accae ran as built on nanocode 0762d8433e0b, with the hand of 54c9ead97ff5',
+  )
+  assert.equal(
+    Watch.apart('nanocode-ts 177b460accae on nanocode 54c9ead97ff5, hand nanocode 54c9ead97ff5'),
+    undefined,
+  )
+  assert.equal(Watch.apart('nanocode-ts build-f3aa94f, hand nanocode-cli-3f97ab0'), undefined)
+  const exported = job([attempt({ agent: 'sonnet', index: 1, mark: 'p', task: 'alpha' })])
+  for (const trial of exported.trials as Record<string, any>[])
+    assert.equal(typeof trial['agent_info'].version, 'string')
+  assert.equal(
+    Watch.rows(exported)[0]!.version,
+    (exported.trials[0] as Record<string, any>)['agent_info'].version,
+  )
+})

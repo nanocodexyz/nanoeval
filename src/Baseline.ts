@@ -1,5 +1,5 @@
 import * as Compare from './Compare.ts'
-import type * as Pins from './Pins.ts'
+import * as Pins from './Pins.ts'
 
 export class MissingError extends Error {
   override name = 'Baseline.MissingError'
@@ -13,30 +13,60 @@ export type Candidate = {
   nanocode: Pins.Pins
   rerun: boolean
   state: 'finished' | 'running'
-  tasks: readonly string[]
+  tasks: Readonly<Record<string, string>>
 }
 
+export type Rule =
+  | { kind: 'latest'; pins: { hand: string; harness: string } }
+  | { kind: 'previous' }
+  | { hand: string; kind: 'revision' }
+
 export type Wanted = {
-  eval: { name: string; version: string }
+  eval: { name: string }
   members: readonly Compare.Member[]
   not: readonly string[]
-  pins: { hand: string; harness: string }
-  tasks: readonly string[]
+  rule: Rule
+  tasks: Readonly<Record<string, string>>
 }
 
 export const rule = 'latest'
+export const previous = 'previous'
+
+const runId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+export function named(name: string): 'id' | 'latest' | 'previous' | 'revision' {
+  return name === rule
+    ? 'latest'
+    : name === previous
+      ? 'previous'
+      : runId.test(name)
+        ? 'id'
+        : 'revision'
+}
+
+export function shared(candidate: Candidate, wanted: Wanted): string[] {
+  return Object.entries(wanted.tasks)
+    .filter(([name, digest]) => candidate.tasks[name] === digest)
+    .map(([name]) => name)
+}
 
 export function misfit(candidate: Candidate, wanted: Wanted): string | undefined {
   if (wanted.not.includes(candidate.id)) return 'one of the runs it would be set against'
   if (candidate.state !== 'finished') return 'not finished'
   if (candidate.cancelled) return 'cancelled'
   if (candidate.rerun) return 'a rerun'
-  if (candidate.eval.name !== wanted.eval.name || candidate.eval.version !== wanted.eval.version)
-    return 'of another eval version'
+  if (candidate.eval.name !== wanted.eval.name) return 'of another eval'
+  const { rule } = wanted
   if (
-    candidate.nanocode.harness !== wanted.pins.harness ||
-    candidate.nanocode.hands.length !== 1 ||
-    candidate.nanocode.hands[0] !== wanted.pins.hand
+    rule.kind === 'latest' &&
+    (candidate.nanocode.harness !== rule.pins.harness ||
+      candidate.nanocode.hands.length !== 1 ||
+      candidate.nanocode.hands[0] !== rule.pins.hand)
+  )
+    return 'on other builds'
+  if (
+    rule.kind === 'revision' &&
+    (candidate.nanocode.hands.length !== 1 || candidate.nanocode.hands[0] !== rule.hand)
   )
     return 'on other builds'
   const pairs = Compare.pairs(candidate.members, wanted.members)
@@ -48,11 +78,46 @@ export function misfit(candidate: Candidate, wanted: Wanted): string | undefined
     )
   )
     return 'without a record of who paid for their models'
-  if (!wanted.tasks.every((task) => candidate.tasks.includes(task))) return 'without these tasks'
+  const names = Object.keys(wanted.tasks)
+  const held = names.filter((name) => candidate.tasks[name] !== undefined)
+  const equal = shared(candidate, wanted)
+  if (rule.kind === 'latest') {
+    if (held.length < names.length) return 'without these tasks'
+    if (equal.length < names.length) return 'with another version of these tasks'
+    return undefined
+  }
+  if (!held.length) return 'without a task of these'
+  if (!equal.length) return 'with another version of these tasks'
   return undefined
 }
 
-export async function latest(
+function builds(rule: Rule): string {
+  return rule.kind === 'latest'
+    ? ' on ' + rule.pins.harness + ', hand ' + rule.pins.hand
+    : rule.kind === 'revision'
+      ? ' on the hand ' + rule.hand
+      : ''
+}
+
+export function said(wanted: Wanted, found: Candidate): string {
+  const equal = shared(found, wanted).length
+  const all = Object.keys(wanted.tasks).length
+  return (
+    (wanted.rule.kind === 'previous'
+      ? 'the run before this one, the latest finished run of '
+      : 'the latest finished run of ') +
+    wanted.eval.name +
+    ' on ' +
+    Pins.text(found.nanocode) +
+    ' that holds ' +
+    (equal === all ? 'these tasks' : equal + ' of these ' + all + ' tasks') +
+    (wanted.members.length
+      ? ' with ' + wanted.members.map((member) => member.label).join(' and ')
+      : '')
+  )
+}
+
+export async function find(
   wanted: Wanted,
   input: { ids: readonly string[]; read: (id: string) => Promise<Candidate> },
 ): Promise<Candidate> {
@@ -63,20 +128,19 @@ export async function latest(
     if (reason === undefined) return candidate
     reasons.set(reason, (reasons.get(reason) ?? 0) + 1)
   }
+  const all = Object.keys(wanted.tasks).length
   throw new MissingError(
     'no finished run of ' +
       wanted.eval.name +
-      '@' +
-      wanted.eval.version.slice(0, 12) +
-      ' on ' +
-      wanted.pins.harness +
-      ', hand ' +
-      wanted.pins.hand +
-      (wanted.tasks.length === 1
+      builds(wanted.rule) +
+      (all === 1
         ? ' holds this task'
-        : ' holds these ' + wanted.tasks.length + ' tasks') +
-      ' with ' +
-      wanted.members.map((member) => member.label).join(' and ') +
+        : wanted.rule.kind === 'latest'
+          ? ' holds these ' + all + ' tasks'
+          : ' holds one of these ' + all + ' tasks') +
+      (wanted.members.length
+        ? ' with ' + wanted.members.map((member) => member.label).join(' and ')
+        : '') +
       (reasons.size
         ? ': of the runs listed, ' +
           [...reasons]
@@ -84,6 +148,8 @@ export async function latest(
             .map(([reason, count]) => count + ' ' + reason)
             .join(', ')
         : ': no run is listed') +
-      '. Make one on the pinned builds, or name a baseline by its id',
+      (wanted.rule.kind === 'latest'
+        ? '. Make one on the pinned builds, or name a baseline by its id'
+        : '. Name a baseline by its id'),
   )
 }
