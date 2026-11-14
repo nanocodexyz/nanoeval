@@ -12,8 +12,10 @@ libkrunfw 5.5.0 from its release, checked against its SHA-256, and the Rust
 toolchain that krun/ pins, which rustup installs at the first cargo call there:
 it is made here, once, because tests that build the launcher at the same time
 would each start that install. It asks sudo for what the machine lacks and needs
-no other argument. On a machine that is kept, put the user in the kvm
-group instead: the rule here opens KVM to everyone on it.
+no other argument, and leaves a libkrunfw that is already the release's as it
+is, so a microVM that starts beside it finds its library. On a machine that is
+kept, put the user in the kvm group instead: the rule here opens KVM to everyone
+on it.
 EOF
 }
 
@@ -53,7 +55,8 @@ curl -fsSL --retry 3 -o "$work/$file" \
   "https://github.com/containers/libkrunfw/releases/download/v$version/$file"
 printf '%s  %s\n' "$sha256" "$work/$file" | sha256sum -c - >/dev/null
 tar -xzf "$work/$file" -C "$work"
-sudo install -m 755 "$work/lib64/libkrunfw.so.$version" /usr/local/lib/
+cmp -s "$work/lib64/libkrunfw.so.$version" "/usr/local/lib/libkrunfw.so.$version" ||
+  sudo install -m 755 "$work/lib64/libkrunfw.so.$version" /usr/local/lib/
 sudo ln -sf "libkrunfw.so.$version" /usr/local/lib/libkrunfw.so.5
 sudo ldconfig
 
