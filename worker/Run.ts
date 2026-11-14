@@ -1471,7 +1471,7 @@ export class Run extends DurableObject<Env> {
         const started =
           row.state === 'starting' &&
           runner.capabilities !== null &&
-          (runner.state === 'ready' || runner.state === 'refused')
+          ['left', 'ready', 'refused'].includes(runner.state)
         if (started) {
           this.update('sandboxes', row.id, { capabilities: runner.capabilities, state: 'ready' })
           this.setMeta({ ...this.meta()!, sandboxFailures: 0 })

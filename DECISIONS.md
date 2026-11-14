@@ -4183,3 +4183,13 @@ The plain way is that `codex_orchestration` lands on both masters and the pin go
 - The kill on krun and ns slots: it reads `steps.log` in the directory of a slot, and the change is in the session object.
 - `hand_updates` in a real session: its rows go when the request they belong to is pruned, and their size was measured by nanocode-ts only (11 rows and 3.5 KB more for a turn of six cells).
 - A build with all of what the next pin must hold: none exists.
+
+## 2026-11-14: a sandbox whose runner left before the run saw it start is closed
+
+**Found** with the lane of two leased sandboxes of which one dies (`NANOEVAL_E2E_SCENARIO=fleet` through the scripted gateway, directory slots), on a 5-core machine, at `438f2a9`: the lane did not end. The run had opened a sandbox for the rows that waited. A tick that opens a sandbox stays in it until the runner was started, and the rows ended in the other sandbox meanwhile. The new runner said hello, was told that the run had no row left, and left, 43 ms after its hello and between two ticks. The next tick found a sandbox in state `starting` whose runner had `left`. That was neither a runner that is ready nor one that is lost, so the sandbox stayed `starting`, its lease was renewed, and the run did not finish, until `--setup-sec` had passed and the sandbox was failed with "the runner did not start within 600 s". On a deployed Worker that is up to `--setup-sec` of lease, 1,200 s in the paid runs of this day, for an empty sandbox at the end of a run, and a run that ends that much later.
+
+**The rule.** A sandbox has started once its runner said what its machine can do, whatever the runner did next: it is ready, it was refused, or it left. A started sandbox whose runner holds no row is closed, or kept warm, by the tick as soon as no row waits, so one whose runner has left goes in the tick that sees it.
+
+**Checked.** The lane of the next entry holds the start of a runner back until every row of the run has ended, and asks that its sandbox is closed with a runner that left and ran no row, and that the run ends inside `--setup-sec`. With this rule taken out of the tree of that entry the lane kept that sandbox `starting` for the 600 s of its `--setup-sec`, failed it with "the runner did not start within 600 s", ended after 643 s and recorded $0.2641 for its sandboxes, where it ends after 78 to 147 s and records $0.047 to $0.088 with the rule, and failed on the count of sandboxes that were closed. The lane of two leased sandboxes, which hung once in one run before, passed 1 time of 1 after on the same machine.
+
+**Not verified.** A deployed Worker and a real gateway. A sandbox kept warm whose runner left before the tick: the same branch, read and not run.
