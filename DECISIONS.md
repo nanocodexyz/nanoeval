@@ -5469,3 +5469,73 @@ Pinned as well: `npm test` 1 of 1, "a standing runner stopped during a run and a
 On the changes as they are, on that machine: the lane without renewals pinned to two CPUs beside two busy loops 10 times of 10 in 50 to 74 s, and on two quiet cores 10 of 10 in 33 to 56 s; and with the changes that landed beside these, every `run` step of the workflow from fresh clones, 104 of 104 at once, and that lane again 10 of 10 pinned and 10 of 10 quiet.
 
 **Not run.** The lanes of these changes ten times each on ns slots. The workflow on GitHub: Actions is disabled for the repository.
+
+## 2026-11-14: a status line that counted a sandbox still asked for, and checks that read a clock where an order was meant
+
+The closing entries of the changes before these name what they left open: the lane of a provider that refuses sandboxes for a cap failed once in six runs on a loaded machine, four checks failed once each on a machine with KVM at a load average of 20 to 65 and passed alone, and one line of a lane could not fail for one of its two sessions. Each was read from its log, reproduced by hand where a load alone did not show it, and changed. One was the product's. What a first start from the README on a bare machine found is at the end.
+
+The machine of every measurement below, unless it names another: Linux with 5 cores and 14 GB, kernel 6.18.56, Node 24.22.1, no KVM, shared with other jobs, two lanes at a time. "Pinned" is `taskset` to two CPUs with two busy loops (`sh -c 'while :; do :; done'`) on the same two. "By hand" is a change of a few lines that was made in a copy of the tree for one run and is in no commit.
+
+**The status line counted a sandbox that was being asked for.** A run writes a sandbox as `creating` before it asks its provider for it, so that a create whose answer is lost is known. The line of `status` about refused sandboxes counted that row as open: while a refused create was asked again it read `sandboxes: 2 open; another could not be opened 2 times` for a run that had one sandbox and asks for two at most. The lane reads the line when the gateway has refused a third create, and failed whenever the read fell inside one: 1 time of 6 at a load average of 6.8. With the answer to the third create held 1.5 s by hand the lane failed 3 times of 3 on `7321491`, with that line. A sandbox that is `creating` now counts as open once it has a handle, which is when its provider has answered, and the lane passed 3 of 3 with the answer held. The lane was right and is unchanged.
+
+**A download was broken after a time.** `test/Remote.test.ts` breaks a download twice and asks that it is resumed from the bytes it has. Its server reset the connection 50 ms after it had sent 100,000 bytes, and a download resumes from what its file holds: where the file was still empty after 50 ms the requests were `whole`, `whole`, `bytes=100000-` and not `whole`, `bytes=100000-`, `bytes=200000-`. The server now resets the connection when the file of the download holds the bytes it sent. With the write of each chunk held 100 ms by hand the test failed 3 times of 3 as it was and passes 3 of 3 as it is.
+
+**Fixtures gave an address six seconds.** The three fixtures of closed networks probe five addresses in each phase, each once under `timeout 6`, and the verifier of `closed-agent` once had no answer from `https://example.com/` in that time on krun slots: the row failed for a network that was open. `check.sh` now takes the names of the addresses its caller must reach. The verifier names them. The agent's side reads them from a file `reaches` of the environment, because a scripted agent runs one command for all three fixtures. Such an address is asked again until it answers, and only the timeout of the phase ends that. An address that must not answer keeps its one try of six seconds. A nanocode session returns from a tool call after ten seconds, so on the agent's side of such a session an answer has until then, not longer.
+
+**Leases of three seconds.** The lanes with tasks through the scripted gateway, and the lanes of a sandbox kept warm, leased their sandbox for 3 s and renewed it 3 s before its end, so that a run of seconds renews. A run ends a sandbox by its own clock when its paid time is over, and so does the pool, so no order of events at the gateway keeps a sandbox whose Worker a loaded machine held up for 3 s. The lane then ends with 3 sandboxes where it asks 2, or with a runner that stopped answering: once on ns slots in the pass named above, and on krun slots pinned to two cores 1 time of 12, on `7321491` and on `40e3fea` alike. This one is patience from a measurement, as "free disk floor" has it: each of these lanes adds three times the seconds its Worker took to answer after it was started to the 3 s, for the lease and for the notice. The Worker took 7.2 to 13.3 s here, which gave leases of 25 to 43 s. The start of the runner still waits a lease and a second at the gateway, and a sandbox is kept idle for two leases and 2 s, which is what the 8 s were to 3. With the tick of the run held 7 s once by hand the lane failed 2 times of 2 on `7321491` and passes 2 of 2.
+
+**The end of a kept sandbox.** The pool pays a kept sandbox in whole seconds to the end of its idle time and terminates it when that time ends, so its paid time is over less than a second after the terminate is due. The lane of a kept sandbox asks that the gateway saw the sandbox `terminated` and not `lapsed`: on a loaded machine that was the order of two events less than a second apart, and it says nothing of the pool, which asks for the end either way. Once the pool has paid the kept sandbox to the end of its idle time, the scripted gateway of the lane ends no sandbox for its lease any more, so the end it records is the one the pool asked for. With the pool's terminate held 1.2 s by hand the lane failed 2 times of 2 on `7321491` with `lapsed`, and passes 2 of 2.
+
+**Payments in order.** A run writes a payment down before it sends the request and writes a refusal back when the answer comes, and every lane with a scripted gateway compared the payments of its run with the charges of the gateway in order. The first renewal, which the gateway refuses once with `503`, is in flight beside the write and the exec that start the runner. On krun slots, in a pass of the whole workflow, the write took longer than a tick, the renewal started under it, and its `503` was written back after the intent of the exec: the lane failed on the order of two lists that held the same payments. With the write of the settings of the runner held 1 s and the `503` held 1.5 s by hand the lane failed 2 times of 2 on `7321491` on that line, and passes 2 of 2. The lanes now compare the lists sorted, as the lanes of a kept sandbox did, and still ask that the first payment is the create and the last the terminate.
+
+**A line that could not fail.** The lane of a codex session with direct tools beside one in Code Mode asked that no request declares `spawn_agent`. A session in Code Mode declares `exec` and `wait` alone and is told the tools of its cells in the description of `exec`, one heading each. Read from the request bodies of the lane: 13 headings in 23,162 bytes on `build-f3aa94f`, `spawn_agent` among them, and 5 in 8,456 bytes on the pinned `build-b8158fd`. The scripted model now reads those headings, and the lane asks that the session in Code Mode is told of `exec_command` there, so that the reading is of something, and that neither session has `spawn_agent` as a tool of its own or of its cells. On `build-f3aa94f` the line as it was passes over the requests of the session in Code Mode alone, and the new one fails.
+
+**What each still catches**, with the behaviour it guards broken by hand:
+
+| Check | Broken by hand | Result |
+| --- | --- | --- |
+| the resumed download | the resume offset is always 0 | failed: `whole`, `whole`, `whole` |
+| tasks through a scripted gateway | the run renews no lease | failed after 607 s: 6 sandboxes where it asks 1, every row an error |
+| a sandbox kept warm | the pool terminates no sandbox | failed in 91 s: `undefined` where it asks `terminated`; on ns slots in 170 s |
+| a session in Code Mode | the build whose Code Mode names `spawn_agent` | failed: `a codex session is given no tool that starts a subagent` |
+| closed networks, installed agents, on krun slots | the slot script never opens the gate of the network | failed after 154 s |
+| tasks through a scripted gateway, on krun slots | the run renews no lease | failed after 686 s: 6 sandboxes where it asks 1. The time is the 600 s a row waits for a sandbox |
+
+**Pinned, each run with a lane slot of its own beside the other jobs of the machine**, on the changes as they are:
+
+| Lane or command | Passed | A run took | Load average |
+| --- | --- | --- | --- |
+| a provider that refuses sandboxes for a cap | 10 of 10 | 80 to 175 s | 6.3 to 14.1 |
+| a codex session with direct tools beside one in Code Mode | 10 of 10 | 22 to 39 s | 6.5 to 14.2 |
+| tasks through a scripted gateway | 10 of 10 | 54 to 96 s | 6.9 to 11.8 |
+| installed agents through a scripted gateway | 10 of 10 | 55 to 85 s | 3.7 to 10.9 |
+| a sandbox kept warm for a second run | 10 of 10 | 121 to 193 s | 4.3 to 11.4 |
+| a task that closes its network is refused, on directory slots | 10 of 10 | 11 to 19 s | 3.7 to 10.9 |
+| `test/Remote.test.ts` and `test/Summary.test.ts` | 10 of 10 | 3 to 6 s | 6.8 to 11.6 |
+| `npm test` | 1 of 1 | 548 s | 10.2 to 10.2 |
+
+`npm test` ran 1 times pinned, not ten: a run takes about nine minutes there. Its last run: 379 tests, 374 passed, 5 skipped for KVM or root, 0 failed. Not pinned: `npm run lint` and `npm run check:types` pass. The lanes took 7.2 to 13.3 s to start their Worker pinned, and the lane of tasks through the gateway 21 s before these changes and 35 s after on the machine unpinned, the kept sandbox 32 s and 71 s: the price of the longer leases.
+
+**On a machine with KVM** (24 cores and 48 threads, kernel 7.0.0-43), beside the other jobs of that machine. Every `run` step of the workflow from fresh clones, twice, on the lanes as they are and then on every change of this entry: 103 of 103 at once both times, the lanes on directory slots in 12.7 of their 20 minutes, on krun slots in 7.8 and 7.9 of 45 and on ns slots in 4.5 and 4.6 of 30. In a unit held to two cores beside two busy loops: tasks through a scripted gateway on krun slots 25 times of 25, where it had failed 1 of 12, in 26 to 32 s after the run that built the launcher, with a Worker that answered after 2.9 to 3.8 s and leases of 12 to 15 s; the same lane on ns slots 10 of 10 in 26 to 29 s; a sandbox kept warm on ns slots 10 of 10 in 60 to 67 s; closed networks on krun slots 10 of 10 and with installed agents 10 of 10, 21 to 23 s each after the first. There too, as a user without a systemd session, `scripts/install-linux.sh` ended with its one line and exit 2, and doctor missed a base URL at a port where nothing listened (`fetch failed: connect ECONNREFUSED`, exit 1) and, once the scripted model was up, printed that it answers and ended `ready for krun slots`.
+
+**A first start from the README on a bare machine.** An operator who had not seen the repository followed "A bare machine", "Quick start" and "Run it locally" as a new user of a fresh Ubuntu 24.04 with KVM, at `7321491`. `nanoeval doctor` named what the machine lacked, each command it printed ran as printed, and the machine part took 41 s; the quick start gave its 4 of 9 on krun slots in 88 s, 72 s of them the build of the launcher, and in 8 s on directory slots; as root, `doctor --backend ns` found nothing missing. Four things were wrong:
+
+- The README said that doctor ends with `ready for krun slots`. With everything installed it ended `1 missing for krun slots` and exit 1, for the model credential that the shell did not hold, until the two variables of the scripted model were exported. The step and the help of the command now say so. A credential stays a miss: a Worker started from such a shell runs `--oracle` only.
+- With `ANTHROPIC_BASE_URL` naming a port where nothing listened, every row of a run ended as `errored agent: Messages transport: {"detail":"Network connection lost."}`, and doctor said that the Worker pays through a base URL and that the machine was ready. Doctor now asks each base URL that its shell names for a model, and one where nothing answers is missing, with the address, what was said and what to start. The Worker does not say which base URL it has, so a doctor in another shell than the Worker's still does not see it.
+- `scripts/ci-machine.sh` installed libkrunfw over the file that was there, and on a machine that ran two jobs a microVM that loaded the library in that moment ended with `Couldn't find or load libkrunfw.so.5`. It now leaves a library that is already the release's as it is.
+- A bare machine has no `git`, and the steps are read from the clone: the section says so before its first step.
+
+**Rejected.**
+
+- For the status line: a word of its own for the sandbox that is asked for, as in "1 open, 1 asked for". The line is there for a refusal, and "another could not be opened" already is that sandbox.
+- For the leases: a run that measures an attached runner first, as the lanes of the entry before this one do. It adds a run to eight lanes on three kinds of slot, and what a lease has to outlast is a Worker that is held up, which the start of the Worker measures at no cost. A longer notice with the lease left at 3 s: a renewal is priced from now to the new end, so each would pay the notice again. Holding the gateway's lapse in these lanes too: the run ends the sandbox by its own clock.
+- For the kept sandbox: asking that the sandbox ended either way. The lane would no longer tell a pool that terminates from one that lets a lease run out.
+- For the payments: the charges in order and the refusals apart. Two requests in flight can also reach the gateway in the other order.
+- For the download and the fixtures: a longer time. 50 ms and six seconds were each enough on a quiet machine and each too short once.
+
+**Not verified.**
+
+- The closed-network fixtures on the agent's side of a nanocode session whose answer takes longer than the ten seconds of a tool call.
+- The lanes of the gateway and of closed networks ten times each on every kind of slot: the counts above are what ran.
+- The line `a row was claimed N ms after the second run was created` of the lane of a kept sandbox still asks for less than 2,000 ms. It did not fail in any run named here.
+- The workflow on GitHub: Actions is disabled for the repository.
