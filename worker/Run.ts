@@ -1251,6 +1251,8 @@ export class Run extends DurableObject<Env> {
     const tools = this.sql.all(
       'SELECT COALESCE(SUM(searches), 0) AS calls, COALESCE(SUM(unpriced), 0) AS unpriced, COALESCE(SUM(tools_usd), 0) AS usd FROM model_requests',
     )[0]!
+    const claims = Ledger.claims(this.sql).filter(Ledger.lost)
+    const lost = claims.at(-1)
     return {
       agents: Result.summarize(results),
       attempts: rows.map((row) => ({
@@ -1271,7 +1273,19 @@ export class Run extends DurableObject<Env> {
               : {}),
           }
         : null,
-      lostClaims: Ledger.claims(this.sql).filter(Ledger.lost).length,
+      ...(lost
+        ? {
+            lostClaim: {
+              attempt: lost.attempt,
+              ending: lost.ending,
+              ...(lost.error === null ? {} : { error: lost.error }),
+              n: lost.n,
+              phase: lost.phase,
+              runner: lost.runner,
+            },
+          }
+        : {}),
+      lostClaims: claims.length,
       name: config.name,
       nanocode: this.pins(),
       opening:
@@ -1372,7 +1386,18 @@ export class Run extends DurableObject<Env> {
 
     try {
       const provider = this.config().sandbox.max > 0 ? this.provider() : undefined
-      for (const row of Ledger.expired(this.sql, Date.now())) await this.lose(row, 'expired')
+      for (const row of Ledger.expired(this.sql, Date.now())) {
+        Ledger.explain(this.sql, {
+          claim: row.claim!,
+          error:
+            'the lease of the attempt ran out: runner ' +
+            row.runner +
+            ' sent no word of it for the ' +
+            this.config().limits.leaseSec +
+            ' s that a lease lasts',
+        })
+        await this.lose(row, 'expired')
+      }
       if (this.meta()!.cancelled) await this.cancelAll()
       await this.watch()
       if (provider) await this.advanceSandboxes(provider)
@@ -1696,6 +1721,10 @@ export class Run extends DurableObject<Env> {
         for (const row of this.rows()) {
           if (!Ledger.active(row) || row.runner !== runner.id) continue
           const seconds = Config.rowSec(config.limits, this.task(row.task))
+          Ledger.explain(this.sql, {
+            claim: row.claim!,
+            error: 'the sandbox of runner ' + runner.id + ' ended after its ' + lived + ' s',
+          })
           await this.lose(
             row,
             'expired',
@@ -2430,7 +2459,13 @@ export class Run extends DurableObject<Env> {
     const lifetime = record.expires_at ?? Infinity
     const reason = paid <= lifetime ? 'the lease of its sandbox ended' : 'its sandbox ended'
     for (const row of this.rows())
-      if (Ledger.active(row) && row.runner === record.runner) await this.lose(row, 'expired')
+      if (Ledger.active(row) && row.runner === record.runner) {
+        Ledger.explain(this.sql, {
+          claim: row.claim!,
+          error: reason.replace('its sandbox', 'the sandbox of runner ' + record.runner),
+        })
+        await this.lose(row, 'expired')
+      }
     this.update('sandboxes', record.id, {
       error: record.error ?? (paid <= lifetime ? 'its lease ended' : 'its lifetime ended'),
       state: 'closed',

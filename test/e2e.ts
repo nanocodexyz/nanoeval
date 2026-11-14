@@ -2705,7 +2705,21 @@ async function main(): Promise<void> {
               detail['claims'].map((claim: { ending: string }) => claim.ending),
               ['expired', 'finished'],
             )
+            assert.match(
+              detail['claims'][0].error,
+              new RegExp(
+                '^the lease of the attempt ran out: runner \\d+ sent no word of it for the ' +
+                  leaseSec +
+                  ' s that a lease lasts$',
+              ),
+              'the claim says why it ended',
+            )
           }
+        assert.match(
+          summary(status),
+          /\nclaims lost: \d+, and what their model calls cost is in the spend of the run and in the cost of no agent; the last, claim 1 of a\d+ on runner \d+, expired in the \w+ phase: the lease of the attempt ran out: /,
+          'the status of the run says how many claims were lost and why the last one ended',
+        )
       }
       if (machine) {
         const [broken, healthy] = runners.map((runner) => ({

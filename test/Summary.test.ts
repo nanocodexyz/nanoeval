@@ -414,3 +414,39 @@ test('a sandbox is open once its provider answered for it, not while it is asked
       refused,
   )
 })
+
+test('a run that lost claims says how many, and why the last one ended', () => {
+  const run = (lostClaim?: Record<string, unknown>) => ({
+    ...status([row('one', 1, 'passed')]),
+    ...(lostClaim ? { lostClaim } : {}),
+    lostClaims: lostClaim ? 2 : 0,
+  })
+  const claims = (text: string) => text.split('\n').filter((entry) => entry.startsWith('claims '))
+  assert.deepEqual(claims(summary(run())), [])
+  assert.deepEqual(
+    claims(
+      summary(
+        run({
+          attempt: 'a00008',
+          ending: 'expired',
+          error:
+            'the lease of the attempt ran out: runner 1 sent no word of it for the 60 s that a lease lasts',
+          n: 1,
+          phase: 'run',
+          runner: 1,
+        }),
+      ),
+    ),
+    [
+      'claims lost: 2, and what their model calls cost is in the spend of the run and in the cost of no agent; the last, claim 1 of a00008 on runner 1, expired in the run phase: the lease of the attempt ran out: runner 1 sent no word of it for the 60 s that a lease lasts',
+    ],
+  )
+  assert.deepEqual(
+    claims(
+      summary(run({ attempt: 'a00002', ending: 'released', n: 2, phase: 'setup', runner: 3 })),
+    ),
+    [
+      'claims lost: 2, and what their model calls cost is in the spend of the run and in the cost of no agent; the last, claim 2 of a00002 on runner 3, was released in the setup phase',
+    ],
+  )
+})

@@ -1062,6 +1062,26 @@ export function summary(
       )
     else if (runner['drained'] && runner['state'] === 'ready')
       lines.push('runner ' + runner['id'] + ' claims no more rows: ' + runner['drained'])
+  const lost = status['lostClaim'] as Record<string, any> | undefined
+  if (lost)
+    lines.push(
+      'claims lost: ' +
+        status['lostClaims'] +
+        ', and what their model calls cost is in the spend of the run and in the cost of no agent; the last, claim ' +
+        lost['n'] +
+        ' of ' +
+        lost['attempt'] +
+        ' on runner ' +
+        lost['runner'] +
+        ', ' +
+        (lost['ending'] === 'expired' ? 'expired' : 'was ' + lost['ending']) +
+        ' in the ' +
+        lost['phase'] +
+        ' phase' +
+        (lost['error']
+          ? ': ' + String(lost['error']).replace(/\s+/g, ' ').trim().slice(0, 300)
+          : ''),
+    )
   const opening = status['opening'] as Record<string, any> | null | undefined
   if (opening) {
     const open = ((status['sandboxes'] ?? []) as Record<string, any>[]).filter(
