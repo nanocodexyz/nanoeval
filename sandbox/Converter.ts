@@ -123,24 +123,37 @@ export function create(options: {
   home: string
   layers: string
   log?(line: string): void
+  machine?: () => Host.Machine
+  notice?(line: string): void
   policy?: Policy
 }): Converter {
   const krun = Path.join(options.home, 'rt', 'krun', 'nanoeval-krun')
   let tools: Promise<unknown> | undefined
+  const prepare = () => {
+    if (Host.launcher() === 'none')
+      options.notice?.(
+        'building the launcher from krun/ with cargo, once on this machine: about a minute, and nothing is printed meanwhile',
+      )
+    return run('tools', ['env', 'NANOEVAL_HOME=' + options.home, 'bash', script, 'tools'])
+  }
   const image = async (step: string, rest: readonly string[]) => {
-    await (tools ??= run('tools', [
-      'env',
-      'NANOEVAL_HOME=' + options.home,
-      'bash',
-      script,
-      'tools',
-    ]))
+    await (tools ??= prepare())
     return run(step, [krun, 'image', step, ...rest])
   }
   return {
     format,
     name: 'krun-image',
     async convert(environment, disk) {
+      const lacks =
+        environment.image === undefined
+          ? Host.microvm((options.machine ?? Host.machine)())
+          : undefined
+      if (lacks)
+        throw new ConvertError(
+          'its environment is a Dockerfile, which is built in a microVM, and ' +
+            lacks +
+            ': import it with --backend dir, which keeps the files and runs them on directory slots without isolation, or on a machine with KVM. nanoeval doctor says what this machine lacks',
+        )
       const file = disk + '.meta.json'
       const build = () =>
         image('build', [

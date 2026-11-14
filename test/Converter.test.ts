@@ -4,6 +4,7 @@ import * as Os from 'node:os'
 import * as Path from 'node:path'
 import { test } from 'node:test'
 import * as Converter from '../sandbox/Converter.ts'
+import * as Host from '../sandbox/Host.ts'
 
 function launcher(script: string): string {
   const directory = Fs.mkdtempSync(Path.join(Os.tmpdir(), 'nanoeval-converter-'))
@@ -98,4 +99,45 @@ test('a wait for a registry that is not a whole number of seconds is refused', (
       () => Converter.policy({ NANOEVAL_PULL_WAIT_SEC: wait }),
       /NANOEVAL_PULL_WAIT_SEC is a whole number of seconds, not /,
     )
+})
+
+test('a Dockerfile is refused on a machine that cannot start a microVM, before anything is built', async () => {
+  const home = await Fs.promises.mkdtemp(Path.join(Os.tmpdir(), 'nanoeval-converter-'))
+  try {
+    const said: string[] = []
+    const converter = (machine: Host.Machine) =>
+      Converter.create({
+        home,
+        layers: Path.join(home, 'oci'),
+        machine: () => machine,
+        notice: (line) => said.push(line),
+      })
+    const environment = { context: Path.join(home, 'context'), storageMb: 16 }
+    for (const [machine, lacks] of [
+      [{ krunfw: true, kvm: 'absent' }, 'this machine has no /dev/kvm'],
+      [{ krunfw: true, kvm: 'closed' }, 'this user cannot read and write /dev/kvm'],
+      [{ krunfw: false, kvm: 'open' }, 'libkrunfw.so.5 is not installed on this machine'],
+    ] as const)
+      await assert.rejects(
+        converter(machine).convert(environment, Path.join(home, 'disk')),
+        new Converter.ConvertError(
+          'its environment is a Dockerfile, which is built in a microVM, and ' +
+            lacks +
+            ': import it with --backend dir, which keeps the files and runs them on directory slots without isolation, or on a machine with KVM. nanoeval doctor says what this machine lacks',
+        ),
+      )
+    assert.deepEqual(said, [])
+    assert.deepEqual(await Fs.promises.readdir(home), [])
+  } finally {
+    await Fs.promises.rm(home, { force: true, recursive: true })
+  }
+})
+
+test('a machine can start a microVM with /dev/kvm open and libkrunfw installed', () => {
+  assert.equal(Host.microvm({ krunfw: true, kvm: 'open' }), undefined)
+  assert.equal(Host.kvm('/nonexistent/kvm'), 'absent')
+  assert.equal(Host.kvm('/dev/null'), 'open')
+  assert.equal(Host.launcher({ NANOEVAL_KRUN: '/opt/krun' }), 'given')
+  assert.equal(Host.launcher({ NANOEVAL_KRUN_SOURCE: '/nonexistent/krun' }), 'none')
+  assert.equal(Host.launcher({}), 'none')
 })

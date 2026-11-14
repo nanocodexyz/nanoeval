@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import * as Fs from 'node:fs'
 import * as FsPromises from 'node:fs/promises'
 import * as Path from 'node:path'
@@ -12,6 +13,50 @@ export function environment(base: NodeJS.ProcessEnv = process.env): NodeJS.Proce
       : {}),
     ...base,
   }
+}
+
+export type Kvm = 'absent' | 'closed' | 'open'
+
+export type Machine = { kvm: Kvm; krunfw: boolean }
+
+export function kvm(device = '/dev/kvm'): Kvm {
+  if (!Fs.existsSync(device)) return 'absent'
+  try {
+    Fs.accessSync(device, Fs.constants.R_OK | Fs.constants.W_OK)
+    return 'open'
+  } catch {
+    return 'closed'
+  }
+}
+
+export function krunfw(): boolean {
+  const listed = spawnSync('ldconfig', ['-p'], {
+    encoding: 'utf8',
+    env: { ...process.env, PATH: (process.env['PATH'] ?? '') + ':/usr/sbin:/sbin' },
+  })
+  return listed.status === 0 && listed.stdout.includes('libkrunfw.so.5')
+}
+
+export function machine(): Machine {
+  return { krunfw: krunfw(), kvm: kvm() }
+}
+
+export function microvm(found: Machine): string | undefined {
+  if (found.kvm === 'absent') return 'this machine has no /dev/kvm'
+  if (found.kvm === 'closed') return 'this user cannot read and write /dev/kvm'
+  if (!found.krunfw) return 'libkrunfw.so.5 is not installed on this machine'
+  return undefined
+}
+
+export function launcher(env: NodeJS.ProcessEnv = environment()): 'built' | 'given' | 'none' {
+  if (env['NANOEVAL_KRUN']) return 'given'
+  const source = env['NANOEVAL_KRUN_SOURCE']
+  if (!source) return 'none'
+  return Fs.existsSync(
+    Path.join(env['CARGO_TARGET_DIR'] ?? Path.join(source, 'target'), 'release', 'nanoeval-krun'),
+  )
+    ? 'built'
+    : 'none'
 }
 
 let writes = 0

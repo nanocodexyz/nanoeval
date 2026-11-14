@@ -1237,6 +1237,7 @@ export async function importEval(
         home: Path.join(input.cache, 'converter'),
         layers: input.layers,
         ...(input.log ? { log: input.log } : {}),
+        notice: (line) => console.error(line),
         ...(input.policy ? { policy: input.policy } : {}),
       }),
       format: Config.kind(input.backend),
