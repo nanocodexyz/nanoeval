@@ -3350,3 +3350,13 @@ An attempt that runs into its timeout is the one that used the most tokens of it
 **Checked.** A unit test in `test/Summary.test.ts`. The run above and a run cancelled while one such attempt had ended, read again: 3 attempts and 1 attempt. A run with neither prints `estimated from tokens` alone. `npm run lint`, `npm run check:types`, `npm test`.
 
 **Not verified.** A gateway run, where the line is unchanged unless an attempt has no cost. A `codex` session. Whether nanocode can price a cancelled turn from the usage it already has: that is the repair, in nanocode, and the count here goes to zero with it.
+
+## 2026-11-14: the summary names a cancelled run
+
+A run that is cancelled ends its unfinished rows as `cancelled` errors and is then `finished`. `status` printed that word alone on its first line, so a run cut short after 10 of 24 rows read as one that had run to its end with 17 errors. And a failure whose message holds a line break, such as the last output of a verifier that wrote no reward, broke the list of rows with an empty line after it.
+
+**What changed.** The first line of the summary of a run with cancelled rows is `finished, cancelled with 14 rows not finished`. The count is of the rows whose failure is `cancelled`, so a `cancel` sent to a run that had already finished changes nothing. The message of a failure is printed with its whitespace folded to single spaces before it is cut to 160 characters.
+
+**Checked.** A unit test in `test/Summary.test.ts`. The cancelled run of the entries above read again, and a finished run that was sent `cancel` afterwards, which prints `finished`. `npm run lint`, `npm run check:types`, `npm test`.
+
+**Not verified.** A run cancelled while a leased sandbox held its rows.

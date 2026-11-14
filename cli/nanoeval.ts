@@ -557,8 +557,19 @@ export async function exportJob(
 }
 
 export function summary(status: Record<string, any>): string {
+  const cancelled = (status['attempts'] as Record<string, any>[]).filter(
+    (attempt) => attempt['failure']?.kind === 'cancelled',
+  ).length
   const lines = [
-    'run ' + status['id'] + ' (' + status['name'] + '): ' + status['state'],
+    'run ' +
+      status['id'] +
+      ' (' +
+      status['name'] +
+      '): ' +
+      status['state'] +
+      (cancelled
+        ? ', cancelled with ' + cancelled + (cancelled === 1 ? ' row' : ' rows') + ' not finished'
+        : ''),
     'attempts: ' +
       Object.entries(status['counts'] as Record<string, number>)
         .map(([name, value]) => name + ' ' + value)
@@ -693,7 +704,9 @@ export function summary(status: Record<string, any>): string {
             ? 'retries ' + attempt['retryOf'].run.slice(0, 8) + '/' + attempt['retryOf'].attempt
             : '',
           attempt['failure']
-            ? attempt['failure'].kind + ': ' + String(attempt['failure'].message).slice(0, 160)
+            ? attempt['failure'].kind +
+              ': ' +
+              String(attempt['failure'].message).replace(/\s+/g, ' ').trim().slice(0, 160)
             : '',
         ]
           .filter(Boolean)

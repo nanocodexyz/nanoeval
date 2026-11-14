@@ -111,3 +111,25 @@ test('the spend says when it is an estimate and which attempts it leaves out', (
     'spend: model $0.5000, without 2 attempts whose model calls have no cost, sandboxes $0.0000',
   )
 })
+
+test('the summary names a cancelled run and keeps each row on one line', () => {
+  const results = [
+    row('one', 1, 'passed'),
+    row('two', 1, 'errored'),
+    {
+      ...row('three', 1, 'errored'),
+      failure: { at: 1, kind: 'verifier' as const, message: 'no reward:\n  it wrote none\n' },
+    },
+  ]
+  const lines = summary(status(results)).split('\n')
+  assert.equal(lines[0], 'run run-1 (example): finished, cancelled with 1 row not finished')
+  assert.equal(lines.at(-2), '  two1 suite/two haiku #1 errored cancelled: the run was cancelled')
+  assert.equal(
+    lines.at(-1),
+    '  three1 suite/three haiku #1 errored verifier: no reward: it wrote none',
+  )
+  assert.equal(
+    summary(status([row('one', 1, 'passed')])).split('\n')[0],
+    'run run-1 (example): finished',
+  )
+})
