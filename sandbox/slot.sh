@@ -93,7 +93,7 @@ format() {
 
 guest_options() {
   local dir=$1 name
-  printf '%s\n' --socket vm.sock --cwd "$(cat "$dir/workdir")" --user "$(cat "$dir/user")" --env-file "$dir/image.env"
+  printf '%s\n' --socket vm.sock --cwd "$(cat "$dir/workdir")" --user "$(cat "$dir/user")" --env-file "$dir/cpus.env" --env-file "$dir/image.env"
   if [ -f "$rt/trust" ]; then
     for name in $trust; do printf '%s\n' --env "$name=/opt/nanoeval/ca.pem"; done
   fi
@@ -540,6 +540,7 @@ cmd__up() {
       local vcpus workdir
       vcpus=$(awk -v cpus="$cpus" 'BEGIN { whole = int(cpus); print (whole < cpus ? whole + 1 : whole) }')
       printf '%s\n' "$base" >"$dir/disk"
+      printf 'OMP_THREAD_LIMIT=%s\n' "$vcpus" >"$dir/cpus.env"
       cp "$base.env" "$dir/image.env"
       cp "$base.user" "$dir/user"
       workdir=$(cat "$base.workdir")

@@ -3859,3 +3859,26 @@ A stall of the `krunfull` launcher, left at layer 5 of 9 for nine minutes, went 
 **Checked** on dev-georgios: `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings` and `cargo test --locked` (51 tests, the two integration tests of the launcher run), three of them new: a guest that reads only once knocked gets all of 8 MiB, a guest that never reads ends as a stall after the limit, a guest that does not answer the knock ends as a stall. `test/Converter.test.ts` is new: the launcher's 75 is a `Converter.StalledError` and 125 is not, a conversion that stalled runs once more and logs it, and one that stalls twice or fails otherwise is not run again. `npm run lint`, `npm run check:types`, `npm test` (257 tests, none skipped).
 
 **Not verified.** CI on GitHub, and the end-to-end lanes beyond the plain krun lane.
+
+## 2026-11-14: OpenMP in a microVM or ns slot runs no more threads than the slot has vCPUs
+
+**The defect.** Terminal-Bench 2.1 `extract-moves-from-video` declares `cpus = 1`, so its krun slot has one vCPU, as [the resources](DESIGN.md) say. An agent there OCRs frames with tesseract 5.3.4 from Ubuntu 24.04, which links libgomp and asks for 4 threads in its LSTM loops (`num_threads` in the pragma), whatever `nproc` says. On one vCPU those threads take turns and spin, and recognition is about four times slower than with one thread. The microVM itself is not slower: one thread costs the same in the guest as on the host.
+
+**Measured** on dev-georgios (AMD EPYC 4585PX, 32 cores, load average 47 to 89 from the live runners), one 1280x720 frame of 18 lines of text, the disk of `alexgshaw/extract-moves-from-video:20260403` on a krun slot of the runner's launcher, tesseract installed with apt in the slot, one run each unless counted:
+
+| Where | Default | `OMP_THREAD_LIMIT=1` | `OMP_THREAD_LIMIT=4` |
+| --- | --- | --- | --- |
+| krun slot, 1 vCPU | 8.9 s | 2.0 and 2.2 s | 7.9 s |
+| host, all 32 cores | 2.3 and 2.4 s | 2.1 and 2.1 s | |
+| host, `taskset -c 5` | 6.5 and 6.2 s | 2.0 and 2.0 s | |
+
+The guest sees one CPU with AVX2, AVX-512 and FMA, and tesseract reports AVX512BW, so no instruction set is missing. `OMP_WAIT_POLICY=PASSIVE` alone took 4.9 s.
+
+**The rule.** `slot.sh` writes `OMP_THREAD_LIMIT=<vCPUs>` to the slot's `cpus.env` when it brings up a krun or ns slot, and every command it runs in the guest (hand, agent, solution, verifier) reads that file before the image's environment, so an image or `NANOEVAL_SLOT_ENV` that sets the variable keeps its own value. The slot's vCPUs stay the task's `cpus` rounded up. A directory slot is unchanged: it has no CPU limit.
+
+**Before and after**, the same six frames three times through `slot.sh _solve` on a 1-vCPU krun slot of that disk, the slot brought up by the script of `7cad077`/`daf5fdb` and by this one: 58.7, 49.8 and 53.6 s before, with `OMP_THREAD_LIMIT` unset; 12.3, 12.6 and 13.5 s after, with `OMP_THREAD_LIMIT=1`.
+
+**Checked** on dev-georgios: the krun lane of `test/Sandbox.test.ts` asserts that a solution in a 1-vCPU slot sees `OMP_THREAD_LIMIT=1`, and fails with the script before this change. `npm run lint`, `npm run check:types`, `npm test`.
+
+**Not verified.** An attempt of the task with a model on these slots, and the ns backend, which takes the same file through the same `exec`.
+

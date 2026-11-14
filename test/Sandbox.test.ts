@@ -644,6 +644,12 @@ test(
       assert.equal(capabilities.krun, true)
 
       const task = await loadTask('tasks/extract-todos', { solution: true })
+      task.files['solution/solve.sh'] = Bytes.toBase64(
+        Bytes.fromText(
+          Bytes.toText(Bytes.fromBase64(task.files['solution/solve.sh']!)) +
+            'printf "%s\\n" "$OMP_THREAD_LIMIT" >/tmp/omp-thread-limit\n',
+        ),
+      )
       await sandbox.write(
         slots.taskFile('vm'),
         Tar.pack(
@@ -706,6 +712,11 @@ test(
 
       await Sandbox.run(sandbox, slots.solve('vm', 30))
       assert.equal(await wait(async () => (await status()).slots['vm']!.solve), 'exit:0')
+      assert.equal(
+        (await guest('cat /tmp/omp-thread-limit')).stdout,
+        '1\n',
+        'OpenMP in the slot runs no more threads than the slot has vCPUs',
+      )
       await Sandbox.run(sandbox, slots.verify('vm', 30))
       assert.equal(await wait(async () => (await status()).slots['vm']!.verify), 'exit:0')
       assert.equal((await status()).slots['vm']!.reward, 1)
