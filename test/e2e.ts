@@ -237,6 +237,7 @@ function sse(events: [string, unknown][]): string {
 const longCells: { exec: string | undefined; received: string }[] = []
 const codexCells: (string[] | undefined)[] = []
 const codexExecs: (string | undefined)[] = []
+const codexInputs: string[] = []
 const budgetLog: { cost: number; search: boolean }[] = []
 let budgetFlying = 0
 let budgetPeak = 0
@@ -362,7 +363,10 @@ function responses(
     ['custom_tool_call_output', 'function_call_output'].includes(item['type']),
   )?.['output']
   const plain = direct && !tools.includes('exec')
-  if (!plain) codexExecs.push(execDescription(body.tools))
+  if (!plain) {
+    codexExecs.push(execDescription(body.tools))
+    codexInputs.push(text)
+  }
   if (text.includes('"custom_tool_call_output"')) codexCells.push(cellTools(body.input))
   if (direct)
     directRequests.push({
@@ -2634,6 +2638,14 @@ async function main(): Promise<void> {
             !claudeTools.some((name) => exec.includes('### `' + name + '`')),
         ),
         'the exec tool of a codex session declares none of the Claude Code hand tools',
+      )
+      assert.ok(
+        codexInputs.every((input) => !input.includes('query pwd')),
+        'a codex session gets no hand placement block in its AGENTS.md instructions, as codex-cli sends none',
+      )
+      assert.ok(
+        codexInputs.every((input) => input.includes('<shell>bash</shell>')),
+        'the environment_context of a codex session on a hand reports the shell of exec_command, bash',
       )
     }
     if (longCell) {
