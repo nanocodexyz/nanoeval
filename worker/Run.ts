@@ -2445,7 +2445,8 @@ export class Run extends DurableObject<Env> {
       const current = Ledger.held(this.sql, { claim: row.claim!, id: row.id })
       if (!current) throw new Refusal(410, 'the attempt is not claimed by this runner any more')
       const earlier = current.failure ? (JSON.parse(current.failure) as Result.Failure) : undefined
-      if (earlier?.kind === 'agent_timeout') return { state: 'timeout' }
+      if (earlier?.kind === 'agent_timeout' || earlier?.kind === 'environment')
+        return { state: 'timeout' }
       const report = await this.kept(current, Harness.turn(this.env, session, requestId))
       if (report.status === 'completed')
         return { message: report.ok?.message ?? '', state: 'completed' }
@@ -2455,11 +2456,24 @@ export class Run extends DurableObject<Env> {
       if (now > current.deadline_at!) {
         await Harness.cancel(this.env, session, requestId)
         Ledger.update(this.sql, row.id, {
-          failure: JSON.stringify({
-            at: now,
-            kind: 'agent_timeout',
-            message: 'the agent did not finish within ' + task.agent.timeoutSec + ' s',
-          } satisfies Result.Failure),
+          failure: JSON.stringify(
+            (report.status === 'queued'
+              ? {
+                  at: now,
+                  kind: 'environment',
+                  message:
+                    Retry.queued +
+                    ': it was still queued after ' +
+                    task.agent.timeoutSec +
+                    ' s' +
+                    (report.kind === 'detached' ? ', with no hand attached' : ''),
+                }
+              : {
+                  at: now,
+                  kind: 'agent_timeout',
+                  message: 'the agent did not finish within ' + task.agent.timeoutSec + ' s',
+                }) satisfies Result.Failure,
+          ),
         })
         return { state: 'timeout' }
       }
@@ -2643,18 +2657,24 @@ export class Run extends DurableObject<Env> {
       }
     } else throw new Refusal(400, 'finishing an attempt reports a verifier or a failure')
     if (row.session && row.phase === 'run' && this.submitted(row)) await this.halt(row.session)
+    const statuses = this.sql
+      .all(
+        'SELECT status FROM model_requests WHERE attempt = ? AND claim = ? AND status IS NOT NULL',
+        row.id,
+        row.claims,
+      )
+      .map((request) => request['status'] as number)
+    const stall = end.failure
+      ? Retry.stalled({
+          failure: end.failure,
+          statuses,
+          ...(end.oomKills === undefined ? {} : { oomKills: end.oomKills }),
+        })
+      : undefined
+    if (stall) end = { ...end, failure: stall, reward: null }
     const cause =
       end.failure && end.reward === null
-        ? Retry.infrastructure({
-            failure: end.failure,
-            statuses: this.sql
-              .all(
-                'SELECT status FROM model_requests WHERE attempt = ? AND claim = ? AND status IS NOT NULL',
-                row.id,
-                row.claims,
-              )
-              .map((request) => request['status'] as number),
-          })
+        ? Retry.infrastructure({ failure: end.failure, statuses })
         : undefined
     if (cause && !Ledger.retried(this.sql, row.id)) {
       Ledger.explain(this.sql, { claim: row.claim!, error: cause + ': ' + end.failure!.message })
