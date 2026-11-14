@@ -376,3 +376,41 @@ test('a run names its reruns, and a run too long for the screen is one line a ta
   assert.equal(shown(run, { height: 13, rows: true, tasks: false }), summary(run))
   assert.equal(shown(run, { rows: false, tasks: true }), summary(run, { tasks: true }))
 })
+
+test('a sandbox is open once its provider answered for it, not while it is asked for after refusals', () => {
+  const refused =
+    'Gateway.RefusedError: the gateway refused create with 429: {"code":"rate_limited","status":429}'
+  const run = (sandboxes: { handle: string | null; state: string }[], endsAt: number | null) => ({
+    ...status([row('one', 1, 'passed')]),
+    opening: {
+      closed: false,
+      endsAt,
+      failures: 2,
+      lastAt: 6000,
+      message: refused,
+      nextAt: 9000,
+      since: 5000,
+    },
+    sandboxes,
+    state: 'running',
+  })
+  const sandboxes = (text: string) =>
+    text.split('\n').find((entry) => entry.startsWith('sandboxes: '))
+  const asked = { handle: null, state: 'creating' }
+  const working = { handle: 'a', state: 'ready' }
+  assert.equal(
+    sandboxes(summary(run([{ handle: null, state: 'failed' }, working, asked], null))),
+    'sandboxes: 1 open; another could not be opened 2 times since +5 s, and is asked for again at +9 s: ' +
+      refused,
+  )
+  assert.equal(
+    sandboxes(summary(run([working, { handle: 'b', state: 'creating' }], null))),
+    'sandboxes: 2 open; another could not be opened 2 times since +5 s, and is asked for again at +9 s: ' +
+      refused,
+  )
+  assert.equal(
+    sandboxes(summary(run([{ handle: 'a', state: 'failed' }, asked], 20000))),
+    'sandboxes: none open; one could not be opened 2 times since +5 s, and is asked for again at +9 s; the rows that wait end as errors at +20 s unless one starts: ' +
+      refused,
+  )
+})

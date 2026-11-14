@@ -1061,8 +1061,10 @@ export function summary(
       lines.push('runner ' + runner['id'] + ' claims no more rows: ' + runner['drained'])
   const opening = status['opening'] as Record<string, any> | null | undefined
   if (opening) {
-    const open = ((status['sandboxes'] ?? []) as Record<string, any>[]).filter((sandbox) =>
-      ['creating', 'ready', 'starting'].includes(sandbox['state']),
+    const open = ((status['sandboxes'] ?? []) as Record<string, any>[]).filter(
+      (sandbox) =>
+        ['ready', 'starting'].includes(sandbox['state']) ||
+        (sandbox['state'] === 'creating' && sandbox['handle'] !== null),
     ).length
     const times = opening['failures'] + (opening['failures'] === 1 ? ' time' : ' times')
     lines.push(
