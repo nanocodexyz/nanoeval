@@ -3360,3 +3360,13 @@ A run that is cancelled ends its unfinished rows as `cancelled` errors and is th
 **Checked.** A unit test in `test/Summary.test.ts`. The cancelled run of the entries above read again, and a finished run that was sent `cancel` afterwards, which prints `finished`. `npm run lint`, `npm run check:types`, `npm test`.
 
 **Not verified.** A run cancelled while a leased sandbox held its rows.
+
+## 2026-11-14: a refusal is one line
+
+Every command that was refused ended in an uncaught rejection: Node printed the source line of the `throw`, a caret, the message, the stack and its version. What the Worker said came inside the JSON of its answer, `Error: /v1/runs answered 400: {"error":"the eval audit cannot be read: the eval has no task typo"}`, and a missing run id read `--RUN is required`, as if it were an option. The checks themselves are right, and were tried on an eval of 8 tasks on directory slots: `--only` with an id the eval does not have, `--limit 0`, `--attempts 0`, an eval or a version that does not exist, no agent, two agents of one id and an unknown option are all refused before a run exists. So this is how they read, not what they do.
+
+**What changed.** `main` is awaited with a handler that prints `nanoeval: ` and the message on standard error and exits 1. An answer of the Worker is printed as what it said, with the route and the status behind it: `nanoeval: the eval audit cannot be read: the eval has no task typo (/v1/runs answered 400)`. A refusal is a plain `Error`, one of this repository's named errors, or an error of the option parser. Anything else, a `TypeError` of a mistake in the code, keeps its stack. A positional that is missing is named without dashes. Exit statuses are unchanged: 1 for a refusal, 2 for an unknown command.
+
+**Checked.** Unit tests in `test/Refusal.test.ts`, one of which runs the command. The refusals above read again. `npm run lint`, `npm run check:types`, `npm test`, and the plain lane and the lane `machine` on directory slots, whose runner exits with what its machine said.
+
+**Not verified.** A runner in a leased sandbox, whose log is where its last words go: it now ends with one line where it had a stack.

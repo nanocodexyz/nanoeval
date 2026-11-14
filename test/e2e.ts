@@ -929,7 +929,7 @@ async function main(): Promise<void> {
       assert.equal(refused.status, 1, 'a runner of another protocol than its Worker does not start')
       assert.match(
         refused.stderr.toString(),
-        /Runner\.RefusedError\]: this runner speaks protocol \d+ with a Worker, and the Worker of the run speaks \d+: /,
+        /^nanoeval: this runner speaks protocol \d+ with a Worker, and the Worker of the run speaks \d+: /m,
       )
     }
 
@@ -1711,10 +1711,7 @@ async function main(): Promise<void> {
           )
         }
         assert.equal(broken!.code, 1, 'the runner of the broken machine says so when it exits')
-        assert.match(
-          broken!.log,
-          /\[Runner\.MachineError\]: the machine could not bring a slot up: /,
-        )
+        assert.match(broken!.log, /^nanoeval: the machine could not bring a slot up: /m)
         assert.match(broken!.log, / goes back to the run and this runner claims no more rows: /)
         assert.equal(healthy!.code, 0)
         if (disk) assert.match(shown['error'], /NANOEVAL_SLOT_ENV is not a file/)

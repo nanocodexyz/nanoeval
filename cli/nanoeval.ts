@@ -1059,7 +1059,7 @@ async function main(lab?: Revision.Lab): Promise<void> {
     return
   }
   const required = (value: string | undefined, name: string): string => {
-    if (!value) throw new Error('--' + name + ' is required')
+    if (!value) throw new Error((name === name.toUpperCase() ? name : '--' + name) + ' is required')
     return value
   }
   const seconds = (value: string, name: string): number => {
@@ -1977,4 +1977,26 @@ async function main(lab?: Revision.Lab): Promise<void> {
   }
 }
 
-if (import.meta.main) await main()
+export function refusal(error: unknown): string {
+  if (!(error instanceof Error)) return String(error)
+  const code = (error as { code?: unknown }).code
+  const stated =
+    error.constructor === Error ||
+    error.name.includes('.') ||
+    (typeof code === 'string' && code.startsWith('ERR_PARSE_ARGS'))
+  if (!stated) return error.stack ?? error.message
+  const answered = /^(\S+) answered (\d+): (.*)$/s.exec(error.message)
+  if (!answered) return error.message
+  let said = answered[3]!
+  try {
+    const body = JSON.parse(said) as { error?: unknown }
+    if (typeof body.error === 'string') said = body.error
+  } catch {}
+  return said + ' (' + answered[1] + ' answered ' + answered[2] + ')'
+}
+
+if (import.meta.main)
+  await main().catch((error: unknown) => {
+    console.error('nanoeval: ' + refusal(error))
+    process.exit(1)
+  })
