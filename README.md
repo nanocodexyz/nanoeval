@@ -108,6 +108,7 @@ The table says what was run. "The first version" is the flow before the eval tab
 | A Claude plan signed in on the Worker (`nanoeval plans`, `run --payer plan`) | Implemented, tested against a scripted Claude only: unit tests of the sealed record, the sign-in, the refresh after a `401` and what a run refuses, and an end-to-end lane on directory slots under local workerd where the command line signs in, a run is paid by the plan with a token refreshed on the way, a run without the option leaves the plan alone, a plan whose refresh is refused ends its rows as `environment` errors, and no file of the lane holds a token or the secret. Not run against Claude: no sign-in, refresh or model request of a real plan was made, under local workerd or on a deployed Worker |
 | Models through the gateway with one key (`TEMPO_KEY`), and a bearer token for an Anthropic endpoint (`ANTHROPIC_AUTH_TOKEN`) | Implemented, tested: unit tests, and end-to-end lanes where a scripted gateway serves a `codex` and a `claude` session, or a scripted Codex CLI and Claude Code, refuses anything but the key as a bearer token, and reports the cost of each response, which becomes the cost of the attempt. Run for real from a deployed Worker: `codex` and `claude` sessions, Codex CLI and Claude Code all answered and passed their rows, 14 attempts in three runs, and the $0.4556 of model spend that the runs recorded agrees with what the key's channel was charged, see [Deploy it](#deploy-it) |
 | Services on one Linux machine (`scripts/install-linux.sh`) | Implemented, tested: installed under a second name on other ports with the store, cache, layers and state on chosen paths, ran an import and a run through the installed services, and removed again |
+| `nanoeval watch`: the branches of nanocode and nanocode-ts followed, the newest pair of revisions evaluated through `nanoeval revision` on a subset of an eval at K attempts against the last accepted baseline, a scoreboard, a ledger and a hook | Implemented, tested against a stand-in for `nanoeval revision`: unit tests for the rule, the plan, the search for the first losing commit and the scoreboard, and tests that run the command over two local repositories that get commits while it runs, with the watcher killed in an evaluation, a build that fails, rows that error, a credential that expired, the lab held by another evaluation and the daily cap. Run over `nanoeval revision` itself on directory slots with a scripted model and nothing to build: a first baseline of three attempts, a revision that failed its task, was rerun and was reported as lost, a model endpoint that refused the credential, and no credential at all. **Not run with a model, with a build of a revision or on krun slots**: [Following nanocode](#following-nanocode) lists what it takes from that command |
 | A certificate bundle and variables for slots (`sandboxd --ca-bundle`, `--slot-env`) | Implemented, tested |
 | A private network per slot (`--network private`, the default for `krun` and `ns` slots) | Implemented, tested on a Linux machine with KVM: a slot has its own loopback and ports, reaches the internet, and is reached neither by another slot nor by the host |
 | The shared host network (`--network host`) | Implemented. Attempts that listen on a fixed port are not isolated from each other there |
@@ -480,6 +481,90 @@ Unpacked disks are kept in `~/.cache/nanoeval/disks` (`NANOEVAL_CACHE` moves the
 Each slot gets its own mount, PID, IPC, UTS, cgroup and network namespaces, the task's memory and CPUs as cgroup limits, a root that grows to `storage_mb`, and a capability set without mounts and device nodes. It shares the machine's kernel, so it keeps attempts apart as a container does and less strongly than a microVM. [DESIGN.md](DESIGN.md#ns-slots) says what a slot may and may not do.
 
 Installed agents and `--verifier-cache` work in ns slots as in krun slots. A task that closes the network of a phase does not run there: only a microVM has the gate that closes it, so such a run is refused unless it names `--backend krun`.
+
+## Following nanocode
+
+`nanoeval watch` runs an eval as nanocode changes. It follows one branch of nanocode and one of nanocode-ts, runs the newest pair of revisions through `nanoeval revision` on a subset of an eval, sets the result against the last accepted baseline, and says when a revision lost tasks. One file configures it:
+
+```toml
+state = "~/.local/state/nanoeval/watch"
+poll_sec = 300
+
+[nanocode]
+repository = "https://github.com/nanocodexyz/nanocode"
+branch = "master"
+
+[nanocode_ts]
+repository = "https://github.com/nanocodexyz/nanocode-ts"
+branch = "master"
+
+[eval]
+name = "terminal-bench-2.1"
+tasks = ["fix-git", "cancel-async-tasks", "openssl-selfsigned-cert", "git-leak-recovery"]
+attempts = 2
+agents = ["haiku=claude:claude-haiku-5-5", "luna=codex:gpt-6-luna"]
+slots = 4
+options = ["--codex-login", "~/.codex/auth.json"]
+
+[budget]
+run_usd = 1
+daily_usd = 20
+daily_runs = 40
+
+[hook]
+command = ["sh", "-c", "cat >> ~/nanoeval-regressions.jsonl"]
+```
+
+```sh
+nanoeval watch --config watch.toml --dry-run   # fetch, and print what it would evaluate
+nanoeval watch --config watch.toml --once      # evaluate what is new, then exit: for a timer
+nanoeval watch --config watch.toml             # the same every poll_sec, as a service
+
+# One pair now, beside the baseline: a checkout with uncommitted changes, or a commit.
+nanoeval watch --config watch.toml --nanocode ~/src/nanocode
+nanoeval watch --config watch.toml --nanocode 0a9ed13f2337 --nanocode-ts pinned --only fix-git --attempts 4
+
+nanoeval watch --config watch.toml --board     # the scoreboard
+nanoeval watch --config watch.toml --accept EVALUATION   # a revision that lost tasks becomes the baseline
+nanoeval watch --config watch.toml --retry     # try again the revisions it gave up on
+```
+
+`tasks = "all"` takes every task of the eval. `options` of `[eval]` go to every run, and `options` of a `[revision]` table to every call, builds included: the host policy of a machine, `--sdk`, `--hand-profile`. `[revision] lab` names the lab directory and `command` the command, which is this checkout's `nanoeval` otherwise. A side that holds still names a revision instead of a branch: `[nanocode_ts]` with `revision = "pinned"` follows nanocode alone and builds no package. A value that begins with `~/` is taken from the home directory, and `state` and `lab` are resolved from the directory of the file.
+
+**What it writes.** Everything is under `state`. `watch.jsonl` gets one line for each evaluation: the pair, the verdict, every attempt of every task as a letter (`p` passed, `f` failed, `e` errored), pass@1 and pass@k, tokens and cost for each agent, what was gained and lost with its p-value, and each call of `nanoeval revision` with its log, its job directory and what it was charged. `scoreboard.md` is written from it after every line: the baseline with the passes of each task, a regression that stands, and one row for each evaluation and agent. Standard output gets one line for each evaluation, for the journal:
+
+```
+nanocode f43ff49cee1d nanocode-ts 8ff3d5f8c98b: REGRESSION, lost luna/fix-git 4/4 -> 0/4 (p 0.014); haiku pass@1 100.0% pass@2 100.0%; luna pass@1 75.0% pass@2 75.0%; 2 runs, $0.0412
+```
+
+The command of `[hook]` is started for each evaluation that lost tasks and for the one that names the first losing commit, with that line of `watch.jsonl` and the path of the scoreboard as JSON on its standard input. `on = [...]` names the verdicts to hear instead of `regression`, such as `build_failed` or `incomplete`. The watcher itself talks to no service: it runs `git fetch` and `nanoeval revision`.
+
+**When a task counts as lost.** Two attempts say little, so a task is never called lost on what one run shows. The baseline of a task is its scored attempts on the last accepted revisions, `baseline.window` of them. A task whose passes moved against that, and that K more attempts could bring to p <= `baseline.alpha` (0.05) in a one-sided Fisher exact test, gets one rerun of K more attempts, and is lost or gained when the test on all of its attempts gives that. Anything less is listed as within noise. The window is by default the fewest accepted revisions at which a task that always passed and now never does is found: 5 at one attempt, 2 at two, 1 at three or more, and the first baseline runs that many times K attempts, so the first comparison can already find one. With two attempts a task of an unchanged revision is called lost at most 4 times in 1,000, where "passed at least once of two, then failed twice and twice again" would call it up to 148 times in 1,000. A task that the baseline solved three times of four and that now never passes is found 32 times in 100 with the default window and 78 with `window = 5`: [DECISIONS.md](DECISIONS.md#2026-11-14-nanoeval-watch-the-evals-run-as-nanocode-changes) has the table. An errored attempt is no attempt: it is run again once, and a revision whose tasks still lack their attempts is `incomplete`, neither accepted nor a regression.
+
+**What moves the baseline.** A revision that lost nothing is accepted: it becomes the baseline, and its attempts join the window. One that lost a task is not. The baseline stays, every later revision is set against it, and the scoreboard keeps the regression until a revision loses nothing or `--accept` takes the losing one, after which the lost tasks start a new history.
+
+**Several commits.** The newest pair is evaluated first and stands for the commits behind it, whose number its line records. Only when it lost tasks are those commits looked at: the two branches are put in one line by the dates of their commits, and that line is bisected on the lost tasks and their agents alone, a revision whose build fails being passed over, until the first losing commit is named. `bisect = "off"` leaves that to `--bisect`.
+
+**Budget.** Every run is given `run_usd` as its model budget. A run starts only while the runs of the day (UTC) are below `daily_runs` and what the day spent plus one more `run_usd` is within `daily_usd`. An evaluation that meets the cap waits where it is and goes on the next day. A run that left no job, or whose rows have no cost, counts as its whole `run_usd`.
+
+**Failures.** A build that fails is recorded with the path of its log, tried once more the next time, and then left: the revision is evaluated again only by `--retry`, and the next commit is evaluated as usual. A run that ends without a job, one that was interrupted and one that stays incomplete are treated the same way. `[retries]` sets the three counts, `build`, `run` and `errored`, each 1 by default. A pass over the branches ends at the first evaluation that did not complete, so a credential that expired costs one failed run each time and not one for each commit.
+
+**Killed at any moment.** The state is that directory and nothing else. An evaluation is written down before each of its calls. Started again, the watcher waits for a call that is still running, takes the job of one that ended without it, and records one that died as `interrupted`, charged its whole budget, before it runs the revision again. No line is written twice, and a revision is given up on only in a line that says so. Two watchers on one state take turns on a lock, and a watcher leaves the lab alone while another evaluation holds it.
+
+**As a timer.** [`scripts/nanoeval-watch.service`](scripts/nanoeval-watch.service) and [`scripts/nanoeval-watch.timer`](scripts/nanoeval-watch.timer) are examples for systemd user units beside the services of [Keep it running on a Linux machine](#keep-it-running-on-a-linux-machine):
+
+```sh
+cp scripts/nanoeval-watch.service scripts/nanoeval-watch.timer ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now nanoeval-watch.timer
+journalctl --user -u nanoeval-watch -f
+```
+
+**What it takes from `nanoeval revision`.** The watcher was written against the description of that command and is tested with a stand-in, `test/StubRevision.ts`. It reads no text the command prints. It relies on these, each read in the source of the command afterwards and the first three run with it once, and `Watch.invocation` in `src/Watch.ts` and `invoke` in `cli/Watch.ts` are the two places that know them:
+
+- `revision --nanocode REV --nanocode-ts REV [--nanocode-repository URL] [--nanocode-ts-repository URL] [--lab DIR] --build-only` builds or finds both, takes a full commit id, a directory or `pinned`, needs no eval, agent or credential, and exits with 0 only when both are built.
+- The same without `--build-only` and with `--eval`, `--only`, `--agent`, `--attempts`, `--model-budget-usd`, `--slots`, `--name` and `--out DIR` runs those rows and writes the Harbor job of the run to DIR, as `nanoeval run --wait --out` does. Where it writes the job under `LAB/runs` instead, the watcher takes the one directory that is new there, by the name of the run if several are.
+- An evaluation holds `flock` on `LAB/lock`, and the lab is `--lab`, `NANOEVAL_LAB` or `~/.local/share/nanoeval/lab`.
+- Stopped by SIGTERM, it stops its Worker and its runner.
 
 ## Deploy it
 

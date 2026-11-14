@@ -34,6 +34,7 @@ import * as Import from './Import.ts'
 import * as Plan from './Plan.ts'
 import * as Revision from './Revision.ts'
 import * as Runtime from './Runtime.ts'
+import * as Watch from './Watch.ts'
 
 const usage = `nanoeval <command>
 
@@ -336,7 +337,7 @@ const usage = `nanoeval <command>
             when the Worker names no blob of the store, unless --allow-empty says that
             emptying it is meant. Eval versions are never removed, and blobs in R2 are not
             pruned.
-`
+${Watch.usage}`
 
 async function walk(
   root: string,
@@ -2407,7 +2408,9 @@ export function refusal(error: unknown): string {
 }
 
 if (import.meta.main)
-  await main().catch((error: unknown) => {
-    console.error('nanoeval: ' + refusal(error))
-    process.exit(1)
-  })
+  await (process.argv[2] === 'watch' ? Watch.main(process.argv.slice(3)) : main()).catch(
+    (error: unknown) => {
+      console.error('nanoeval: ' + refusal(error))
+      process.exit(1)
+    },
+  )

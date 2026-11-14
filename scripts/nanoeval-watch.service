@@ -1,0 +1,8 @@
+[Unit]
+Description=nanoeval watch: evaluate what is new on nanocode and nanocode-ts
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/nanoeval/watch.env
+ExecStart=%h/.local/bin/nanoeval watch --config %h/.config/nanoeval/watch.toml --once
+TimeoutStartSec=infinity

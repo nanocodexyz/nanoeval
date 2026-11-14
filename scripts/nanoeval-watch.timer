@@ -1,0 +1,9 @@
+[Unit]
+Description=nanoeval watch, a while after it last ended
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+
+[Install]
+WantedBy=timers.target
