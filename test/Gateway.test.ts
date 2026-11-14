@@ -499,3 +499,40 @@ test('a renewal priced only for its owner, of a sandbox without its lease rate, 
   assert.equal(seen.length, 1)
   assert.deepEqual(charges, [])
 })
+
+test('the funding of a key is changed with its own bearer, and a refusal says why', async () => {
+  const seen: [string, string | undefined, string | undefined, unknown][] = []
+  const fund = (status: number) =>
+    Gateway.fund(
+      {
+        fetch: async (input, init) => {
+          seen.push([
+            input,
+            init?.method,
+            new Headers(init?.headers).get('authorization') ?? undefined,
+            JSON.parse(String(init?.body)),
+          ])
+          return Response.json(status === 200 ? {} : { code: 'invalid_request' }, { status })
+        },
+        key: 'sk-tempo-test',
+        url: 'https://gateway.example/',
+      },
+      { deposit: 5, topUp: 2 },
+    )
+  await fund(200)
+  assert.deepEqual(seen, [
+    [
+      'https://gateway.example/api/keys/me',
+      'PATCH',
+      'Bearer sk-tempo-test',
+      { deposit: 5, topUp: 2 },
+    ],
+  ])
+  await assert.rejects(
+    fund(400),
+    (error: unknown) =>
+      error instanceof Gateway.RefusedError &&
+      error.status === 400 &&
+      /refused to change the funding of the key with 400/.test(error.message),
+  )
+})

@@ -1,0 +1,16 @@
+[Unit]
+Description=nanoeval runner of run %i
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=20
+
+[Service]
+EnvironmentFile=%h/.config/nanoeval/runner.env
+ExecStart=/bin/sh -c 'cd "$NANOEVAL_CHECKOUT" && exec node cli/nanoeval.ts runner --run "$1" $NANOEVAL_RUNNER_ARGS' runner %i
+Restart=on-failure
+RestartSec=5
+KillMode=process
+OOMPolicy=continue
+
+[Install]
+WantedBy=default.target

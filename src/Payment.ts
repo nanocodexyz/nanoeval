@@ -19,6 +19,27 @@ export type Account = Parameters<typeof tempo.charge>[0] extends infer P
 
 export const decimals = 6
 
+export function pause(input: pause.Input): number | undefined {
+  if (input.kind === 'passing')
+    return input.tries < input.stepRetries ? input.pollMs * 2 ** input.tries : undefined
+  const left = input.refusedAt + input.waitSec * 1000 - input.now
+  if (left <= 0) return undefined
+  return Math.min(input.pollMs * 2 ** input.tries, input.leaseSec * 1000, left)
+}
+
+export declare namespace pause {
+  type Input = {
+    kind: 'passing' | 'spent'
+    leaseSec: number
+    now: number
+    pollMs: number
+    refusedAt: number
+    stepRetries: number
+    tries: number
+    waitSec: number
+  }
+}
+
 export function usd(amount: string): number {
   if (!/^\d+$/.test(amount))
     throw new Error('a charge amount is a base-unit integer, not ' + amount)

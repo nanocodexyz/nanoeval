@@ -52,6 +52,15 @@ const usage = `nanoeval <command>
             is never refreshed, and reaches workerd through a private file. --public-url
             names the address that runners and hands on other machines dial, such as a
             tunnel in front of this Worker.
+  plan      refresh [--codex-login ~/.codex/auth.json] [--within-sec 21600]
+            [--secret-command CMD [--relay-url-file FILE] [--pushed FILE]]
+            Refresh the ChatGPT plan login with its refresh token when it expires within
+            --within-sec, and write the new tokens back to the file. With --secret-command,
+            run CMD with sh for each of CHATGPT_ACCESS_TOKEN, CHATGPT_ACCOUNT_ID and, from
+            --relay-url-file, CHATGPT_RELAY_URL whose value changed since the last push:
+            the name in NANOEVAL_SECRET_NAME and the value on standard input, such as
+            'wrangler secret put "$NANOEVAL_SECRET_NAME"'. --pushed keeps a SHA-256 of each
+            value pushed (~/.config/nanoeval/plan-pushed.json).
   datasets  List the datasets that import knows, with the source each is pinned to and what
             was run end to end.
   import    --url URL --token T (DATASET | --task DIR...) [--eval NAME] [--only ID]... [--limit N]
@@ -79,7 +88,7 @@ const usage = `nanoeval <command>
   eval      --url URL --token T NAME[@DIGEST]
             List the imported evals, or the versions and tasks of one.
   run       --url URL --token T (--eval NAME[@DIGEST] [--only ID]... [--limit N] | --task DIR...
-            | --rerun RUN [--failed | --errored])
+            | --rerun RUN [--failed | --errored] [--agent ID...])
             (--agent ID=HARNESS:MODEL[:THINKING]... | --oracle) [--judge PROVIDER:MODEL[:THINKING]]
             [--attempts 1] [--provider local|e2b|gateway] [--backend auto|krun|ns|dir] [--slots 4]
             [--sandboxes 1] [--memory-mb N] [--network private|host] [--template NAME]
@@ -87,6 +96,7 @@ const usage = `nanoeval <command>
             [--sandbox-budget-usd 0] [--model-budget-usd N] [--setup-sec 600] [--attach-sec 60]
             [--lease-sec 60] [--claims 3] [--step-retries 3] [--poll-ms 250]
             [--disks keep|remove] [--free-disk-mb N] [--verifier-cache] [--name NAME] [--wait]
+            [--key-deposit N] [--key-top-up N]
             [--out DIR] [--location HINT] [--warm-sec N [--warm-budget-usd 0]]
             Create the rows of a run, task x agent x attempt, against one version of an eval.
             Task runners claim the rows: the run starts one in each sandbox it opens
@@ -98,16 +108,22 @@ const usage = `nanoeval <command>
             imports the directories into the eval named local first. --rerun makes a run of
             the attempts of RUN that did not pass (--failed or --errored narrow it), each
             pointing at the attempt it retries, on the same eval version and agents.
+            --agent ID with --rerun keeps only the attempts of those agents of RUN.
             A row whose runner stops answering for --lease-sec is claimable again, at most
             --claims times in all, and then ends as an error. Rows are claimed longest
             timeouts first. A row that no runner could take for --setup-sec ends as an
             error when the run opens no sandbox itself: no runner is attached, or the
             sandbox of every runner ends before the timeouts of the row do.
             A model request whose payment is refused in passing is sent again, at most
-            --step-retries times. One that is refused because the key or its wallet is
-            spent ends its row as a budget error, and every row not yet started with it.
-            With --disks remove, a runner removes each environment disk it unpacked once no
-            row of the run needs it. With --free-disk-mb, a runner claims only while its
+            --step-retries times. One that is refused because the key or its channel is
+            spent waits and is sent again, and no row starts while it waits; one still
+            refused after --setup-sec ends its row as a budget error, and every row not yet
+            started with it. --key-deposit and --key-top-up set the deposit that the
+            channel of the Worker's TEMPO_KEY opens with and each automatic top-up, in the
+            key's token, when the run is created: size them for one hold of every model
+            request the run may have in flight at once.
+            With --disks remove, the default for --provider e2b and gateway, a runner removes
+            each environment disk it unpacked once no row of the run needs it. With --free-disk-mb, a runner claims only while its
             machine has that much free disk, and prepares one environment at a time.
             With --verifier-cache, the verifier of a krun or ns slot finds what uv downloaded for
             the same task on this machine before, when an oracle run with the option kept it.
@@ -631,7 +647,7 @@ async function main(): Promise<void> {
       config: { type: 'string' },
       days: { type: 'string' },
       detach: { default: false, type: 'boolean' },
-      disks: { default: 'keep', type: 'string' },
+      disks: { type: 'string' },
       'dry-run': { default: false, type: 'boolean' },
       e2b: { type: 'string' },
       'ends-in-sec': { type: 'string' },
@@ -645,6 +661,8 @@ async function main(): Promise<void> {
       host: { default: '127.0.0.1', type: 'string' },
       judge: { type: 'string' },
       'keep-going': { default: false, type: 'boolean' },
+      'key-deposit': { type: 'string' },
+      'key-top-up': { type: 'string' },
       layers: { type: 'string' },
       'lease-sec': { default: '60', type: 'string' },
       limit: { type: 'string' },
@@ -661,7 +679,9 @@ async function main(): Promise<void> {
       port: { type: 'string' },
       provider: { default: 'local', type: 'string' },
       'public-url': { type: 'string' },
+      'relay-url-file': { type: 'string' },
       publish: { default: false, type: 'boolean' },
+      pushed: { type: 'string' },
       remove: { default: false, type: 'boolean' },
       report: { type: 'string' },
       rerun: { type: 'string' },
@@ -675,6 +695,7 @@ async function main(): Promise<void> {
       'sandbox-url': { type: 'string' },
       'sandbox-timeout-sec': { type: 'string' },
       sandboxes: { default: '1', type: 'string' },
+      'secret-command': { type: 'string' },
       'setup-sec': { default: '600', type: 'string' },
       'slot-env': { type: 'string' },
       standing: { default: false, type: 'boolean' },
@@ -693,6 +714,7 @@ async function main(): Promise<void> {
       wait: { default: false, type: 'boolean' },
       'warm-budget-usd': { default: '0', type: 'string' },
       'warm-sec': { type: 'string' },
+      'within-sec': { default: '21600', type: 'string' },
     },
   })
   const [command, ...rest] = positionals
@@ -730,6 +752,44 @@ async function main(): Promise<void> {
     console.log('nanoeval sandboxd listening on ' + server.url)
     for (const signal of ['SIGINT', 'SIGTERM'] as const)
       process.once(signal, () => void server.close().then(() => process.exit(0)))
+    return
+  }
+
+  if (command === 'plan') {
+    if (rest[0] !== 'refresh') throw new Error('plan has one command, refresh')
+    const file = Path.resolve(
+      values['codex-login'] ?? Path.join(Os.homedir(), '.codex', 'auth.json'),
+    )
+    const { login, refreshed } = await Plan.refresh(file, {
+      now: Date.now(),
+      withinMs: seconds(values['within-sec'], 'within-sec') * 1000,
+    })
+    console.log(
+      (refreshed ? 'refreshed' : 'kept') +
+        ' the ChatGPT login of ' +
+        file +
+        (login.expiresAt === undefined
+          ? ''
+          : ', which expires at ' + new Date(login.expiresAt).toISOString()),
+    )
+    if (!values['secret-command']) return
+    const pushed = await Plan.push(
+      {
+        ...login.vars,
+        ...(values['relay-url-file']
+          ? { CHATGPT_RELAY_URL: await Plan.relayUrl(Path.resolve(values['relay-url-file'])) }
+          : {}),
+      },
+      {
+        command: values['secret-command'],
+        state: Path.resolve(
+          values.pushed ?? Path.join(Os.homedir(), '.config', 'nanoeval', 'plan-pushed.json'),
+        ),
+      },
+    )
+    console.log(
+      pushed.length ? 'pushed ' + pushed.join(', ') : 'nothing changed since the last push',
+    )
     return
   }
 
@@ -1254,7 +1314,10 @@ async function main(): Promise<void> {
         : 'unpassed'
     const config: Config.Config = {
       agents: parent
-        ? parent.agents
+        ? Config.rerunAgents(
+            parent.agents,
+            (values.agent ?? []).map((text) => text.split('=')[0]!),
+          )
         : values.oracle
           ? [oracle]
           : (values.agent ?? []).map(parseAgent),
@@ -1269,6 +1332,14 @@ async function main(): Promise<void> {
         : parent?.judge
           ? { judge: parent.judge }
           : {}),
+      ...(values['key-deposit'] || values['key-top-up']
+        ? {
+            key: {
+              ...(values['key-deposit'] ? { deposit: Number(values['key-deposit']) } : {}),
+              ...(values['key-top-up'] ? { topUp: Number(values['key-top-up']) } : {}),
+            },
+          }
+        : {}),
       ...(selection.limit === undefined || parent ? {} : { limit: selection.limit }),
       limits: {
         attachSec: Number(values['attach-sec']),
@@ -1283,7 +1354,7 @@ async function main(): Promise<void> {
       ...(values.rerun ? { rerun: { run: values.rerun, select } } : {}),
       sandbox: {
         backend,
-        disks: values.disks as 'keep' | 'remove',
+        disks: (values.disks ?? Config.disks(provider)) as 'keep' | 'remove',
         ...(values['free-disk-mb'] ? { freeDiskMb: Number(values['free-disk-mb']) } : {}),
         ...(values['sandbox-lease-sec'] ? { leaseSec: Number(values['sandbox-lease-sec']) } : {}),
         max: Number(values.sandboxes),

@@ -20,6 +20,7 @@ import * as Members from '../src/Pool.ts'
 import * as Protocol from '../src/Protocol.ts'
 import * as Proxy from '../src/Proxy.ts'
 import * as Result from '../src/Result.ts'
+import * as Retry from '../src/Retry.ts'
 import * as Sandbox from '../src/Sandbox.ts'
 import * as Slot from '../src/Slot.ts'
 import * as SqlSetup from '../src/Sql.ts'
@@ -68,11 +69,19 @@ type Meta = {
   eval: { name: string; version: string }
   finishedAt: number | null
   id: string
-  key?: { end?: KeyRead; error?: string; start?: KeyRead }
+  key?: {
+    end?: KeyRead
+    error?: string
+    funded?: { at: number }
+    funding?: Gateway.Funding & { at: number }
+    fundingError?: string
+    start?: KeyRead
+  }
   location?: string
   publicUrl: string
   refused?: { at: number; message: string }
   reruns: string[]
+  restranded?: true
   runnerToken: string
   sandboxFailures: number
   starvedAt?: number
@@ -482,7 +491,7 @@ export class Run extends DurableObject<Env> {
         'https://run.internal/reruns',
         { body: JSON.stringify({ id }), method: 'POST' },
       )
-    this.ctx.waitUntil(this.readKey('start'))
+    this.ctx.waitUntil(this.fundKey().then(() => this.readKey('start')))
     this.ctx.waitUntil(this.tick())
     return json(
       {
@@ -592,6 +601,35 @@ export class Run extends DurableObject<Env> {
     })
   }
 
+  private async fundKey(): Promise<void> {
+    const funding = this.config().key
+    if (!funding) return
+    const meta = this.meta()!
+    if (!this.keyed()) {
+      this.setMeta({
+        ...meta,
+        key: { ...meta.key, fundingError: 'the run pays nothing with the key of the Worker' },
+      })
+      return
+    }
+    this.setMeta({ ...meta, key: { ...meta.key, funding: { ...funding, at: Date.now() } } })
+    let read: NonNullable<Meta['key']>
+    try {
+      await Gateway.fund(
+        {
+          key: this.env.TEMPO_KEY!,
+          ...(this.env.TEMPO_GATEWAY_URL ? { url: this.env.TEMPO_GATEWAY_URL } : {}),
+        },
+        funding,
+      )
+      read = { funded: { at: Date.now() } }
+    } catch (error) {
+      read = { fundingError: message(error) }
+    }
+    const after = this.meta()!
+    this.setMeta({ ...after, key: { ...after.key, ...read } })
+  }
+
   private async readKey(edge: 'end' | 'start'): Promise<void> {
     if (!this.keyed()) return
     let read: NonNullable<Meta['key']>
@@ -629,22 +667,31 @@ export class Run extends DurableObject<Env> {
       outcome.refusal ?? null,
       usage ? (usage.webFetches ?? 0) + (usage.webSearches ?? 0) : null,
     )
+    const { refused, ...rest } = this.meta()!
+    if (refused && outcome.status < 400) {
+      this.setMeta(rest)
+      Timeline.add(this.sql, { at: outcome.at, name: 'model.paid' })
+    }
   }
 
   private refuse(refused: Meter.Refused): number | undefined {
     const config = this.config()
-    if (refused.kind === 'passing')
-      return refused.tries < config.limits.stepRetries
-        ? config.sandbox.pollMs * 2 ** refused.tries
-        : undefined
-    const meta = this.meta()!
-    if (!meta.refused) {
-      const now = Date.now()
-      this.setMeta({ ...meta, refused: { at: now, message: detail(refused.text) } })
+    const now = Date.now()
+    if (refused.kind === 'spent' && !this.meta()!.refused) {
+      this.setMeta({ ...this.meta()!, refused: { at: now, message: detail(refused.text) } })
       Timeline.add(this.sql, { at: now, name: 'model.refused' })
       this.ctx.waitUntil(this.tick())
     }
-    return undefined
+    return Payment.pause({
+      kind: refused.kind,
+      leaseSec: config.limits.leaseSec,
+      now,
+      pollMs: config.sandbox.pollMs,
+      refusedAt: this.meta()!.refused?.at ?? now,
+      stepRetries: config.limits.stepRetries,
+      tries: refused.tries,
+      waitSec: config.limits.setupSec,
+    })
   }
 
   private settled(body: Settled): { pauseMs?: number } {
@@ -1177,7 +1224,7 @@ export class Run extends DurableObject<Env> {
 
   private async lose(
     row: Ledger.Attempt,
-    ending: 'expired' | 'forgotten' | 'released',
+    ending: 'expired' | 'forgotten' | 'released' | 'retried',
     final?: string,
   ): Promise<void> {
     const config = this.config()
@@ -1204,7 +1251,7 @@ export class Run extends DurableObject<Env> {
     const requeued = Ledger.requeue(this.sql, {
       ending,
       id: row.id,
-      limit: final === undefined ? config.limits.claims : 0,
+      limit: final !== undefined ? 0 : ending === 'retried' ? row.claims + 1 : config.limits.claims,
       now: Date.now(),
       ...(usage ? { usage } : {}),
     })
@@ -1568,8 +1615,8 @@ export class Run extends DurableObject<Env> {
     const config = this.config()
     const now = Date.now()
     const forget = () => {
-      const { strandedAt, ...rest } = this.meta()!
-      if (strandedAt !== undefined) this.setMeta(rest)
+      const { restranded, strandedAt, ...rest } = this.meta()!
+      if (strandedAt !== undefined || restranded) this.setMeta(rest)
     }
     if (config.sandbox.max > 0) return forget()
     const able = this.runners()
@@ -1588,6 +1635,10 @@ export class Run extends DurableObject<Env> {
       return this.setMeta({ ...this.meta()!, strandedAt: now })
     }
     if (now - since <= config.limits.setupSec * 1000) return
+    if (!this.meta()!.restranded) {
+      Timeline.add(this.sql, { at: now, name: 'run.restranded' })
+      return this.setMeta({ ...this.meta()!, restranded: true, strandedAt: now })
+    }
     for (const row of stranded)
       await this.complete(row, {
         failure: {
@@ -1611,6 +1662,7 @@ export class Run extends DurableObject<Env> {
   private async overBudget(): Promise<boolean> {
     const config = this.config()
     const refused = this.meta()!.refused
+    if (refused && Date.now() - refused.at <= config.limits.setupSec * 1000) return true
     if (
       !refused &&
       (config.budget.modelUsd === undefined || this.modelSpent() < config.budget.modelUsd)
@@ -1622,7 +1674,9 @@ export class Run extends DurableObject<Env> {
           at: Date.now(),
           kind: 'budget',
           message: refused
-            ? 'the payment for a model request was refused, and no row is started after that: ' +
+            ? 'the payment for a model request was refused for ' +
+              config.limits.setupSec +
+              ' s, and no row is started after that: ' +
               refused.message
             : 'the model budget of $' + config.budget.modelUsd + ' is spent',
         },
@@ -2438,6 +2492,25 @@ export class Run extends DurableObject<Env> {
       }
     } else throw new Refusal(400, 'finishing an attempt reports a verifier or a failure')
     if (row.session && row.phase === 'run' && this.submitted(row)) await this.halt(row.session)
+    const cause =
+      end.failure && end.reward === null
+        ? Retry.infrastructure({
+            failure: end.failure,
+            statuses: this.sql
+              .all(
+                'SELECT status FROM model_requests WHERE attempt = ? AND claim = ? AND status IS NOT NULL',
+                row.id,
+                row.claims,
+              )
+              .map((request) => request['status'] as number),
+          })
+        : undefined
+    if (cause && !Ledger.retried(this.sql, row.id)) {
+      Ledger.explain(this.sql, { claim: row.claim!, error: cause + ': ' + end.failure!.message })
+      Timeline.add(this.sql, { at: now, attempt: row.id, name: 'attempt.retried' })
+      await this.lose(Ledger.get(this.sql, row.id)!, 'retried')
+      return { evict: false }
+    }
     await this.complete(Ledger.get(this.sql, row.id)!, end)
 
     const disk = (name: string) => {

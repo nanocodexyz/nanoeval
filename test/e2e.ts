@@ -62,6 +62,9 @@ const attached = ending || ['lost', 'machine', 'resume', 'runners', 'standing'].
 const alone = scenario === 'alone'
 const refusedPassing = scenario === 'refused'
 const spent = scenario === 'spent'
+const funded = scenario === 'funded'
+const unreached = scenario === 'unreached'
+const unreachedSeen = new Set<string>()
 const fleet = scenario === 'fleet'
 const turnLost = scenario === 'forgotten'
 const lapse = scenario === 'lapse'
@@ -446,6 +449,11 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
             return
           }
         }
+        if (unreached && body.fake_cli && !unreachedSeen.has(body.model + body.prompt_base64)) {
+          unreachedSeen.add(body.model + body.prompt_base64)
+          response.writeHead(530, { 'content-type': 'text/plain' }).end('error code: 530')
+          return
+        }
         answered++
         response.writeHead(200, { 'content-type': 'text/event-stream' }).end(reply)
       } catch (error) {
@@ -587,7 +595,9 @@ async function main(): Promise<void> {
           ? { refusals: { passing: 3 } }
           : spent
             ? { refusals: { spentAfter: 2 } }
-            : {}),
+            : funded
+              ? { refusals: { spentAfter: 2, spentTimes: 2 } }
+              : {}),
         ...(lapse ? { renewals: false } : {}),
         sandboxd: { token: sandboxToken, url: sandboxd.url },
       })
@@ -784,7 +794,9 @@ async function main(): Promise<void> {
       !((judged || warm) && model === 'oracle') &&
       !(
         installed &&
-        ['closed', 'failures', 'lost', 'refused', 'resume', 'runners'].includes(scenario)
+        ['closed', 'failures', 'lost', 'refused', 'resume', 'runners', 'unreached'].includes(
+          scenario,
+        )
       )
     )
       throw new Error('the ' + scenario + ' scenario runs on the scripted model')
@@ -971,11 +983,12 @@ async function main(): Promise<void> {
       budget: { modelUsd: 1, sandboxUsd: gateway ? 1 : 0 },
       eval: { name: evalName, version: version.digest },
       ...(judged ? { judge: { model: 'claude-haiku-4-5', provider: 'claude' as const } } : {}),
+      ...(funded ? { key: { topUp: 5 } } : {}),
       limits: {
         attachSec: 60,
         claims: 3,
         leaseSec,
-        setupSec: scenario === 'disk' ? 5 : ending ? 4 : 600,
+        setupSec: scenario === 'disk' ? 5 : ending ? 4 : spent ? 15 : 600,
         stepRetries: failures ? 1 : 3,
       },
       name: 'e2e-' + label,
@@ -1515,6 +1528,30 @@ async function main(): Promise<void> {
       return
     }
 
+    if (funded) {
+      assert.equal(status['counts'].errored, 0, 'a payment refused for a while is paid later')
+      assert.equal(status['refused'], null)
+      assert.equal(mock!.paymentRefusals.length, 2)
+      assert.deepEqual(mock!.funding, [{ topUp: 5 }])
+      assert.ok(status['key'].funded, 'the run set the top-up of the key when it was created')
+      console.log('e2e passed: ' + label)
+      return
+    }
+
+    if (unreached) {
+      const rows = status['attempts'] as Record<string, any>[]
+      assert.equal(
+        status['counts'].errored,
+        0,
+        'a row whose model endpoint answered 530 is retried',
+      )
+      for (const row of rows) assert.equal(row['claims'], 2, 'each row was retried once')
+      assert.equal(status['lostClaims'], 0)
+      assert.equal(unreachedSeen.size, rows.length)
+      console.log('e2e passed: ' + label)
+      return
+    }
+
     if (spent) {
       const rows = status['attempts'] as Record<string, any>[]
       const errored = rows.filter((row) => row['outcome'] === 'errored')
@@ -1530,11 +1567,8 @@ async function main(): Promise<void> {
       assert.match(status['refused'].message, /^The wallet holds 0 of the 3 its channel needs now/)
       assert.equal(status['lostClaims'], 0)
       assert.equal(mock!.modelCosts.length, 2)
-      assert.ok(mock!.paymentRefusals.length >= 1)
-      assert.ok(
-        mock!.paymentRefusals.every((type) => type.endsWith('/payment-failed')),
-        'a payment that cannot succeed is not sent again',
-      )
+      assert.ok(mock!.paymentRefusals.length >= 2, 'a refused payment is sent again while it waits')
+      assert.ok(mock!.paymentRefusals.every((type) => type.endsWith('/payment-failed')))
       assert.ok(
         Math.abs(status['spend'].modelUsd - mock!.modelCosts.reduce((all, usd) => all + usd, 0)) <
           1e-9,

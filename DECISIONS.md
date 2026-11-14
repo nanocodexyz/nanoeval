@@ -2806,3 +2806,55 @@ One run of each on `build-2672c04`, where the three lanes fail on the list of wh
 - More than one kill in a turn, and a kill less than a second after an answer of the model.
 - The size of the log of a real session, and what its rows cost in time.
 - CI on GitHub.
+
+## 2026-11-14: runs that go on unattended
+
+Measured on 2026-11-13 and 2026-11-14 (PST), on the 32-core, 62 GB Linux x86_64 machine with `/dev/kvm` of the entries above, while it also ran a krun runner of four slots for another run. Node 24.22.2, from a worktree of main `e22609e`. Every lane below ran once.
+
+### Why
+
+Eight Codex runs and four earlier runs on one deployed Worker, read on 2026-11-13, held 2,487 attempts that ended as errors for reasons outside the agent and the task (counted over the 12 runs; cancelled rows left out):
+
+| Failure | Attempts |
+| --- | ---: |
+| `budget`: "the payment for a model request was refused, and no row is started after that: The channel still lacks deposit after a top-up." | 2,038 |
+| `environment`: "no runner of the run could take the row for N s: the run has no runner" | 397 |
+| `agent` or `environment`: "No space left on device", from the slot's disk or from unpacking an environment | 32 |
+| `agent`: `codex-cli` exited on "error code: 530" from the model endpoint of the run, whose relay sat behind a tunnel that had restarted | 20 |
+
+One payment refusal ended every row not yet started. A runner killed by the kernel's OOM killer, outside a unit of its own, left its run without a runner until someone started it again. And each of the other two needed a rerun by hand.
+
+### What changed
+
+- **A refused payment waits.** A model request that the gateway refuses because the key, its wallet or its channel is spent (`402 payment_failed`) is sent again after `--poll-ms` × 2^tries, never longer than `--lease-sec` and never past `--setup-sec` from the first refusal, and no row is claimed while it waits. The first request that is paid ends the wait (`model.paid` in the timeline). A request still refused after `--setup-sec` ends its row, and the rows not yet started end as `budget` errors as before. `--setup-sec` is the time the run already gives a row to find a runner, and `--lease-sec` the notice a runner gets, so neither is a new constant.
+- **The key's funding can be set by the run.** `--key-deposit` and `--key-top-up` send `PATCH /api/keys/me` with `deposit` and `topUp` when the run is created, once, with the Worker's `TEMPO_KEY`, after the run has written what it asks for (`key.funding`) and before it reads the key's usage; the answer is `key.funded` or `key.fundingError`. The gateway's documentation says a model request holds what it may cost, so a channel needs room for one hold of every request in flight. nanoeval does not guess that size: the operator gives it.
+- **An attempt that the infrastructure failed is retried once.** When a runner reports a failure that names `No space left on device`, or an `agent` failure of an attempt whose model endpoint answered `502` or `530` (from its own record of model requests, or "error code: 502/530" in the failure), the claim ends `retried` with that cause and the row starts again from nothing in a new slot, as a lost claim does. A second such failure ends the row as before. `src/Retry.ts` says which failures these are, and `Ledger.retried` reads the claims, so no table changes. A failure of kind `budget`, `agent_timeout` or `cancelled` is never retried, and a verdict never.
+- **A run without a runner waits twice.** When no runner could take a row for `--setup-sec`, the run waits `--setup-sec` once more (`run.restranded`) before the rows end as errors.
+- **A runner can be supervised.** `scripts/nanoeval-runner@.service` runs `nanoeval runner --run %i` as a systemd user unit that starts it again 5 s after it dies by a signal or an error, and not after it leaves a finished run. `KillMode=process` and `OOMPolicy=continue` keep the slots, which `slot.sh` detaches, running when the runner is killed, and a runner started again in the same home within `--lease-sec` goes on with them, as the `resume` lane shows. The README gives the same as a `systemd-run` command.
+- **`--disks remove` is the default with `--provider e2b` and `gateway`**, where the sandbox's disk is the runner's only disk. `local` keeps `keep`.
+- **`run --rerun RUN --agent ID`** keeps only the attempts of the named agents of RUN; an ID that RUN does not have is refused. The Worker already selected the rows of a rerun by the agents of its config.
+- **`nanoeval plan refresh`** refreshes a ChatGPT login with its refresh token at `https://auth.openai.com/oauth/token` (Codex's public client id) when its access token expires within `--within-sec` (6 h, which leaves a timer room), and writes the new tokens back to the file with mode 600, keeping every other field. With `--secret-command` it runs the command for each of `CHATGPT_ACCESS_TOKEN`, `CHATGPT_ACCOUNT_ID` and, from `--relay-url-file`, `CHATGPT_RELAY_URL` whose value changed since the last push, with the name in `NANOEVAL_SECRET_NAME` and the value on standard input; a SHA-256 of each pushed value is kept in `--pushed`. So a relay behind a quick tunnel, whose address changes when the tunnel restarts, is pushed again by the next run of the timer. A command that does not read its input fails the push.
+
+### How it was checked
+
+`npm test`: 158 of 158 passed (148 of 148 on `e22609e` the same hour). `npm run lint`, `npm run check:types` and `npm run dry-run` passed. The end-to-end lanes that these changes touch, on directory slots:
+
+| Lane | Wall | Result |
+| --- | ---: | --- |
+| `NANOEVAL_E2E_MODEL=installed NANOEVAL_E2E_SCENARIO=unreached`, new: the model endpoint answers `530` to the first request of each row | 7 s | 6 rows, each claimed twice, 3 passed and 3 failed as scripted, 0 errored, no lost claim |
+| `NANOEVAL_E2E_GATEWAY=1 NANOEVAL_E2E_SCENARIO=funded`, new: the scripted gateway refuses two payments `payment_failed` and then pays, and the run sets `topUp: 5` | 12 s | 0 errored, the wait ended, one `PATCH /api/keys/me` with `{"topUp":5}` |
+| `NANOEVAL_E2E_GATEWAY=1 NANOEVAL_E2E_SCENARIO=spent`, now with `setupSec` 15 | 24 s | the row that ran when the key was spent and the rows not yet started end as `budget` errors after the wait, and the refused payment was sent again while it waited |
+| `refused`, scripted and installed, through the scripted gateway | 10 s, 9 s | passed |
+| `failures`, scripted and installed | 13 s, 21 s | passed |
+| `tasks` (3 tasks, 3 slots) | 18 s | passed |
+| `resume`, installed, 8 slots | 7 s | passed |
+| `lost` | 68 s | passed |
+
+`systemd-analyze verify` could not run on the machine without a user manager in the shell that ran it, so the unit is checked by reading only.
+
+### Not verified
+
+- Any of it on a deployed Worker, a real gateway or a real plan login: no refusal by the real gateway, no `PATCH /api/keys/me` against it, and no refresh against `auth.openai.com` was made. The refresh request has the shape that Codex CLI sends.
+- A runner killed by the kernel under the unit, and the unit on systemd versions other than 255.
+- The lanes on krun and ns slots and the rest of `ci.yml`: the machine was running a run of another track.
+- CI on GitHub.

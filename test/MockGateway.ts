@@ -21,6 +21,7 @@ export type Mock = {
   readonly charges: readonly Charge[]
   close(): void
   die(id: string): Promise<void>
+  readonly funding: readonly unknown[]
   readonly key: string
   readonly log: readonly Entry[]
   readonly modelCosts: readonly number[]
@@ -35,7 +36,7 @@ export type Mock = {
 export type Options = {
   key: string
   model(path: string, body: Record<string, any>, cost: number): string
-  refusals?: { passing?: number; spentAfter?: number }
+  refusals?: { passing?: number; spentAfter?: number; spentTimes?: number }
   renewals?: boolean
   sandboxd: { token: string; url: string }
 }
@@ -100,6 +101,7 @@ async function read(request: Http.IncomingMessage): Promise<Buffer> {
 
 export async function start(options: Options): Promise<Mock> {
   const charges: Charge[] = []
+  const funding: unknown[] = []
   const log: Entry[] = []
   const quoted = new Map<string, number>()
   const modelCosts: number[] = []
@@ -273,6 +275,13 @@ export async function start(options: Options): Promise<Mock> {
     const path = new URL(request.url ?? '/', 'http://gateway').pathname
     const handled = (async () => {
       if (request.headers.upgrade) return problem(response, 404, 'Not found')
+      if (request.method === 'PATCH' && path === '/api/keys/me') {
+        if (request.headers['authorization'] !== 'Bearer ' + options.key)
+          return problem(response, 401, 'The API key is unknown, revoked or expired.')
+        funding.push(JSON.parse((await read(request)).toString()))
+        response.writeHead(200, { 'content-type': 'application/json' }).end('{}')
+        return
+      }
       if (request.method === 'GET' && path === '/api/keys/me') {
         if (request.headers['authorization'] !== 'Bearer ' + options.key)
           return problem(response, 401, 'The API key is unknown, revoked or expired.')
@@ -310,7 +319,13 @@ export async function start(options: Options): Promise<Mock> {
       const passing = options.refusals?.passing ?? 0
       const spent = options.refusals?.spentAfter
       const refusal =
-        spent !== undefined && modelCosts.length >= spent
+        spent !== undefined &&
+        modelCosts.length >= spent &&
+        !(
+          options.refusals?.spentTimes !== undefined &&
+          paymentRefusals.filter((type) => type === refusals.spent.type).length >=
+            options.refusals.spentTimes
+        )
           ? refusals.spent
           : paymentRefusals.length < passing
             ? refusals.passing[paymentRefusals.length % refusals.passing.length]!
@@ -341,6 +356,7 @@ export async function start(options: Options): Promise<Mock> {
       server.close()
     },
     die: (id) => end(id, 'died'),
+    funding,
     key: options.key,
     log,
     modelCosts,

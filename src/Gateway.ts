@@ -51,6 +51,29 @@ export type Charged = { channelUsd: number; outsideUsd: number; usd: number }
 
 export type Lease = { amount: string; currency: string; realm: string; seconds: number }
 
+export type Funding = { deposit?: number; topUp?: number }
+
+export async function fund(
+  options: { fetch?: Fetch; key: string; url?: string },
+  funding: Funding,
+) {
+  const send = options.fetch ?? ((input: string, init?: RequestInit) => fetch(input, init))
+  const response = await send((options.url || origin).replace(/\/+$/, '') + '/api/keys/me', {
+    body: JSON.stringify(funding),
+    headers: { authorization: 'Bearer ' + options.key, 'content-type': 'application/json' },
+    method: 'PATCH',
+  })
+  const text = await response.text()
+  if (!response.ok)
+    throw new RefusedError(
+      response.status,
+      'the gateway refused to change the funding of the key with ' +
+        response.status +
+        ': ' +
+        text.slice(0, 300),
+    )
+}
+
 export async function usage(options: {
   fetch?: Fetch
   key: string
