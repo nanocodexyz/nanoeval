@@ -77,6 +77,15 @@ export declare namespace held {
   }
 }
 
+export type Flight = { claim: number; instance: string }
+
+export function flying(
+  flight: Flight,
+  holder: { claim: number | undefined; instance: string },
+): boolean {
+  return flight.instance === holder.instance && flight.claim === holder.claim
+}
+
 export function admit(input: admit.Input): Admission {
   if (microUsd(input.spentUsd) >= microUsd(input.limitUsd))
     return { reason: 'spent', state: 'refused' }

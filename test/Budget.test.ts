@@ -46,6 +46,18 @@ test('a model request is admitted while what is spent and what is in flight leav
   )
 })
 
+test('a request counts as in flight only for the object that admitted it and the claim it was admitted for', () => {
+  const flight = { claim: 2, instance: 'first' }
+  assert.equal(Budget.flying(flight, { claim: 2, instance: 'first' }), true)
+  assert.equal(
+    Budget.flying(flight, { claim: 2, instance: 'second' }),
+    false,
+    'an object that started again holds no request of the one before it',
+  )
+  assert.equal(Budget.flying(flight, { claim: 3, instance: 'first' }), false)
+  assert.equal(Budget.flying(flight, { claim: undefined, instance: 'first' }), false)
+})
+
 type Flown = { cost: number; excess: number; rows: number; spent: number }
 
 function run(input: {

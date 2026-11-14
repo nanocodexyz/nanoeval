@@ -171,7 +171,8 @@ const tables = [
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     attempt TEXT NOT NULL,
     claim INTEGER NOT NULL,
-    at INTEGER NOT NULL
+    at INTEGER NOT NULL,
+    instance TEXT NOT NULL
   )`,
   ...Ledger.tables,
   ...Timeline.tables,
@@ -231,6 +232,7 @@ export class Run extends DurableObject<Env> {
   private readonly creating = new Set<number>()
   private readonly cursors = new Map<string, number>()
   private readonly holds = Hold.create()
+  private readonly instance = secret()
   private readonly specs = new Map<string, Eval.Task>()
   private readonly sql: SqlSetup.Sql
   private ticking: Promise<void> | undefined
@@ -679,11 +681,15 @@ export class Run extends DurableObject<Env> {
   }
 
   private flights(): number {
-    const flights = this.sql.all('SELECT id, attempt, claim FROM model_flights')
+    const flights = this.sql.all('SELECT id, attempt, claim, instance FROM model_flights')
     let held = 0
     for (const flight of flights) {
       const row = Ledger.get(this.sql, flight['attempt'] as string)
-      if (row && Ledger.active(row) && row.claims === flight['claim']) held++
+      const flying = Budget.flying(
+        { claim: flight['claim'] as number, instance: flight['instance'] as string },
+        { claim: row && Ledger.active(row) ? row.claims : undefined, instance: this.instance },
+      )
+      if (flying) held++
       else this.sql.run('DELETE FROM model_flights WHERE id = ?', flight['id'] as number)
     }
     return held
@@ -744,10 +750,11 @@ export class Run extends DurableObject<Env> {
       }
     }
     this.sql.run(
-      'INSERT INTO model_flights (attempt, claim, at) VALUES (?, ?, ?)',
+      'INSERT INTO model_flights (attempt, claim, at, instance) VALUES (?, ?, ?, ?)',
       input.attempt,
       input.claim,
       Date.now(),
+      this.instance,
     )
     return {
       flight: this.sql.all('SELECT MAX(id) AS id FROM model_flights')[0]!['id'] as number,
