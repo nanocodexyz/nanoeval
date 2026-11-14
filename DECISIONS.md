@@ -3321,3 +3321,18 @@ pass@k came from gakonst/nanoeval as "any of the first k attempts passed". With 
 - `npm run lint`, `npm run check:types`, `npm test`.
 
 **Not verified.** A rerun that is still running beside its run, and a rerun of a rerun, outside the unit test. The table still has no pass@k, and two unrelated runs of one agent still share a row.
+
+## 2026-11-14: a rerun says which options it does not take
+
+`run --rerun RUN` builds its rows from the attempts of `RUN` and takes the eval version, the agents and the attempt numbers from it. The command line took every option of `run` beside it and dropped the ones a rerun does not follow, without a word.
+
+**Found** on directory slots under local workerd, on a run of 8 tasks and 3 attempts with 10 failed and 7 errored attempts:
+
+- `run --rerun RUN --failed --errored` made a run of the 10 failed attempts. The usage names the two as alternatives, and the command took the first: the 7 errored attempts were not retried, and nothing said so.
+- `run --rerun RUN --attempts 5 --agent b=claude:x --limit 1 --eval other --only t2` made a run of one row, the failed attempt of `t2` by the agent of `RUN` on the eval of `RUN`: `--only` narrowed it, and the other four were ignored. That was before `--agent ID` narrowed a rerun to agents of its run: it now does, and refuses an id the run does not have.
+
+**The rule.** `--failed` and `--errored` together select what they name together, every attempt that did not pass, which is the selection with neither. `--only` narrows a rerun to tasks, as it did, and the usage now says so. A rerun with `--attempts`, `--oracle`, `--eval`, `--task` or `--limit` is refused before anything is asked of the Worker, with the options to leave out. `--agent` is not among them: with a rerun it names agents of the run to keep. `--attempts` lost its default in the option table for that, and a run without it has one attempt as before.
+
+**Checked.** Unit tests in `test/Selection.test.ts`. On the run above: the second command without its `--agent` is refused, and `--rerun RUN --failed --errored --only t2 --only t6` made the 3 rows of those two tasks that had not passed, one failed and two of the other task, one errored and one failed. `npm run lint`, `npm run check:types`, `npm test`.
+
+**Not verified.** The sandbox settings of a rerun, which still come from the command line and not from its run.

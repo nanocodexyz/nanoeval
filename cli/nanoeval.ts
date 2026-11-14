@@ -106,7 +106,7 @@ const usage = `nanoeval <command>
   eval      --url URL --token T NAME[@DIGEST]
             List the imported evals, or the versions and tasks of one.
   run       --url URL --token T (--eval NAME[@DIGEST] [--only ID]... [--limit N] | --task DIR...
-            | --rerun RUN [--failed | --errored] [--agent ID...])
+            | --rerun RUN [--failed] [--errored] [--only ID]... [--agent ID]...)
             (--agent ID=HARNESS:MODEL[:THINKING]... | --oracle) [--judge PROVIDER:MODEL[:THINKING]]
             [--attempts 1] [--provider local|e2b|gateway] [--backend auto|krun|ns|dir] [--slots 4]
             [--sandboxes 1] [--memory-mb N] [--network private|host] [--template NAME]
@@ -125,12 +125,15 @@ const usage = `nanoeval <command>
             (krun) where its machine has KVM and in namespaces (ns) where it has root. A task
             that closes the network of its agent or verifier needs --backend krun. --task
             imports the directories into the eval named local first. --rerun makes a run of
-            the attempts of RUN that did not pass (--failed or --errored narrow it), each
-            pointing at the attempt it retries, on the same eval version and agents. It
-            takes the budgets, the limits and the sandbox settings of RUN wherever the
-            command names none: --model-budget-usd, --sandboxes, --slots, --setup-sec and
-            the rest. --sandbox-timeout-sec and the runtime are not taken over.
-            --agent ID with --rerun keeps only the attempts of those agents of RUN.
+            the attempts of RUN that did not pass, each pointing at the attempt it retries,
+            on the same eval version and agents and with the same attempt numbers. --failed
+            or --errored narrows it to those, both together are every attempt that did not
+            pass, --only to the tasks named, and --agent ID to the attempts of those agents
+            of RUN. It is refused with --eval, --task, --limit, --oracle or --attempts,
+            which it takes from RUN. It takes the budgets, the limits and the sandbox
+            settings of RUN wherever the command names none: --model-budget-usd,
+            --sandboxes, --slots, --setup-sec and the rest. --sandbox-timeout-sec and the
+            runtime are not taken over.
             A row whose runner stops answering for --lease-sec is claimable again, at most
             --claims times in all, and then ends as an error. Rows are claimed longest
             timeouts first. A row that no runner could take for --setup-sec ends as an
@@ -348,6 +351,27 @@ export function parseAgent(text: string): Config.Agent {
     provider: direct ? 'codex' : (match[2] as Config.Agent['provider']),
     ...(match[4] ? { thinking: match[4] } : {}),
   }
+}
+
+export function rerunSelection(values: {
+  attempts?: string | undefined
+  errored: boolean
+  eval?: string | undefined
+  failed: boolean
+  limit?: string | undefined
+  oracle: boolean
+  task?: readonly string[] | undefined
+}): Ledger.Selection {
+  const kept = (['attempts', 'eval', 'limit', 'oracle', 'task'] as const).filter((name) =>
+    Array.isArray(values[name]) ? values[name].length : values[name],
+  )
+  if (kept.length)
+    throw new Error(
+      'a rerun keeps the eval and the attempt numbers of its run: leave out --' +
+        kept.join(' and --') +
+        ', and narrow it with --failed, --errored, --only or --agent',
+    )
+  return values.failed === values.errored ? 'unpassed' : values.failed ? 'failed' : 'errored'
 }
 
 export function client(options: { token: string; url: string }) {
@@ -907,7 +931,7 @@ async function main(lab?: Revision.Lab): Promise<void> {
       agent: { multiple: true, type: 'string' },
       'allow-empty': { default: false, type: 'boolean' },
       'attach-sec': { default: '60', type: 'string' },
-      attempts: { default: '1', type: 'string' },
+      attempts: { type: 'string' },
       backend: { type: 'string' },
       baseline: { type: 'string' },
       'build-only': { default: false, type: 'boolean' },
@@ -1769,11 +1793,7 @@ async function main(lab?: Revision.Lab): Promise<void> {
           })
         : undefined
     if (runtime) console.error('runner runtime ' + runtime.digest + ', ' + runtime.bytes + ' bytes')
-    const select: Ledger.Selection = values.failed
-      ? 'failed'
-      : values.errored
-        ? 'errored'
-        : 'unpassed'
+    const select = values.rerun ? rerunSelection(values) : 'unpassed'
     const own: Config.Config = {
       agents: parent
         ? Config.rerunAgents(
@@ -1783,7 +1803,7 @@ async function main(lab?: Revision.Lab): Promise<void> {
         : values.oracle
           ? [oracle]
           : (values.agent ?? []).map(parseAgent),
-      attempts: parent ? parent.attempts : Number(values.attempts),
+      attempts: parent ? parent.attempts : Number(values.attempts ?? '1'),
       budget: {
         ...(values['model-budget-usd'] ? { modelUsd: Number(values['model-budget-usd']) } : {}),
         sandboxUsd: Number(values['sandbox-budget-usd']),
