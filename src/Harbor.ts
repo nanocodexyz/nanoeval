@@ -25,12 +25,19 @@ function harness(attempt: Result.Attempt): string {
   return provider === 'oracle' || Installed.is(provider) ? provider : 'nanocode'
 }
 
-export function trialName(attempt: Result.Attempt): string {
+export function trialName(attempt: Result.Attempt, run: string): string {
   const task = attempt.task.name.split('/').at(-1)!
-  return task + '__' + attempt.agent.id + '__' + attempt.index
+  return (
+    task +
+    '__' +
+    attempt.agent.id +
+    '__' +
+    attempt.index +
+    (attempt.retryOf ? '__retry-' + run : '')
+  )
 }
 
-export function trialId(job: Job, attempt: Result.Attempt): string {
+export function trialId(job: Pick<Job, 'id'>, attempt: Pick<Result.Attempt, 'id'>): string {
   return job.id.slice(0, 24) + attempt.id.replace(/\D/g, '').padStart(12, '0')
 }
 
@@ -42,7 +49,7 @@ export function trialConfig(
   const type = sandbox?.provider === 'e2b' ? 'e2b' : undefined
   return {
     task: { path: attempt.task.name, source: options.source },
-    trial_name: trialName(attempt),
+    trial_name: trialName(attempt, options.job.id),
     agent: {
       name: harness(attempt),
       model_name: attempt.agent.model,
@@ -94,7 +101,7 @@ export function trial(attempt: Result.Attempt, options: trial.Options): Record<s
   return {
     id: trialId(options.job, attempt),
     task_name: attempt.task.name,
-    trial_name: trialName(attempt),
+    trial_name: trialName(attempt, options.job.id),
     trial_uri: options.uri,
     task_id: { path: attempt.task.name },
     source: options.source,
@@ -146,6 +153,15 @@ export function trial(attempt: Result.Attempt, options: trial.Options): Record<s
         }
       : null,
     step_results: null,
+    ...(attempt.retryOf
+      ? {
+          retry_of: {
+            attempt: attempt.retryOf.attempt,
+            run: attempt.retryOf.run,
+            trial_id: trialId({ id: attempt.retryOf.run }, { id: attempt.retryOf.attempt }),
+          },
+        }
+      : {}),
   }
 }
 
@@ -183,9 +199,9 @@ export function job(
     const rewards: Record<string, string[]> = {}
     const errors: Record<string, string[]> = {}
     for (const attempt of own) {
-      if (attempt.reward !== null) (rewards[String(attempt.reward)] ??= []).push(trialName(attempt))
-      if (attempt.failure)
-        (errors[exceptions[attempt.failure.kind]] ??= []).push(trialName(attempt))
+      const name = trialName(attempt, options.job.id)
+      if (attempt.reward !== null) (rewards[String(attempt.reward)] ??= []).push(name)
+      if (attempt.failure) (errors[exceptions[attempt.failure.kind]] ??= []).push(name)
     }
     evals[agent + '__' + options.source] = {
       n_trials: scored.length,
@@ -258,7 +274,7 @@ export function files(input: files.Input): Record<string, string> {
     ),
   }
   for (const attempt of input.attempts) {
-    const name = trialName(attempt)
+    const name = trialName(attempt, input.job.id)
     out[name + '/config.json'] = pretty(trialConfig(attempt, input))
     out[name + '/result.json'] = pretty(
       trial(attempt, {

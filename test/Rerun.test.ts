@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { rerunConfig, runsTable } from '../cli/nanoeval.ts'
+import * as Compare from '../src/Compare.ts'
 import type * as Config from '../src/Config.ts'
+import * as Harbor from '../src/Harbor.ts'
+import type * as Result from '../src/Result.ts'
 
 const parent: Config.Config = {
   agents: [{ id: 'luna', model: 'gpt-6-luna', provider: 'codex' }],
@@ -111,6 +114,99 @@ test('what the command of a rerun names wins over its run', () => {
     parent: { ...own, budget: { sandboxUsd: 0 }, name: 'first' },
   })
   assert.deepEqual(plain, own, 'a run without the optional settings hands none on')
+})
+
+test('a retried row is exported under a name of its own, and a row that is no retry keeps its name', () => {
+  const [first, second, third, beside] = ['1', '2', '3', '4'].map(
+    (digit) => digit.repeat(8) + '-0000-4000-8000-' + digit.repeat(12),
+  ) as [string, string, string, string]
+  const row = (
+    task: string,
+    outcome: Result.Attempt['outcome'],
+    retryOf?: Result.Attempt['retryOf'],
+  ): Result.Attempt => ({
+    agent: { id: 'luna', model: 'gpt-6-luna', provider: 'codex' },
+    ...(outcome === 'errored'
+      ? { failure: { at: 2000, kind: 'verifier' as const, message: 'no reward' } }
+      : {}),
+    finishedAt: 3000,
+    id: task === 'one' ? 'a00001' : 'a00002',
+    index: 1,
+    outcome,
+    ...(retryOf ? { retryOf } : {}),
+    reward: outcome === 'errored' ? null : outcome === 'passed' ? 1 : 0,
+    sandbox: null,
+    session: 'session',
+    startedAt: 1000,
+    task: { checksum: 'sha256:' + task, name: 'suite/' + task },
+    timing: {},
+    usage: null,
+  })
+  const runs: Compare.Run[] = [
+    { attempts: [row('one', 'errored'), row('two', 'passed')], id: first },
+    { attempts: [row('one', 'errored', { attempt: 'a00001', run: first })], id: second },
+    { attempts: [row('one', 'passed', { attempt: 'a00001', run: second })], id: third },
+    { attempts: [row('one', 'failed', { attempt: 'a00001', run: first })], id: beside },
+  ].map((run) => ({
+    ...run,
+    eval: { name: 'suite', version: 'a'.repeat(64) },
+    name: 'run',
+    state: 'finished' as const,
+  }))
+  const exported = runs.map((run) =>
+    Harbor.files({
+      artifacts: {},
+      attempts: run.attempts,
+      job: { finishedAt: 4000, id: run.id, name: run.name, startedAt: 0 },
+      running: 0,
+      source: 'suite',
+      total: run.attempts.length,
+      version: '0.1.0',
+    }),
+  )
+  const trials = exported.map((files) =>
+    Object.keys(files)
+      .filter((path) => path.endsWith('/result.json'))
+      .map((path) => path.split('/')[0]!),
+  )
+  assert.deepEqual(trials, [
+    ['one__luna__1', 'two__luna__1'],
+    ['one__luna__1__retry-' + second],
+    ['one__luna__1__retry-' + third],
+    ['one__luna__1__retry-' + beside],
+  ])
+  assert.equal(new Set(trials.flat()).size, 5, 'a run and its reruns merge by trial name')
+
+  const result = (run: number, trial: string) =>
+    JSON.parse(exported[run]![trial + '/result.json']!) as Record<string, any>
+  const retry = result(1, trials[1]![0]!)
+  assert.deepEqual(
+    [retry['trial_name'], retry['trial_uri'], retry['config'].trial_name],
+    [trials[1]![0], trials[1]![0], trials[1]![0]],
+  )
+  assert.deepEqual(retry['retry_of'], {
+    attempt: 'a00001',
+    run: first,
+    trial_id: result(0, 'one__luna__1')['id'],
+  })
+  assert.equal(
+    result(2, trials[2]![0]!)['retry_of'].trial_id,
+    retry['id'],
+    'a retry of a retry names the trial it retries by the id of its result',
+  )
+  assert.ok(!('retry_of' in result(0, 'one__luna__1')))
+  assert.deepEqual(
+    JSON.parse(exported[1]!['result.json']!).stats.evals['luna__suite'].exception_stats,
+    { VerifierError: [trials[1]![0]] },
+  )
+
+  const [arm, other] = Compare.arms(runs)
+  assert.deepEqual(
+    [arm!.attempts, arm!.passed, arm!.runs],
+    [2, 2, [first, third]],
+    'a retry keeps the attempt number of its row, so a run and its reruns are one arm',
+  )
+  assert.deepEqual([other!.attempts, other!.failed, other!.runs], [1, 1, [beside]])
 })
 
 test('the list of runs has a line for each run', () => {

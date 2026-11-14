@@ -1167,7 +1167,7 @@ export class Run extends DurableObject<Env> {
       artifacts: attempts.map((attempt) => ({
         attempt: attempt.id,
         names: this.artifactNames(attempt.id),
-        trial: Harbor.trialName(attempt),
+        trial: Harbor.trialName(attempt, meta.id),
       })),
       files: {
         ...Harbor.files({

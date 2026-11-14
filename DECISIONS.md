@@ -4434,3 +4434,28 @@ A deploy restarts every object at once since the entry before this one, which ma
 - `npm run lint`, `npm run check:types`, `npm test`, `npm run dry-run`.
 
 **Not verified.** A deployed Worker. A session with hours of events: a read pages through all of them each time, as the end of a row does once. krun and ns slots, which the route does not see. A row in its `verify` or `judge` phase, whose session is still there: the same code path, not read in a lane.
+
+## 2026-11-14: the trials of a rerun have names of their own
+
+An exported trial is named `TASK__AGENT__N` after its task, agent and attempt number, and a rerun keeps the attempt numbers of its run. So the job of a run and the job of its rerun named their trials alike, and the two could not be put together by trial name: one directory replaced the other, and a table keyed by name kept one row of each pair.
+
+**Found** on directory slots under local workerd, in the failures lane: a run of 5 rows of which 3 errored, and `rerun: { select: 'errored' }` of it. Both jobs exported, the 8 trials had 5 names: `no-reward__right__1`, `unreported-tests__right__1` and `write-greeting__right__1` were in both.
+
+**The rule.**
+
+- A row that retries another is exported as `TASK__AGENT__N__retry-RUN`, where `RUN` is the id of the run the row is in, whole. Within a run, rows differ in task, agent or number, and no two runs have one id, so this name is not the name of the row it retries, nor of a retry of that row by another rerun of the same run, nor of anything a rerun of the rerun makes. The id is not shortened: a prefix of a random id can repeat, and the name exists to not repeat.
+- The id is the row's own run and not the run it retries: two reruns of one run retry the same rows, and both stand, as the entry on compare says.
+- A row that retries nothing keeps `TASK__AGENT__N`, so the jobs exported before read as they did, and so do the rows of a first run after this change.
+- The `result.json` of a retry carries `retry_of`: the run and the attempt it retries, and `trial_id`, the `id` of that trial's `result.json`, which is made from the two. A reader of merged jobs finds what a retry replaces without the Worker. Harbor's `TrialResult` has no such field and skips it.
+- The attempt number does not change, and `compare`, `status` and the search for a baseline do not read the name: a run and its reruns are still one arm by run, attempt and attempt number, `status` still prints `#1 ... retries RUN/ATTEMPT`, and a rerun is still no baseline.
+
+**Why not a counter.** `__retry1`, `__retry2` for the depth of a retry would be shorter. A row knows the run and attempt it retries and not how deep that one is, so the depth would have to be carried from run to run, and two reruns of one run would still share it.
+
+**Checked.**
+
+- `test/Rerun.test.ts`: a run of two rows, a rerun of its errored row, a rerun of that rerun, and a second rerun of the first run. The five trials have five names, the first two are `one__luna__1` and `two__luna__1`, each retry names the `id` of the result it retries, the job's `exception_stats` lists the retry by its new name, and `Compare.arms` reads the run, its rerun and the rerun of that as one arm of 2 attempts and the second rerun as another. Before the change the test fails: every retry is `one__luna__1`.
+- The failures lane on directory slots (`NANOEVAL_E2E_SCENARIO=failures`) exports the run and its rerun and asks for 8 names, for the suffix of the rerun on its three, for `retry_of` against the results of the first job, and that the files of a retried row are under its trial. Before the change it fails with `5 !== 8`.
+- Both jobs of that lane load with the models of Harbor 0.25.0 (`scripts/harbor-check.py`: 17 and 11 files, none refused).
+- `npm run lint`, `npm run check:types`, `npm test`.
+
+**Not verified.** A rerun of a rerun end to end: the unit test has one, the lane does not. krun and ns slots and installed agents, whose lanes run the same assertions and were not run here. A tool of Harbor that takes a trial name apart at `__`: none was found in Harbor 0.25.0, whose own names are `TASK__RANDOM`.

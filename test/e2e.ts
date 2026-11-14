@@ -2680,6 +2680,39 @@ async function main(): Promise<void> {
         attempt: erroredBefore[0]!['id'],
         run: created.id,
       })
+      const exportedAgain = await exportJob(api, {
+        out: Path.join(out, 'harbor-rerun'),
+        run: rerun.id,
+      })
+      const trialsOf = (job: Record<string, string>) =>
+        Object.keys(job)
+          .filter((path) => path.endsWith('/result.json'))
+          .map((path) => path.split('/')[0]!)
+      const suffix = '__retry-' + rerun.id
+      assert.equal(trialsOf(exportedAgain.files).length, 3)
+      assert.equal(
+        new Set([...trialsOf(files), ...trialsOf(exportedAgain.files)]).size,
+        total + 3,
+        'the trials of a run and of its rerun have names of their own, so the two jobs merge',
+      )
+      for (const name of trialsOf(exportedAgain.files)) {
+        assert.ok(name.endsWith(suffix), 'a retried row is named after the run that retries it')
+        const trial = JSON.parse(exportedAgain.files[name + '/result.json']!)
+        assert.deepEqual(
+          trial.retry_of,
+          {
+            attempt: trial.retry_of.attempt,
+            run: created.id,
+            trial_id: JSON.parse(files[name.slice(0, -suffix.length) + '/result.json']!).id,
+          },
+          'a retried row names the trial it retries by the id of its result',
+        )
+        assert.ok(Fs.existsSync(Path.join(out, 'harbor-rerun', name, 'result.json')))
+      }
+      assert.ok(
+        exportedAgain.artifacts.every((entry) => entry.trial.endsWith(suffix)),
+        'the files of a retried row are written under its trial',
+      )
       const refused = await fetch(url + '/v1/runs', {
         body: JSON.stringify({
           ...config,
