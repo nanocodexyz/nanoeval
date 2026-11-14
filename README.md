@@ -675,6 +675,8 @@ Unpacked disks are kept in `~/.cache/nanoeval/disks` (`NANOEVAL_CACHE` moves the
 - `ip` and `nft` for the private network, and a resolver that is not on the machine's loopback.
 - The launcher, as for krun slots. It needs neither KVM nor libkrunfw here, and `nanoeval runtime` builds one that is linked statically, with the musl C compiler of the machine that builds it (`musl-tools`: `x86_64-linux-musl-gcc`).
 
+`nanoeval doctor --backend ns`, as root, checks a machine for these. A shell that only starts a runner holds no model credential, which doctor counts as missing: name the Worker there, `--url` and `--token`, and it asks the Worker how it pays for models instead.
+
 Each slot gets its own mount, PID, IPC, UTS, cgroup and network namespaces, the task's memory and CPUs as cgroup limits, a root that grows to `storage_mb`, and a capability set without mounts and device nodes. It shares the machine's kernel, so it keeps attempts apart as a container does and less strongly than a microVM. [DESIGN.md](DESIGN.md#ns-slots) says what a slot may and may not do.
 
 Installed agents and `--verifier-cache` work in ns slots as in krun slots. A task that closes the network of a phase does not run there: only a microVM has the gate that closes it, so such a run is refused unless it names `--backend krun`.
