@@ -1,4 +1,5 @@
 import type * as Result from './Result.ts'
+import * as Verdict from './Verdict.ts'
 
 export const queued = 'the turn never started'
 
@@ -55,7 +56,15 @@ export function infrastructure(input: {
   const { failure } = input
   if (failure.kind === 'budget' || failure.kind === 'agent_timeout' || failure.kind === 'cancelled')
     return undefined
-  if (failure.message.includes('No space left on device')) return 'the slot ran out of disk'
+  if (
+    failure.message.includes('No space left on device') ||
+    (failure.kind === 'environment' && failure.message.startsWith(Verdict.fullPrefix))
+  )
+    return 'the slot ran out of disk'
+  if (failure.kind === 'environment' && failure.message.startsWith(Verdict.brokenPrefix))
+    return 'the disk of the slot failed'
+  if (failure.kind === 'environment' && failure.message.startsWith(Verdict.unfetchedPrefix))
+    return 'the verifier could not download its dependencies'
   if (
     failure.kind === 'environment' &&
     (failure.message.startsWith(queued) || failure.message.startsWith(stalledPrefix))

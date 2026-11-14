@@ -76,6 +76,7 @@ type Work = {
   busy: boolean
   changed: number
   delay: number
+  diskMb?: number
   down?: Promise<void>
   errors: number
   instruction?: string
@@ -995,6 +996,7 @@ async function attend(
     if (task.verifier.finalMessage) await verifierInput(item, 'final_message.txt', item.message)
     await shell(slots.verify(item.row.slot, task.verifier.timeoutSec))
     item.round = 1
+    delete item.diskMb
     await move(item, 'verify')
   }
 
@@ -1051,6 +1053,7 @@ async function attend(
     await finish(item, {
       verifier: {
         code,
+        ...(item.diskMb === undefined ? {} : { diskMb: item.diskMb }),
         files: written.map((file) => file.path),
         ...(memoryMb < task.resources.memoryMb ? { memoryMb } : {}),
         ...(oom ? { oom } : {}),
@@ -1187,6 +1190,7 @@ async function attend(
       }
       case 'verify': {
         const code = Slot.exit(await phase(Path.join(target, 'verify.status')))
+        item.diskMb = Math.min(item.diskMb ?? Infinity, await freeDiskMb([home, cache]))
         if (code === undefined) {
           if (elapsed > (task.verifier.timeoutSec + config.limits.setupSec) * 1000)
             return fail(item, 'verifier_timeout', 'the verifier did not report within its deadline')
