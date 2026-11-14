@@ -119,7 +119,11 @@ fn main() -> ExitCode {
         Ok(code) => ExitCode::from(code),
         Err(message) => {
             eprintln!("nanoeval-krun: {message}");
-            ExitCode::from(125)
+            ExitCode::from(if message.contains(image::STALLED) {
+                image::STALLED_CODE
+            } else {
+                125
+            })
         }
     }
 }

@@ -18,6 +18,8 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
+pub(crate) use machine::{STALLED, STALLED_CODE};
+
 const HEX: &[u8; 16] = b"0123456789abcdef";
 const SECTOR: u64 = 512;
 const USAGE: &str = "usage: nanoeval-krun image <build|pack|prune|tree|unpack> ...";

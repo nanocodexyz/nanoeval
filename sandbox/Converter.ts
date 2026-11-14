@@ -8,6 +8,10 @@ export class ConvertError extends Error {
   override name = 'Converter.ConvertError'
 }
 
+export class StalledError extends ConvertError {
+  override name = 'Converter.StalledError'
+}
+
 export type Environment = {
   context?: string
   image?: string
@@ -40,6 +44,7 @@ export type Built = {
   image_digest: string
 }
 
+export const stalledCode = 75
 export const defaultPath = 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 export const format = 'nkrdisk1'
 
@@ -76,7 +81,7 @@ export function meta(built: Built): Eval.Meta {
   }
 }
 
-function run(step: string, command: readonly [program: string, ...arguments: string[]]) {
+export function run(step: string, command: readonly [program: string, ...arguments: string[]]) {
   const [program, ...rest] = command
   return new Promise<string>((resolve, reject) => {
     execFile(
@@ -86,7 +91,7 @@ function run(step: string, command: readonly [program: string, ...arguments: str
       (error, stdout, stderr) => {
         if (error)
           reject(
-            new ConvertError(
+            new (error.code === stalledCode ? StalledError : ConvertError)(
               'the converter failed at ' +
                 step +
                 ': ' +
@@ -99,7 +104,22 @@ function run(step: string, command: readonly [program: string, ...arguments: str
   })
 }
 
-export function create(options: { home: string; layers: string; policy?: Policy }): Converter {
+export async function again<T>(work: () => Promise<T>, log?: (line: string) => void): Promise<T> {
+  try {
+    return await work()
+  } catch (error) {
+    if (!(error instanceof StalledError)) throw error
+    log?.(error.message + ', so the image is converted again')
+    return work()
+  }
+}
+
+export function create(options: {
+  home: string
+  layers: string
+  log?(line: string): void
+  policy?: Policy
+}): Converter {
   const krun = Path.join(options.home, 'rt', 'krun', 'nanoeval-krun')
   let tools: Promise<unknown> | undefined
   const image = async (step: string, rest: readonly string[]) => {
@@ -117,25 +137,27 @@ export function create(options: { home: string; layers: string; policy?: Policy 
     name: 'krun-image',
     async convert(environment, disk) {
       const file = disk + '.meta.json'
-      await image('build', [
-        ...(environment.image === undefined
-          ? [
-              '--dockerfile',
-              environment.context ?? '',
-              ...(options.policy?.caBundle ? ['--ca-bundle', options.policy.caBundle] : []),
-              ...(options.policy?.envFile ? ['--env-file', options.policy.envFile] : []),
-              ...(options.policy?.forwards ?? []).flatMap((forward) => ['--forward', forward]),
-            ]
-          : ['--ref', environment.image]),
-        '--size-mb',
-        String(environment.storageMb),
-        '--out',
-        disk,
-        '--meta',
-        file,
-        '--cache',
-        options.layers,
-      ])
+      const build = () =>
+        image('build', [
+          ...(environment.image === undefined
+            ? [
+                '--dockerfile',
+                environment.context ?? '',
+                ...(options.policy?.caBundle ? ['--ca-bundle', options.policy.caBundle] : []),
+                ...(options.policy?.envFile ? ['--env-file', options.policy.envFile] : []),
+                ...(options.policy?.forwards ?? []).flatMap((forward) => ['--forward', forward]),
+              ]
+            : ['--ref', environment.image]),
+          '--size-mb',
+          String(environment.storageMb),
+          '--out',
+          disk,
+          '--meta',
+          file,
+          '--cache',
+          options.layers,
+        ])
+      await again(build, options.log)
       const built = JSON.parse(await Fs.readFile(file, 'utf8')) as Built
       await Fs.rm(file, { force: true })
       return meta(built)

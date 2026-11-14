@@ -1008,6 +1008,7 @@ export async function importEval(
       converter: Converter.create({
         home: Path.join(input.cache, 'converter'),
         layers: input.layers,
+        ...(input.log ? { log: input.log } : {}),
         ...(input.policy ? { policy: input.policy } : {}),
       }),
       format: Config.kind(input.backend),

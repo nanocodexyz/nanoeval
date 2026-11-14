@@ -3836,3 +3836,26 @@ Checked: `npm run lint`, `npm run check:types`.
 - `npm run lint`, `npm run check:types`, `npm test` and `npm run dry-run`, and the krun lanes listed in the commit.
 
 **Not verified.** A runner under one of the live units: they were not restarted. The scope on a machine whose user manager has no memory controller delegated, where `MemoryMax` of the scope is accepted and not enforced. A disk removed by one runner between another runner's unpack and the start of its slot, which is possible only for the newest disk of the cache.
+## 2026-11-14: a builder guest that stops reading its layer is knocked, and a conversion that stalls is made again
+
+**The defect.** The import of the Terminal-Bench gate on dev-georgios stopped three times on 2026-11-13 (`sqlite-db-truncate`, `mteb-retrieve` for 33 minutes, `qemu-alpine-ssh` for 23 minutes), with the signature of [the stall](#2026-11-13-the-two-entries-above-on-a-machine-with-kvm-and-a-stall-in-libkrun-that-is-open): the launcher's sending thread in `sock_alloc_send_pskb` on `vm.sock`, its reading thread in `unix_stream_data_wait`, every thread of the microVM asleep. Nothing in nanoeval bounded it: `Machine::request` wrote the layer with blocking writes and no timeout, and `Converter.convert` waited for the launcher without one, so an import that met it waited forever.
+
+**Why it still happened after the pin of `8ce363e`.** The launcher that the machine's runners and imports use is not built from this repository's lock. `~/nc-live/krunfull/nanoeval-krun`, which `NANOEVAL_KRUN` names there and which `slot.sh tools` copied into the converter's `rt/krun`, holds the source paths of `libkrun-68c139de8acad8bb/df85b8b`: it was built from a checkout whose lock still named `containers/libkrun` at `df85b8b`, without the credit request interrupt. A launcher built from this lock holds `libkrun-508ca49eaab03505/8ce363e`.
+
+**Reproduced** on dev-georgios (32 cores, load average 55 to 86 from other work), converting `alexgshaw/mteb-retrieve:20260430` (9 layers, 629 MB, cached) with `nanoeval-krun image build` four at a time, arms interleaved, a conversion counted as stalled when its directory and the layer cache did not change for 120 s:
+
+| Launcher | Conversions | Stalled | Knocks |
+| --- | --- | --- | --- |
+| `krunfull` (libkrun `df85b8b`, before this change) | 32 | 10 | none |
+| libkrun `df85b8b` with this change | 12 | 0 | 2 conversions knocked once each, 35 and 40 s |
+| libkrun `8ce363e` with this change | 20 | 0 | none |
+
+A stall of the `krunfull` launcher, left at layer 5 of 9 for nine minutes, went on within three seconds of one `nanoeval-krun ready` against its socket and finished: a new connection is the wakeup that the stream lost, as the entry on the stall found.
+
+**The rule.** The launcher bounds what it waits for, in `krun/host/src/image/machine.rs`. While it streams input to the builder guest, its socket has a write timeout of 10 s. A write that moves nothing in that time opens a second connection and pings the guest, which recovers a lost wakeup at once, and says so on stderr. A ping that is not answered within 10 s, or 30 knocks in a row that move nothing (5 min), end the request with "the builder guest read nothing of its input", and the launcher exits with 75 (`EX_TEMPFAIL`) instead of 125. `Converter.convert` makes a conversion that ended with 75 once more, with a fresh microVM, and logs why; a second stall, or any other failure, is the error it was. 10 s is above every write of the table that moved: with `8ce363e`, 20 conversions under that load had no write that waited 10 s. Other requests and slots are unchanged.
+
+**Not changed here.** libkrun: the knock recovers its lost wakeup whatever its cause, and `8ce363e` removed every stall of the table. `krunfull` on dev-georgios is not replaced while runners use it: launchers built from this commit's lock (host, and guest and relay for musl) are left beside it.
+
+**Checked** on dev-georgios: `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings` and `cargo test --locked` (51 tests, the two integration tests of the launcher run), three of them new: a guest that reads only once knocked gets all of 8 MiB, a guest that never reads ends as a stall after the limit, a guest that does not answer the knock ends as a stall. `test/Converter.test.ts` is new: the launcher's 75 is a `Converter.StalledError` and 125 is not, a conversion that stalled runs once more and logs it, and one that stalls twice or fails otherwise is not run again. `npm run lint`, `npm run check:types`, `npm test` (257 tests, none skipped).
+
+**Not verified.** CI on GitHub, and the end-to-end lanes beyond the plain krun lane.
