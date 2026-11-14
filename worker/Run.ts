@@ -1703,8 +1703,8 @@ export class Run extends DurableObject<Env> {
   }
 
   private unmark(): void {
-    const { starvedAt, strandedAt, ...rest } = this.meta()!
-    if (starvedAt !== undefined || strandedAt !== undefined) this.setMeta(rest)
+    const { restranded, starvedAt, strandedAt, ...rest } = this.meta()!
+    if (restranded || starvedAt !== undefined || strandedAt !== undefined) this.setMeta(rest)
   }
 
   private async strand(): Promise<void> {
