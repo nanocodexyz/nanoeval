@@ -263,7 +263,7 @@ export function credentials(input: {
   judge?: Pick<Config.Judge, 'provider'>
   logins: { claude?: string; codex?: string }
   variables: Record<string, string | undefined>
-}): void {
+}): (keyof typeof keys)[] {
   const wanted = new Map<keyof typeof keys, string[]>()
   for (const agent of input.agents) {
     if (agent.provider === 'oracle') continue
@@ -274,7 +274,9 @@ export function credentials(input: {
   }
   if (input.judge)
     wanted.set(input.judge.provider, [...(wanted.get(input.judge.provider) ?? []), 'the judge'])
+  const served: (keyof typeof keys)[] = []
   for (const [provider, users] of wanted) {
+    if (input.logins[provider]) served.push(provider)
     if (input.logins[provider] || keys[provider].some((name) => input.variables[name])) continue
     throw new CredentialError(
       'no model credential serves ' +
@@ -286,6 +288,7 @@ export function credentials(input: {
         '-login FILE',
     )
   }
+  return served
 }
 
 export function environment(builds: Builds): string {

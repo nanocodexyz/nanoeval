@@ -10,16 +10,19 @@ export type Env = App.Env & {
   CELL_YIELD_MS?: string
   CHATGPT_ACCESS_TOKEN?: string
   CHATGPT_ACCOUNT_ID?: string
+  CHATGPT_LOGIN_URL?: string
   CHATGPT_RELAY_SECRET?: string
   CHATGPT_RELAY_URL?: string
   CLAUDE_PLAN_URL?: string
   CLAUDE_CODE_OAUTH_TOKEN?: string
+  CLAUDE_LOGIN_URL?: string
   COMMIT?: string
   EVALS: DurableObjectNamespace
   HAND_LIST_MS: string
   HOLD_MS: string
   LOCAL_SANDBOX_TOKEN?: string
   LOCAL_SANDBOX_URL?: string
+  LOGIN_SECRET?: string
   NANOCODE_TS_REVISION?: string
   OPENAI_API_KEY?: string
   OPENAI_BASE_URL?: string

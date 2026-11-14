@@ -15,6 +15,7 @@ import * as Judge from '../src/Judge.ts'
 import * as Ledger from '../src/Ledger.ts'
 import * as Bytes from '../src/internal/Bytes.ts'
 import * as Local from '../src/Local.ts'
+import * as Logins from '../src/Logins.ts'
 import * as Opening from '../src/Opening.ts'
 import * as Payment from '../src/Payment.ts'
 import * as Pins from '../src/Pins.ts'
@@ -773,7 +774,7 @@ export class Run extends DurableObject<Env> {
 
   private payer(provider: 'claude' | 'codex'): Config.Payer | undefined {
     if (this.config().payer === 'plan') return 'plan'
-    return Sessions.plan(this.env, provider) ? undefined : 'deployment'
+    return Logins.held(this.env, provider) ? undefined : 'deployment'
   }
 
   private keyed(): boolean {

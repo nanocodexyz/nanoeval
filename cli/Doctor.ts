@@ -10,7 +10,7 @@ import * as Pins from '../src/Pins.ts'
 import * as Protocol from '../src/Protocol.ts'
 import * as Route from '../src/Route.ts'
 import * as Slot from '../src/Slot.ts'
-import * as Plan from './Plan.ts'
+import * as Login from './Login.ts'
 import * as Revision from './Revision.ts'
 
 export type Level = 'miss' | 'note' | 'ok'
@@ -552,10 +552,10 @@ async function registry(): Promise<Registry> {
   return 'said' in answered ? { kind: 'unreached', said: answered.said } : answered
 }
 
-async function login(file: string, read: (path: string) => Promise<Plan.Login>): Promise<string[]> {
+async function login(kind: Login.Kind, file: string): Promise<string[]> {
   if (!Fs.existsSync(file)) return []
   try {
-    const found = await read(file)
+    const found = await Login.login(kind, file)
     return [
       file +
         (found.expiresAt === undefined
@@ -629,13 +629,10 @@ export async function gather(input: {
         })
       : undefined,
     login(
+      'claude',
       env['NANOEVAL_CLAUDE_LOGIN'] ?? Path.join(Os.homedir(), '.claude', '.credentials.json'),
-      Plan.claude,
     ),
-    login(
-      env['NANOEVAL_CODEX_LOGIN'] ?? Path.join(Os.homedir(), '.codex', 'auth.json'),
-      Plan.codex,
-    ),
+    login('codex', env['NANOEVAL_CODEX_LOGIN'] ?? Path.join(Os.homedir(), '.codex', 'auth.json')),
   ])
   const group = spawnSync('stat', ['-c', '%G', '/dev/kvm'], { encoding: 'utf8' })
   return {

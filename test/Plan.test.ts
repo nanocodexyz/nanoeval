@@ -15,59 +15,6 @@ after(() => {
   Fs.rmSync(directory, { force: true, recursive: true })
 })
 
-function write(name: string, value: unknown, mode = 0o600): string {
-  const path = Path.join(directory, name)
-  Fs.writeFileSync(path, JSON.stringify(value), { mode })
-  return path
-}
-
-function jwt(claims: unknown): string {
-  return ['header', Buffer.from(JSON.stringify(claims)).toString('base64url'), 'signature'].join(
-    '.',
-  )
-}
-
-test('a Codex login gives the access token, the account and the expiry, never the refresh token', async () => {
-  const access = jwt({ exp: 1_800_000_000 })
-  const login = await Plan.codex(
-    write('codex.json', {
-      auth_mode: 'chatgpt',
-      tokens: { access_token: access, account_id: 'account-1', refresh_token: 'refresh-1' },
-    }),
-  )
-  assert.deepEqual(login, {
-    expiresAt: 1_800_000_000_000,
-    vars: { CHATGPT_ACCESS_TOKEN: access, CHATGPT_ACCOUNT_ID: 'account-1' },
-  })
-  assert.ok(!JSON.stringify(login).includes('refresh-1'))
-  await assert.rejects(
-    Plan.codex(write('key.json', { auth_mode: 'apikey', OPENAI_API_KEY: 'key' })),
-    Plan.LoginError,
-  )
-})
-
-test('a Claude login gives the access token and the expiry, never the refresh token', async () => {
-  const login = await Plan.claude(
-    write('claude.json', {
-      claudeAiOauth: { accessToken: 'access-1', expiresAt: 1_800_000_000_000, refreshToken: 'r' },
-    }),
-  )
-  assert.deepEqual(login, {
-    expiresAt: 1_800_000_000_000,
-    vars: { CLAUDE_CODE_OAUTH_TOKEN: 'access-1' },
-  })
-  await assert.rejects(Plan.claude(write('empty.json', {})), Plan.LoginError)
-})
-
-test('a login file that others can read, is missing or is not JSON is refused', async () => {
-  const open = write('open.json', { claudeAiOauth: { accessToken: 'access-1' } }, 0o644)
-  await assert.rejects(Plan.claude(open), /must not be readable/)
-  await assert.rejects(Plan.claude(Path.join(directory, 'missing.json')), Plan.LoginError)
-  const text = Path.join(directory, 'text.json')
-  Fs.writeFileSync(text, 'not json', { mode: 0o600 })
-  await assert.rejects(Plan.codex(text), /is not JSON/)
-})
-
 test('the relay listens on loopback and refuses a caller without its secret', async () => {
   const relay = await Plan.relay()
   try {
@@ -95,76 +42,6 @@ test('the secret that seals a plan is made once, in a private file', async () =>
   assert.equal(await Plan.secret(path), made)
   Fs.chmodSync(path, 0o644)
   await assert.rejects(Plan.secret(path), /must not be readable/)
-})
-
-test('a ChatGPT login is refreshed only when it expires soon, and the file keeps the new tokens', async () => {
-  const now = 1_800_000_000_000
-  const old = jwt({ exp: now / 1000 + 3600 })
-  const fresh = jwt({ exp: now / 1000 + 864_000 })
-  const path = write('refresh.json', {
-    OPENAI_API_KEY: null,
-    auth_mode: 'chatgpt',
-    tokens: {
-      access_token: old,
-      account_id: 'account-1',
-      id_token: 'id-1',
-      refresh_token: 'refresh-1',
-    },
-  })
-  const asked: unknown[] = []
-  const answer = (status: number, body: unknown) => async (url: string, init?: RequestInit) => {
-    asked.push([url, JSON.parse(String(init?.body))])
-    return Response.json(body, { status })
-  }
-
-  const kept = await Plan.refresh(path, {
-    fetch: answer(200, {}),
-    now,
-    withinMs: 1800 * 1000,
-  })
-  assert.equal(kept.refreshed, false)
-  assert.equal(asked.length, 0)
-
-  await assert.rejects(
-    Plan.refresh(path, {
-      fetch: answer(401, { error: 'invalid_grant' }),
-      now,
-      withinMs: 6 * 3600 * 1000,
-    }),
-    (error: unknown) =>
-      error instanceof Plan.LoginError && /refused a refresh with 401/.test(error.message),
-  )
-  assert.equal(JSON.parse(Fs.readFileSync(path, 'utf8')).tokens.access_token, old)
-
-  const refreshed = await Plan.refresh(path, {
-    fetch: answer(200, { access_token: fresh, id_token: 'id-2', refresh_token: 'refresh-2' }),
-    now,
-    withinMs: 6 * 3600 * 1000,
-  })
-  assert.equal(refreshed.refreshed, true)
-  assert.deepEqual(refreshed.login, {
-    expiresAt: now + 864_000_000,
-    vars: { CHATGPT_ACCESS_TOKEN: fresh, CHATGPT_ACCOUNT_ID: 'account-1' },
-  })
-  assert.deepEqual(asked.at(-1), [
-    Plan.codexTokenUrl,
-    {
-      client_id: Plan.codexClient,
-      grant_type: 'refresh_token',
-      refresh_token: 'refresh-1',
-      scope: 'openid profile email',
-    },
-  ])
-  const file = JSON.parse(Fs.readFileSync(path, 'utf8'))
-  assert.deepEqual(file.tokens, {
-    access_token: fresh,
-    account_id: 'account-1',
-    id_token: 'id-2',
-    refresh_token: 'refresh-2',
-  })
-  assert.equal(file.OPENAI_API_KEY, null)
-  assert.equal(file.last_refresh, new Date(now).toISOString())
-  assert.equal(Fs.statSync(path).mode & 0o777, 0o600)
 })
 
 test('a push runs the command for each value that changed, with the value on its input', async () => {

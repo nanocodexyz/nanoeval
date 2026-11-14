@@ -109,6 +109,17 @@ jobs:
           NANOEVAL_E2E_SCENARIO: plan
           NANOEVAL_E2E_SLOTS: '2'
           NANOEVAL_E2E_ATTEMPTS: '1'
+      - name: End to end, directory slots, a Claude login file whose token ended and is then rejected, refreshed against a scripted Claude
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: login
+      - name: End to end, directory slots, installed agents on login files of both tools, refreshed against scripted providers
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_MODEL: installed
+          NANOEVAL_E2E_SCENARIO: login
       - name: End to end, directory slots, orchestrator restart
         run: npm run e2e
         env:

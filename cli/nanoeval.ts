@@ -21,6 +21,7 @@ import * as Config from '../src/Config.ts'
 import * as E2b from '../src/E2b.ts'
 import * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
+import * as Logins from '../src/Logins.ts'
 import type * as Ledger from '../src/Ledger.ts'
 import * as Pins from '../src/Pins.ts'
 import * as Protocol from '../src/Protocol.ts'
@@ -35,6 +36,7 @@ import * as Timeline from '../src/Timeline.ts'
 import * as Unsound from '../src/Unsound.ts'
 import * as Doctor from './Doctor.ts'
 import * as Import from './Import.ts'
+import * as Login from './Login.ts'
 import * as Plan from './Plan.ts'
 import * as Revision from './Revision.ts'
 import * as Runtime from './Runtime.ts'
@@ -76,8 +78,10 @@ const usage = `nanoeval <command>
             TEMPO_GATEWAY_URL pays for the models of both providers and for the sandboxes of
             run --provider gateway where a provider has no key of its own. A login
             file (~/.claude/.credentials.json, ~/.codex/auth.json) makes that provider's
-            agents run on the plan signed in there: its access token is read once at start,
-            is never refreshed, and reaches workerd through a private file. --public-url
+            agents run on the plan signed in there. The Worker asks this command for the
+            token of each model request, and the command refreshes the login as its tool
+            does, when the token ends within five minutes and once when the provider
+            rejects it, and writes the file back in the tool's format. --public-url
             names the address that runners and hands on other machines dial, such as a
             tunnel in front of this Worker. --nanocode-ts, or NANOEVAL_NANOCODE_TS, names
             the directory of a built nanocode-ts package that the Worker bundles in place
@@ -85,10 +89,12 @@ const usage = `nanoeval <command>
             NANOEVAL_NANOCODE_TS_REVISION as their harness, or the WASM build of the package.
             PLAN_SECRET, which seals a plan signed in with nanoeval plans, is taken from the
             environment, or made once and kept in a private file of the state directory.
-  plan      refresh [--codex-login ~/.codex/auth.json] [--within-sec 21600]
+  plan      refresh [--codex-login FILE] [--claude-login FILE] [--within-sec 21600]
             [--secret-command CMD [--relay-url-file FILE] [--pushed FILE]]
-            Refresh the ChatGPT plan login with its refresh token when it expires within
-            --within-sec, and write the new tokens back to the file. With --secret-command,
+            Refresh each named plan login with its refresh token when its token ends within
+            --within-sec, and write the new tokens back to the file as its tool does:
+            ~/.codex/auth.json when no file is named. A login that is signed out ends the
+            command with 1 and a line that says so. With --secret-command,
             run CMD with sh for each of CHATGPT_ACCESS_TOKEN, CHATGPT_ACCOUNT_ID and, from
             --relay-url-file, CHATGPT_RELAY_URL whose value changed since the last push:
             the name in NANOEVAL_SECRET_NAME and the value on standard input, such as
@@ -1268,6 +1274,16 @@ export async function importEval(
   }
 }
 
+function loginFiles(values: {
+  'claude-login'?: string | undefined
+  'codex-login'?: string | undefined
+}): Partial<Record<Login.Kind, string>> {
+  return {
+    ...(values['claude-login'] ? { claude: Path.resolve(values['claude-login']) } : {}),
+    ...(values['codex-login'] ? { codex: Path.resolve(values['codex-login']) } : {}),
+  }
+}
+
 export function planSummary(claude: Record<string, any>): string {
   const time = (at: number) => new Date(at).toISOString()
   if (claude['state'] === 'authenticated')
@@ -1634,25 +1650,31 @@ async function main(
 
   if (command === 'plan') {
     if (rest[0] !== 'refresh') throw new Error('plan has one command, refresh')
-    const file = Path.resolve(
-      values['codex-login'] ?? Path.join(Os.homedir(), '.codex', 'auth.json'),
-    )
-    const { login, refreshed } = await Plan.refresh(file, {
-      now: Date.now(),
-      withinMs: seconds(values['within-sec'], 'within-sec') * 1000,
-    })
-    console.log(
-      (refreshed ? 'refreshed' : 'kept') +
-        ' the ChatGPT login of ' +
-        file +
-        (login.expiresAt === undefined
-          ? ''
-          : ', which expires at ' + new Date(login.expiresAt).toISOString()),
-    )
+    const named = loginFiles(values)
+    const files = Object.keys(named).length
+      ? named
+      : { codex: Path.join(Os.homedir(), '.codex', 'auth.json') }
+    const urls = Login.urls(process.env)
+    const refreshed: Partial<Record<Login.Kind, Login.Login>> = {}
+    for (const kind of Object.keys(files).sort() as Login.Kind[]) {
+      const { login, outcome } = await Login.refresh(kind, {
+        path: files[kind]!,
+        ...(urls[kind] ? { url: urls[kind] } : {}),
+        withinMs: seconds(values['within-sec'], 'within-sec') * 1000,
+      })
+      refreshed[kind] = login
+      console.log(
+        (outcome === 'refreshed' ? 'refreshed: ' : 'kept: ') +
+          Login.describe(kind, { login, path: files[kind]! }),
+      )
+    }
     if (!values['secret-command']) return
+    if (!refreshed.codex)
+      throw new Error('--secret-command pushes a ChatGPT login: name it with --codex-login')
     const pushed = await Plan.push(
       {
-        ...login.vars,
+        CHATGPT_ACCESS_TOKEN: Logins.token(refreshed.codex.headers)!,
+        CHATGPT_ACCOUNT_ID: refreshed.codex.headers['chatgpt-account-id']!,
         ...(values['relay-url-file']
           ? { CHATGPT_RELAY_URL: await Plan.relayUrl(Path.resolve(values['relay-url-file'])) }
           : {}),
@@ -1689,27 +1711,28 @@ async function main(
     vars['TICK_MS'] = values['tick-ms']
     if (values['public-url']) vars['PUBLIC_URL'] = values['public-url']
 
-    const logins: [name: string, login: Plan.Login][] = []
-    if (values['claude-login'])
-      logins.push(['Claude', await Plan.claude(Path.resolve(values['claude-login']))])
-    if (values['codex-login'])
-      logins.push(['ChatGPT', await Plan.codex(Path.resolve(values['codex-login']))])
-    for (const [name, login] of logins) {
-      Object.assign(vars, login.vars)
-      const expiry =
-        login.expiresAt === undefined
-          ? 'at an unknown time'
-          : 'at ' + new Date(login.expiresAt).toISOString()
-      console.error(
-        login.expiresAt !== undefined && login.expiresAt <= Date.now()
-          ? 'the ' +
-              name +
-              ' plan login expired ' +
-              expiry +
-              ': its agents fail until you sign in again and restart the worker'
-          : 'the ' + name + ' plan login is used until it expires ' + expiry,
+    const files = loginFiles(values)
+    const logins = Object.keys(files).length
+      ? await Login.serve(files, {
+          log: (line) => console.error(line),
+          urls: Login.urls(process.env),
+        })
+      : undefined
+    Object.assign(vars, logins?.vars)
+    for (const kind of Object.keys(files).sort() as Login.Kind[])
+      await logins!.current(kind).then(
+        (login) =>
+          console.error(
+            Login.describe(kind, { login, path: files[kind]! }) +
+              ': it is refreshed before that, and once when the provider rejects it',
+          ),
+        (error: unknown) => {
+          if (!(error instanceof Login.RefusedError)) throw error
+          console.error(
+            'the agents of that login fail until it is signed in again, which needs no restart of this command',
+          )
+        },
       )
-    }
     const relay = values['codex-login'] ? await Plan.relay() : undefined
     Object.assign(vars, relay?.vars)
     const state = Path.resolve(values.state ?? Path.join('output', 'worker'))
@@ -1750,6 +1773,7 @@ async function main(
       child.once('exit', (exit) => resolve(exit ?? 1)),
     )
     await relay?.close()
+    await logins?.close()
     await Fs.rm(directory, { force: true, recursive: true })
     process.exit(code)
   }
@@ -1882,12 +1906,20 @@ async function main(
       )
     }
     if (!values['build-only'])
-      Revision.credentials({
+      for (const kind of Revision.credentials({
         agents: values.oracle ? [] : (values.agent ?? []).map(parseAgent),
         ...(values.judge ? { judge: parseJudge(values.judge) } : {}),
         logins,
         variables: process.env,
-      })
+      }))
+        await Login.refresh(kind, {
+          path: logins[kind]!,
+          ...(Login.urls(process.env)[kind] ? { url: Login.urls(process.env)[kind] } : {}),
+          withinMs: Login.tools[kind].refreshEarlyMs,
+        }).catch((error: unknown) => {
+          if (!(error instanceof Login.RefreshError)) throw error
+          log(error.message + '; it is used as it is')
+        })
     const held = await Revision.hold(directory, {
       waiting: (ahead) =>
         log(

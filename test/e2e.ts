@@ -9,6 +9,7 @@ import * as Path from 'node:path'
 import * as Util from 'node:util'
 import * as Import from '../cli/Import.ts'
 import { blobStore, client, exportJob, oracle, runsTable, summary } from '../cli/nanoeval.ts'
+import * as Login from '../cli/Login.ts'
 import * as Plan from '../cli/Plan.ts'
 import * as Revision from '../cli/Revision.ts'
 import * as Runtime from '../cli/Runtime.ts'
@@ -122,6 +123,25 @@ const vaultRefusals = planned
     ]
   : []
 const planSecret = Crypto.randomBytes(32).toString('hex')
+const loginLane = scenario === 'login'
+const codexPlanPath = '/backend-api/codex/responses'
+const scriptedAccount = 'scripted-account'
+const scriptedLogins = Object.fromEntries(
+  (['claude', 'codex'] as const).map((kind) => [
+    kind,
+    {
+      access: undefined as string | undefined,
+      asked: [] as string[],
+      down: false,
+      grants: 0,
+      issued: [] as string[],
+      paid: 0,
+      refresh: 'scripted-' + kind + '-refresh-' + Crypto.randomBytes(8).toString('hex'),
+      rejected: 0,
+      revokeAt: undefined as number | undefined,
+    },
+  ]),
+) as Record<Login.Kind, ScriptedLogin>
 const firstTokenAnswers = 3
 const claudePlan = {
   access: undefined as string | undefined,
@@ -703,6 +723,140 @@ async function read(request: Http.IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks)
 }
 
+type ScriptedLogin = {
+  access: string | undefined
+  asked: string[]
+  down: boolean
+  grants: number
+  issued: string[]
+  paid: number
+  refresh: string
+  rejected: number
+  revokeAt: number | undefined
+}
+
+function jwt(claims: Record<string, unknown>): string {
+  return ['e30', Buffer.from(JSON.stringify(claims)).toString('base64url'), 'scripted'].join('.')
+}
+
+function loginAccess(kind: Login.Kind): string {
+  const unique = Crypto.randomBytes(8).toString('hex')
+  return kind === 'codex'
+    ? jwt({ exp: Math.floor(Date.now() / 1000) + 864_000, jti: unique })
+    : 'scripted-claude-access-' + unique
+}
+
+function loginFile(kind: Login.Kind, input: { directory: string; signedIn?: true }): string {
+  const { directory, signedIn } = input
+  const state = scriptedLogins[kind]
+  const access = loginAccess(kind)
+  if (signedIn) {
+    state.access = access
+    state.down = false
+    state.refresh = 'scripted-' + kind + '-refresh-' + Crypto.randomBytes(8).toString('hex')
+    state.revokeAt = undefined
+  }
+  state.issued.push(access, state.refresh)
+  const path = Path.join(directory, kind === 'codex' ? 'auth.json' : '.credentials.json')
+  Fs.mkdirSync(directory, { recursive: true })
+  Fs.writeFileSync(
+    path,
+    kind === 'codex'
+      ? JSON.stringify(
+          {
+            auth_mode: 'chatgpt',
+            OPENAI_API_KEY: null,
+            tokens: {
+              id_token: jwt({ email: 'owner@example.com' }),
+              access_token: access,
+              refresh_token: state.refresh,
+              account_id: scriptedAccount,
+            },
+            last_refresh: '2026-11-05T05:45:29.123456789Z',
+          },
+          null,
+          2,
+        )
+      : JSON.stringify({
+          claudeAiOauth: {
+            accessToken: access,
+            refreshToken: state.refresh,
+            expiresAt: Date.now() + (signedIn ? 3_600_000 : -60_000),
+            scopes: ['user:inference', 'user:profile'],
+            subscriptionType: 'max',
+          },
+          mcpOAuth: { kept: true },
+        }),
+    { mode: 0o600 },
+  )
+  return path
+}
+
+async function loginToken(
+  request: Http.IncomingMessage,
+  response: Http.ServerResponse,
+): Promise<void> {
+  const kind = request.url === '/v1/oauth/token' ? 'claude' : 'codex'
+  const state = scriptedLogins[kind]
+  const grant = JSON.parse((await read(request)).toString()) as Record<string, string>
+  state.asked.push(grant['refresh_token']!)
+  const answer = (status: number, body: unknown) =>
+    void response
+      .writeHead(status, { 'content-type': 'application/json' })
+      .end(JSON.stringify(body))
+  if (
+    state.down ||
+    grant['grant_type'] !== 'refresh_token' ||
+    grant['client_id'] !== Login.tools[kind].client ||
+    grant['refresh_token'] !== state.refresh
+  )
+    return answer(400, {
+      error: 'invalid_grant',
+      error_description: 'the scripted provider knows no ' + grant['refresh_token'],
+    })
+  state.grants++
+  state.access = loginAccess(kind)
+  state.refresh = 'scripted-' + kind + '-refresh-' + Crypto.randomBytes(8).toString('hex')
+  state.issued.push(state.access, state.refresh)
+  if (kind === 'claude' && state.grants === 1) state.revokeAt = state.paid + 1
+  answer(
+    200,
+    kind === 'claude'
+      ? {
+          access_token: state.access,
+          expires_in: 3600,
+          refresh_token: state.refresh,
+          scope: 'user:inference user:profile',
+          token_type: 'Bearer',
+        }
+      : {
+          access_token: state.access,
+          id_token: jwt({ 'https://api.openai.com/auth': { chatgpt_account_id: scriptedAccount } }),
+          refresh_token: state.refresh,
+        },
+  )
+}
+
+function loginPays(request: Http.IncomingMessage, installedAgent: boolean): boolean {
+  const kind = request.url === codexPlanPath ? 'codex' : 'claude'
+  const state = scriptedLogins[kind]
+  const fresh =
+    state.access !== undefined &&
+    request.headers['authorization'] === 'Bearer ' + state.access &&
+    request.headers['x-api-key'] === undefined &&
+    (kind === 'codex'
+      ? request.headers['chatgpt-account-id'] === scriptedAccount
+      : !installedAgent ||
+        String(request.headers['anthropic-beta']).split(',').includes('oauth-2025-04-20'))
+  if (!fresh) {
+    state.rejected++
+    return false
+  }
+  state.paid++
+  if (state.paid === state.revokeAt) state.access = undefined
+  return true
+}
+
 async function claudeSignIn(
   request: Http.IncomingMessage,
   response: Http.ServerResponse,
@@ -772,12 +926,19 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
           await claudeSignIn(request, response)
           return
         }
+        if (loginLane && request.url!.endsWith('/oauth/token')) {
+          await loginToken(request, response)
+          return
+        }
         const body = JSON.parse((await read(request)).toString())
-        if (planned && !planPays(request)) {
+        if (
+          (planned && !planPays(request)) ||
+          (loginLane && !loginPays(request, body.fake_cli === true))
+        ) {
           response.writeHead(401, { 'content-type': 'application/json' }).end(
             JSON.stringify({
               error: {
-                message: 'the scripted Claude rejects this credential',
+                message: 'the scripted provider rejects this credential',
                 type: 'authentication_error',
               },
               type: 'error',
@@ -785,14 +946,15 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
           )
           return
         }
-        const codex = request.url === '/v1/responses'
-        const credential = !body.fake_cli
-          ? true
-          : codex
-            ? request.headers['authorization'] === 'Bearer scripted-openai' &&
-              request.headers['x-api-key'] === undefined
-            : request.headers['x-api-key'] === 'scripted' &&
-              request.headers['authorization'] === undefined
+        const codex = request.url === '/v1/responses' || request.url === codexPlanPath
+        const credential =
+          !body.fake_cli || loginLane
+            ? true
+            : codex
+              ? request.headers['authorization'] === 'Bearer scripted-openai' &&
+                request.headers['x-api-key'] === undefined
+              : request.headers['x-api-key'] === 'scripted' &&
+                request.headers['authorization'] === undefined
         if (!credential || (body.fake_cli && !codex && request.url !== '/v1/messages'))
           throw new Error(
             'the request of the installed agent did not carry the credential of the run',
@@ -802,7 +964,7 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
           await new Promise((resolve) => setTimeout(resolve, 1000)).finally(() => budgetFlying--)
         }
         const reply = body.fake_cli
-          ? fake(request.url!, body)
+          ? fake(codex ? '/v1/responses' : request.url!, body)
           : budgeted || searching
             ? metered(body)
             : codex && midturnPair
@@ -999,15 +1161,35 @@ async function main(): Promise<void> {
     : undefined
   if (lapse || sooner) mock?.hold(0)
   const upstream = mock ?? (await modelEndpoint())
-  const plan =
-    model === 'codex-plan'
-      ? await Plan.codex(login ?? Path.join(Os.homedir(), '.codex', 'auth.json'))
+  const secrets = Fs.mkdtempSync(Path.join(Os.tmpdir(), 'nanoeval-e2e-'))
+  const loginFiles: Partial<Record<Login.Kind, string>> = loginLane
+    ? {
+        claude: loginFile('claude', { directory: Path.join(secrets, 'claude') }),
+        ...(installed
+          ? { codex: loginFile('codex', { directory: Path.join(secrets, 'codex') }) }
+          : {}),
+      }
+    : model === 'codex-plan'
+      ? { codex: login ?? Path.join(Os.homedir(), '.codex', 'auth.json') }
       : model === 'claude-plan'
-        ? await Plan.claude(login ?? Path.join(Os.homedir(), '.claude', '.credentials.json'))
+        ? { claude: login ?? Path.join(Os.homedir(), '.claude', '.credentials.json') }
+        : {}
+  const logins = Object.keys(loginFiles).length
+    ? await Login.serve(loginFiles, {
+        log: (line) => Fs.appendFileSync(Path.join(out, 'login.log'), line + '\n'),
+        urls: loginLane
+          ? { claude: upstream.url + '/v1/oauth/token', codex: upstream.url + '/oauth/token' }
+          : {},
+      })
+    : undefined
+  if (!loginLane)
+    for (const kind of Object.keys(loginFiles)) await logins!.current(kind as Login.Kind)
+  const relay =
+    model === 'codex-plan'
+      ? await Plan.relay()
+      : loginFiles.codex
+        ? await Plan.relay(upstream.url)
         : undefined
-  if (plan?.expiresAt !== undefined && plan.expiresAt <= Date.now())
-    throw new Error('the plan login expired at ' + new Date(plan.expiresAt).toISOString())
-  const relay = model === 'codex-plan' ? await Plan.relay() : undefined
   const url = 'http://127.0.0.1:' + port
   const harness = await Revision.wrangler(process.env)
   const vars: Record<string, string> = {
@@ -1019,19 +1201,19 @@ async function main(): Promise<void> {
     TICK_MS: tickMs,
     ...(mock ? { TEMPO_GATEWAY_URL: mock.url, TEMPO_KEY: mock.key } : {}),
     ...(upstream.url && !mock ? { ANTHROPIC_BASE_URL: upstream.url } : {}),
-    ...((model === 'scripted' || installed || scenario === 'judge') && !mock
+    ...((model === 'scripted' || installed || scenario === 'judge') && !mock && !loginLane
       ? { ANTHROPIC_API_KEY: 'scripted' }
       : {}),
-    ...((direct || installed || midturnPair) && upstream.url && !mock
+    ...((direct || installed || midturnPair) && upstream.url && !mock && !loginLane
       ? { OPENAI_API_KEY: 'scripted-openai', OPENAI_BASE_URL: upstream.url }
       : {}),
     ...(model === 'anthropic' ? { ANTHROPIC_API_KEY: process.env['ANTHROPIC_API_KEY']! } : {}),
     ...(midturn ? { CELL_YIELD_MS: String(midturnYieldMs) } : {}),
-    ...plan?.vars,
+    ...logins?.vars,
     ...relay?.vars,
     ...(planned ? { CLAUDE_PLAN_URL: upstream.url!, PLAN_SECRET: planSecret } : {}),
+    ...(loginLane ? { CLAUDE_PLAN_URL: upstream.url! } : {}),
   }
-  const secrets = Fs.mkdtempSync(Path.join(Os.tmpdir(), 'nanoeval-e2e-'))
   Fs.writeFileSync(Path.join(secrets, 'vars.env'), Plan.envFile(vars), { mode: 0o600 })
   const log = Fs.createWriteStream(Path.join(out, 'wrangler.log'))
   let logged = Promise.resolve()
@@ -1266,9 +1448,16 @@ async function main(): Promise<void> {
       !(underAgent && installed) &&
       !(
         installed &&
-        ['closed', 'failures', 'lost', 'refused', 'resume', 'runners', 'unreached'].includes(
-          scenario,
-        )
+        [
+          'closed',
+          'failures',
+          'login',
+          'lost',
+          'refused',
+          'resume',
+          'runners',
+          'unreached',
+        ].includes(scenario)
       )
     )
       throw new Error('the ' + scenario + ' scenario runs on the scripted model')
@@ -2568,6 +2757,168 @@ async function main(): Promise<void> {
       warm ? 1 : 0,
       'no sandbox directory outlives the run, unless the run keeps its sandbox warm',
     )
+
+    if (loginLane) {
+      const kinds = Object.keys(loginFiles).sort() as Login.Kind[]
+      const finished = (run: string) =>
+        waitFor('the run ' + run + ' to finish', async () => {
+          const current = await api.status(run)
+          return current['state'] === 'finished' ? current : undefined
+        })
+      const lines = () =>
+        Fs.readFileSync(Path.join(out, 'login.log'), 'utf8').split('\n').filter(Boolean)
+      assert.deepEqual(
+        [status['counts'].passed, status['counts'].failed, status['counts'].errored],
+        [total / 2, total / 2, 0],
+        'no attempt saw the token that ended or the one the provider rejected',
+      )
+      assert.deepEqual(await api.routes(), {
+        claude: { payer: 'login' },
+        codex: installed ? { payer: 'login', through: 'relay' } : null,
+      })
+      for (const kind of kinds) {
+        const state = scriptedLogins[kind]
+        const grants = kind === 'claude' ? 2 : 1
+        assert.equal(
+          state.grants,
+          grants,
+          kind === 'claude'
+            ? 'a token that ended is refreshed before a request, and one that Claude rejects once'
+            : 'a token that ChatGPT rejects is refreshed once, whichever attempts held it',
+        )
+        assert.deepEqual(
+          state.asked,
+          state.issued.filter((_, index) => index % 2 === 1).slice(0, grants),
+          'each refresh token is sent once, and the one of the last answer next',
+        )
+        assert.ok(state.rejected >= 1, 'the scripted provider rejected a token of ' + kind)
+        assert.ok(state.paid >= (installed ? total / 2 : 2 * total))
+        const path = loginFiles[kind]!
+        const text = Fs.readFileSync(path, 'utf8')
+        const file = JSON.parse(text)
+        assert.equal(Fs.statSync(path).mode & 0o777, 0o600)
+        assert.ok(
+          Fs.readdirSync(Path.dirname(path)).every((name) => !name.endsWith('.tmp')),
+          'no staged file is left beside the login',
+        )
+        if (kind === 'codex') {
+          assert.equal(text, JSON.stringify(file, null, 2), 'the file keeps the format of Codex')
+          assert.deepEqual(Object.keys(file), [
+            'auth_mode',
+            'OPENAI_API_KEY',
+            'tokens',
+            'last_refresh',
+          ])
+          assert.deepEqual(
+            [file.tokens.access_token, file.tokens.refresh_token, file.tokens.account_id],
+            [state.access, state.refresh, scriptedAccount],
+          )
+          assert.ok(Date.parse(file.last_refresh) >= started)
+        } else {
+          assert.equal(text, JSON.stringify(file), 'the file keeps the format it had')
+          assert.deepEqual(
+            [file.claudeAiOauth.accessToken, file.claudeAiOauth.refreshToken],
+            [state.access, state.refresh],
+          )
+          assert.ok(file.claudeAiOauth.expiresAt > Date.now())
+          assert.deepEqual(
+            [file.claudeAiOauth.subscriptionType, file.mcpOAuth],
+            ['max', { kept: true }],
+            'what the refresh does not answer stays in the file',
+          )
+        }
+        assert.equal(
+          lines().filter((line) => line.startsWith('refreshed: the ' + Login.tools[kind].name))
+            .length,
+          grants,
+        )
+      }
+      if (!installed) {
+        const requests: Record<string, any>[] = []
+        for (const detail of details)
+          for (const line of (
+            await api.artifact(created.id, detail['attempt'].id, 'agent/model-requests.jsonl')
+          )
+            .trim()
+            .split('\n'))
+            requests.push(JSON.parse(line))
+        assert.ok(
+          requests.some((request) => request['status'] === 401),
+          'the request that Claude rejected is in the record of its attempt',
+        )
+      }
+
+      for (const kind of kinds) {
+        scriptedLogins[kind].access = undefined
+        scriptedLogins[kind].down = true
+      }
+      const second = await api.create({ ...config, name: config.name + '-signed-out' })
+      const lost = await finished(second.id)
+      console.log(summary(lost))
+      const rows = lost['attempts'] as Record<string, any>[]
+      const signedOut =
+        /the (Claude|ChatGPT) login of \S+ is signed out: its refresh was refused with 400 \(invalid_grant\)\. Sign in again with (claude auth login|codex login)/
+      for (const row of rows) {
+        assert.equal(row['outcome'], 'errored')
+        assert.equal(row['failure'].kind, 'environment', row['failure'].message)
+        assert.match(row['failure'].message, signedOut)
+      }
+      const waiting = rows.filter((row) => row['claims'] === 0)
+      assert.ok(waiting.length >= 1, 'no row is claimed once a login is signed out')
+      for (const row of waiting)
+        assert.match(
+          row['failure'].message,
+          /^no row is started after a model request that the plan could not pay for: the /,
+        )
+      assert.equal(lost['refused'].plan, true)
+      for (const kind of kinds) {
+        const refused = lines().filter(
+          (line) => line.startsWith('the ' + Login.tools[kind].name) && signedOut.test(line),
+        )
+        assert.ok(refused.length <= 1, 'a login that is signed out says so once')
+        assert.ok(
+          scriptedLogins[kind].asked.length <= (kind === 'claude' ? 3 : 2),
+          'a login whose refresh was refused is not asked for again',
+        )
+      }
+      assert.ok(lines().some((line) => signedOut.test(line)))
+
+      for (const kind of kinds)
+        loginFile(kind, { directory: Path.dirname(loginFiles[kind]!), signedIn: true })
+      const asked = kinds.map((kind) => scriptedLogins[kind].asked.length)
+      const third = await api.create({ ...config, name: config.name + '-signed-in' })
+      const back = await finished(third.id)
+      assert.deepEqual(
+        back['counts'],
+        status['counts'],
+        'a login that was signed in again is used without a restart of the Worker',
+      )
+      assert.deepEqual(
+        kinds.map((kind) => scriptedLogins[kind].asked.length),
+        asked,
+        'a token that ends later is not refreshed',
+      )
+
+      const secret = [
+        vars['LOGIN_SECRET']!,
+        ...kinds.flatMap((kind) => scriptedLogins[kind].issued),
+      ]
+      assert.ok(secret.length >= 9 && secret.every((value) => value.length >= 32))
+      let scanned = 0
+      for (const entry of Fs.readdirSync(out, { recursive: true, withFileTypes: true })) {
+        if (!entry.isFile()) continue
+        const file = Path.join(entry.parentPath, entry.name)
+        const bytes = Fs.readFileSync(file)
+        scanned++
+        assert.ok(
+          secret.every((value) => !bytes.includes(value)),
+          file + ' holds a token of a login or the secret of the login service',
+        )
+      }
+      console.log('login: ' + scanned + ' files of the lane hold no token and no secret')
+      await pass()
+      return
+    }
 
     if (planned) {
       const finished = (run: string) =>
@@ -4158,6 +4509,7 @@ async function main(): Promise<void> {
     beacon.close()
     upstream.close()
     await relay?.close()
+    await logins?.close()
     Fs.rmSync(secrets, { force: true, recursive: true })
     await sandboxd.close()
     guest?.close()

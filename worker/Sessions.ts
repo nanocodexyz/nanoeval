@@ -2,6 +2,7 @@ import { env as bound } from 'cloudflare:workers'
 import { App, Forward } from 'nanocode-ts/cloudflare'
 import manifest from '../package.json' with { type: 'json' }
 import type * as Atif from '../src/Atif.ts'
+import * as Logins from '../src/Logins.ts'
 import * as Pins from '../src/Pins.ts'
 import * as Plans from '../src/Plans.ts'
 import * as Proxy from '../src/Proxy.ts'
@@ -22,19 +23,6 @@ export async function authorized(request: Request, env: Env): Promise<boolean> {
     crypto.subtle.digest('SHA-256', encoder.encode(env.ACCESS_TOKEN)),
   ])
   return crypto.subtle.timingSafeEqual(actual, expected)
-}
-
-export function plan(env: Env, provider: 'claude' | 'codex'): Record<string, string> | undefined {
-  if (provider === 'claude')
-    return env.CLAUDE_CODE_OAUTH_TOKEN
-      ? { authorization: 'Bearer ' + env.CLAUDE_CODE_OAUTH_TOKEN }
-      : undefined
-  return env.CHATGPT_ACCESS_TOKEN && env.CHATGPT_ACCOUNT_ID
-    ? {
-        authorization: 'Bearer ' + env.CHATGPT_ACCESS_TOKEN,
-        'chatgpt-account-id': env.CHATGPT_ACCOUNT_ID,
-      }
-    : undefined
 }
 
 function refuse(message: string): Response {
@@ -58,8 +46,7 @@ export const nanocode = App.create<Env>({
         const name = dispatch.provider ?? 'claude'
         const headers = new Headers(request.headers)
         const source = new URL(request.url)
-        const login =
-          dispatch.subscription && dispatch.payer !== 'plan' ? plan(env, name) : undefined
+        const login = dispatch.subscription && dispatch.payer !== 'plan' && Logins.held(env, name)
         const signed = dispatch.subscription && !login
         let target = request.url
 
@@ -68,7 +55,7 @@ export const nanocode = App.create<Env>({
             return refuse('no ' + name + ' plan login is set')
         } else if (login) {
           headers.delete('x-api-key')
-          for (const [header, value] of Object.entries(login)) headers.set(header, value)
+          if (name === 'claude') target = Plans.target(request.url, env.CLAUDE_PLAN_URL)
           if (name === 'codex' && env.CHATGPT_RELAY_URL) {
             target = env.CHATGPT_RELAY_URL.replace(/\/+$/, '') + source.pathname + source.search
             headers.set(Proxy.relaySecretHeader, env.CHATGPT_RELAY_SECRET ?? '')
@@ -80,15 +67,6 @@ export const nanocode = App.create<Env>({
           if (held.base) target = held.base.replace(/\/+$/, '') + source.pathname + source.search
         }
 
-        if (request.method !== 'POST' || headers.has('upgrade'))
-          return fetch(
-            new Request(target, {
-              method: request.method,
-              headers,
-              body: request.body,
-              signal: request.signal,
-            }),
-          )
         const session = Proxy.session(dispatch.authority.session_name ?? '')
         const path =
           (session?.judge === undefined ? '' : 'judge/') +
@@ -121,6 +99,38 @@ export const nanocode = App.create<Env>({
             if (session) await tell({ outcome, path, provider: name }).catch(() => {})
           },
         }
+        const unpaid = async (error: unknown): Promise<Response> => {
+          if (!(error instanceof Plans.UnusableError) && !(error instanceof Logins.RefusedError))
+            throw error
+          await hooks.settle({ at: Date.now(), ms: 0, refusal: 'plan', status: 401 })
+          await hooks.refused?.({ kind: 'plan', text: error.message, tries: 0 })
+          return refuse(error.message)
+        }
+        const credential = (rejected?: string) =>
+          Logins.headers(env, { provider: name, ...(rejected === undefined ? {} : { rejected }) })
+        const carrying = (held: Logins.Headers): Headers => {
+          const sent = new Headers(headers)
+          for (const [header, value] of Object.entries(held)) sent.set(header, value)
+          return sent
+        }
+        if (request.method !== 'POST' || headers.has('upgrade')) {
+          const plain = (sent: Headers) =>
+            fetch(
+              new Request(target, {
+                method: request.method,
+                headers: sent,
+                body: request.body,
+                signal: request.signal,
+              }),
+            )
+          if (!login) return plain(headers)
+          try {
+            if (request.body) return await plain(carrying(await credential()))
+            return await Logins.send({ attempt: (held) => plain(carrying(held)), credential })
+          } catch (error) {
+            return unpaid(error)
+          }
+        }
         const body = await request.arrayBuffer()
         const relay = (to: { headers: Headers; url: string }) =>
           Meter.relay({
@@ -132,8 +142,13 @@ export const nanocode = App.create<Env>({
             signal: request.signal,
             url: to.url,
           })
-        if (!signed) return relay({ headers, url: target })
+        if (!signed && !login) return relay({ headers, url: target })
         try {
+          if (login)
+            return await Logins.send({
+              attempt: (held) => relay({ headers: carrying(held), url: target }),
+              credential,
+            })
           return await Plans.send(Vault.vault(env), {
             endpoint: request.url,
             headers: dispatch.headers,
@@ -141,17 +156,14 @@ export const nanocode = App.create<Env>({
             ...(env.CLAUDE_PLAN_URL ? { url: env.CLAUDE_PLAN_URL } : {}),
           })
         } catch (error) {
-          if (!(error instanceof Plans.UnusableError)) throw error
-          await hooks.settle({ at: Date.now(), ms: 0, refusal: 'plan', status: 401 })
-          await hooks.refused?.({ kind: 'plan', text: error.message, tries: 0 })
-          return refuse(error.message)
+          return unpaid(error)
         }
       },
     }),
   hands: 'always',
   hedge: { cap_percent: 0 },
   subscription: async (_account, env, provider) =>
-    plan(env, provider) !== undefined ||
+    Logins.held(env, provider) ||
     (provider === 'claude' && (await Vault.unusable(env)) === undefined),
   workspace: false,
 })
