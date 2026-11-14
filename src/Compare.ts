@@ -1,11 +1,13 @@
 import * as Installed from './Installed.ts'
-import type * as Result from './Result.ts'
+import * as Pins from './Pins.ts'
+import * as Result from './Result.ts'
 
 export type Run = {
   attempts: readonly Result.Attempt[]
   eval: { name: string; version: string }
   id: string
   name: string
+  nanocode?: Pins.Pins
   state: 'finished' | 'running'
 }
 
@@ -30,11 +32,24 @@ export type Arm = {
   totalSec: number
 }
 
-export function harness(agent: Result.Attempt['agent']): string {
+export type Change = {
+  agent: string
+  baseline: Result.AgentSummary | undefined
+  gained: string[]
+  lost: string[]
+  neither: string[]
+  onlyBaseline: string[]
+  onlyRun: string[]
+  run: Result.AgentSummary
+  solved: string[]
+  tasks: Record<string, { baseline: string; run: string }>
+}
+
+export function harness(agent: Result.Attempt['agent'], nanocode?: Pins.Pins): string {
   if (agent.provider === 'oracle') return 'oracle'
-  return Installed.is(agent.provider)
-    ? agent.provider + ' ' + Installed.releases[agent.provider].version
-    : 'nanocode'
+  if (Installed.is(agent.provider))
+    return agent.provider + ' ' + Installed.releases[agent.provider].version
+  return nanocode ? Pins.text(nanocode) : 'nanocode'
 }
 
 export function model(agent: Result.Attempt['agent']): string {
@@ -45,13 +60,14 @@ export function model(agent: Result.Attempt['agent']): string {
   return provider + ':' + agent.model + (agent.thinking ? ':' + agent.thinking : '')
 }
 
-function key(agent: Result.Attempt['agent']): string {
+function key(agent: Result.Attempt['agent'], nanocode?: Pins.Pins): string {
   return [
     agent.id,
     agent.provider,
     agent.model,
     agent.thinking ?? '',
     agent.orchestration ?? '',
+    harness(agent, nanocode),
   ].join(' ')
 }
 
@@ -64,7 +80,7 @@ export function arms(runs: readonly Run[]): Arm[] {
   const tasks = new Map<string, Set<string>>()
   for (const run of runs)
     for (const attempt of run.attempts) {
-      const id = key(attempt.agent)
+      const id = key(attempt.agent, run.nanocode)
       let arm = found.get(id)
       if (!arm) {
         arm = {
@@ -75,7 +91,7 @@ export function arms(runs: readonly Run[]): Arm[] {
           costUsd: null,
           errored: 0,
           failed: 0,
-          harness: harness(attempt.agent),
+          harness: harness(attempt.agent, run.nanocode),
           inputTokens: 0,
           key: id,
           metered: 0,
@@ -127,9 +143,39 @@ function cells(rows: readonly (readonly string[])[]): string {
     .join('\n')
 }
 
+function number(value: number): string {
+  return value.toLocaleString('en-US')
+}
+
+function cost(value: number | null): string {
+  return value === null ? 'not known' : '$' + value.toFixed(4)
+}
+
+function line(run: Run): string {
+  return (
+    'run ' +
+    run.id +
+    ' (' +
+    run.name +
+    '): ' +
+    run.state +
+    ', ' +
+    run.eval.name +
+    '@' +
+    run.eval.version.slice(0, 12) +
+    ', ' +
+    run.attempts.length +
+    ' attempts ended' +
+    (run.nanocode ? ', ' + Pins.text(run.nanocode) : '')
+  )
+}
+
 export function table(runs: readonly Run[]): string {
   const all = arms(runs)
-  const number = (value: number) => value.toLocaleString('en-US')
+  const title = (arm: Arm) =>
+    all.filter((other) => other.agent === arm.agent).length === 1
+      ? arm.agent
+      : arm.agent + ' of ' + arm.runs.map((id) => id.slice(0, 8)).join(' and ')
   const summary = cells([
     [
       'Arm',
@@ -146,7 +192,7 @@ export function table(runs: readonly Run[]): string {
       'Estimated cost',
     ],
     ...all.map((arm) => [
-      arm.agent,
+      title(arm),
       arm.harness,
       arm.model,
       String(arm.attempts),
@@ -159,11 +205,10 @@ export function table(runs: readonly Run[]): string {
         ? number(arm.inputTokens) + ' (' + number(arm.cachedTokens) + ')'
         : 'not recorded',
       arm.metered ? number(arm.outputTokens) : 'not recorded',
-      arm.costUsd === null
-        ? 'not known'
-        : '$' +
-          arm.costUsd.toFixed(4) +
-          (arm.priced === arm.attempts ? '' : ' for ' + arm.priced + ' of ' + arm.attempts),
+      cost(arm.costUsd) +
+        (arm.costUsd === null || arm.priced === arm.attempts
+          ? ''
+          : ' for ' + arm.priced + ' of ' + arm.attempts),
     ]),
   ])
 
@@ -172,8 +217,11 @@ export function table(runs: readonly Run[]): string {
   ].sort()
   const outcome = (task: string, arm: Arm) => {
     const own = runs
-      .flatMap((run) => run.attempts)
-      .filter((attempt) => attempt.task.name === task && key(attempt.agent) === arm.key)
+      .flatMap((run) =>
+        run.attempts.filter(
+          (attempt) => attempt.task.name === task && key(attempt.agent, run.nanocode) === arm.key,
+        ),
+      )
       .sort((left, right) => left.index - right.index)
     return own.length
       ? own
@@ -188,32 +236,120 @@ export function table(runs: readonly Run[]): string {
       : 'not run'
   }
   const tasks = cells([
-    ['Task', ...all.map((arm) => arm.agent)],
+    ['Task', ...all.map(title)],
     ...names.map((task) => [task.split('/').at(-1)!, ...all.map((arm) => outcome(task, arm))]),
   ])
 
+  return [...runs.map(line), '', summary, '', tasks].join('\n') + '\n'
+}
+
+export function changes(baseline: Run, run: Run): Change[] {
+  const before = Result.summarize(baseline.attempts)
+  const after = Result.summarize(run.attempts)
+  const score = (attempts: readonly Result.Attempt[], agent: string) => {
+    const tasks = new Map<string, { attempts: number; passed: number }>()
+    for (const attempt of attempts) {
+      if (attempt.agent.id !== agent) continue
+      const task = tasks.get(attempt.task.name) ?? { attempts: 0, passed: 0 }
+      task.attempts++
+      if (attempt.outcome === 'passed') task.passed++
+      tasks.set(attempt.task.name, task)
+    }
+    return tasks
+  }
+  return Object.entries(after).map(([agent, summary]) => {
+    const old = score(baseline.attempts, agent)
+    const now = score(run.attempts, agent)
+    const change: Change = {
+      agent,
+      baseline: before[agent],
+      gained: [],
+      lost: [],
+      neither: [],
+      onlyBaseline: [],
+      onlyRun: [],
+      run: summary,
+      solved: [],
+      tasks: {},
+    }
+    for (const name of [...new Set([...old.keys(), ...now.keys()])].sort()) {
+      const left = old.get(name)
+      const right = now.get(name)
+      const short = name.split('/').at(-1)!
+      change.tasks[short] = {
+        baseline: left ? left.passed + '/' + left.attempts : 'not run',
+        run: right ? right.passed + '/' + right.attempts : 'not run',
+      }
+      if (!left) change.onlyRun.push(short)
+      else if (!right) change.onlyBaseline.push(short)
+      else if (left.passed && right.passed) change.solved.push(short)
+      else if (right.passed) change.gained.push(short)
+      else if (left.passed) change.lost.push(short)
+      else change.neither.push(short)
+    }
+    return change
+  })
+}
+
+export function against(baseline: Run, run: Run): string {
+  const percent = (value: number | undefined) =>
+    value === undefined ? 'not run' : (value * 100).toFixed(1) + '%'
+  const tokens = (summary: Result.AgentSummary | undefined) =>
+    summary ? number(summary.inputTokens) + ' (' + number(summary.cachedTokens) + ')' : 'not run'
   return (
-    [
-      ...runs.map(
-        (run) =>
-          'run ' +
-          run.id +
-          ' (' +
-          run.name +
-          '): ' +
-          run.state +
-          ', ' +
-          run.eval.name +
-          '@' +
-          run.eval.version.slice(0, 12) +
-          ', ' +
-          run.attempts.length +
-          ' attempts ended',
-      ),
-      '',
-      summary,
-      '',
-      tasks,
-    ].join('\n') + '\n'
+    changes(baseline, run)
+      .map((change) => {
+        const before = change.baseline
+        const after = change.run
+        const count = (name: 'attempts' | 'errored' | 'failed' | 'passed' | 'tasks') => [
+          name[0]!.toUpperCase() + name.slice(1),
+          before ? String(before[name]) : 'not run',
+          String(after[name]),
+        ]
+        const ks = [
+          ...new Set([...Object.keys(before?.passAtK ?? {}), ...Object.keys(after.passAtK)]),
+        ].sort((left, right) => Number(left) - Number(right))
+        const listed = (names: readonly string[]) =>
+          names
+            .map(
+              (name) =>
+                name + ' (' + change.tasks[name]!.baseline + ' to ' + change.tasks[name]!.run + ')',
+            )
+            .join(', ') || 'none'
+        return [
+          change.agent + ': run ' + run.id + ' against the baseline ' + baseline.id,
+          '',
+          cells([
+            ['', 'Baseline', 'Run'],
+            [
+              'nanocode',
+              baseline.nanocode ? Pins.text(baseline.nanocode) : 'not recorded',
+              run.nanocode ? Pins.text(run.nanocode) : 'not recorded',
+            ],
+            count('tasks'),
+            count('attempts'),
+            count('passed'),
+            count('failed'),
+            count('errored'),
+            ...ks.map((k) => ['pass@' + k, percent(before?.passAtK[k]), percent(after.passAtK[k])]),
+            ['Input tokens (cached)', tokens(before), tokens(after)],
+            [
+              'Output tokens',
+              before ? number(before.outputTokens) : 'not run',
+              number(after.outputTokens),
+            ],
+            ['Cost', before ? cost(before.costUsd) : 'not run', cost(after.costUsd)],
+          ]),
+          '',
+          'gained: ' + listed(change.gained),
+          'lost: ' + listed(change.lost),
+          'solved in both: ' + change.solved.length + ', in neither: ' + change.neither.length,
+          ...(change.onlyRun.length ? ['not in the baseline: ' + change.onlyRun.join(', ')] : []),
+          ...(change.onlyBaseline.length
+            ? ['only in the baseline: ' + change.onlyBaseline.join(', ')]
+            : []),
+        ].join('\n')
+      })
+      .join('\n\n') + '\n'
   )
 }

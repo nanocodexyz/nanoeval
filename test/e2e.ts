@@ -9,15 +9,18 @@ import * as Path from 'node:path'
 import * as Import from '../cli/Import.ts'
 import { blobStore, client, exportJob, oracle, runsTable, summary } from '../cli/nanoeval.ts'
 import * as Plan from '../cli/Plan.ts'
+import * as Revision from '../cli/Revision.ts'
 import * as Runtime from '../cli/Runtime.ts'
 import type * as Dataset from '../datasets/Dataset.ts'
 import * as Converter from '../sandbox/Converter.ts'
+import * as Runner from '../sandbox/Runner.ts'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
 import * as Store from '../sandbox/Store.ts'
 import * as Config from '../src/Config.ts'
 import type * as Eval from '../src/Eval.ts'
+import * as Pins from '../src/Pins.ts'
 import * as Protocol from '../src/Protocol.ts'
-import type * as Slot from '../src/Slot.ts'
+import * as Slot from '../src/Slot.ts'
 import * as Guest from './Guest.ts'
 import * as Krun from './Krun.ts'
 import * as MockGateway from './MockGateway.ts'
@@ -712,7 +715,9 @@ async function main(): Promise<void> {
     throw new Error('the plan login expired at ' + new Date(plan.expiresAt).toISOString())
   const relay = model === 'codex-plan' ? await Plan.relay() : undefined
   const url = 'http://127.0.0.1:' + port
+  const harness = await Revision.wrangler(process.env)
   const vars: Record<string, string> = {
+    ...harness.vars,
     ACCESS_TOKEN: token,
     COMMIT: 'the-commit-of-the-lane',
     LOCAL_SANDBOX_TOKEN: sandboxToken,
@@ -748,6 +753,7 @@ async function main(): Promise<void> {
         Path.join(out, 'state'),
         '--env-file',
         Path.join(secrets, 'vars.env'),
+        ...harness.arguments,
       ],
       {
         detached: true,
@@ -2202,6 +2208,26 @@ async function main(): Promise<void> {
 
     assert.equal(status['counts'].errored, 0, 'no attempt may end in an infrastructure error')
     assert.equal(status['counts'].passed + status['counts'].failed, total)
+    const pins = status['nanocode'] as Pins.Pins
+    assert.equal(
+      pins.harness,
+      harness.vars['NANOCODE_TS_REVISION'] ??
+        Pins.pinned(
+          (
+            JSON.parse(Fs.readFileSync('package.json', 'utf8')) as {
+              dependencies: Record<string, string>
+            }
+          ).dependencies['nanocode-ts']!,
+        ),
+      'the run records the nanocode-ts build of its Worker',
+    )
+    assert.equal(pins.hands.length, 1, 'every runner reports the hand it placed')
+    const placed = bundled
+      ? Pins.release(Slot.runtime.release)
+      : guest
+        ? undefined
+        : await Runner.hand(process.env)
+    if (placed) assert.equal(pins.hands[0], placed, 'the hand is the one of this run')
     if (!attached && !fleet && !turnLost && !lapse)
       assert.equal(peak, Math.min(slots, total), 'the sandbox fills every slot')
     if (cached) {

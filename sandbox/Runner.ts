@@ -9,6 +9,7 @@ import * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
 import * as Bytes from '../src/internal/Bytes.ts'
 import * as Judge from '../src/Judge.ts'
+import * as Pins from '../src/Pins.ts'
 import * as Protocol from '../src/Protocol.ts'
 import type * as Result from '../src/Result.ts'
 import * as Sandbox from '../src/Sandbox.ts'
@@ -215,6 +216,8 @@ async function setup(input: {
       )
     return result.stdout
   }
+  const placed = hand(process.env)
+  placed.catch(() => {})
   await Fs.mkdir(Path.join(home, 'slots'), { recursive: true })
   await Fs.mkdir(Path.join(input.cache, 'blobs'), { recursive: true })
   await Fs.copyFile(script, slots.script)
@@ -241,7 +244,19 @@ async function setup(input: {
       )
     await moved
   }
-  return { backend, capabilities: JSON.parse(await shell(slots.probe())) as Sandbox.Capabilities }
+  return {
+    backend,
+    capabilities: {
+      ...(JSON.parse(await shell(slots.probe())) as Sandbox.Capabilities),
+      hand: await placed,
+    },
+  }
+}
+
+export async function hand(env: Record<string, string | undefined>): Promise<string> {
+  const file = env['NANOEVAL_NANOCODE']
+  if (!file) return Pins.release(Slot.runtime.release)
+  return env['NANOEVAL_NANOCODE_REVISION'] || Pins.file((await Store.digest(file)).digest)
 }
 
 async function ask(

@@ -2638,6 +2638,7 @@ Not changed, measured for a later change. A cell yields after 10 s when the mode
 - Whether a model reads the file that a cut result names: no row of these runs did. In five cut results the command was `base64` of an image for the model to look at, and the image was then refused where it had been shown cut.
 - The four long solutions through exec_command on this hand, and nanoeval's own download of the hand on the second machine, where the binary was placed with its checksum checked.
 - CI on GitHub.
+
 ## 2026-11-13: a turn that its session no longer has puts the row back
 
 The entry of this day on the model calls of a session ends its paragraph on a Worker that moves to another build with a rule for whoever deploys: the Worker moves when no row is in its `attach` or `run` phase, and a row caught by it is picked up with a rerun. This entry makes the run do that itself for a row whose turn is gone.
@@ -2806,6 +2807,7 @@ One run of each on `build-2672c04`, where the three lanes fail on the list of wh
 - A paired arm with a model across the two builds. A `claude` session sends the same request under both, and what differs for it is the 11 attempts and the dropped blocks. A `codex` agent on a model that nanocode does not know should be compared before its scores stand beside earlier ones.
 - More than one kill in a turn, and a kill less than a second after an answer of the model.
 - The size of the log of a real session, and what its rows cost in time.
+
 ## 2026-11-14: a Claude plan signed in on the Worker pays for a run
 
 A deployed Worker paid for its sessions with an API key or the gateway and with nothing else. A plan could pay on a local Worker only, from a login file whose access token `nanoeval worker --claude-login` reads once and never refreshes. The need was a Claude subscription that the operator signs in once on the Worker, which keeps it, refreshes it and pays with it for the runs that ask. Whether a subscription may be used this way is governed by the terms of its provider and is the operator's call: nanoeval makes it possible and says so where it documents it.
@@ -3106,7 +3108,6 @@ After the rebase onto `2244c58` (2026-11-14, same machine, Node 24.22.2, fresh c
 - Any of it on a deployed Worker, a real gateway or a real plan login: no refusal by the real gateway, no `PATCH /api/keys/me` against it, and no refresh against `auth.openai.com` was made. The refresh request has the shape that Codex CLI sends.
 - A runner killed by the kernel under the unit, and the unit on systemd versions other than 255.
 - The lanes on krun and ns slots and the rest of `ci.yml`: the machine was running a run of another track.
-- CI on GitHub.
 
 ## 2026-11-14: a codex-direct agent, on nanocode-ts `build-f3aa94f`
 
@@ -3117,3 +3118,104 @@ An agent can run Codex with direct tools: `--agent nanoxd=codex-direct:gpt-6-lun
 **Checked.** `npm test`: the new cases (the agent syntax, the configuration, the comparison) pass; on the macOS machine it ran on, the same 20 tests that fail on main fail here (the slot tests need Linux: `/proc/meminfo`, `flock`). `tsc --noEmit` for the CLI and the Worker. On nanocode-ts's own harness (its `bench/handbench.ts` with the TypeScript hand and a scripted Responses endpoint), a `codex` session with `codex_orchestration: "direct"` and one without, each on a hand: the first request of the direct session declared `exec_command`, `apply_patch` and no `exec` or `wait`, and its `exec_command` call ran on the hand; the default session declared `exec` and `wait` and ran the same command from a cell.
 
 **Not verified.** The e2e lanes (they need Linux), a deployed Worker, and a real model on either arm.
+
+## 2026-11-14: a revision of nanocode runs on one machine, with no release
+
+A run was on the two builds a checkout pins, and nothing else could be measured without three steps by hand: a release of nanocode-ts and of the hand, a commit here that moves the pins, and a deployment. The entry of 2026-11-13 on the cell yield did the first two by hand in a copy of this repository to measure one option. This entry makes it one command, `nanoeval revision`, and makes a run say what it ran on. It adds `cli/Revision.ts` and `src/Pins.ts` and changes `cli/nanoeval.ts`, `src/Compare.ts`, `src/Harbor.ts`, `src/Sandbox.ts`, `sandbox/Runner.ts`, `worker/Env.ts`, `worker/Run.ts`, `worker/Sessions.ts`, `tsconfig.json` and `test/e2e.ts`. The pins, `sandbox/slot.sh` and the tables of a run are unchanged.
+
+**What a run recorded.** Nothing about the harness, and for the hand the first 12 digits of the pinned release's SHA-256, written as the version of the agent into every trajectory whatever hand the runner had placed: `NANOEVAL_NANOCODE` has always let a runner take another file. The Harbor result named the version of this Worker's code, `0.2.0`. Two runs of one agent on two builds could not be told apart afterwards, and `compare` added them into one row.
+
+**The rule.** Each side says what it has, and the creator of a run says nothing.
+
+- The Worker knows its harness when it is bundled: `worker/Sessions.ts` imports `package.json` and names the release its `nanocode-ts` entry pins, `nanocode-ts build-7968b53` since the entry of this day on a turn that goes on, unless the variable `NANOCODE_TS_REVISION` names another. A run writes it into its record when it is created.
+- A runner names the hand it placed and reports it among its capabilities, with its hello: the tag of the pinned release, `nanocode-cli-3f97ab0`, or for a file that `NANOEVAL_NANOCODE` names what `NANOEVAL_NANOCODE_REVISION` says, or else `sha256` and the first 12 digits of the file's digest. The runner of a runtime archive is given such a file, the hand of the archive, and names the pinned release of the checkout that built the archive without reading it. The capabilities are JSON in a column that exists, so no table changes and an older run reads as before: its harness is "not recorded".
+- `status` and the results of a run carry both as `nanocode`. `compare` prints them on the line of each run, keeps the rows of one agent on different pairs apart and names such rows by their run, and the trajectory and the Harbor result of a session agent carry the pair as the version of the agent. `compare --baseline RUN` sets each run against one: attempts, passed, failed, errored, pass@k, tokens and cost for each agent, and the tasks that one solves and the other does not, a task being solved when one of its attempts passed.
+
+**The command.** `nanoeval revision --nanocode REV --eval NAME --only ID --agent ...` takes the options of `run` and does what the three steps did:
+
+- It resolves each revision. A commit, branch or tag is fetched into a build tree of the lab from the repository. A directory is a checkout: its commit is fetched from it, and its diff against that commit and its untracked files that git does not ignore are read once, hashed into the name of the revision, and applied to the build tree. Nothing is written to the checkout.
+- It builds the hand with `cargo build --locked --profile release`, and the package as nanocode-ts builds itself, `scripts/build.mjs` and `npm run build:ts`, in a build tree of nanocode-ts beside the one of nanocode, which is where nanocode-ts looks for it. Two files of that tree are changed for a nanocode that is not the one the revision names: `sdk-revision.json`, so the build has a fingerprint of its own, and `Cargo.lock`, resolved again with `cargo fetch`, because `--locked` refuses the lock of another nanocode. That was met at once: the nanocode master of the day had dropped 12 crates since the revision that nanocode-ts master named, and `cargo metadata --locked` ended with 101.
+- It keeps each build under the name of its revision, `hands/REVISION-PROFILE` and `packages/NANOCODE_TS-on-NANOCODE`, and builds nothing that is there.
+- It starts `nanoeval worker` on a free port with the package, on the state of the lab, imports the tasks that the lab's eval does not hold, creates the run, starts `nanoeval runner` on it with the hand, waits, prints the summary, writes the Harbor job into the lab, and stops both. A runner that ends before its run cancels the run and fails the command with the path of the runner's log.
+
+**How the Worker gets another package.** By alias. `nanoeval worker --nanocode-ts DIR` gives wrangler `--alias nanocode-ts/ENTRY:FILE` for each entry of the package's `exports` that is a JavaScript file. The directory is a `package.json` and lock file of nanocode-ts with `npm ci --omit=dev` run in it and the built `dist` copied in, so the package resolves its own dependencies at the versions its lock names. Checked before anything else was written: `wrangler deploy --dry-run` with the alias on a copy of the pinned package gave a bundle with the same two WebAssembly modules, by their digests, as the bundle without it. Rejected: a copy of this checkout for each revision, which is 841 MB of `node_modules` a copy and would test the copy's Worker sources, and `npm install` of the package here, which rewrites the two files that are the pins.
+
+**One state, every build.** The entry of 2026-11-13 on a lost turn says that a build of nanocode-ts does not read the sessions of an earlier one. That is about a session with a turn under way. A finished attempt has none: its events, trajectory and verifier files are copied into its run when it ends, and the session is deleted. So the lab has one state for all builds and one Worker at a time, and this was run: three runs on three builds, the pinned release, nanocode-ts `2672c04` built here and the master of the day, were printed by `compare` under the pinned release, and an attempt of the second was read with its events and its trajectory. Each run with a baseline also read that baseline under its own build, four builds in all.
+
+**Ports and two evaluations at once.** An evaluation holds `flock` on the lab from its build to its summary. A second in the same lab says that it waits, and goes on when the first is done: one build tree cannot be at two revisions, and the tables of the state have one writer. The Worker takes a port that was free a moment before and wrangler picks its own inspector port, so two labs run side by side. A port that another process takes in between ends the Worker with wrangler's "Address already in use", and the command fails with that log and is run again. `--serve` holds the lab the same way and serves it with the pinned package for `status`, `compare`, `attempt` and `export`.
+
+**The credential** is what `nanoeval worker` takes, passed through: the variables, or the two login files. `Revision.credentials` asks for each agent and the judge whether a key, the gateway key or a login serves its provider, by the variables the Worker takes a key from, which a unit test holds to the Worker's own function, and refuses before a build: "no model credential serves the agent haiku: set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN or TEMPO_KEY, or name --claude-login FILE".
+
+**Measured** on a Linux machine with 32 cores and KVM, on 2026-11-14 between 01:16 and 02:20 UTC. Other work held its load average between 66 and 100 and nearly all of its 62 GB of memory, and the kernel had ended processes for memory five times in the half hour before, so the times are an upper bound for that machine. One lab, krun slots, the host policy of the machine (below). The runs were made before that entry moved the harness, so the pinned package of this section is `build-2672c04`. The revisions:
+
+| | nanocode | nanocode-ts |
+| --- | --- | --- |
+| The pins | `nanocode-cli-3f97ab0`, released | `build-2672c04`, released |
+| A | 3f97ab009aa6, the commit of the pinned hand | 2672c043e379 on the nanocode it names, 439011f972c4 (`--sdk pinned`) |
+| B | f43ff49cee1d, master at 01:37 | 8ff3d5f8c98b, master at 01:37 |
+| C | a checkout of B with one changed line and one untracked file | 19c535dc8cf7, master at 02:06 |
+
+Builds, in the order they ran:
+
+| | Hand | Package |
+| --- | --- | --- |
+| An empty lab, nanocode master of 01:16 (0a9ed13f2337) and nanocode-ts 8ff3d5f8c98b | 239 s | Ended after 856 s in its last step, see below |
+| B, seven commits of nanocode later | 101 s | 189 s |
+| A | 347 s | 355 s |
+| C | 165 s | 262 s |
+| A or B again | Nothing built | Nothing built |
+
+- **The package of the empty lab did not finish in one build.** Its four modules were built, the last, `python.wasm`, alone in 374 s, and `tsc` had run. The last step of `npm run build:ts` installs two Python packages with Pyodide, and failed: "Can't fetch metadata for 'cowsay'". The registries of this machine are served on its loopback with a certificate of its own, which Node does not trust by itself. The step passed in 37 s with `NODE_EXTRA_CA_CERTS` set to the machine's bundle, and `--ca-bundle` now sets that for the build of the package. So the time of a whole package in an empty lab is about 900 s there and was not measured in one piece. The same four modules, built alone in a tree of their own before the command existed, took 874 s.
+- **The package of A has the fingerprint of the release**, ddf130637a2713aa9c6b, since nothing of its tree was changed, the same files, and the same model catalog. Its four modules differ from the released ones byte for byte: they were built on another machine.
+- **C** is the checkout's commit and 12 digits of a digest, f43ff49cee1d+98a0902f7eda. The hand it built prints the changed line, `git status` of the checkout was the same before and after, and no `target` directory appeared in it.
+
+Runs, each one invocation of the command:
+
+| Run | Rows | Passed | Run | Whole command |
+| --- | --- | --- | --- | --- |
+| The pins, the tasks' solutions (`--oracle`), four tasks, with their import | 4 | 4 | 38 s | 74 s |
+| A, scripted model, four tasks, two attempts, four slots | 8 | 8 | 43 s | 55 s |
+| B, the same, against A | 8 | 8 | 49 s | 64 s |
+| A, `codex:gpt-6-luna` on a ChatGPT plan login, `fix-git` and `cancel-async-tasks`, two slots | 2 | 2 | 58 s | 68 s |
+| B, the same, against A | 2 | 2 | 52 s | 62 s |
+| C, scripted model, two tasks, against B, with its builds | 2 | 2 | 31 s | 467 s |
+| C again, scripted model, four tasks, two attempts | 8 | 8 | 88 s | 98 s |
+
+- The tasks are `fix-git`, `cancel-async-tasks`, `openssl-selfsigned-cert` and `git-leak-recovery` of Terminal-Bench 2.1, imported into the lab by the first run that named each.
+- **The scripted model** is not in this repository. It answers a Messages request that holds a task's instruction with one `exec` cell whose Bash call writes the task's `solution/solve.sh` and runs it, and the next request with the end of the turn. A row therefore goes through the built package, the hand, its Bash tool and the real verifier, and costs nothing. It says that the two builds run a turn together, not what a model does with them.
+- **With a model**, A against B: 127,095 input tokens, 85,632 of them cached, and 1,983 output tokens for $0.0060, against 153,565, 106,496 and 2,049 for $0.0068. Two rows an arm are a proof that the path works and nothing about the revisions.
+- **From the command to the first claim** with everything built: 8.4 s in the last run, of which 1.3 s after the run was created. The rest is two reads of the checkout, a fetch of nanocode-ts, and the start of the Worker. The first claim came 1.3 to 1.5 s after the run was created when the runner's home held the hand of the run before, and 2.5 to 7.5 s when the hand had changed and the home was set up again.
+- **The end-to-end lanes on B**, with the variables that `revision --build-only` prints: the plain lane on krun slots passed in 32 s and the plain lane on directory slots, with its cell of 12 s, in 39 s. Both ask that the run names the package and the hand they were given.
+
+**Verifiers and the package index on that machine.** The machine resolves `pypi.org`, `files.pythonhosted.org`, the npm registry and the crates registry to an address on its loopback, where a filter serves them with its own certificate. A krun slot has a loopback of its own:
+
+- Without host policy, the first run of the command, `fix-git` with its solution: the verifier's `apt-get` and the download of uv from `astral.sh` worked, and `uvx` ended with "Failed to fetch: `https://pypi.org/simple/pytest-json-ctrf/` ... Connection refused". The row ended as a `verifier` error, which is what a verifier without its report is.
+- With `--ca-bundle` naming the machine's bundle and `--slot-forward` naming that listener, by their variables: every run of the table above, 34 rows, each with a verifier that installs pytest from the index, and none errored.
+
+So that machine runs real evals only with those two options, as the README says of such a network, and with them it does.
+
+**A runner that was stopped from outside.** The first run of A with the scripted model lost its runner half a minute in: the runner logged "stopping: releasing 2 attempts", which is what it does on SIGTERM, in the same second in which a runner of another checkout on the machine was stopped. No process of this command sends that signal and the kernel had ended nothing. The command cancelled the run, said where the runner's log was and failed, and the same command passed two minutes later. Two things came of it. A runner that ends this way exits with 0 and had left a slot directory in the home, which the next runner took for a slot of its own, logged as resumed and lost: the command now removes the slots of the home before a runner starts and after one ends with slots left. Who sent the signal was not found.
+
+**What the first proof found.** The first version of `Revision.credentials` called the Worker's function, in `src/Proxy.ts`, which imports the gateway and with it the payment client. The command line had never loaded that: it started in 0.27 to 0.47 s on the machine above and in 1.07 to 1.25 s with the import, and every runner is that command line. The lane `lapse` has sandboxes whose lease of 6 s is refused its renewal after 3 s, and a sandbox that is refused takes no row. Its runners said hello 4.1 to 4.5 s after their sandbox was created, so most sandboxes took none: 125 sandboxes for 31 of the lane's 48 rows after seven minutes, where the lane takes 25 s and 6 sandboxes on a quiet machine. The proof was stopped there. The check now names the variables itself, a unit test asks that they are the ones the Worker's function answers to, and another loads the command line in a process that records what it resolves and asks that neither `mppx` nor `viem` is among it. With that the command line starts as it did, and the lane passed alone in 79 s while the load average was 70.
+
+The second proof found the other cost of the same kind. A runner from the runtime archive is always given the hand as a file, so it hashed 90 MB before its hello, and in a guest that read is slow: the two lanes on ns slots whose sandbox starts its runner from the archive had the hello 3.4 and 6.6 s after the run was created, where it takes 1.8 to 2.3 s, the lease of 3 s ended, and both failed twice on "every attempt shares one sandbox". `sandbox/Main.ts`, the entry of the archive's runner, now names the release that its own checkout pins, which is the hand the archive was built with, and those lanes ask for that name. A file that is given no name is still hashed, since nothing else can say what it is, and a runner now does that beside the set-up of its slots and not after it. The lanes went on failing on a loaded machine once this cost was gone, with and without this change: the entry below has the cause.
+
+**Checked.**
+
+- Unit tests, 14 new: what is built from what is named, with `pinned` and `--sdk`; the name of a revision; a branch, a short commit and a checkout made the same tree, a checkout with a changed file, a removed file, an untracked file and an ignored directory applied to a tree that had build output, and the tree taken back; the lock, with a second holder that waits; the aliases and the name of a package directory; the tasks a selection still needs; the credential check with keys, the gateway key, logins and a judge, its variables against the Worker's, and what the command line loads; the names of a release, a revision and a file; the hand a runner reports; rows kept apart by their pair and a run set against a baseline with tasks gained, lost, solved in both and in neither, and tasks only one of the two ran.
+- `test/e2e.ts` gives wrangler the aliases when `NANOEVAL_NANOCODE_TS` is set, and every lane that reaches its counts asks that its run names the build of its Worker, the pinned release unless that variable is set, and exactly one hand, the one of this process where the runner is neither in a guest nor started from the archive.
+- `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test`, 180 tests and none skipped, with the changes of this day under it.
+- **On the head it landed on**, with the list of runs and the rerun that keeps its settings under it, in the lab that held the runs above: the command on the pins with the solutions of two tasks, 2 of 2 in 37 s, the tables of the earlier Worker read as they were. Then with the scripted model made to leave one task unsolved, two attempts a task: 1 of 4 passed. `revision --rerun RUN --failed --baseline RUN` ran the three rows again with the attempts and the model budget of that run, 3 of 3, and printed the task as gained, 0 of 2 to 2 of 2. `revision --serve` then answered `runs`, which listed the three runs with their counts, `status`, `compare --baseline`, `export` and `version`.
+- Every `run` step of `.github/workflows/ci.yml` from a fresh clone of the change before its two repairs above, on the pins of 2026-11-13: 67 of 70 passed at once, the two lanes of the paragraph above failed, and a lane on krun slots whose image builder stood still for 300 s passed when it was run again alone. The proof of the head it landed in is at the end of the entry below.
+
+**Not verified.**
+
+- A package built in an empty lab from start to end in one build, and any build on a machine whose load is its own.
+- `--hand-profile dist`, `--nanocode-ts` as a checkout with changes, `--sdk` with a revision of its own, `--task` and a judge through the command. The plan of each is unit tested, the build of none was run.
+- ns and directory slots through the command, a machine without the host policy's network, and macOS: the command asks for nothing but what a krun runner asks for, and was run nowhere else.
+- Two labs at once, and a second evaluation that waits for a first with a run under way. The lock was tested with two holders and no run.
+- A `claude` agent with a model, an installed agent, and more than two rows of a model an arm.
+- A nanocode-ts revision that does not build against its nanocode. The command passes the compiler's error on, which was seen only with the lock file before it was refreshed.
+- Rows that differ between two revisions with a model: every row of both arms passed, so "gained" and "lost" were seen only in the unit test.
+- A deployed Worker with this change: it records the pinned release as the harness of the runs it creates, from the `package.json` it is bundled with. `wrangler deploy --dry-run` bundles it.
+- CI on GitHub.

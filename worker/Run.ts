@@ -16,6 +16,7 @@ import * as Ledger from '../src/Ledger.ts'
 import * as Bytes from '../src/internal/Bytes.ts'
 import * as Local from '../src/Local.ts'
 import * as Payment from '../src/Payment.ts'
+import * as Pins from '../src/Pins.ts'
 import * as Members from '../src/Pool.ts'
 import * as Protocol from '../src/Protocol.ts'
 import * as Proxy from '../src/Proxy.ts'
@@ -23,7 +24,6 @@ import * as Result from '../src/Result.ts'
 import * as Retry from '../src/Retry.ts'
 import type * as Runs from '../src/Runs.ts'
 import * as Sandbox from '../src/Sandbox.ts'
-import * as Slot from '../src/Slot.ts'
 import * as SqlSetup from '../src/Sql.ts'
 import * as Timeline from '../src/Timeline.ts'
 import * as Verdict from '../src/Verdict.ts'
@@ -34,7 +34,7 @@ import * as Harness from './Harness.ts'
 import type * as Meter from './Meter.ts'
 import * as Model from './Model.ts'
 import * as PoolObject from './Pool.ts'
-import { plan } from './Sessions.ts'
+import * as Sessions from './Sessions.ts'
 import * as Storage from './Storage.ts'
 import * as Vault from './Vault.ts'
 
@@ -71,6 +71,7 @@ type Meta = {
   createdAt: number
   eval: { name: string; version: string }
   finishedAt: number | null
+  harness?: string
   id: string
   key?: {
     end?: KeyRead
@@ -263,6 +264,7 @@ export class Run extends DurableObject<Env> {
           eval: meta.eval,
           id: meta.id,
           name: this.config().name,
+          nanocode: this.pins(),
           state: meta.finishedAt === null ? 'running' : 'finished',
         })
       if (request.method === 'GET' && parts[0] === 'lineage')
@@ -498,6 +500,7 @@ export class Run extends DurableObject<Env> {
         createdAt: receivedAt,
         eval: { name: config.eval.name, version: snapshot.version.digest },
         finishedAt: null,
+        harness: Sessions.revision,
         id,
         ...(params.get('location') ? { location: params.get('location')! } : {}),
         publicUrl: params.get('url')!,
@@ -643,7 +646,7 @@ export class Run extends DurableObject<Env> {
 
   private payer(provider: 'claude' | 'codex'): Config.Payer | undefined {
     if (this.config().payer === 'plan') return 'plan'
-    return plan(this.env, provider) ? undefined : 'deployment'
+    return Sessions.plan(this.env, provider) ? undefined : 'deployment'
   }
 
   private keyed(): boolean {
@@ -978,6 +981,16 @@ export class Run extends DurableObject<Env> {
       .map((row) => JSON.parse(row.result!) as Result.Attempt)
   }
 
+  private pins(): Pins.Pins {
+    const hands = this.runners().flatMap((row) => {
+      const hand = row.capabilities
+        ? (JSON.parse(row.capabilities) as Sandbox.Capabilities).hand
+        : undefined
+      return hand ? [hand] : []
+    })
+    return { hands: [...new Set(hands)].sort(), harness: this.meta()!.harness ?? null }
+  }
+
   private status() {
     const meta = this.meta()!
     const config = this.config()
@@ -1018,6 +1031,7 @@ export class Run extends DurableObject<Env> {
         : null,
       lostClaims: Ledger.claims(this.sql).filter(Ledger.lost).length,
       name: config.name,
+      nanocode: this.pins(),
       payer: config.payer ?? 'deployment',
       payments: this.sql.all('SELECT at, usd, detail FROM payments ORDER BY id'),
       refused: meta.refused ?? null,
@@ -1079,6 +1093,7 @@ export class Run extends DurableObject<Env> {
             startedAt: meta.createdAt,
           },
           running: rows.filter(Ledger.active).length,
+          nanocode: Pins.text(this.pins()),
           source: config.eval.name + '@' + config.eval.version,
           total: rows.length,
           version,
@@ -2749,7 +2764,7 @@ export class Run extends DurableObject<Env> {
               model: agent.model,
               name: 'nanocode',
               session,
-              version: Slot.runtime.sha256.slice(0, 12),
+              version: Pins.text(this.pins()),
             }),
             null,
             2,

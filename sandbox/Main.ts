@@ -2,6 +2,8 @@ import * as Fs from 'node:fs/promises'
 import * as Path from 'node:path'
 import { parseArgs } from 'node:util'
 import type * as Config from '../src/Config.ts'
+import * as Pins from '../src/Pins.ts'
+import * as Slot from '../src/Slot.ts'
 import * as Runner from './Runner.ts'
 import * as Store from './Store.ts'
 
@@ -18,6 +20,7 @@ if (positionals[0] !== 'runner' || !values.config) {
   console.error('usage: runner --config FILE [--detach] [--cache DIR] [--store DIR]')
   process.exit(2)
 }
+process.env['NANOEVAL_NANOCODE_REVISION'] ||= Pins.release(Slot.runtime.release)
 const file = Path.resolve(values.config)
 const home = Path.dirname(file)
 if (values.detach) {

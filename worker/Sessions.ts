@@ -1,6 +1,8 @@
 import { env as bound } from 'cloudflare:workers'
 import { App, Forward } from 'nanocode-ts/cloudflare'
+import manifest from '../package.json' with { type: 'json' }
 import type * as Atif from '../src/Atif.ts'
+import * as Pins from '../src/Pins.ts'
 import * as Plans from '../src/Plans.ts'
 import * as Proxy from '../src/Proxy.ts'
 import * as Sql from '../src/Sql.ts'
@@ -43,6 +45,9 @@ function refuse(message: string): Response {
 }
 
 const cellYieldMs = (bound as Env).CELL_YIELD_MS
+
+export const revision =
+  (bound as Env).NANOCODE_TS_REVISION || Pins.pinned(manifest.dependencies['nanocode-ts'])
 
 export const nanocode = App.create<Env>({
   authenticate: async (request, env) => ((await authorized(request, env)) ? account : null),

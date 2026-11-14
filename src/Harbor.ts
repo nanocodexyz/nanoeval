@@ -102,7 +102,11 @@ export function trial(attempt: Result.Attempt, options: trial.Options): Record<s
     config: trialConfig(attempt, options),
     agent_info: {
       name: harness(attempt),
-      version: installed ? installed.version : options.version,
+      version: installed
+        ? installed.version
+        : oracle
+          ? options.version
+          : (options.nanocode ?? options.version),
       model_info: oracle
         ? null
         : {
@@ -148,6 +152,7 @@ export function trial(attempt: Result.Attempt, options: trial.Options): Record<s
 export declare namespace trial {
   type Options = {
     job: Job
+    nanocode?: string
     source: string
     uri: string
     version: string
@@ -244,6 +249,7 @@ export function files(input: files.Input): Record<string, string> {
     out[name + '/result.json'] = pretty(
       trial(attempt, {
         job: input.job,
+        ...(input.nanocode ? { nanocode: input.nanocode } : {}),
         source: input.source,
         uri: name,
         version: input.version,
@@ -260,6 +266,7 @@ export declare namespace files {
     artifacts: Record<string, Record<string, string>>
     attempts: readonly Result.Attempt[]
     job: Job
+    nanocode?: string
     running: number
     source: string
     total: number

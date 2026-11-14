@@ -7,6 +7,7 @@ export type Capabilities = {
   ca_bundle: boolean
   cgroup: boolean
   cpus: number
+  hand?: string
   kernel: string
   krun: boolean
   kvm: boolean

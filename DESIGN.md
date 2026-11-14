@@ -266,6 +266,16 @@ A run keeps a **timeline**: a table of marks, each a name, a time on the run's c
 
 **A cold start** is the one case that still takes seconds, and most of them are not nanoeval's: the provider's create and the first command in a new sandbox. What nanoeval does around them: it asks the pool first, it starts the runner with one command that carries the configuration instead of two writes and a command, the bootstrap fetches the archive while it looks for Node, the runner fetches the disks of the first rows before it has claimed them, and a claim's answer names the disks of the rows that still wait, which a runner with busy slots fetches ahead unless it was told to keep its disk short (`--disks remove`, `--free-disk-mb`). The archive is still one file of 20 MB of which the hand is 17: fetching the hand beside the runner's start would save about a second and is not done.
 
+## Another revision of nanocode
+
+A deployment runs the two builds its checkout pins. `nanoeval revision` (`cli/Revision.ts`) runs any other pair on one machine, and three things make that possible without a second code path for a run.
+
+- **The Worker takes its harness by alias.** `nanoeval worker --nanocode-ts DIR` passes wrangler one `--alias` for every entry of the `nanocode-ts` package that names a JavaScript file, so the bundle is this repository's Worker with the built package in place of the pinned one. The package directory is a nanocode-ts checkout's `package.json` and lock file with its production dependencies installed from that lock, and its `dist`. The WebAssembly modules are found beside the JavaScript that imports them.
+- **A run names what it ran on.** The Worker knows its harness: the release that `package.json` pins, read when it is bundled, or `NANOCODE_TS_REVISION`, which `nanoeval worker` sets for a built package. A run writes it down when it is created. A runner adds the hand it placed to the capabilities it reports with its hello, and `src/Pins.ts` puts the two into words. Nothing in the tables of an older run changes: a run without them says so.
+- **A lab holds the state.** One directory keeps the build trees, the builds by revision, the tables of the Worker and the home of the runner. An evaluation holds a lock on it from its build to its summary, starts a Worker on a free port and stops it at the end. The tables outlive every Worker, so runs on different builds are read and compared in one place, and the attempts of a finished run need no session: their events and files were copied into the run when they ended.
+
+A revision is a commit of a repository or a checkout with its changes. Either becomes the same thing, a build tree at that commit with the changes applied, so cargo sees one path whatever is built and compiles what differs from the last revision. The package of a revision is built as a release of nanocode-ts is, apart from two files of the tree: `sdk-revision.json` names the revision, which gives the build a fingerprint of its own, and the lock file of the Rust crates is resolved again, since it names the dependencies of the nanocode it was released against.
+
 ## The slot splitter
 
 `sandbox/slot.sh` runs one attempt in one slot, and packs N of them onto a machine. A runner calls it. `probe` reports what the machine can isolate with (`kvm`, `krun`, `ns`, `cgroup`, `userns`, `bwrap`, CPUs, memory) and which backend and network it was set up for. `kvm` says that `/dev/kvm` can be opened for reading and writing, `krun` that the installed launcher reached KVM and loaded libkrunfw, `ns` that the machine has root and the tools of an ns slot, and `cgroup` that ns slots are limited.
@@ -880,6 +890,10 @@ On 2026-11-12 the gateway sold no renewal of an E2B sandbox: every `renew`, unpa
 | The dependency setup of a verifier run in a spare microVM to fill the cache | A verifier on an unsolved environment can run until its timeout, 900 s for some tasks, and an oracle run already does the same work on a solved one |
 | A second launcher protocol for disks made from one archive | Only the export of a container needed it. The request, its command and the boot on one writable disk went with their caller |
 | A registry mirror or a login, to stay under Docker Hub's anonymous limit | The limit counts manifest requests, and a conversion makes one or two. 89 images converted from an empty store without meeting it. A `429` waits instead |
+| A copy of this checkout for each revision, with the package installed into its `node_modules` | A copy holds 500 MB of dependencies that do not differ, and the Worker under test would be the copy's sources, not this checkout's. An alias changes one package and nothing else |
+| `npm install` of the built package into this checkout | It rewrites `package.json` and the lock file, which are the pins, and a run that is interrupted leaves them changed |
+| One Worker for each revision on one state at the same time | The tables of an object are one SQLite file with one writer. A lab has one Worker at a time and a second evaluation waits |
+| The revisions as fields of a run's configuration, set by whoever creates it | The creator can name any revision. The Worker and the runner each say what they have |
 
 ## Reused
 

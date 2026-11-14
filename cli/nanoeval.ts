@@ -21,6 +21,7 @@ import * as E2b from '../src/E2b.ts'
 import type * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
 import type * as Ledger from '../src/Ledger.ts'
+import * as Pins from '../src/Pins.ts'
 import * as Protocol from '../src/Protocol.ts'
 import type * as Runs from '../src/Runs.ts'
 import * as Sandbox from '../src/Sandbox.ts'
@@ -28,6 +29,7 @@ import * as Task from '../src/Task.ts'
 import * as Timeline from '../src/Timeline.ts'
 import * as Import from './Import.ts'
 import * as Plan from './Plan.ts'
+import * as Revision from './Revision.ts'
 import * as Runtime from './Runtime.ts'
 
 const usage = `nanoeval <command>
@@ -44,7 +46,7 @@ const usage = `nanoeval <command>
             and unpacked environment disks.
   worker    --token T [--host 127.0.0.1] [--port 8787] [--state DIR] [--tick-ms 500]
             [--sandbox-url URL --sandbox-token T] [--claude-login FILE] [--codex-login FILE]
-            [--public-url URL]
+            [--public-url URL] [--nanocode-ts DIR]
             Run the Worker under local workerd. Model API keys and base URLs are taken from
             ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN (sent as a bearer token),
             ANTHROPIC_BASE_URL, OPENAI_API_KEY and OPENAI_BASE_URL, and TEMPO_KEY with
@@ -54,9 +56,12 @@ const usage = `nanoeval <command>
             agents run on the plan signed in there: its access token is read once at start,
             is never refreshed, and reaches workerd through a private file. --public-url
             names the address that runners and hands on other machines dial, such as a
-            tunnel in front of this Worker. PLAN_SECRET, which seals a plan signed in with
-            nanoeval plans, is taken from the environment, or made once and kept in a
-            private file of the state directory.
+            tunnel in front of this Worker. --nanocode-ts, or NANOEVAL_NANOCODE_TS, names
+            the directory of a built nanocode-ts package that the Worker bundles in place
+            of the pinned one, as nanoeval revision builds it: runs created on it record
+            NANOEVAL_NANOCODE_TS_REVISION as their harness, or the WASM build of the package.
+            PLAN_SECRET, which seals a plan signed in with nanoeval plans, is taken from the
+            environment, or made once and kept in a private file of the state directory.
   plan      refresh [--codex-login ~/.codex/auth.json] [--within-sec 21600]
             [--secret-command CMD [--relay-url-file FILE] [--pushed FILE]]
             Refresh the ChatGPT plan login with its refresh token when it expires within
@@ -236,9 +241,40 @@ const usage = `nanoeval <command>
   attempt   --url URL --token T RUN ATTEMPT [ARTIFACT]
   export    --url URL --token T RUN --out DIR
             Write the run as a Harbor job directory, and print where.
-  compare   --url URL --token T RUN...
+  compare   --url URL --token T [--baseline RUN] RUN...
             Print one table of the agents of these runs: attempts, outcomes, time, tokens and
-            estimated cost per agent, and the outcome of every task per agent.
+            estimated cost per agent, and the outcome of every task per agent. Runs of one
+            agent on different nanocode revisions are separate rows. With --baseline, each
+            run is also set against that run, agent by agent: attempts, pass@k, tokens, cost,
+            and the tasks it solves that the baseline does not and the reverse.
+  revision  [--nanocode REV|DIR|pinned] [--nanocode-ts REV|DIR|pinned] [--sdk REV|DIR|pinned]
+            [--lab DIR] [--hand-profile release] [--nanocode-repository URL|DIR]
+            [--nanocode-ts-repository URL|DIR] [--build-only] [--baseline RUN]
+            [--claude-login FILE] [--codex-login FILE]
+            (--serve [--port N] | --eval NAME [--only ID]... [--limit N] | --task DIR...)
+            (--agent ID=HARNESS:MODEL[:THINKING]... | --oracle) and the other options of run
+            Evaluate a revision of nanocode on this machine without a release: build the hand
+            from --nanocode (a commit, branch or tag of the repository, or a checkout with
+            its uncommitted changes) and the nanocode-ts package of --nanocode-ts (master
+            unless named) against it, start the Worker under local workerd on that package
+            and on the state of the lab (--lab, NANOEVAL_LAB, DATA/nanoeval/lab), import the
+            tasks the eval of the lab does not hold yet, create the run, attach a runner
+            with the built hand (krun slots unless --backend says otherwise), wait, print
+            the summary and write the Harbor job to LAB/runs/RUN. With --baseline, set the
+            run against that run of the lab. pinned stands for what this checkout pins: the
+            released hand, the released package, or for --sdk the nanocode revision that
+            the nanocode-ts revision names itself. With --ca-bundle, the build of the package
+            trusts that bundle too, as the slots do. --nanocode-ts pinned skips the build of
+            the package for a change that only the hand runs. Without --nanocode the hand is
+            the pinned one, and without both nothing is built: that run is the baseline of
+            the pins. Builds are kept by revision in the lab, so a revision is built once.
+            One evaluation runs in a lab at a time and a second waits for it. The model
+            credential is the one nanoeval worker takes: the variables of this command, or
+            --claude-login and --codex-login. --limit counts in the tasks the lab holds.
+            --build-only builds and prints the variables that make nanoeval worker, nanoeval
+            runner and npm run e2e use the builds. --serve builds and runs nothing: it holds
+            the lab and serves its state with the pinned package until it is interrupted, so
+            that runs, status, compare, attempt and export read the runs of the lab.
   cancel    --url URL --token T RUN
   prune     [--dry-run] [--cache DIR]
             On this machine, remove the cached environment disks that no slot is using and
@@ -592,6 +628,12 @@ export function summary(status: Record<string, any>): string {
     lines.splice(1, 0, 'eval: ' + status['eval'].name + '@' + status['eval'].version)
   if (status['rerunOf'])
     lines.splice(2, 0, 'rerun of ' + status['rerunOf'].run + ' (' + status['rerunOf'].select + ')')
+  if (status['nanocode'])
+    lines.splice(
+      status['eval'] ? 2 : 1,
+      0,
+      'nanocode: ' + Pins.text(status['nanocode'] as Pins.Pins),
+    )
   for (const attempt of status['attempts'] as Record<string, any>[])
     lines.push(
       '  ' +
@@ -845,7 +887,7 @@ export function blobStore(
     : Store.directory(Path.resolve(name ?? Store.defaultRoot()))
 }
 
-async function main(): Promise<void> {
+async function main(lab?: Revision.Lab): Promise<void> {
   const { positionals, tokens, values } = parseArgs({
     allowPositionals: true,
     tokens: true,
@@ -855,6 +897,8 @@ async function main(): Promise<void> {
       'attach-sec': { default: '60', type: 'string' },
       attempts: { default: '1', type: 'string' },
       backend: { type: 'string' },
+      baseline: { type: 'string' },
+      'build-only': { default: false, type: 'boolean' },
       'ca-bundle': { type: 'string' },
       cache: { type: 'string' },
       claims: { default: '3', type: 'string' },
@@ -875,12 +919,14 @@ async function main(): Promise<void> {
       help: { default: false, short: 'h', type: 'boolean' },
       failed: { default: false, type: 'boolean' },
       'free-disk-mb': { type: 'string' },
+      'hand-profile': { default: 'release', type: 'string' },
       home: { type: 'string' },
       host: { default: '127.0.0.1', type: 'string' },
       judge: { type: 'string' },
       'keep-going': { default: false, type: 'boolean' },
       'key-deposit': { type: 'string' },
       'key-top-up': { type: 'string' },
+      lab: { type: 'string' },
       layers: { type: 'string' },
       'lease-sec': { default: '60', type: 'string' },
       limit: { type: 'string' },
@@ -888,6 +934,10 @@ async function main(): Promise<void> {
       'memory-mb': { type: 'string' },
       'model-budget-usd': { type: 'string' },
       name: { type: 'string' },
+      nanocode: { type: 'string' },
+      'nanocode-repository': { default: Revision.repositories.nanocode, type: 'string' },
+      'nanocode-ts': { type: 'string' },
+      'nanocode-ts-repository': { default: Revision.repositories.nanocodeTs, type: 'string' },
       network: { type: 'string' },
       only: { multiple: true, type: 'string' },
       'opened-at': { type: 'string' },
@@ -912,6 +962,8 @@ async function main(): Promise<void> {
       'sandbox-lease-sec': { type: 'string' },
       'sandbox-token': { default: process.env['NANOEVAL_SANDBOX_TOKEN'], type: 'string' },
       'sandbox-url': { type: 'string' },
+      sdk: { type: 'string' },
+      serve: { default: false, type: 'boolean' },
       'sandbox-timeout-sec': { type: 'string' },
       sandboxes: { default: '1', type: 'string' },
       'secret-command': { type: 'string' },
@@ -936,7 +988,16 @@ async function main(): Promise<void> {
       'within-sec': { default: '21600', type: 'string' },
     },
   })
-  const [command, ...rest] = positionals
+  const [named, ...rest] = positionals
+  const command = lab ? 'run' : named
+  if (lab)
+    Object.assign(values, {
+      backend: values.backend ?? 'krun',
+      sandboxes: '0',
+      token: lab.token,
+      url: lab.url,
+      wait: true,
+    })
   if (values.help) {
     console.log(usage)
     return
@@ -1057,6 +1118,11 @@ async function main(): Promise<void> {
     const state = Path.resolve(values.state ?? Path.join('output', 'worker'))
     vars['PLAN_SECRET'] =
       process.env['PLAN_SECRET'] ?? (await Plan.secret(Path.join(state, 'plan.secret')))
+    const harness = await Revision.wrangler({
+      ...process.env,
+      ...(values['nanocode-ts'] ? { NANOEVAL_NANOCODE_TS: values['nanocode-ts'] } : {}),
+    })
+    Object.assign(vars, harness.vars)
 
     const root = Path.resolve(import.meta.dirname, '..')
     const directory = await Fs.mkdtemp(Path.join(Os.tmpdir(), 'nanoeval-worker-'))
@@ -1075,6 +1141,7 @@ async function main(): Promise<void> {
         state,
         '--env-file',
         file,
+        ...harness.arguments,
       ],
       { cwd: root, stdio: 'inherit' },
     )
@@ -1086,6 +1153,81 @@ async function main(): Promise<void> {
     await relay?.close()
     await Fs.rm(directory, { force: true, recursive: true })
     process.exit(code)
+  }
+
+  if (command === 'revision') {
+    const logins = {
+      ...(values['claude-login'] ? { claude: Path.resolve(values['claude-login']) } : {}),
+      ...(values['codex-login'] ? { codex: Path.resolve(values['codex-login']) } : {}),
+    }
+    const directory = Path.resolve(values.lab ?? Revision.defaultLab())
+    const log = (line: string) => console.error(line)
+    if (!values['build-only'] && !values.serve)
+      Revision.credentials({
+        agents: values.oracle ? [] : (values.agent ?? []).map(parseAgent),
+        ...(values.judge ? { judge: parseJudge(values.judge) } : {}),
+        logins,
+        variables: process.env,
+      })
+    const held = await Revision.hold(directory, () =>
+      log('waiting for another evaluation in ' + directory),
+    )
+    let opened: Revision.Lab | undefined
+    const end = async () => {
+      await opened?.close()
+      await held.release()
+    }
+    for (const signal of ['SIGINT', 'SIGTERM'] as const)
+      process.once(signal, () => void end().then(() => process.exit(1)))
+    try {
+      if (values.serve) {
+        opened = await Revision.open({
+          builds: {},
+          lab: directory,
+          log,
+          logins,
+          pollMs: Number(values['poll-ms'] ?? '250'),
+          ...(values.port ? { port: Number(values.port) } : {}),
+        })
+        console.log(
+          'the lab is served until this command is interrupted: NANOEVAL_URL=' +
+            opened.url +
+            ' NANOEVAL_TOKEN=$(cat ' +
+            Path.join(directory, 'token') +
+            ')',
+        )
+        await new Promise(() => {})
+      }
+      const bundle = values['ca-bundle'] ?? process.env['NANOEVAL_CA_BUNDLE']
+      const builds = await Revision.build({
+        ...(bundle ? { caBundle: Path.resolve(bundle) } : {}),
+        lab: directory,
+        log,
+        ...(values.nanocode ? { nanocode: values.nanocode } : {}),
+        ...(values['nanocode-ts'] ? { nanocodeTs: values['nanocode-ts'] } : {}),
+        profile: values['hand-profile'],
+        repositories: {
+          nanocode: values['nanocode-repository'],
+          nanocodeTs: values['nanocode-ts-repository'],
+        },
+        ...(values.sdk ? { sdk: values.sdk } : {}),
+      })
+      if (values['build-only']) {
+        console.log(Revision.environment(builds))
+        return
+      }
+      opened = await Revision.open({
+        builds,
+        lab: directory,
+        log,
+        logins,
+        pollMs: Number(values['poll-ms'] ?? '250'),
+      })
+      await main(opened)
+    } finally {
+      await end()
+    }
+    return
   }
 
   const selection: Dataset.Selection = {
@@ -1565,6 +1707,27 @@ async function main(): Promise<void> {
   if (command === 'run') {
     if (values.oracle && values.agent?.length)
       throw new Error('--oracle runs no model: leave out --agent')
+    const baseline = lab && values.baseline ? await api.results(values.baseline) : undefined
+    if (lab && !values.task?.length && !values.rerun) {
+      const name = required(values.eval, 'eval').split('@')[0]!
+      const held = (await api.evals()).evals.some((entry) => entry.name === name)
+        ? (await api.eval(name)).entries.map((entry) => entry.id)
+        : []
+      const wanted = Revision.missing(held, selection)
+      const dataset = Catalog.find(name)
+      if (wanted && !dataset)
+        throw new Error(
+          'the lab holds no eval ' +
+            name +
+            ' with these tasks, and import knows no dataset of that name: name --task DIR or one of nanoeval datasets',
+        )
+      if (wanted && dataset)
+        await imported(dataset.cases({ ...wanted, store: sources }), {
+          dataset: dataset.name,
+          name,
+          source: dataset.source,
+        })
+    }
     const parent = values.rerun ? await api.config(values.rerun) : undefined
     let reference: Eval.Reference
     let only = values.only
@@ -1581,6 +1744,7 @@ async function main(): Promise<void> {
       reference = { name: name!, ...(digest ? { version: digest } : {}) }
     }
     const named = new Set(tokens.flatMap((token) => (token.kind === 'option' ? [token.name] : [])))
+    if (lab) named.add('sandboxes')
     const provider = (
       parent && !named.has('provider') ? parent.sandbox.provider : values.provider
     ) as Config.Config['sandbox']['provider']
@@ -1684,13 +1848,34 @@ async function main(): Promise<void> {
         created.eval.version.slice(0, 12),
     )
     if (!values.wait) return
+    const runner = await lab?.runner(created.id, hostPolicy)
 
     for (;;) {
+      const gone = runner ? runner.exit() !== null : false
       const status = await api.status(created.id)
       if (status['state'] === 'finished') {
         console.log(summary(status))
+        if (lab) {
+          const results = await api.results(created.id)
+          if (baseline)
+            process.stdout.write(
+              '\n' + Compare.table([baseline, results]) + '\n' + Compare.against(baseline, results),
+            )
+          await lab.record({
+            agents: status['agents'],
+            at: new Date().toISOString(),
+            ...(baseline ? { baseline: baseline.id } : {}),
+            counts: status['counts'],
+            eval: status['eval'],
+            id: created.id,
+            name: config.name,
+            nanocode: status['nanocode'],
+            spend: status['spend'],
+          })
+        }
         const out =
           values.out ??
+          (lab ? Path.join(lab.directory, 'runs', created.id) : undefined) ??
           (process.env['NANOEVAL_RUNS_DIR']
             ? Path.join(
                 process.env['NANOEVAL_RUNS_DIR'],
@@ -1704,13 +1889,22 @@ async function main(): Promise<void> {
         process.exitCode = status['counts'].errored ? 1 : 0
         return
       }
+      if (gone) {
+        await api.cancel(created.id)
+        throw new Error('the runner ended before the run did: see ' + runner!.log)
+      }
       await new Promise((resolve) => setTimeout(resolve, 2000))
     }
   }
 
   const run = required(rest[0], 'RUN')
   if (command === 'compare') {
-    process.stdout.write(Compare.table(await Promise.all(rest.map((id) => api.results(id)))))
+    const runs = await Promise.all(rest.map((id) => api.results(id)))
+    const baseline = values.baseline ? await api.results(values.baseline) : undefined
+    process.stdout.write(
+      Compare.table(baseline ? [baseline, ...runs] : runs) +
+        (baseline ? runs.map((result) => '\n' + Compare.against(baseline, result)).join('') : ''),
+    )
     return
   }
   if (command === 'status') console.log(summary(await api.status(run)))

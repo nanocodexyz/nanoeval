@@ -53,6 +53,8 @@ The table says what was run. "The first version" is the flow before the eval tab
 | nanocode-ts harness sessions | Implemented, on nanocode-ts `build-7968b53`. Tested end to end under local workerd. A cell that names no yield runs for two minutes before it goes back to the model (`CELL_YIELD_MS`), where the protocol gives it 10 s: the plain lane on directory slots runs a cell of 12 s and asks that it ends in the exec that started it. Measured with a model on 20 tasks, one attempt each: 174 model calls where 10 s took 219, 9 `wait` calls where it took 29, 17 passed where 16 did. See [DECISIONS.md](DECISIONS.md#2026-11-13-a-cell-yields-after-two-minutes-set-by-the-brain) |
 | Installed agents (`codex-cli`, `claude-code`): the vendor's command line inside the slot, its model requests through an endpoint of the run that adds the credential | Implemented, tested: unit tests for the agent syntax, the commands, the credential swap and the usage meter, and end-to-end lanes with a scripted command on directory and krun slots (tasks, failure kinds, a restarted and a lost runner), on ns slots in a guest (tasks), and on krun slots whose tasks close the agent's network. Codex CLI 0.166.0 ran 6 Terminal-Bench 2.1 tasks on krun slots through a ChatGPT plan login beside a nanocode session on the same model: 6 passed for each, and it passed two fixtures in an Alpine image. The Claude Code 2.1.318 binaries ran on krun slots in an Alpine and a Debian image against a scripted Messages endpoint. Through the gateway, from a deployed Worker, both commands ran on ns slots in a sandbox the run leased, where the runner fetched their releases: Codex CLI 0.166.0 and Claude Code 2.1.318 each passed `fix-git` on a small model, and again at high effort on a large one. Those are the first answers Claude Code had from a real Messages endpoint, see [Deploy it](#deploy-it). Claude Code has not run with an Anthropic API key or a plan login: no valid login was at hand. See [DESIGN.md](DESIGN.md#installed-agents) |
 | `nanoeval compare RUN...`: the agents of one or more runs in one table | Implemented, tested |
+| `nanoeval revision`: a revision of nanocode and of nanocode-ts built and run on one machine with no release, see [Evaluating a nanocode commit](#evaluating-a-nanocode-commit) | Implemented, tested: unit tests for what is built from what is named, the name of a checkout with changes, a build tree moved between a branch, a commit and such a checkout, the lab's lock, the aliases of the Worker, the tasks to import and the credential check. Run for real on a Linux machine with KVM, krun slots: the commit of the pinned hand with nanocode-ts `2672c04` on its own nanocode, the nanocode and nanocode-ts masters of the day, and a checkout with an uncommitted change, each built by the command, then four Terminal-Bench 2.1 tasks with a scripted model that runs each task's solution through the hand, two attempts each, 8 of 8 passed on both revisions, and `gpt-6-luna` on two of the tasks, 2 of 2 on both. The plain lanes on krun and on directory slots passed on the builds of the masters. **Not run**: a package in an empty lab from start to end in one build, `--hand-profile dist`, `--nanocode-ts` as a checkout, ns and directory slots through the command, two labs at once, a `claude` agent with a model |
+| What a run ran on: the nanocode-ts build of its Worker and the hand of each runner, in `status`, `compare`, the trajectory and the Harbor result, and `compare --baseline` | Implemented, tested: unit tests, every end-to-end lane asks that its run names the build of its Worker and one hand, and three runs on three builds of nanocode-ts in one state were compared under one of them, each baseline read under the build of the run set against it. A runner that starts from the runtime archive names the release its archive was built with, which the lanes on that archive ask |
 | Local sandbox provider (`nanoeval sandboxd`) | Implemented, tested |
 | Slot backend `krun`, one libkrun microVM per slot | Implemented, tested on a Linux machine with KVM: every end-to-end lane, 32 microVMs at once, and Terminal-Bench 2.1 with the tasks' own solutions, imported once and run by two runners: 82 of the 89 pass, and all 89 rows end as they did when slots pulled images. [DECISIONS.md](DECISIONS.md#2026-11-11-no-container-engine-at-import-or-at-run-time) has the table |
 | Slot backend `ns`, one set of namespaces per slot over the same disk, for a machine with root and no KVM | Implemented, tested inside a microVM guest without KVM (the slot test and the scripted, oracle, failures, judge, network, restart and packing lanes) and in E2B sandboxes. It shares the machine's kernel: see [ns slots](#ns-slots) |
@@ -180,6 +182,99 @@ A long run on a machine with little disk takes two more options. `--disks remove
 Two more commands prune what imports leave, and both only list until `--remove` is given. `nanoeval prune layers --days N` lists the layers, configs and manifests of the layer cache that no import used for N days, with abandoned downloads, each with its size. `nanoeval prune store` asks the Worker for every version of every eval and lists the blobs of the directory store that none of them names, with the files an import that died left staged. A removal is refused while an import is converting from that cache or writing to that store, and `prune store --remove` is refused when the Worker names no blob of the store, unless `--allow-empty` says that emptying it is meant: a Worker started on the wrong state would otherwise take everything. Eval versions are never removed, and blobs in R2 are not pruned. [DESIGN.md](DESIGN.md#pruning) has the rules.
 
 `--verifier-cache` makes the verifier of a task find what uv downloaded for it before: an oracle run with the option keeps it in the runner's cache, and later attempts of that task on the machine start their verifier with it. It is off by default, and [DESIGN.md](DESIGN.md#verifier-cache) says what it does and does not change.
+
+## Evaluating a nanocode commit
+
+Every run above is on the two builds this checkout pins: the nanocode-ts release in `package.json`, which is the harness, and the hand release in `src/Slot.ts`. `nanoeval revision` runs any other revision of nanocode, and of nanocode-ts, on one Linux machine with KVM: no release, no change of the pins and no deployment. It builds what the revision needs, starts the Worker under local workerd on the built package, attaches a runner with the built hand, waits, and sets the run against a baseline.
+
+```sh
+# The baseline: nothing is built, the pinned hand and the pinned package. It prints the id of its run.
+node cli/nanoeval.ts revision --eval terminal-bench-2.1 --only fix-git --only cancel-async-tasks \
+  --agent luna=codex:gpt-6-luna --codex-login ~/.codex/auth.json --attempts 2 --model-budget-usd 1
+
+# A commit, a branch or a tag of nanocode: its hand, and nanocode-ts master built against it.
+node cli/nanoeval.ts revision --nanocode master --baseline RUN \
+  --eval terminal-bench-2.1 --only fix-git --only cancel-async-tasks \
+  --agent luna=codex:gpt-6-luna --codex-login ~/.codex/auth.json --attempts 2 --model-budget-usd 1
+
+# "I changed nanocode here, did I break anything": the checkout as it is, uncommitted changes included.
+node cli/nanoeval.ts revision --nanocode ~/src/nanocode --baseline RUN --eval terminal-bench-2.1 --limit 8 \
+  --agent luna=codex:gpt-6-luna --codex-login ~/.codex/auth.json --model-budget-usd 1
+
+# A change that only the hand runs, a tool or the shell: keep the pinned package and build the hand alone.
+node cli/nanoeval.ts revision --nanocode ~/src/nanocode --nanocode-ts pinned --baseline RUN \
+  --eval terminal-bench-2.1 --only fix-git --agent luna=codex:gpt-6-luna --codex-login ~/.codex/auth.json
+
+# Before a merge, with no model: the end-to-end lanes of this repository on the two builds.
+eval "$(node cli/nanoeval.ts revision --nanocode ~/src/nanocode --build-only)"
+npm run e2e && NANOEVAL_E2E_BACKEND=dir npm run e2e
+
+# Read the runs of the lab later: its state is served until the command is interrupted.
+node cli/nanoeval.ts revision --serve --port 8787 &
+export NANOEVAL_URL=http://127.0.0.1:8787 NANOEVAL_TOKEN=$(cat ~/.local/share/nanoeval/lab/token)
+node cli/nanoeval.ts runs
+node cli/nanoeval.ts compare --baseline RUN RUN RUN
+```
+
+**What is built.** `--nanocode` names a commit, a branch or a tag of the nanocode repository (`--nanocode-repository`, GitHub unless named), or a directory: a checkout, taken as it is, with its uncommitted changes and the untracked files that git does not ignore. The checkout is only read. The hand is built from it with `cargo build --locked --profile release -p nanocode-cli`. `--hand-profile dist` is the profile of a release and slower to build. `--nanocode-ts` names a revision or a checkout of nanocode-ts in the same way, `master` unless named, and the package is built against that nanocode as nanocode-ts builds itself: `scripts/build.mjs` for the four WebAssembly modules, then `npm run build:ts`, with `sdk-revision.json` naming the revision and the lock file of its Rust crates refreshed for it. `--sdk` names another nanocode for the package than the one of the hand, and `--sdk pinned` the one that the nanocode-ts revision names itself. `pinned` in place of a revision is what this checkout pins, and builds nothing. The shell and the Python of the package stay at the revisions that nanocode-ts pins for them.
+
+The machine needs git, Rust through rustup with the `wasm32-unknown-unknown` target, Node 24 and npm, beside what [krun slots](#krun-slots) need. The host policy of a runner applies as it does to `nanoeval runner`: `--ca-bundle`, `--slot-env` and `--slot-forward`, or their variables. With `--ca-bundle` the Node of the package's build trusts the bundle too, since its last step installs two Python packages.
+
+**The lab.** Everything is kept in one directory, `~/.local/share/nanoeval/lab` (`--lab`, `NANOEVAL_LAB`):
+
+| In the lab | Holds |
+| --- | --- |
+| `source/` | One build tree of nanocode and one of nanocode-ts, moved to each revision in turn, so a later revision compiles only what changed |
+| `hands/`, `packages/` | The builds, by revision: a revision is built once. A checkout with changes is named by its commit and a digest of the changes |
+| `worker/` | The tables of the Worker: the evals and every run of the lab, whatever it ran on |
+| `runner/`, `logs/` | The home of the runner, and the logs of each build, of the Worker and of the runner of each run |
+| `runs/RUN/`, `runs.jsonl` | The Harbor job of each run, and one line a run with its id, its revisions and its counts |
+| `token` | The access token of the lab's Worker |
+
+The blob store, the cache and the layers are the machine's, as for `import` and `runner`. The tasks a run names are imported into the lab's eval the first time and found there afterwards, and `--limit` counts in the tasks the lab holds.
+
+**The Worker under test** is `nanoeval worker --nanocode-ts DIR`: wrangler bundles the Worker with every entry of the `nanocode-ts` package aliased to the built one, whose dependencies were installed beside it from its own lock file. `package.json` and `node_modules` of this checkout are not touched. One state serves every build: a finished attempt is in the tables of its run, with its events, its trajectory and the files of its verifier, and no session of another build is read for it.
+
+**One evaluation at a time.** An evaluation holds the lab from its build to its summary. A second one in the same lab waits for it, and so does `--serve`. Each evaluation starts its Worker on a free port and stops it and its runner at the end, so nothing is left running. Two evaluations at once take two labs, each with its own builds and its own runs.
+
+**The model credential** is the one `nanoeval worker` takes: the variables of the command, or `--claude-login` and `--codex-login`. An evaluation whose agents or judge no credential serves is refused before anything is built.
+
+**What a run says it ran on.** A run records the nanocode-ts build of the Worker that created it, and each runner reports the hand it placed: the pinned release, the revision it was built from, or the SHA-256 of the file that `NANOEVAL_NANOCODE` names. `status` and `compare` print both, the trajectory and the Harbor result of an attempt carry them as the version of the agent, and `compare` keeps the runs of one agent on different revisions apart. `--baseline RUN` sets a run against another, agent by agent, here two attempts of `gpt-6-luna` on the commit of the pinned hand and on the master of that day:
+
+```
+luna: run RUN against the baseline BASELINE
+
+|  | Baseline | Run |
+| --- | --- | --- |
+| nanocode | nanocode-ts 2672c043e379 on nanocode 439011f972c4, hand nanocode 3f97ab009aa6 | nanocode-ts 8ff3d5f8c98b on nanocode f43ff49cee1d, hand nanocode f43ff49cee1d |
+| Tasks | 2 | 2 |
+| Attempts | 2 | 2 |
+| Passed | 2 | 2 |
+| Failed | 0 | 0 |
+| Errored | 0 | 0 |
+| pass@1 | 100.0% | 100.0% |
+| Input tokens (cached) | 127,095 (85,632) | 153,565 (106,496) |
+| Output tokens | 1,983 | 2,049 |
+| Cost | $0.0060 | $0.0068 |
+
+gained: none
+lost: none
+solved in both: 2, in neither: 0
+```
+
+**What it takes**, measured on a machine with 32 cores whose load average was 66 to 100 from other work:
+
+| | Seconds |
+| --- | --- |
+| The hand, in an empty lab | 239 |
+| The package, in an empty lab | About 900: 856 to its last step, which that build did not pass, see [DECISIONS.md](DECISIONS.md#2026-11-14-a-revision-of-nanocode-runs-on-one-machine-with-no-release) |
+| Seven commits of nanocode later in the same lab: hand, package | 101, 189 |
+| An older nanocode and another nanocode-ts in the same lab: hand, package | 347, 355 |
+| A checkout with one changed file, after the lab had built an older revision: hand, package | 165, 262 |
+| A revision that was built before | Nothing is built: 8.4 from the command to the first claim |
+| Four tasks, two attempts each, four krun slots, the scripted model: the whole command | 55, 64 and 98 |
+
+**What it does not do.** The runs are on this machine only: a revision is not run on a deployed Worker or in leased sandboxes. A nanocode-ts revision that does not build against the nanocode it is given ends the command with the compiler's error: name a pair that fits, with `--nanocode-ts` or `--sdk`. The hand is built for this machine and placed in slots with the machine's loader and libraries, as `NANOEVAL_NANOCODE` always was, and not against the old glibc of a release, so a row measures the revision and not the release build of it.
 
 ## Datasets
 
