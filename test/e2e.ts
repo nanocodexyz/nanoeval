@@ -1357,6 +1357,7 @@ async function main(): Promise<void> {
       imported.tasks.map((task) => Math.ceil(task.resources.cpus) + ' ' + task.resources.memoryMb),
     )
     let status: Record<string, any>
+    const cut = new Set<string>()
     let restarted = false
     let forgotten = 0
     let activeAt: number | undefined
@@ -2409,21 +2410,28 @@ async function main(): Promise<void> {
         'the requests of the row are those the model endpoint answered',
       )
     } else if (model === 'scripted' || installed) {
-      let interrupted = 0
       if (scenario === 'restart' && !installed)
-        for (const attempt of status['attempts'] as {
-          agent: string
-          id: string
-          outcome: string
-        }[])
+        for (const attempt of status['attempts'] as { id: string }[])
           if (
-            attempt.agent === 'right' &&
-            attempt.outcome === 'failed' &&
             (await api.artifact(created.id, attempt.id, 'agent/events.jsonl')).includes(
               '"outcome_unknown":true',
             )
           )
-            interrupted++
+            cut.add(attempt.id)
+      if (scenario === 'restart' && !installed)
+        console.log(
+          'restart: the kill cut a tool call of ' +
+            cut.size +
+            ' of ' +
+            total +
+            ' attempts before it was dispatched',
+        )
+      const interrupted = (
+        status['attempts'] as { agent: string; id: string; outcome: string }[]
+      ).filter(
+        (attempt) =>
+          attempt.agent === 'right' && attempt.outcome === 'failed' && cut.has(attempt.id),
+      ).length
       assert.equal(
         status['agents'].right.passed + interrupted,
         total / 2,
@@ -2632,7 +2640,10 @@ async function main(): Promise<void> {
         )
         assert.equal(trajectory.schema_version, 'ATIF-v1.7')
         assert.ok(trajectory.steps.length >= 2)
-        assert.ok(trajectory.final_metrics.extra.tool_calls >= 1)
+        assert.ok(
+          cut.has(attempt.id) || trajectory.final_metrics.extra.tool_calls >= 1,
+          'an attempt made a tool call, unless the restart cut the call before it was dispatched',
+        )
         if (installed) {
           const kind = detail['result'].agent.provider as keyof typeof fakeUsage
           assert.deepEqual(
