@@ -1,7 +1,7 @@
 import type * as Atif from '../src/Atif.ts'
-import type * as Config from '../src/Config.ts'
 import * as Sse from '../src/Sse.ts'
 import * as Telemetry from '../src/Telemetry.ts'
+import * as Turn from '../src/Turn.ts'
 import { account, type Env } from './Env.ts'
 import { nanocode } from './Sessions.ts'
 
@@ -19,17 +19,6 @@ export type Report = {
   ok?: { message?: string; model?: string; session_id?: string }
   request_id: string
   status: 'cancelled' | 'completed' | 'failed' | 'queued' | 'running'
-}
-
-export type Turn = {
-  hand?: string
-  model: string
-  orchestration?: 'direct'
-  payer?: Config.Payer
-  prompt: string
-  provider: 'claude' | 'codex'
-  requestId: string
-  thinking?: string
 }
 
 async function call(env: Env, path: string, init: RequestInit = {}): Promise<Response> {
@@ -68,21 +57,12 @@ export async function hands(env: Env, name: string): Promise<readonly string[]> 
   return listed.hands
 }
 
-export async function submit(env: Env, name: string, turn: Turn): Promise<Report> {
+export async function submit(env: Env, name: string, turn: Turn.Turn): Promise<Report> {
   return json<Report>(
     await call(env, session(name) + '/turns', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        ...(turn.hand ? { hand: turn.hand } : {}),
-        ...(turn.orchestration ? { codex_orchestration: turn.orchestration } : {}),
-        model: turn.model,
-        ...(turn.payer ? { payer: turn.payer } : {}),
-        prompt: turn.prompt,
-        provider: turn.provider,
-        request_id: turn.requestId,
-        ...(turn.thinking ? { thinking: turn.thinking } : {}),
-      }),
+      body: JSON.stringify(Turn.body(turn)),
     }),
     'submitting the turn',
   )
