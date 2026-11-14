@@ -133,7 +133,7 @@ export function script(agent: Agent, options: { url: string }): string {
         'else',
         '  set -- "$NANOEVAL_AGENT_RT/nanocode"',
         'fi',
-        'export NANOCODE_HOME="$NANOEVAL_AGENT_HOME" NANOCODE_NO_TEMPO_TOOLS=1',
+        'export NANOCODE_HOME="$NANOEVAL_AGENT_HOME"',
         ...(harness === 'codex'
           ? [
               'export NANOCODE_OPENAI_BASE_URL=' + quote(options.url),
@@ -148,6 +148,7 @@ export function script(agent: Agent, options: { url: string }): string {
           'exec "$@" exec',
           '--ephemeral',
           '--no-subagents',
+          '--no-tempo-tools',
           '--harness ' + harness,
           '-m ' + quote(agent.model),
           ...(agent.thinking ? ['-t ' + quote(agent.thinking)] : []),

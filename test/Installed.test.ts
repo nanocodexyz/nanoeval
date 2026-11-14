@@ -279,6 +279,7 @@ test('the command of nanocode is the runtime of the slot and reads the endpoint 
     'exec',
     '--ephemeral',
     '--no-subagents',
+    '--no-tempo-tools',
     '--harness',
     'codex',
     '-m',
@@ -293,7 +294,6 @@ test('the command of nanocode is the runtime of the slot and reads the endpoint 
     /^NANOCODE_OPENAI_BASE_URL=http:\/\/127\.0\.0\.1:8787\/v1\/runs\/r\/model\/a00001$/m,
   )
   assert.match(codex, new RegExp('^NANOCODE_OPENAI_API_KEY=' + attemptToken + '$', 'm'))
-  assert.match(codex, /^NANOCODE_NO_TEMPO_TOOLS=1$/m)
   assert.match(codex, /^NANOCODE_HOME=.*home-nanocode-codex$/m)
   assert.equal(codex.split(attemptToken).length, 3, 'the token is in two variables and no argument')
 
@@ -302,10 +302,11 @@ test('the command of nanocode is the runtime of the slot and reads the endpoint 
     runtime(false),
   )
   assert.doesNotMatch(claude, /^loader:/m)
-  assert.deepEqual(args(claude).slice(0, 5), [
+  assert.deepEqual(args(claude).slice(0, 6), [
     'exec',
     '--ephemeral',
     '--no-subagents',
+    '--no-tempo-tools',
     '--harness',
     'claude',
   ])

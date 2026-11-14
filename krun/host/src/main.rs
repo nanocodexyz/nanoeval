@@ -114,7 +114,9 @@ fn main() -> ExitCode {
         #[cfg(feature = "microvm")]
         Some("check") => vm::check(),
         #[cfg(not(feature = "microvm"))]
-        Some("check" | "vm") => Err("this build of nanoeval-krun starts no microVM".to_owned()),
+        Some("check") => Err("this build of nanoeval-krun starts no microVM".to_owned()),
+        #[cfg(not(feature = "microvm"))]
+        Some("vm") => namespace_builder(arguments),
         Some("copy-in") => copy(arguments, true),
         Some("copy-out") => copy(arguments, false),
         Some("exec") => exec(arguments),
@@ -136,6 +138,40 @@ fn main() -> ExitCode {
             })
         }
     }
+}
+
+#[cfg(not(feature = "microvm"))]
+const NAMESPACE_BUILDER: &str = "set -e; mkdir -p /mnt/root /.nanoeval; mount -o loop \"$1\" /mnt/root; mount --bind \"$2\" /.nanoeval; exec \"$3\" ns-serve";
+
+#[cfg(not(feature = "microvm"))]
+fn namespace_builder(arguments: impl Iterator<Item = OsString>) -> Result<u8, String> {
+    use std::os::unix::process::CommandExt;
+    let arguments = Arguments::parse(
+        arguments,
+        &["boot", "build", "cpus", "leash", "memory-mib", "socket"],
+    )?;
+    if arguments.one("socket")? != "vm.sock" {
+        return Err("a namespace builder serves vm.sock only".to_owned());
+    }
+    let build = fs::canonicalize(arguments.one("build")?)
+        .map_err(|error| format!("the build disk: {error}"))?;
+    let guest = Path::new(arguments.one("boot")?).join("nanoeval-krun-guest");
+    let home = env::current_dir().map_err(|error| format!("the builder's directory: {error}"))?;
+    let error = std::process::Command::new("unshare")
+        .args([
+            "-m",
+            "--propagation",
+            "private",
+            "sh",
+            "-c",
+            NAMESPACE_BUILDER,
+        ])
+        .arg("nanoeval-krun")
+        .arg(build)
+        .arg(home)
+        .arg(guest)
+        .exec();
+    Err(format!("unshare did not start: {error}"))
 }
 
 fn exec(arguments: impl Iterator<Item = OsString>) -> Result<u8, String> {

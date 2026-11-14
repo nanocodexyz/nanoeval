@@ -28,6 +28,17 @@ export const adapters: readonly Dataset.Adapter[] = [
     tasks: 'a52279506fb02fe3b3daa430a0c8e027ad71e9df582b4bb833f709cb28b9252a',
     version: '7d7bdc1cbedad549fc1140404bd4dc45e5fd0ea7c4186773687d177ad3a0699a',
   }),
+  HarborHub.create({
+    description:
+      'DeepSWE v1.1, 113 long-horizon tasks from open-source repositories, as published to the Harbor registry',
+    name: 'deep-swe-1.1',
+    package: 'datacurve/deep-swe-1-1',
+    proof:
+      'task directories written with --out and checked against their digests. Not importable as an eval: its tasks use task schema 1.3, a verifier in an environment of its own, collect hooks and reward.json',
+    state: 'unverified',
+    tasks: '395be8f15204cc7e48df1a6457978c33f3ee49813241656586977309cd265d56',
+    version: '5affcd534fd90ac85d202d4c63f8b35ddc942140afdd5d60014a21365440a2f5',
+  }),
 ]
 
 export function find(name: string): Dataset.Adapter | undefined {
