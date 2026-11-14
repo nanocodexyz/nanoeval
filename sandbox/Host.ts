@@ -30,11 +30,19 @@ export function kvm(device = '/dev/kvm'): Kvm {
 }
 
 export function krunfw(): boolean {
+  const name = 'libkrunfw.so.5'
   const listed = spawnSync('ldconfig', ['-p'], {
     encoding: 'utf8',
     env: { ...process.env, PATH: (process.env['PATH'] ?? '') + ':/usr/sbin:/sbin' },
   })
-  return listed.status === 0 && listed.stdout.includes('libkrunfw.so.5')
+  if (listed.status === 0 && listed.stdout.includes(name)) return true
+  return [
+    ...(process.env['LD_LIBRARY_PATH'] ?? '').split(':').filter(Boolean),
+    '/lib',
+    '/usr/lib',
+    '/lib64',
+    '/usr/lib64',
+  ].some((directory) => Fs.existsSync(Path.join(directory, name)))
 }
 
 export function machine(): Machine {
