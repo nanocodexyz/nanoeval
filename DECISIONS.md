@@ -3403,3 +3403,28 @@ Every command that was refused ended in an uncaught rejection: Node printed the 
 - `npm run lint`, `npm run check:types`, `npm test`.
 
 **Not verified.** A real model, where the assumption of independent attempts is the open question. Runs of many tasks: the test was read on 8 tasks here and on fixtures. Agents are matched by their id, so a comparison of two models has to give them one id.
+
+## 2026-11-14: an exit status that gates a script
+
+`run --wait` exits 1 when an attempt errored and 0 otherwise, and `compare` always 0, so a script could stop on a broken machine and not on a lower pass rate: it had to read the summary. That status is kept as it is, because scripts read it, and a gate is asked for by name.
+
+**The rule.** `--fail-on` takes `regression`, `lost` and `any-failure`, repeated or as a list, on `run --wait`, `revision` and `compare`.
+
+| Status | When |
+| --- | --- |
+| 3 | `regression`: the verdict of the comparison against the baseline is a regression, for any agent. `lost`: that, or one task is lost |
+| 4 | `any-failure`: an attempt failed or errored. For `compare`, an attempt of the runs named that stands after their reruns, not of the baseline |
+| 1 | As before: an attempt errored or was cancelled, for `run --wait` and `revision`. And a gate that cannot be judged is refused: no `--baseline`, an agent the baseline does not have, or no task that both sides scored |
+| 0 | Nothing of the above |
+
+3 goes before 4 and 4 before 1: the status names the strongest thing the command found. `run --wait` takes `--baseline`, repeated for a baseline with its reruns, and prints the comparison under its summary, as `revision` did, so that one command runs a selection and gates on it. `--baseline` or `--fail-on` without `--wait` is refused, since there is nothing to read yet.
+
+**Which gate.** `regression` has the error rate of the verdict: a run of an agent that did not change fails it at most 1 time in 20. `lost` also fails on a single task at 0.05 or less, which finds a task that broke beside many flaky ones that dilute the verdict, and fails more often by chance, each flaky task adding its own small rate. A gate that fails on every lower pass rate was not added: with a few attempts that is a coin.
+
+**Checked.**
+
+- `test/Gate.test.ts`: the names and a wrong one, every status with and without a gate, noise that does not fail `regression`, one task lost beside one gained that fails `lost` and not `regression`, and the order of 3, 4 and 1.
+- From a shell on directory slots with the scripted model, the runs of the entry above: `compare --baseline` with no gate 0; `--fail-on regression` 0 where the verdict is noise and one task is lost, and 3 against the baseline with its reruns, where it is a regression at 0.010; `--fail-on lost` 3; `--fail-on any-failure` 4; both gates 3. `run --eval ... --only ... --attempts 3 --baseline RUN --baseline RERUN --baseline RERUN --fail-on regression --wait` on five tasks printed its summary, the comparison and exited 3. A gate without a baseline, a gate with another word, and `--baseline` without `--wait` each printed one line and exited 1 before anything was run or printed.
+- `npm run lint`, `npm run check:types`, `npm test`.
+
+**Not verified.** `revision --fail-on`: it shares the code of `run --wait` and was not run, since it builds nanocode. A gate in a CI job.

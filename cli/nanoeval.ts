@@ -107,6 +107,7 @@ const usage = `nanoeval <command>
             List the imported evals, or the versions and tasks of one.
   run       --url URL --token T (--eval NAME[@DIGEST] [--only ID]... [--limit N] | --task DIR...
             | --rerun RUN [--failed] [--errored] [--only ID]... [--agent ID]...)
+            [--baseline RUN]... [--fail-on regression|lost|any-failure]...
             (--agent ID=HARNESS:MODEL[:THINKING]... | --oracle) [--judge PROVIDER:MODEL[:THINKING]]
             [--attempts 1] [--provider local|e2b|gateway] [--backend auto|krun|ns|dir] [--slots 4]
             [--sandboxes 1] [--memory-mb N] [--network private|host] [--template NAME]
@@ -169,7 +170,12 @@ const usage = `nanoeval <command>
             job to --out, or under NANOEVAL_RUNS_DIR when that is set. It then exits 0 when
             no attempt errored, also when attempts failed, and 1 when one errored or was
             cancelled. Without --wait it exits 0 once the run is created. A command that
-            is refused exits 1, and an unknown command 2.
+            is refused exits 1, and an unknown command 2. With --wait, --baseline RUN
+            (repeat it for the reruns of the baseline) sets the run against that run as
+            compare --baseline does, and --fail-on makes the exit status a gate:
+            regression exits 3 when the verdict against the baseline is a regression,
+            lost exits 3 also when a single task is lost, any-failure exits 4 when an
+            attempt failed or errored. 3 goes before 4, and 4 before 1.
             An e2b sandbox is paid for its whole lifetime when it is opened, 3600 s at most:
             without --sandbox-timeout-sec the run takes the longest its rows can keep its
             slots busy, from the setup, agent and verifier timeouts of their tasks, up to
@@ -247,7 +253,8 @@ const usage = `nanoeval <command>
   attempt   --url URL --token T RUN ATTEMPT [ARTIFACT]
   export    --url URL --token T RUN --out DIR
             Write the run as a Harbor job directory, and print where.
-  compare   --url URL --token T [--baseline RUN]... RUN...
+  compare   --url URL --token T [--baseline RUN]... [--fail-on regression|lost|any-failure]...
+            RUN...
             Print one table of the agents of these runs: attempts, outcomes, time, tokens and
             estimated cost per agent, and the outcome of every task per agent. Runs of one
             agent on different nanocode revisions are separate rows, and so are runs that
@@ -259,6 +266,9 @@ const usage = `nanoeval <command>
             gained, and the verdict a regression or an improvement, only when pass counts
             that far apart have a chance of 0.05 or less under no change; otherwise a task
             moved within noise. A task whose attempts all errored on a side is not compared.
+            --fail-on makes the exit status a gate, as for run: 3 for a regression (or, with
+            lost, a lost task) of any of the runs, 4 with any-failure when an attempt of the
+            runs that stands failed or errored, 0 otherwise.
   revision  [--nanocode REV|DIR|pinned] [--nanocode-ts REV|DIR|pinned] [--sdk REV|DIR|pinned]
             [--lab DIR] [--hand-profile release] [--nanocode-repository URL|DIR]
             [--nanocode-ts-repository URL|DIR] [--build-only] [--baseline RUN]
@@ -381,6 +391,49 @@ export function rerunSelection(values: {
         ', and narrow it with --failed, --errored, --only or --agent',
     )
   return values.failed === values.errored ? 'unpassed' : values.failed ? 'failed' : 'errored'
+}
+
+export type Gate = 'any-failure' | 'lost' | 'regression'
+
+export function gates(named: readonly string[] | undefined): Set<Gate> {
+  const known: readonly string[] = ['any-failure', 'lost', 'regression']
+  const found = (named ?? []).flatMap((value) => value.split(','))
+  for (const name of found)
+    if (!known.includes(name))
+      throw new Error('--fail-on takes regression, lost or any-failure, not ' + name)
+  return new Set(found as Gate[])
+}
+
+export function exitStatus(input: {
+  changes: readonly Compare.Change[]
+  counts: { errored: number; failed: number }
+  on: ReadonlySet<Gate>
+  waited: boolean
+}): number {
+  const { on } = input
+  if (
+    (on.has('regression') || on.has('lost')) &&
+    Compare.regressed(input.changes, on.has('lost') ? 'lost' : 'regression')
+  )
+    return 3
+  if (on.has('any-failure') && (input.counts.failed || input.counts.errored)) return 4
+  return input.waited && input.counts.errored ? 1 : 0
+}
+
+function judged(changes: readonly Compare.Change[], on: ReadonlySet<Gate>): void {
+  if (!on.has('regression') && !on.has('lost')) return
+  if (!changes.length)
+    throw new Error(
+      '--fail-on ' + [...on].join(',') + ' needs a baseline: name one with --baseline',
+    )
+  const blind = changes.filter((change) => !change.overall.tasks)
+  if (blind.length)
+    throw new Error(
+      '--fail-on ' +
+        [...on].join(',') +
+        ' cannot be judged: the baseline and the run share no scored task of ' +
+        blind.map((change) => change.agent).join(' and '),
+    )
 }
 
 export function client(options: { token: string; url: string }) {
@@ -982,6 +1035,7 @@ async function main(lab?: Revision.Lab): Promise<void> {
       eval: { type: 'string' },
       'exec-timeout-ms': { default: '600000', type: 'string' },
       help: { default: false, short: 'h', type: 'boolean' },
+      'fail-on': { multiple: true, type: 'string' },
       failed: { default: false, type: 'boolean' },
       'free-disk-mb': { type: 'string' },
       'hand-profile': { default: 'release', type: 'string' },
@@ -1772,6 +1826,13 @@ async function main(lab?: Revision.Lab): Promise<void> {
   if (command === 'run') {
     if (values.oracle && values.agent?.length)
       throw new Error('--oracle runs no model: leave out --agent')
+    const on = gates(values['fail-on'])
+    if ((values.baseline?.length || on.size) && !values.wait)
+      throw new Error('--baseline and --fail-on read a run that ended: add --wait')
+    if ((on.has('regression') || on.has('lost')) && !values.baseline?.length)
+      throw new Error(
+        '--fail-on ' + [...on].join(',') + ' needs a baseline: name one with --baseline',
+      )
     const baseline = await Promise.all((values.baseline ?? []).map((id) => api.results(id)))
     if (lab && !values.task?.length && !values.rerun) {
       const name = required(values.eval, 'eval').split('@')[0]!
@@ -1916,8 +1977,9 @@ async function main(lab?: Revision.Lab): Promise<void> {
       const status = await api.status(created.id)
       if (status['state'] === 'finished') {
         console.log(summary(status))
-        if (baseline.length) {
-          const results = await api.results(created.id)
+        const results = baseline.length ? await api.results(created.id) : undefined
+        const changes = results ? Compare.changes(baseline, results) : []
+        if (results) {
           process.stdout.write(
             '\n' +
               Compare.table([...baseline, results]) +
@@ -1951,7 +2013,8 @@ async function main(lab?: Revision.Lab): Promise<void> {
           await exportJob(api, { out, run: created.id })
           console.log('job written to ' + out)
         }
-        process.exitCode = status['counts'].errored ? 1 : 0
+        judged(changes, on)
+        process.exitCode = exitStatus({ changes, counts: status['counts'], on, waited: true })
         return
       }
       if (gone) {
@@ -1964,16 +2027,30 @@ async function main(lab?: Revision.Lab): Promise<void> {
 
   const run = required(rest[0], 'RUN')
   if (command === 'compare') {
+    const on = gates(values['fail-on'])
+    if ((on.has('regression') || on.has('lost')) && !values.baseline?.length)
+      throw new Error(
+        '--fail-on ' + [...on].join(',') + ' needs a baseline: name one with --baseline',
+      )
     const runs = await Promise.all(rest.map((id) => api.results(id)))
     const baseline = await Promise.all((values.baseline ?? []).map((id) => api.results(id)))
+    const sides = baseline.length ? Compare.lineages(runs) : []
+    const changes = sides.flatMap((side) => Compare.changes(baseline, side))
     process.stdout.write(
       Compare.table([...baseline, ...runs]) +
-        (baseline.length
-          ? Compare.lineages(runs)
-              .map((side) => '\n' + Compare.against(baseline, side))
-              .join('')
-          : ''),
+        sides.map((side) => '\n' + Compare.against(baseline, side)).join(''),
     )
+    judged(changes, on)
+    const standing = Compare.standing(runs).flatMap((result) => result.attempts)
+    process.exitCode = exitStatus({
+      changes,
+      counts: {
+        errored: standing.filter((attempt) => attempt.outcome === 'errored').length,
+        failed: standing.filter((attempt) => attempt.outcome === 'failed').length,
+      },
+      on,
+      waited: false,
+    })
     return
   }
   if (command === 'status') console.log(summary(await api.status(run)))
