@@ -976,7 +976,7 @@ export class Run extends DurableObject<Env> {
         webSearches: searches,
       },
       state: meta.finishedAt === null ? 'running' : 'finished',
-      strandedAt: meta.strandedAt ?? null,
+      strandedAt: rows.some((row) => row.phase === 'unclaimed') ? (meta.strandedAt ?? null) : null,
     }
   }
 
@@ -1580,7 +1580,7 @@ export class Run extends DurableObject<Env> {
 
   private async enforce(): Promise<void> {
     const config = this.config()
-    if (!this.rows().some((row) => row.phase === 'unclaimed')) return
+    if (!this.rows().some((row) => row.phase === 'unclaimed')) return this.unmark()
     if (await this.overBudget()) return
     await this.strand()
     const unclaimed = this.rows().filter((row) => row.phase === 'unclaimed')
@@ -1613,6 +1613,11 @@ export class Run extends DurableObject<Env> {
         },
         reward: null,
       })
+  }
+
+  private unmark(): void {
+    const { starvedAt, strandedAt, ...rest } = this.meta()!
+    if (starvedAt !== undefined || strandedAt !== undefined) this.setMeta(rest)
   }
 
   private async strand(): Promise<void> {

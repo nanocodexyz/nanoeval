@@ -2852,3 +2852,29 @@ A deployed Worker paid for its sessions with an API key or the gateway and with 
 - A login file of a local Worker after this change. Its session gets no payer and its request the same headers as before, read in the code. No valid login was at hand and none was used.
 - A refresh that fails without an answer, many sessions behind one refresh, and `plans sign-in` on a terminal.
 - CI on GitHub.
+
+## 2026-11-14: a row that a runner gives back waits its own time for the next runner
+
+A standing runner ran as a service for a day against a deployed Worker, with the tasks' solutions and a dozen restarts of the runner, and the defects it met are the six entries of this day. This one is in `worker/Run.ts` alone.
+
+**The defect.** A run that opens no sandbox ends the rows that no runner could take for `--setup-sec` as `environment` errors, so that it finishes instead of waiting for a runner that is not coming. `strand` keeps the moment that wait began in the run's `strandedAt` and takes it away when no row is stranded. `enforce` called it only while a row was unclaimed. A run that is handed to a standing runner is created without a runner, so the mark is written in its first tick, 18 ms after the run was created on the deployed Worker. When the rows of the run are no more than the slots of the runner, all of them are claimed before the next tick, `enforce` returned before `strand`, and the mark stayed for the life of the run. Two things followed.
+
+- A row that came back later, because its runner was stopped or lost, was measured against the creation of the run. Later than `--setup-sec` it ended in the millisecond its claim ended: "no runner of the run could take the row for 600 s: the run has no runner, and opens no sandbox itself", while the runner that had been started again stood idle in the pool. Met on the deployed Worker with a run of one row whose runner was restarted 621 s after the run was created.
+- `status` printed "rows wait since +0 s for a runner …" for every such run, the finished ones too.
+
+`starvedAt`, the same kind of mark for runners that are idle for want of disk, was kept the same way and is cleared the same way now. That one was read, not met.
+
+**The rule.** The time a row may wait for a runner is counted from the moment rows wait with no runner that could take them, and it ends when no row waits. `enforce` clears both marks when no row is unclaimed, so a row that a runner gives back has the whole of `--setup-sec` for the next runner. `status` reports `strandedAt` only while a row is unclaimed, so a run that a Worker without this change finished no longer says that its rows wait. Nothing is migrated: the mark of an existing run is in its own table and is read as before.
+
+**Checked** on the 32-core machine with KVM of the entries above, beside other work that kept its load average between 55 and 100.
+
+- **The lane `stopped`**, which the next entry adds to `ci.yml` because it passes only from there: a standing runner, a run of 6 rows with `--setup-sec 5` whose 6 slots take all of them at once, and the scripted model holding the second response of one row. Once every other row has its verdict and 6 s have passed, the lane stops the runner with SIGTERM, starts another and lets the model go. It asks that no row ends as an error, that the held row is claimed twice, and that the finished run has no `strandedAt`.
+- **Without the change**, the lane on the commit before this one, on directory slots: it failed after 73 s. The held row ended as an `environment` error, "no runner of the run could take the row for 5 s: the run has no runner, and opens no sandbox itself", with the second runner idle in the pool.
+- **With it**, one run: no row ended as an error. The lane still failed, after 76 s, on what the next entry describes: the row was claimed three times, the second claim `expired` in the `claimed` phase after the lease of 60 s.
+- What ran on all six changes together is at the end of the last entry of this day.
+
+**Not verified.**
+
+- A deployed Worker with this change, and a run made before it whose rows come back after it: the mark of such a run is still the one of its creation until a tick finds no row unclaimed, which is its next tick unless rows wait at that moment.
+- `starvedAt`: no lane holds a runner short of disk, lets every row be claimed and starves it again.
+- CI on GitHub.
