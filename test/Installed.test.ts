@@ -82,7 +82,10 @@ test('an agent names a session harness or an installed command', () => {
   )
   const arms = Config.parse({
     ...config,
-    agents: [parseAgent('nanox=codex:gpt-6-luna:high'), parseAgent('nanoxd=codex-direct:gpt-6-luna:high')],
+    agents: [
+      parseAgent('nanox=codex:gpt-6-luna:high'),
+      parseAgent('nanoxd=codex-direct:gpt-6-luna:high'),
+    ],
   }).agents
   assert.deepEqual(
     arms.map((agent) => [agent.id, agent.provider, agent.orchestration]),
