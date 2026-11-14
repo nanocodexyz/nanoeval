@@ -3107,3 +3107,13 @@ After the rebase onto `2244c58` (2026-11-14, same machine, Node 24.22.2, fresh c
 - A runner killed by the kernel under the unit, and the unit on systemd versions other than 255.
 - The lanes on krun and ns slots and the rest of `ci.yml`: the machine was running a run of another track.
 - CI on GitHub.
+
+## 2026-11-14: a codex-direct agent, on nanocode-ts `build-f3aa94f`
+
+An agent can run Codex with direct tools: `--agent nanoxd=codex-direct:gpt-6-luna:high`, or `{ "provider": "codex", "orchestration": "direct" }` in a run configuration (Georgios: one run carries nanox, Code Mode, and nanoxd, direct tools, to see whether Code Mode costs gpt-6-luna on reasoning-heavy Terminal-Bench tasks). The agent stays a `codex` session in every place that asks for the provider (the gateway, the meter, the plan, the payer), and its turn body carries `codex_orchestration: "direct"`. nanocode-ts binds that at the session's first accepted turn, as it binds the model, and opens the session with `CodexHarness::direct_tools_for`, so its model gets the hand's tools as tools of its own (`exec_command`, `write_stdin`, `apply_patch`, `view_image`, the hand's `Bash`, `Read`, `Edit`, `Write`, the subagent tools and `web__run`) and no `exec` or `wait`. Another session of the same Worker keeps Code Mode. `Config.parse` takes `orchestration` only as `direct` and only on a `codex` agent. `nanoeval compare` keeps the two apart by agent and names the direct one's model `codex-direct:MODEL`, and a Harbor export carries `orchestration` in the agent's kwargs.
+
+`build-f3aa94f` is nanocode-ts master 2aad477 with that option, against nanocode 0e428f673 on `feat/codex-direct-orchestration` (master 1072097ac and the commit that makes direct tools hold with a hand). It is not on nanocode-ts master.
+
+**Checked.** `npm test`: the new cases (the agent syntax, the configuration, the comparison) pass; on the macOS machine it ran on, the same 20 tests that fail on main fail here (the slot tests need Linux: `/proc/meminfo`, `flock`). `tsc --noEmit` for the CLI and the Worker. On nanocode-ts's own harness (its `bench/handbench.ts` with the TypeScript hand and a scripted Responses endpoint), a `codex` session with `codex_orchestration: "direct"` and one without, each on a hand: the first request of the direct session declared `exec_command`, `apply_patch` and no `exec` or `wait`, and its `exec_command` call ran on the hand; the default session declared `exec` and `wait` and ran the same command from a cell.
+
+**Not verified.** The e2e lanes (they need Linux), a deployed Worker, and a real model on either arm.
