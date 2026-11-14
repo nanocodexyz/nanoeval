@@ -72,3 +72,35 @@ test('a refused payment waits longer each time, within the notice of a lease and
   assert.equal(Payment.pause({ ...input, kind: 'spent', now: 1_590_000, tries: 20 }), 10_000)
   assert.equal(Payment.pause({ ...input, kind: 'spent', now: 1_600_000, tries: 0 }), undefined)
 })
+
+test('an agent that never started counts as an error of its slot and is retried', () => {
+  const timeout = {
+    at: 5,
+    kind: 'agent_timeout' as const,
+    message: 'the agent did not finish within 1800 s',
+  }
+  const stall = Retry.stalled({ failure: timeout, oomKills: 2, statuses: [] })
+  assert.deepEqual(stall, {
+    at: 5,
+    kind: 'environment',
+    message:
+      'the agent never reached its model and its slot had 2 OOM kills: the agent did not finish within 1800 s',
+  })
+  assert.equal(Retry.infrastructure({ failure: stall!, statuses: [] }), 'the agent never started')
+  assert.equal(Retry.stalled({ failure: timeout, oomKills: 2, statuses: [200] }), undefined)
+  assert.equal(Retry.stalled({ failure: timeout, statuses: [] }), undefined)
+  assert.equal(
+    Retry.stalled({ failure: { ...timeout, kind: 'agent' }, oomKills: 2, statuses: [] }),
+    undefined,
+  )
+  assert.equal(
+    Retry.infrastructure({
+      failure: {
+        kind: 'environment',
+        message: Retry.queued + ': it was still queued after 1800 s, with no hand attached',
+      },
+      statuses: [],
+    }),
+    'the agent never started',
+  )
+})
