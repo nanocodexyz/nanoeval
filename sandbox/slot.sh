@@ -780,6 +780,23 @@ cmd__agent() {
   esac
 }
 
+cmd_preflight() {
+  local slot=$1 seconds=$2
+  valid "$slot"
+  local dir=$home/slots/$slot
+  [ "$(state "$dir/up.status")" = exit:0 ] || die "slot $slot is not up"
+  case $(cat "$dir/backend") in
+    dir)
+      cd "$(cat "$dir/workdir")"
+      timeout -k 10 "$seconds" sh
+      ;;
+    krun | ns)
+      mapfile -t options < <(guest_options "$dir")
+      vm "$dir" exec "${options[@]}" -- timeout -k 10 "$seconds" sh
+      ;;
+  esac
+}
+
 stop_hand() {
   local slot=$1
   local dir=$home/slots/$slot
@@ -1072,10 +1089,10 @@ cmd_file() {
 }
 
 command=${1:-}
-[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|tools|agents|up|hand|agent|solve|verify|gone|down|drop|destroy|prune|status|log|files|file> ...'
+[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|tools|agents|up|hand|preflight|agent|solve|verify|gone|down|drop|destroy|prune|status|log|files|file> ...'
 shift
 case $command in
-  probe | setup | _setup | tools | agents | up | _up | _ns | drop | _drop | hand | _hand | agent | _agent | solve | _solve | verify | _verify | gone | down | destroy | prune | status | log | files | file)
+  probe | setup | _setup | tools | agents | up | _up | _ns | drop | _drop | hand | _hand | preflight | agent | _agent | solve | _solve | verify | _verify | gone | down | destroy | prune | status | log | files | file)
     "cmd_$command" "$@"
     ;;
   *) die "unknown command: $command" ;;

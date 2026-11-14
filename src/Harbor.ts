@@ -57,6 +57,7 @@ export function trialConfig(
         id: attempt.agent.id,
         provider: attempt.agent.provider,
         ...(attempt.agent.orchestration ? { orchestration: attempt.agent.orchestration } : {}),
+        ...(attempt.agent.preflight ? { preflight: true } : {}),
         ...(attempt.agent.thinking ? { reasoning_effort: attempt.agent.thinking } : {}),
       },
     },

@@ -120,7 +120,7 @@ export function model(agent: Result.Attempt['agent']): string {
   if (agent.provider === 'oracle') return 'the task solution'
   const provider = Installed.is(agent.provider)
     ? Installed.releases[agent.provider].provider
-    : agent.provider + (agent.orchestration ? '-' + agent.orchestration : '')
+    : kind(agent)
   return provider + ':' + agent.model + (agent.thinking ? ':' + agent.thinking : '')
 }
 
@@ -131,6 +131,7 @@ function key(agent: Result.Attempt['agent'], nanocode?: Pins.Pins): string {
     agent.model,
     agent.thinking ?? '',
     agent.orchestration ?? '',
+    agent.preflight ? 'preflight' : '',
     harness(agent, nanocode),
   ].join(' ')
 }
@@ -411,11 +412,21 @@ function side(given: Side): Run[] {
 }
 
 function typed(agent: Result.Attempt['agent']): string {
-  return [agent.provider, agent.orchestration ?? '', agent.model, agent.thinking ?? ''].join(' ')
+  return [
+    agent.provider,
+    agent.orchestration ?? '',
+    agent.preflight ? 'preflight' : '',
+    agent.model,
+    agent.thinking ?? '',
+  ].join(' ')
 }
 
 function kind(agent: Result.Attempt['agent']): string {
-  return agent.provider + (agent.orchestration ? '-' + agent.orchestration : '')
+  return (
+    agent.provider +
+    (agent.orchestration ? '-' + agent.orchestration : '') +
+    (agent.preflight ? '+preflight' : '')
+  )
 }
 
 function unique(values: readonly string[]): string[] {

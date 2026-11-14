@@ -25,6 +25,7 @@ export type Attempt = {
     id: string
     model: string
     orchestration?: 'direct'
+    preflight?: true
     provider: 'claude' | 'codex' | 'oracle' | Installed.Kind
     thinking?: string
   }

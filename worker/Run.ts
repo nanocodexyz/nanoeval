@@ -20,6 +20,7 @@ import * as Opening from '../src/Opening.ts'
 import * as Payment from '../src/Payment.ts'
 import * as Pins from '../src/Pins.ts'
 import * as Members from '../src/Pool.ts'
+import * as Preflight from '../src/Preflight.ts'
 import * as Protocol from '../src/Protocol.ts'
 import * as Proxy from '../src/Proxy.ts'
 import * as Result from '../src/Result.ts'
@@ -2822,6 +2823,7 @@ export class Run extends DurableObject<Env> {
         : {}),
       id: agent.id,
       oracle: agent.provider === 'oracle',
+      ...(agent.preflight ? { preflight: true as const } : {}),
     }
   }
 
@@ -2901,6 +2903,14 @@ export class Run extends DurableObject<Env> {
       }
       if (harness === 'installed')
         this.putArtifact(row.id, Installed.instruction, body.instruction!)
+      if (agent.preflight) {
+        if (typeof body.facts !== 'string')
+          throw new Refusal(
+            400,
+            'the agent takes a preflight, and the runner sent no facts from its probe',
+          )
+        this.putArtifact(row.id, Preflight.artifact, body.facts)
+      }
       if (agent.provider === 'claude' || agent.provider === 'codex') {
         try {
           await Harness.submit(this.env, session, {
@@ -2908,7 +2918,9 @@ export class Run extends DurableObject<Env> {
             model: agent.model,
             ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
             payer: this.payer(agent.provider),
-            prompt: body.instruction!,
+            prompt: agent.preflight
+              ? Preflight.prompt({ facts: body.facts!, instruction: body.instruction! })
+              : body.instruction!,
             provider: agent.provider,
             requestId,
             ...(agent.thinking ? { thinking: agent.thinking } : {}),

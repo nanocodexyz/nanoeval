@@ -215,6 +215,10 @@ const usage = `nanoeval <command>
             the model credential, so none enters the slot. nanocode-codex and nanocode-claude
             run nanocode exec with that harness inside the slot the same way, from the slot's
             runtime nanocode (NANOEVAL_NANOCODE on the runner names another build).
+            A claude, codex or codex-direct HARNESS followed by +preflight (nanoxp=codex+preflight:
+            gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
+            PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
+            puts what it printed before the instruction, in an <environment_facts> block.
             With --payer plan, the Claude plan signed in on the Worker (nanoeval plans) pays
             for the sessions of the run, its judge included, in place of the Worker's own
             credential: its agents and its judge are claude sessions, nothing is charged per
@@ -491,16 +495,17 @@ export function parseAgent(text: string): Config.Agent {
   const match = new RegExp(
     '^([^=]+)=(' +
       ['claude', 'codex-direct', 'codex', ...Installed.kinds].join('|') +
-      '):([^:]+)(?::([a-z]+))?$',
+      ')(\\+preflight)?:([^:]+)(?::([a-z]+))?$',
   ).exec(text)
   if (!match) throw new Error('an agent is ID=HARNESS:MODEL[:THINKING], not ' + text)
   const direct = match[2] === 'codex-direct'
   return {
     id: match[1]!,
-    model: match[3]!,
+    model: match[4]!,
     ...(direct ? { orchestration: 'direct' as const } : {}),
+    ...(match[3] ? { preflight: true as const } : {}),
     provider: direct ? 'codex' : (match[2] as Config.Agent['provider']),
-    ...(match[4] ? { thinking: match[4] } : {}),
+    ...(match[5] ? { thinking: match[5] } : {}),
   }
 }
 
@@ -674,6 +679,7 @@ export function agentText(agent: Config.Agent): string {
     agent.id +
     '=' +
     (agent.orchestration === 'direct' ? agent.provider + '-direct' : agent.provider) +
+    (agent.preflight ? '+preflight' : '') +
     ':' +
     agent.model +
     (agent.thinking ? ':' + agent.thinking : '')

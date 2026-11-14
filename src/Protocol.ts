@@ -38,7 +38,7 @@ export type ClaimRequest = {
 }
 
 export type Claimed = {
-  agent: { cli?: Installed.Agent; id: string; oracle: boolean }
+  agent: { cli?: Installed.Agent; id: string; oracle: boolean; preflight?: true }
   claim: string
   id: string
   leaseUntil: number
@@ -73,7 +73,7 @@ export type Session = { name: string; token: string; url: string }
 
 export type Endpoint = { token: string; url: string }
 
-export type Ask = { instruction?: string; waitMs?: number }
+export type Ask = { facts?: string; instruction?: string; waitMs?: number }
 
 export type Standing = { location?: string; member: number; token: string }
 

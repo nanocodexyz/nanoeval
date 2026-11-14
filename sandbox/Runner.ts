@@ -10,6 +10,7 @@ import * as Installed from '../src/Installed.ts'
 import * as Bytes from '../src/internal/Bytes.ts'
 import * as Judge from '../src/Judge.ts'
 import * as Pins from '../src/Pins.ts'
+import * as Preflight from '../src/Preflight.ts'
 import * as Protocol from '../src/Protocol.ts'
 import type * as Result from '../src/Result.ts'
 import * as Sandbox from '../src/Sandbox.ts'
@@ -80,6 +81,7 @@ type Work = {
   diskMb?: number
   down?: Promise<void>
   errors: number
+  facts?: string
   instruction?: string
   marks: Mark[]
   memoryMb?: number
@@ -1137,8 +1139,18 @@ async function attend(
       }
       case 'attach': {
         if (!item.row.agent.oracle) await instruct(item)
+        if (item.row.agent.preflight && item.facts === undefined) {
+          const file = Path.join(target, 'preflight.sh')
+          await Fs.writeFile(file, Preflight.script())
+          item.facts = await timed(item, 'attempt.preflight', () =>
+            shell(
+              slots.preflight(item.row.slot, config.limits.attachSec) + ' < ' + Sandbox.quote(file),
+            ),
+          )
+        }
         const askedAt = Date.now()
         const state = await rowCall<Protocol.Agent>(item, 'agent', {
+          ...(item.facts === undefined ? {} : { facts: item.facts }),
           ...(item.instruction === undefined ? {} : { instruction: item.instruction }),
           waitMs: holdMs,
         })

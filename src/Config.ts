@@ -19,6 +19,7 @@ export type Agent = {
   id: string
   model: string
   orchestration?: Orchestration
+  preflight?: true
   provider: 'claude' | 'codex' | 'oracle' | Installed.Kind
   thinking?: string
 }
@@ -201,10 +202,16 @@ export function parse(value: unknown): Config {
       choice(agent.orchestration, 'orchestration', ['direct'])
       if (provider !== 'codex') fail(agent.id + ' has an orchestration, which only codex takes')
     }
+    if (agent.preflight !== undefined) {
+      if (agent.preflight !== true) fail(agent.id + ' has a preflight that is not true')
+      if (provider !== 'claude' && provider !== 'codex')
+        fail(agent.id + ' has a preflight, which only claude and codex sessions take')
+    }
     return {
       id: agent.id,
       model: agent.model,
       ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
+      ...(agent.preflight ? { preflight: true as const } : {}),
       provider,
       ...(agent.thinking ? { thinking: agent.thinking } : {}),
     }
