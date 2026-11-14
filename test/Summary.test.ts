@@ -76,6 +76,6 @@ test('the summary says how many tasks a pass@k rates when errors left some out',
         ]),
       ),
     ),
-    'haiku: passed 1/4, errored 0, mean reward 0.250, pass@1 50.0%, pass@2 50.0%',
+    'haiku: passed 1/4, errored 0, mean reward 0.250, pass@1 25.0%, pass@2 50.0%',
   )
 })

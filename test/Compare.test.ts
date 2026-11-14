@@ -211,7 +211,7 @@ test('runs of one agent on different nanocode revisions are separate rows, and a
   assert.match(against, /^\| Attempts \| 9 \| 10 \|$/m)
   assert.match(against, /^\| Passed \| 4 \| 4 \|$/m)
   assert.match(against, /^\| Errored \| 1 \| 0 \|$/m)
-  assert.match(against, /^\| pass@1 \| 60\.0% \| 40\.0% \|$/m)
+  assert.match(against, /^\| pass@1 \| 50\.0% \| 40\.0% \|$/m)
   assert.match(against, /^\| pass@2 \| 66\.7% of 3 tasks \| 60\.0% \|$/m)
   assert.match(against, /^\| Input tokens \(cached\) \| 2,700 \(900\) \| 3,000 \(1,000\) \|$/m)
   assert.match(against, /^\| Cost \| \$2\.2500 \| \$2\.5000 \|$/m)

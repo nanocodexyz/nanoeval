@@ -3286,3 +3286,22 @@ An attempt ends as `passed`, `failed` or `errored`, so that an infrastructure fa
 - `npm run lint`, `npm run check:types`, `npm test`, and the plain lane on directory slots.
 
 **Not verified.** krun and ns slots, a real model, a deployed Worker: the change is in the summary, which no slot sees. A CLI of this commit against a Worker of the one before prints pass@k without the count of tasks.
+
+## 2026-11-14: pass@k is estimated from every scored attempt of a task
+
+pass@k came from gakonst/nanoeval as "any of the first k attempts passed". With more attempts than k that reads k of them and drops the rest: a run with `--attempts 3` printed a pass@1 that one attempt in three decided, and which attempt it was depended on the attempt number alone. It is an estimate of the right quantity, the chance that k attempts of a task include a pass, with more noise than the run had paid for.
+
+**Found** on directory slots under local workerd, with a scripted model whose answer to each attempt was planned.
+
+- 3 tasks, 2 attempts each, no error: the outcomes were passed and passed, failed and passed, failed and failed. `status` printed `passed 3/6, pass@1 33.3%, pass@2 66.7%`. Half of the attempts passed, and the mean pass rate of the three tasks is (1 + 1/2 + 0) / 3, 50.0 %.
+- 8 tasks, 3 attempts each, the run of the entry above: after that entry it printed `pass@1 33.3% of 6 tasks, pass@2 50.0% of 6 tasks`. By hand over the same scored attempts, pass@1 is (0 + 1 + 2/3 + 0 + 1/3 + 1/2) / 6, 41.7 %, and pass@2 is (0 + 1 + 1 + 0 + 2/3 + 1) / 6, 61.1 %.
+
+**The rule.** A task with n scored attempts of which c passed counts 1 − C(n−c, k)/C(n, k) towards pass@k: the share of the ways to draw k of its attempts that include a pass. This is the estimator of Chen et al., "Evaluating Large Language Models Trained on Code" (2021), unbiased for every k up to n, and equal to the earlier figure when a task has exactly k scored attempts. pass@1 is the mean pass rate of the tasks. Tasks may have different numbers of scored attempts, after errors or in a run that is under way, and each is rated with its own. Nothing else of the entry above changes.
+
+**Checked.**
+
+- A unit test in `test/Result.test.ts`: four tasks of three attempts against the figures by hand, the same outcomes in another order, all passed, none passed, and tasks with 2 and with 4 attempts.
+- The runs above read again from the same Worker state: `pass@1 50.0%, pass@2 66.7%` for the first, and `pass@1 41.7% of 6 tasks, pass@2 61.1% of 6 tasks, pass@3 60.0% of 5 tasks` for the second. pass@3 is under pass@2 there because it rates one task fewer, which the line says.
+- `npm run lint`, `npm run check:types`, `npm test`, and the plain lane on directory slots, whose two agents pass every attempt or none and read 100 % and 0 % as before.
+
+**Not verified.** A run with a real model, where attempts of one task are not independent draws when a cache or a seed ties them. An interval around the figure: the summary prints a point estimate, and with a few attempts on a few tasks two runs of one agent can differ by more than a change between them.

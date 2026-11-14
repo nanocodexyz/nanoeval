@@ -123,20 +123,22 @@ export function summarize(attempts: readonly Attempt[]): Record<string, AgentSum
     if (rewards.length)
       summary.meanReward = rewards.reduce((total, reward) => total + reward, 0) / rewards.length
     summary.tasks = groups.length
-    const scored = groups.map((group) =>
-      group
-        .filter((attempt) => attempt.outcome !== 'errored')
-        .sort((left, right) => left.index - right.index),
-    )
+    const scored = groups.map((group) => group.filter((attempt) => attempt.outcome !== 'errored'))
     const trials = Math.max(...scored.map((group) => group.length))
     for (let k = 1; k <= trials; k++) {
       const rated = scored.filter((group) => group.length >= k)
-      const solved = rated.filter((group) =>
-        group.slice(0, k).some((attempt) => attempt.outcome === 'passed'),
-      ).length
-      summary.passAtK[String(k)] = solved / rated.length
+      summary.passAtK[String(k)] =
+        rated.reduce((total, group) => total + solved(group, k), 0) / rated.length
       summary.rated[String(k)] = rated.length
     }
   }
   return agents
+}
+
+function solved(scored: readonly Attempt[], k: number): number {
+  const missed = scored.filter((attempt) => attempt.outcome !== 'passed').length
+  let none = 1
+  for (let drawn = 0; drawn < k && none > 0; drawn++)
+    none *= (missed - drawn) / (scored.length - drawn)
+  return 1 - none
 }

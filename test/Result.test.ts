@@ -161,7 +161,46 @@ test('outcomes follow the verifier reward, and infrastructure failures are error
   assert.equal(Result.outcome(1, { at: 1, kind: 'verifier_timeout', message: 'late' }), 'errored')
 })
 
-test('pass@k counts a task solved when any of its first k attempts passed', () => {
+test('pass@k is the chance that k scored attempts of a task include a pass, from all of them', () => {
+  const outcomes = (task: string, text: string) =>
+    [...text].map((letter, n) =>
+      attempt({
+        id: task + n,
+        index: n + 1,
+        outcome: letter === 'P' ? 'passed' : 'failed',
+        reward: letter === 'P' ? 1 : 0,
+        task: { checksum: 'sha256:' + task, name: 'suite/' + task },
+      }),
+    )
+  const three = Result.summarize([
+    ...outcomes('one', 'PPP'),
+    ...outcomes('two', 'FPP'),
+    ...outcomes('three', 'FFP'),
+    ...outcomes('four', 'FFF'),
+  ])['haiku']!
+  assert.deepEqual(
+    Object.entries(three.passAtK).map(([k, value]) => [k, value.toFixed(9)]),
+    [
+      ['1', (6 / 12).toFixed(9)],
+      ['2', ((1 + 1 + 2 / 3) / 4).toFixed(9)],
+      ['3', (3 / 4).toFixed(9)],
+    ],
+  )
+  const order = (text: string) => Result.summarize(outcomes('one', text))['haiku']!.passAtK
+  assert.deepEqual(order('PFF'), order('FFP'))
+  assert.deepEqual(order('PPPP'), { '1': 1, '2': 1, '3': 1, '4': 1 })
+  assert.deepEqual(order('FFFF'), { '1': 0, '2': 0, '3': 0, '4': 0 })
+  const uneven = Result.summarize([...outcomes('one', 'FP'), ...outcomes('two', 'FFFP')])['haiku']!
+  assert.deepEqual(uneven.passAtK, {
+    '1': (1 / 2 + 1 / 4) / 2,
+    '2': (1 + 1 / 2) / 2,
+    '3': 3 / 4,
+    '4': 1,
+  })
+  assert.deepEqual(uneven.rated, { '1': 2, '2': 2, '3': 1, '4': 1 })
+})
+
+test('the summary of an agent counts outcomes, tasks, reward and cost', () => {
   const attempts = [
     attempt({ id: 'a1', index: 1, outcome: 'failed', reward: 0 }),
     attempt({ id: 'a2', index: 2 }),
@@ -176,7 +215,7 @@ test('pass@k counts a task solved when any of its first k attempts passed', () =
     }),
   ]
   const summary = Result.summarize(attempts)['haiku']!
-  assert.deepEqual(summary.passAtK, { '1': 0.5, '2': 1 })
+  assert.deepEqual(summary.passAtK, { '1': 0.75, '2': 1 })
   assert.deepEqual(summary.rated, { '1': 2, '2': 1 })
   assert.equal(summary.passed, 2)
   assert.equal(summary.failed, 1)
