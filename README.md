@@ -118,6 +118,7 @@ Requirements: Linux and Node 24. For `krun` evals and slots, which a runner take
 
 ```sh
 npm ci
+TOKEN=$(openssl rand -hex 32) SANDBOX_TOKEN=$(openssl rand -hex 32)
 
 # 1. Make this machine a sandbox host.
 node cli/nanoeval.ts sandboxd --token "$SANDBOX_TOKEN"
@@ -137,13 +138,15 @@ node cli/nanoeval.ts run --eval samples \
   --agent haiku=claude:claude-haiku-4-5 \
   --attempts 2 --slots 4 --model-budget-usd 1 --wait --out output/job
 
-# 5. Run what did not pass again, as a run that points at those attempts.
+# 5. Run what did not pass again, as a run that points at those attempts. It is refused when every attempt passed.
 node cli/nanoeval.ts run --rerun RUN --wait
 ```
 
 `--out` writes the Harbor job directory. `nanoeval runs` lists the runs of the Worker with their ids, `nanoeval status`, `attempt`, `export` and `cancel` read a run later, and `attempt` lists the claims of a row. A rerun keeps the budgets, the limits and the sandbox settings of its run unless the command names others. `nanoeval run --task DIR` does steps 3 and 4 at once, into the eval named `local`. A machine without KVM that has root runs the same evals in [ns slots](#ns-slots): a runner picks them by itself, and `--backend ns` names them. A machine with neither takes `--backend dir` in both steps: no isolation, for development.
 
 **Reading the summary.** `status` and `run --wait` print one line for each agent: the attempts that passed over the ones that ended, the ones that errored, the mean reward of the attempts that have one, and pass@k. pass@k is the chance that k attempts of a task include one that passed, averaged over the tasks. It is estimated from the scored attempts of each task, the ones that passed or failed: with n of them, of which c passed, a task counts 1 − C(n−c, k)/C(n, k), so every attempt counts for every k, their order does not matter, and pass@1 is the mean pass rate of the tasks. An attempt that errored or was cancelled is no trial, a task with fewer than k scored attempts is left out of pass@k, and the line then says how many tasks that pass@k rates, as in `pass@2 61.1% of 6 tasks`. A run that was cancelled says so on its first line, with the number of rows it did not finish.
+
+**Exit status.** `run --wait` exits 0 when no attempt errored and 1 when one did, or was cancelled. Attempts that failed do not change it: a failed attempt is a score, and a script that should stop on a lower pass rate has to read the summary or the exported `result.json`. Without `--wait` the command exits 0 once the run is created. `status`, `compare` and `export` exit 0 whatever the run holds. A command that is refused prints one line and exits 1, and an unknown command prints the usage and exits 2.
 
 Blobs go to a directory by default, `~/.local/share/nanoeval/store` (`--store DIR` or `NANOEVAL_STORE`), which the runners of the same machine read. `--store r2` uploads them through the Worker into its `BLOBS` bucket instead, and runners then fetch them through their run. A runner keeps what it fetched, verified, in `~/.cache/nanoeval` (`--cache` or `NANOEVAL_CACHE`). An import keeps the image layers it read from registries in `oci` under that cache (`--layers` or `NANOEVAL_LAYERS`), so importing a dataset again downloads none of them.
 

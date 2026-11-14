@@ -166,7 +166,10 @@ const usage = `nanoeval <command>
             With --oracle no model runs: each task's solution is run in its slot, then the
             verifier. --judge names the model that answers the verifiers of judged tasks.
             With --wait, poll until the run finishes, print the summary and write the Harbor
-            job to --out, or under NANOEVAL_RUNS_DIR when that is set.
+            job to --out, or under NANOEVAL_RUNS_DIR when that is set. It then exits 0 when
+            no attempt errored, also when attempts failed, and 1 when one errored or was
+            cancelled. Without --wait it exits 0 once the run is created. A command that
+            is refused exits 1, and an unknown command 2.
             An e2b sandbox is paid for its whole lifetime when it is opened, 3600 s at most:
             without --sandbox-timeout-sec the run takes the longest its rows can keep its
             slots busy, from the setup, agent and verifier timeouts of their tasks, up to
