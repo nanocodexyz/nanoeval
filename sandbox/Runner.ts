@@ -1392,6 +1392,7 @@ async function attend(
   }
   const report = (current: Admission.Load): Protocol.Report => ({
     ...(current.freeDiskMb === undefined ? {} : { freeDiskMb: current.freeDiskMb }),
+    offer: Admission.offer(current, capacity),
     running: current.running,
     starved: Admission.starved(current, capacity),
   })
