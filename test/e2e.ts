@@ -77,6 +77,19 @@ const midturnYieldMs = 10_000
 const sandboxLeaseSec = Number(process.env['NANOEVAL_E2E_SANDBOX_LEASE_SEC'] ?? leaseSec)
 const seededDisk = 'e'.repeat(64)
 const standing = scenario === 'standing'
+const planned = scenario === 'plan'
+const planSecret = Crypto.randomBytes(32).toString('hex')
+const firstTokenAnswers = 3
+const claudePlan = {
+  access: undefined as string | undefined,
+  down: false,
+  grants: [] as string[],
+  issued: [] as string[],
+  keyed: 0,
+  paid: 0,
+  rejected: 0,
+  revoked: 0,
+}
 const warm = scenario === 'warm'
 const installed = model === 'installed'
 const fakeCli = Path.resolve('test/fixtures/fake-cli.sh')
@@ -406,11 +419,88 @@ async function read(request: Http.IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks)
 }
 
+async function claudeSignIn(
+  request: Http.IncomingMessage,
+  response: Http.ServerResponse,
+): Promise<void> {
+  const answer = (status: number, body: unknown) =>
+    void response
+      .writeHead(status, { 'content-type': 'application/json' })
+      .end(JSON.stringify(body))
+  const identity = {
+    account: { uuid: 'scripted-account' },
+    organization: { uuid: 'scripted-organization' },
+  }
+  if (request.url === '/v1/oauth/token') {
+    const grant = JSON.parse((await read(request)).toString()) as { grant_type: string }
+    claudePlan.grants.push(grant.grant_type)
+    if (claudePlan.down) return answer(400, { error: 'invalid_grant' })
+    const [access, refresh] = ['access', 'refresh'].map(
+      (kind) => 'scripted-' + kind + '-' + Crypto.randomBytes(16).toString('hex'),
+    )
+    claudePlan.access = access
+    claudePlan.issued.push(access!, refresh!)
+    return answer(200, {
+      ...identity,
+      access_token: access,
+      expires_in: 3600,
+      refresh_token: refresh,
+      scope: 'user:profile user:inference',
+      token_type: 'Bearer',
+    })
+  }
+  if (request.url === '/api/oauth/profile')
+    return request.headers['authorization'] === 'Bearer ' + claudePlan.access
+      ? answer(200, identity)
+      : answer(401, { error: 'unauthorized' })
+  if (request.url === '/v1/oauth/token/revoke') {
+    claudePlan.revoked++
+    return answer(200, {})
+  }
+  answer(404, { error: 'the scripted Claude has no ' + request.url })
+}
+
+function planPays(request: Http.IncomingMessage): boolean {
+  if (request.headers['authorization'] === undefined) {
+    claudePlan.keyed++
+    return request.headers['x-api-key'] === 'scripted' && request.url === '/v1/messages'
+  }
+  const fresh =
+    !claudePlan.down &&
+    request.headers['authorization'] === 'Bearer ' + claudePlan.access &&
+    request.headers['x-api-key'] === undefined &&
+    String(request.headers['anthropic-beta']).split(',').includes('oauth-2025-04-20') &&
+    request.url === '/v1/messages?beta=true'
+  if (!fresh) {
+    claudePlan.rejected++
+    return false
+  }
+  claudePlan.paid++
+  if (claudePlan.paid === firstTokenAnswers) claudePlan.access = undefined
+  return true
+}
+
 async function modelEndpoint(): Promise<{ close(): void; url: string | undefined }> {
   if (model === 'scripted' || installed || scenario === 'judge')
     return listen(async (request, response) => {
       try {
+        if (planned && !request.url!.startsWith('/v1/messages')) {
+          await claudeSignIn(request, response)
+          return
+        }
         const body = JSON.parse((await read(request)).toString())
+        if (planned && !planPays(request)) {
+          response.writeHead(401, { 'content-type': 'application/json' }).end(
+            JSON.stringify({
+              error: {
+                message: 'the scripted Claude rejects this credential',
+                type: 'authentication_error',
+              },
+              type: 'error',
+            }),
+          )
+          return
+        }
         const codex = request.url === '/v1/responses'
         const credential = !body.fake_cli
           ? true
@@ -620,6 +710,7 @@ async function main(): Promise<void> {
     ...(midturn ? { CELL_YIELD_MS: String(midturnYieldMs) } : {}),
     ...plan?.vars,
     ...relay?.vars,
+    ...(planned ? { CLAUDE_PLAN_URL: upstream.url!, PLAN_SECRET: planSecret } : {}),
   }
   const secrets = Fs.mkdtempSync(Path.join(Os.tmpdir(), 'nanoeval-e2e-'))
   Fs.writeFileSync(Path.join(secrets, 'vars.env'), Plan.envFile(vars), { mode: 0o600 })
@@ -767,6 +858,22 @@ async function main(): Promise<void> {
   const destroy = (home: string) =>
     spawnSync('bash', [Path.resolve('sandbox/slot.sh'), 'destroy'], {
       env: { ...process.env, NANOEVAL_HOME: home },
+    })
+  const cli = (args: readonly string[], input?: string) =>
+    new Promise<{ code: number | null; text: string }>((resolve) => {
+      const child = spawn(
+        process.execPath,
+        [Path.resolve('cli/nanoeval.ts'), ...args, '--url', url],
+        {
+          env: { ...process.env, NANOEVAL_TOKEN: token },
+          stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+        },
+      )
+      let text = ''
+      for (const stream of [child.stdout!, child.stderr!])
+        stream.on('data', (chunk: Buffer) => (text += chunk.toString()))
+      child.once('close', (code) => resolve({ code, text }))
+      if (input !== undefined) child.stdin!.end(input)
     })
 
   try {
@@ -971,6 +1078,7 @@ async function main(): Promise<void> {
       budget: { modelUsd: 1, sandboxUsd: gateway ? 1 : 0 },
       eval: { name: evalName, version: version.digest },
       ...(judged ? { judge: { model: 'claude-haiku-4-5', provider: 'claude' as const } } : {}),
+      ...(planned ? { payer: 'plan' as const } : {}),
       limits: {
         attachSec: 60,
         claims: 3,
@@ -1014,6 +1122,63 @@ async function main(): Promise<void> {
     if (standing) {
       stand('a')
       await standingBy(api)
+    }
+    if (planned) {
+      for (const [path, method] of [
+        ['/v1/plans', 'GET'],
+        ['/v1/plans/claude/sign-in', 'POST'],
+        ['/v1/plans/claude/complete', 'POST'],
+        ['/v1/plans/claude', 'DELETE'],
+      ])
+        assert.equal(
+          (await fetch(url + path, { method })).status,
+          401,
+          method + ' ' + path + ' needs the token of the operator',
+        )
+      assert.equal(
+        (await fetch(url + '/plans', { headers: { authorization: 'Bearer ' + token } })).status,
+        404,
+      )
+      assert.equal(
+        (
+          await fetch(url + '/v1/plans/codex/sign-in', {
+            headers: { authorization: 'Bearer ' + token },
+            method: 'POST',
+          })
+        ).status,
+        501,
+        'a ChatGPT plan is not signed in on a Worker without the relay container',
+      )
+      assert.match(
+        (await cli(['plans'])).text,
+        /^claude plan: signed_out: sign in with nanoeval plans sign-in claude$/m,
+      )
+      await assert.rejects(
+        api.create(config),
+        /payer plan needs a Claude plan signed in on the Worker: Claude is not signed in \(nanoeval plans sign-in claude\)/,
+        'a run the plan pays for is refused while no plan is signed in',
+      )
+      await assert.rejects(
+        api.create({
+          ...config,
+          agents: [{ id: 'cli', model: 'claude-sonnet-wrong', provider: 'claude-code' }],
+        }),
+        /payer plan pays for claude sessions .*, and cli is claude-code/,
+      )
+      const asked = await cli(['plans', 'sign-in', 'claude'])
+      const page = /^open (https:\/\/claude\.com\/\S+)$/m.exec(asked.text)?.[1]
+      assert.ok(
+        page && asked.code === 0,
+        'sign-in prints the page of Claude and ends: ' + asked.text,
+      )
+      const pending = new URL(page).searchParams.get('state')
+      assert.match((await cli(['plans'])).text, /^claude plan: a sign-in waits until /m)
+      const wrong = await cli(['plans', 'complete', '--code', 'scripted#another'])
+      assert.notEqual(wrong.code, 0)
+      assert.match(wrong.text, /the code does not belong to this sign-in/)
+      const signed = await cli(['plans', 'complete'], 'scripted#' + pending + '\n')
+      assert.match(signed.text, /^claude plan: signed in as account scripted-account, /m)
+      assert.deepEqual(claudePlan.grants, ['authorization_code'])
     }
     const started = Date.now()
     const created = await api.create(config)
@@ -1470,6 +1635,146 @@ async function main(): Promise<void> {
       warm ? 1 : 0,
       'no sandbox directory outlives the run, unless the run keeps its sandbox warm',
     )
+
+    if (planned) {
+      const finished = (run: string) =>
+        waitFor('the run ' + run + ' to finish', async () => {
+          const current = await api.status(run)
+          return current['state'] === 'finished' ? current : undefined
+        })
+      assert.equal(status['payer'], 'plan')
+      assert.match(summary(status), /^payer: the Claude plan signed in on the Worker; /m)
+      assert.deepEqual(
+        [status['counts'].passed, status['counts'].failed, status['counts'].errored],
+        [total / 2, total / 2, 0],
+      )
+      assert.equal(claudePlan.keyed, 0, 'no request of the run carried the key of the Worker')
+      assert.ok(claudePlan.paid >= 2 * total, 'the plan answered the requests of every session')
+      assert.ok(claudePlan.rejected >= 1, 'Claude rejected the first token during the run')
+      assert.deepEqual(
+        claudePlan.grants,
+        ['authorization_code', 'refresh_token'],
+        'a token that Claude rejects is refreshed once, whichever sessions held it',
+      )
+      const requests: Record<string, any>[] = []
+      for (const detail of details)
+        for (const line of (
+          await api.artifact(created.id, detail['attempt'].id, 'agent/model-requests.jsonl')
+        )
+          .trim()
+          .split('\n'))
+          requests.push(JSON.parse(line))
+      assert.ok(
+        requests.some((request) => request['status'] === 401),
+        'the request that Claude rejected is in the record of its attempt',
+      )
+      assert.equal(
+        requests.filter((request) => request['status'] === 200 && request['usage']).length,
+        claudePlan.paid,
+        'every response of the plan is recorded with its tokens',
+      )
+      assert.ok(
+        requests.every((request) => request['usage']?.costUsd === undefined),
+        'a response of the plan carries no cost',
+      )
+      console.log('plan: spend ' + JSON.stringify(status['spend']))
+
+      const before = { ...claudePlan }
+      const { payer: _, ...unpaid } = config
+      const second = await api.create({ ...unpaid, name: config.name + '-deployment' })
+      const keyed = await finished(second.id)
+      assert.equal(keyed['payer'], 'deployment')
+      assert.deepEqual(keyed['counts'], status['counts'])
+      assert.equal(
+        claudePlan.paid,
+        before.paid,
+        'a run that does not ask for the plan leaves a signed-in plan alone',
+      )
+      assert.ok(claudePlan.keyed >= 2 * total, 'the key of the Worker pays for it')
+
+      claudePlan.down = true
+      const third = await api.create({ ...config, name: config.name + '-revoked' })
+      const lost = await finished(third.id)
+      console.log(summary(lost))
+      const rows = lost['attempts'] as Record<string, any>[]
+      for (const row of rows) {
+        assert.equal(row['outcome'], 'errored')
+        assert.equal(row['failure'].kind, 'environment', row['failure'].message)
+        assert.equal(row['retries'], undefined, 'the runner is told at once that the row is over')
+        assert.match(
+          row['failure'].message,
+          /the Claude plan that pays for this (session|run) gives no credential: .+ \(nanoeval plans sign-in claude\)/,
+        )
+      }
+      const waiting = rows.filter((row) => row['claims'] === 0)
+      assert.equal(waiting.length, total - slots, 'no row is claimed once the plan pays no more')
+      for (const row of waiting)
+        assert.match(
+          row['failure'].message,
+          /^no row is started after a model request that the plan could not pay for: /,
+        )
+      assert.equal(lost['refused'].plan, true)
+      assert.match(summary(lost), /^models: the plan gave no credential at \+\d+ s, /m)
+      assert.equal(lost['spend'].modelUsd, 0)
+      assert.match((await cli(['plans'])).text, /^claude plan: signed_out: /m)
+      await assert.rejects(api.create(config), /Claude is not signed in/)
+
+      claudePlan.down = false
+      const signIn = async () => {
+        const page = await api.planSignIn()
+        await api.planComplete(
+          'scripted#' + new URL(page.authorization_url).searchParams.get('state'),
+        )
+      }
+      await signIn()
+      assert.match((await cli(['plans', 'sign-out', 'claude'])).text, /^claude plan: signed_out: /m)
+      assert.equal(claudePlan.revoked, 1, 'signing out revokes the refresh token at Claude')
+
+      await signIn()
+      const answered = claudePlan.paid
+      const fourth = await api.create({ ...config, name: config.name + '-signed-out' })
+      await api.planSignOut()
+      const left = await finished(fourth.id)
+      console.log(summary(left))
+      for (const row of left['attempts'] as Record<string, any>[]) {
+        assert.equal(row['failure']?.kind, 'environment', JSON.stringify(row))
+        assert.equal(row['retries'], undefined, 'the runner is told at once that the row is over')
+        assert.match(
+          row['failure'].message,
+          row['claims'] === 0
+            ? /^no row is started after a model request that the plan could not pay for: /
+            : /^the Claude plan that pays for this run gives no credential: Claude is not signed in \(nanoeval plans sign-in claude\)$/,
+        )
+      }
+      assert.equal(
+        (left['attempts'] as Record<string, any>[]).filter((row) => row['claims'] === 0).length,
+        total - slots,
+      )
+      assert.equal(claudePlan.paid, answered, 'a plan that was signed out is sent no request')
+
+      await exportJob(api, { out: Path.join(out, 'harbor-revoked'), run: third.id })
+      await exportJob(api, { out: Path.join(out, 'harbor-signed-out'), run: fourth.id })
+      const secrets = [planSecret, ...claudePlan.issued]
+      assert.equal(secrets.length, 9)
+      let scanned = 0
+      for (const entry of Fs.readdirSync(out, { recursive: true, withFileTypes: true })) {
+        if (!entry.isFile()) continue
+        const file = Path.join(entry.parentPath, entry.name)
+        const bytes = Fs.readFileSync(file)
+        scanned++
+        assert.ok(
+          secrets.every((secret) => !bytes.includes(secret)),
+          file + ' holds a token of the plan or the secret that seals it',
+        )
+      }
+      assert.ok(
+        Fs.readdirSync(Path.join(out, 'state', 'v3', 'do', 'nanoeval-PlanVault')).length > 0,
+        'the scan read the storage of the vault',
+      )
+      console.log('plan: ' + scanned + ' files of the lane hold no token and no secret')
+      console.log('e2e passed: ' + label)
+      return
+    }
 
     if (ending) {
       const rows = status['attempts'] as Record<string, any>[]

@@ -1,4 +1,5 @@
 import type * as Atif from '../src/Atif.ts'
+import type * as Config from '../src/Config.ts'
 import * as Sse from '../src/Sse.ts'
 import * as Telemetry from '../src/Telemetry.ts'
 import { account, type Env } from './Env.ts'
@@ -23,6 +24,7 @@ export type Report = {
 export type Turn = {
   hand?: string
   model: string
+  payer?: Config.Payer
   prompt: string
   provider: 'claude' | 'codex'
   requestId: string
@@ -73,6 +75,7 @@ export async function submit(env: Env, name: string, turn: Turn): Promise<Report
       body: JSON.stringify({
         ...(turn.hand ? { hand: turn.hand } : {}),
         model: turn.model,
+        ...(turn.payer ? { payer: turn.payer } : {}),
         prompt: turn.prompt,
         provider: turn.provider,
         request_id: turn.requestId,

@@ -32,7 +32,9 @@ import * as Harness from './Harness.ts'
 import type * as Meter from './Meter.ts'
 import * as Model from './Model.ts'
 import * as PoolObject from './Pool.ts'
+import { plan } from './Sessions.ts'
 import * as Storage from './Storage.ts'
+import * as Vault from './Vault.ts'
 
 type SandboxRow = {
   capabilities: string | null
@@ -71,7 +73,7 @@ type Meta = {
   key?: { end?: KeyRead; error?: string; start?: KeyRead }
   location?: string
   publicUrl: string
-  refused?: { at: number; message: string }
+  refused?: { at: number; message: string; plan?: true }
   reruns: string[]
   runnerToken: string
   sandboxFailures: number
@@ -345,6 +347,21 @@ export class Run extends DurableObject<Env> {
       if (config.sandbox.provider === 'gateway' && !this.env.TEMPO_KEY)
         return json({ error: 'the gateway provider needs TEMPO_KEY' }, 400)
     }
+    if (config.payer === 'plan') {
+      const reason = await Vault.unusable(this.env)
+      if (reason !== undefined)
+        return json(
+          {
+            error:
+              'payer plan needs a Claude plan signed in on the Worker: ' +
+              reason +
+              ' (' +
+              Config.planSignIn +
+              ')',
+          },
+          400,
+        )
+    }
 
     const query = new URLSearchParams({ tasks: '1' })
     if (config.eval.version) query.set('digest', config.eval.version)
@@ -578,10 +595,16 @@ export class Run extends DurableObject<Env> {
     return total
   }
 
+  private payer(provider: 'claude' | 'codex'): Config.Payer | undefined {
+    if (this.config().payer === 'plan') return 'plan'
+    return plan(this.env, provider) ? undefined : 'deployment'
+  }
+
   private keyed(): boolean {
     const config = this.config()
     if (!this.env.TEMPO_KEY) return false
     if (config.sandbox.provider === 'gateway' && config.sandbox.max > 0) return true
+    if (config.payer === 'plan') return false
     return [...config.agents, ...(config.judge ? [config.judge] : [])].some((agent) => {
       if (agent.provider === 'oracle') return false
       const held = Model.credential(
@@ -640,11 +663,38 @@ export class Run extends DurableObject<Env> {
     const meta = this.meta()!
     if (!meta.refused) {
       const now = Date.now()
-      this.setMeta({ ...meta, refused: { at: now, message: detail(refused.text) } })
+      this.setMeta({
+        ...meta,
+        refused: {
+          at: now,
+          message: detail(refused.text),
+          ...(refused.kind === 'plan' ? { plan: true as const } : {}),
+        },
+      })
       Timeline.add(this.sql, { at: now, name: 'model.refused' })
       this.ctx.waitUntil(this.tick())
     }
     return undefined
+  }
+
+  private async unpaid(row: Ledger.Attempt, error: unknown): Promise<Refusal> {
+    const reason =
+      error instanceof Harness.RequestError && this.config().payer === 'plan'
+        ? await Vault.unusable(this.env)
+        : undefined
+    if (reason === undefined) throw error
+    const text =
+      'the Claude plan that pays for this run gives no credential: ' +
+      reason +
+      ' (' +
+      Config.planSignIn +
+      ')'
+    this.refuse({ kind: 'plan', text, tries: 0 })
+    await this.complete(Ledger.get(this.sql, row.id)!, {
+      failure: { at: Date.now(), kind: 'environment', message: text },
+      reward: null,
+    })
+    return new Refusal(410, text)
   }
 
   private settled(body: Settled): { pauseMs?: number } {
@@ -891,6 +941,7 @@ export class Run extends DurableObject<Env> {
         : null,
       lostClaims: Ledger.claims(this.sql).filter(Ledger.lost).length,
       name: config.name,
+      payer: config.payer ?? 'deployment',
       payments: this.sql.all('SELECT at, usd, detail FROM payments ORDER BY id'),
       refused: meta.refused ?? null,
       rerunOf: config.rerun ?? null,
@@ -1620,11 +1671,14 @@ export class Run extends DurableObject<Env> {
       await this.complete(row, {
         failure: {
           at: Date.now(),
-          kind: 'budget',
-          message: refused
-            ? 'the payment for a model request was refused, and no row is started after that: ' +
+          kind: refused?.plan ? 'environment' : 'budget',
+          message: refused?.plan
+            ? 'no row is started after a model request that the plan could not pay for: ' +
               refused.message
-            : 'the model budget of $' + config.budget.modelUsd + ' is spent',
+            : refused
+              ? 'the payment for a model request was refused, and no row is started after that: ' +
+                refused.message
+              : 'the model budget of $' + config.budget.modelUsd + ' is spent',
         },
         reward: null,
       })
@@ -2219,14 +2273,19 @@ export class Run extends DurableObject<Env> {
       if (harness === 'installed')
         this.putArtifact(row.id, Installed.instruction, body.instruction!)
       if (agent.provider === 'claude' || agent.provider === 'codex') {
-        await Harness.submit(this.env, session, {
-          hand: Protocol.handName,
-          model: agent.model,
-          prompt: body.instruction!,
-          provider: agent.provider,
-          requestId,
-          ...(agent.thinking ? { thinking: agent.thinking } : {}),
-        })
+        try {
+          await Harness.submit(this.env, session, {
+            hand: Protocol.handName,
+            model: agent.model,
+            payer: this.payer(agent.provider),
+            prompt: body.instruction!,
+            provider: agent.provider,
+            requestId,
+            ...(agent.thinking ? { thinking: agent.thinking } : {}),
+          })
+        } catch (error) {
+          throw await this.unpaid(row, error)
+        }
       }
       const now = Date.now()
       Timeline.add(this.sql, { at: now, attempt: row.id, name: 'attempt.agent' })
@@ -2348,14 +2407,19 @@ export class Run extends DurableObject<Env> {
         return { error: message(error), state: 'invalid' }
       }
       this.putArtifact(row.id, judgeRequest, body.request)
-      for (const [index, entry] of requests.entries())
-        await Harness.submit(this.env, row.session + '-judge-' + index, {
-          model: config.judge.model,
-          prompt: entry.prompt,
-          provider: config.judge.provider,
-          requestId: judgeRequestId,
-          ...(config.judge.thinking ? { thinking: config.judge.thinking } : {}),
-        })
+      try {
+        for (const [index, entry] of requests.entries())
+          await Harness.submit(this.env, row.session + '-judge-' + index, {
+            model: config.judge.model,
+            payer: this.payer(config.judge.provider),
+            prompt: entry.prompt,
+            provider: config.judge.provider,
+            requestId: judgeRequestId,
+            ...(config.judge.thinking ? { thinking: config.judge.thinking } : {}),
+          })
+      } catch (error) {
+        throw await this.unpaid(row, error)
+      }
       Ledger.update(this.sql, row.id, {
         phase: 'judge',
         phase_at: now,
@@ -2425,15 +2489,25 @@ export class Run extends DurableObject<Env> {
         timing: Ledger.mark(row.timing, 'verifier', { at: now, edge: 'finish' }),
       })
     } else if (body.failure) {
-      const spent =
-        body.failure.kind === 'agent' &&
-        this.sql.all(
-          "SELECT id FROM model_requests WHERE attempt = ? AND claim = ? AND refusal = 'spent' LIMIT 1",
-          row.id,
-          row.claims,
-        ).length > 0
+      const refusals = new Set(
+        this.sql
+          .all(
+            'SELECT DISTINCT refusal FROM model_requests WHERE attempt = ? AND claim = ? AND refusal IS NOT NULL',
+            row.id,
+            row.claims,
+          )
+          .map((request) => request['refusal'] as Proxy.Refusal),
+      )
+      const unpaid = refusals.has('plan') ? this.meta()!.refused : undefined
       end = {
-        failure: { at: now, ...body.failure, ...(spent ? { kind: 'budget' as const } : {}) },
+        failure: {
+          at: now,
+          ...body.failure,
+          ...(body.failure.kind === 'agent' && refusals.has('spent')
+            ? { kind: 'budget' as const }
+            : {}),
+          ...(unpaid?.plan ? { kind: 'environment' as const, message: unpaid.message } : {}),
+        },
         reward: null,
       }
     } else throw new Refusal(400, 'finishing an attempt reports a verifier or a failure')

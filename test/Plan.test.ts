@@ -86,3 +86,13 @@ test('the relay listens on loopback and refuses a caller without its secret', as
 test('an env file quotes its values', () => {
   assert.equal(Plan.envFile({ A: 'one two', B: 'a"b' }), 'A="one two"\nB="a\\"b"\n')
 })
+
+test('the secret that seals a plan is made once, in a private file', async () => {
+  const path = Path.join(directory, 'state', 'plan.secret')
+  const made = await Plan.secret(path)
+  assert.match(made, /^[0-9a-f]{64}$/)
+  assert.equal(Fs.statSync(path).mode & 0o777, 0o600)
+  assert.equal(await Plan.secret(path), made)
+  Fs.chmodSync(path, 0o644)
+  await assert.rejects(Plan.secret(path), /must not be readable/)
+})

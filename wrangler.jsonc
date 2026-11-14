@@ -6,6 +6,7 @@
   "durable_objects": {
     "bindings": [
       { "name": "EVALS", "class_name": "Evals" },
+      { "name": "PLANS", "class_name": "PlanVault" },
       { "name": "POOL", "class_name": "Pool" },
       { "name": "RUNS", "class_name": "Run" },
       { "name": "SESSIONS", "class_name": "AgentSession" },
@@ -15,6 +16,7 @@
     { "tag": "v1", "new_sqlite_classes": ["AgentSession", "Run"] },
     { "tag": "v2", "new_sqlite_classes": ["Evals"] },
     { "tag": "v3", "new_sqlite_classes": ["Pool"] },
+    { "tag": "v4", "new_sqlite_classes": ["PlanVault"] },
   ],
   "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "nanoeval-blobs" }],
   "vars": {

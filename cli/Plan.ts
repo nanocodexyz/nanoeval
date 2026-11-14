@@ -1,6 +1,7 @@
 import * as Crypto from 'node:crypto'
 import * as Fs from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
+import * as Path from 'node:path'
 import { Relay } from 'nanocode-egress/relay'
 
 export class LoginError extends Error {
@@ -82,6 +83,18 @@ export async function relay(): Promise<RelayServer> {
       CHATGPT_RELAY_URL: 'http://127.0.0.1:' + (server.address() as AddressInfo).port,
     },
   }
+}
+
+export async function secret(path: string): Promise<string> {
+  await Fs.mkdir(Path.dirname(path), { recursive: true })
+  try {
+    await Fs.writeFile(path, Crypto.randomBytes(32).toString('hex'), { flag: 'wx', mode: 0o600 })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+  }
+  if ((await Fs.stat(path)).mode & 0o077)
+    throw new LoginError(path + ' must not be readable by group or other users')
+  return (await Fs.readFile(path, 'utf8')).trim()
 }
 
 export function envFile(vars: Record<string, string>): string {

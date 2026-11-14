@@ -3,6 +3,8 @@ import { spawn } from 'node:child_process'
 import * as Fs from 'node:fs/promises'
 import * as Os from 'node:os'
 import * as Path from 'node:path'
+import * as Readline from 'node:readline/promises'
+import * as Consumers from 'node:stream/consumers'
 import { parseArgs } from 'node:util'
 import * as Catalog from '../datasets/Catalog.ts'
 import * as Dataset from '../datasets/Dataset.ts'
@@ -51,7 +53,17 @@ const usage = `nanoeval <command>
             agents run on the plan signed in there: its access token is read once at start,
             is never refreshed, and reaches workerd through a private file. --public-url
             names the address that runners and hands on other machines dial, such as a
-            tunnel in front of this Worker.
+            tunnel in front of this Worker. PLAN_SECRET, which seals a plan signed in with
+            nanoeval plans, is taken from the environment, or made once and kept in a
+            private file of the state directory.
+  plans     --url URL --token T [sign-in claude | complete [--code CODE] | sign-out claude]
+            Print whether a Claude plan is signed in on the Worker, or change that. sign-in
+            prints the page of Claude to open. The code that page shows once you approve
+            goes to complete, as --code or on standard input; on a terminal sign-in asks
+            for it itself. The Worker keeps the sign-in sealed with its PLAN_SECRET,
+            refreshes its token when a request needs one, and pays with it for the sessions
+            of run --payer plan. Whether a subscription may be used this way is governed by
+            the terms of its provider.
   datasets  List the datasets that import knows, with the source each is pinned to and what
             was run end to end.
   import    --url URL --token T (DATASET | --task DIR...) [--eval NAME] [--only ID]... [--limit N]
@@ -88,6 +100,7 @@ const usage = `nanoeval <command>
             [--lease-sec 60] [--claims 3] [--step-retries 3] [--poll-ms 250]
             [--disks keep|remove] [--free-disk-mb N] [--verifier-cache] [--name NAME] [--wait]
             [--out DIR] [--location HINT] [--warm-sec N [--warm-budget-usd 0]]
+            [--payer deployment|plan]
             Create the rows of a run, task x agent x attempt, against one version of an eval.
             Task runners claim the rows: the run starts one in each sandbox it opens
             (--sandboxes, with --slots attempts at once each), and nanoeval runner attaches
@@ -115,6 +128,13 @@ const usage = `nanoeval <command>
             claude-code or codex-cli, that vendor's command line inside the slot: a pinned
             release that the runner fetches once, pointed at an endpoint of the run that adds
             the model credential, so none enters the slot.
+            With --payer plan, the Claude plan signed in on the Worker (nanoeval plans) pays
+            for the sessions of the run, its judge included, in place of the Worker's own
+            credential: its agents and its judge are claude sessions, nothing is charged per
+            response, and the model spend that is recorded and that --model-budget-usd
+            bounds is what the sessions estimate from their tokens at list prices. The run
+            is refused while no plan is signed in. Once the plan gives no credential any
+            more, the rows that asked end as environment errors and no row is started.
             With --oracle no model runs: each task's solution is run in its slot, then the
             verifier. --judge names the model that answers the verifiers of judged tasks.
             With --wait, poll until the run finishes, print the summary and write the Harbor
@@ -344,6 +364,24 @@ export function client(options: { token: string; url: string }) {
       ).json()) as { attempts: number; eval: { name: string; version: string }; id: string },
     harbor: async (run: string) =>
       (await (await call('/v1/runs/' + run + '/harbor')).json()) as Job,
+    planComplete: async (code: string) =>
+      (
+        await call('/v1/plans/claude/complete', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ code }),
+        })
+      ).json(),
+    planSignIn: async () =>
+      (await (
+        await call('/v1/plans/claude/sign-in', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+        })
+      ).json()) as { authorization_url: string; expires_at: number },
+    planSignOut: async () => (await call('/v1/plans/claude', { method: 'DELETE' })).json(),
+    plans: async () => (await (await call('/v1/plans')).json()) as { claude: Record<string, any> },
     pool: async (action?: 'close', location?: string) =>
       (
         await call(
@@ -442,9 +480,15 @@ export function summary(status: Record<string, any>): string {
         status['spend'].webSearches +
         ', counted in the recorded spend only where a response reported them in its cost',
     )
+  if (status['payer'] === 'plan')
+    lines.push(
+      'payer: the Claude plan signed in on the Worker; nothing is charged per response, and the model spend is what the sessions estimate at list prices',
+    )
   if (status['refused'])
     lines.push(
-      'models: payment refused at ' +
+      (status['refused'].plan
+        ? 'models: the plan gave no credential at '
+        : 'models: payment refused at ') +
         offset(status['refused'].at) +
         ', no row is started after that: ' +
         String(status['refused'].message).slice(0, 300),
@@ -557,6 +601,25 @@ export async function importEval(
   }
 }
 
+export function planSummary(claude: Record<string, any>): string {
+  const time = (at: number) => new Date(at).toISOString()
+  if (claude['state'] === 'authenticated')
+    return (
+      'claude plan: signed in as account ' +
+      claude['account_id'] +
+      ', with a token until ' +
+      time(claude['expires_at']) +
+      ' that the Worker refreshes when a request needs one'
+    )
+  if (claude['state'] === 'pending')
+    return (
+      'claude plan: a sign-in waits until ' +
+      time(claude['expires_at']) +
+      ' for its code: nanoeval plans complete --code CODE'
+    )
+  return 'claude plan: ' + claude['state'] + ': sign in with ' + Config.planSignIn
+}
+
 export function poolSummary(status: Record<string, any>): string {
   const time = (at: number | null) => (at === null ? 'never' : new Date(at).toISOString())
   const members = status['members'] as Record<string, any>[]
@@ -627,6 +690,7 @@ async function main(): Promise<void> {
       claims: { default: '3', type: 'string' },
       close: { default: false, type: 'boolean' },
       'claude-login': { type: 'string' },
+      code: { type: 'string' },
       'codex-login': { type: 'string' },
       config: { type: 'string' },
       days: { type: 'string' },
@@ -657,6 +721,7 @@ async function main(): Promise<void> {
       'opened-at': { type: 'string' },
       oracle: { default: false, type: 'boolean' },
       out: { type: 'string' },
+      payer: { type: 'string' },
       'poll-ms': { type: 'string' },
       port: { type: 'string' },
       provider: { default: 'local', type: 'string' },
@@ -775,6 +840,9 @@ async function main(): Promise<void> {
     }
     const relay = values['codex-login'] ? await Plan.relay() : undefined
     Object.assign(vars, relay?.vars)
+    const state = Path.resolve(values.state ?? Path.join('output', 'worker'))
+    vars['PLAN_SECRET'] =
+      process.env['PLAN_SECRET'] ?? (await Plan.secret(Path.join(state, 'plan.secret')))
 
     const root = Path.resolve(import.meta.dirname, '..')
     const directory = await Fs.mkdtemp(Path.join(Os.tmpdir(), 'nanoeval-worker-'))
@@ -790,7 +858,7 @@ async function main(): Promise<void> {
         '--port',
         values.port ?? '8787',
         '--persist-to',
-        Path.resolve(values.state ?? Path.join('output', 'worker')),
+        state,
         '--env-file',
         file,
       ],
@@ -932,6 +1000,7 @@ async function main(): Promise<void> {
       'evals',
       'export',
       'import',
+      'plans',
       'pool',
       'run',
       'runner',
@@ -946,6 +1015,44 @@ async function main(): Promise<void> {
   }
   const access = { token: required(values.token, 'token'), url: required(values.url, 'url') }
   const api = client(access)
+
+  if (command === 'plans') {
+    const [action, provider] = rest
+    const known =
+      action === undefined ||
+      (action === 'complete' && provider === undefined) ||
+      ((action === 'sign-in' || action === 'sign-out') && provider === 'claude')
+    if (!known || rest.length > 2)
+      throw new Error(
+        'plans takes sign-in claude, complete, sign-out claude or nothing, not ' + rest.join(' '),
+      )
+    const code = async () => {
+      if (values.code) return values.code
+      if (!process.stdin.isTTY) return (await Consumers.text(process.stdin)).trim()
+      const terminal = Readline.createInterface({ input: process.stdin, output: process.stdout })
+      try {
+        return (await terminal.question('code: ')).trim()
+      } finally {
+        terminal.close()
+      }
+    }
+    if (action === 'sign-in') {
+      const started = await api.planSignIn()
+      console.log(
+        'open ' +
+          started.authorization_url +
+          '\nand approve. The page then shows a code: give it, before ' +
+          new Date(started.expires_at).toISOString() +
+          ", to nanoeval plans complete --code 'CODE'",
+      )
+      if (!process.stdin.isTTY) return
+      await api.planComplete(await code())
+    }
+    if (action === 'complete') await api.planComplete(await code())
+    if (action === 'sign-out') await api.planSignOut()
+    console.log(planSummary((await api.plans()).claude))
+    return
+  }
 
   if (command === 'evals') {
     for (const entry of (await api.evals()).evals)
@@ -1280,6 +1387,9 @@ async function main(): Promise<void> {
       name:
         values.name ?? 'nanoeval-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-'),
       ...(only?.length ? { only } : {}),
+      ...((values.payer ?? parent?.payer)
+        ? { payer: (values.payer ?? parent?.payer) as Config.Payer }
+        : {}),
       ...(values.rerun ? { rerun: { run: values.rerun, select } } : {}),
       sandbox: {
         backend,

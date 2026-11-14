@@ -1,4 +1,5 @@
 import type { App } from 'nanocode-ts/cloudflare'
+import type { PlanVault } from './Vault.ts'
 
 export type Env = App.Env & {
   ACCESS_TOKEN: string
@@ -11,6 +12,7 @@ export type Env = App.Env & {
   CHATGPT_ACCOUNT_ID?: string
   CHATGPT_RELAY_SECRET?: string
   CHATGPT_RELAY_URL?: string
+  CLAUDE_PLAN_URL?: string
   CLAUDE_CODE_OAUTH_TOKEN?: string
   EVALS: DurableObjectNamespace
   HAND_LIST_MS: string
@@ -19,6 +21,8 @@ export type Env = App.Env & {
   LOCAL_SANDBOX_URL?: string
   OPENAI_API_KEY?: string
   OPENAI_BASE_URL?: string
+  PLAN_SECRET?: string
+  PLANS: DurableObjectNamespace<PlanVault>
   POOL: DurableObjectNamespace
   PUBLIC_URL?: string
   RUN_LOCATION_HINT?: string

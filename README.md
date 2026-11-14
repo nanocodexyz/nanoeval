@@ -88,6 +88,7 @@ The table says what was run. "The first version" is the flow before the eval tab
 | Images whose user is not root, and images without bash | Tested with a fixture: tests and solutions are put in place as root, and the agent and the verifier run as the image's user |
 | Codex models (`provider: codex`) | Tested on a ChatGPT plan login (`nanoeval worker --codex-login`). With a key nanocode-ts takes Responses over HTTPS: tested against a scripted gateway, and run through the real one from a deployed Worker with `gpt-6-luna` and `gpt-6.1-sol`. Not run with an OpenAI API key |
 | Claude plan login (`nanoeval worker --claude-login`) | Run once, on the first flow: `claude-haiku-4-5` on `uppercase-message` reached the model through the plan and ended `failed`. The hand's `Bash` tool needs bash, which that Alpine image lacks, see [DECISIONS.md](DECISIONS.md#2026-11-11-installed-agents-and-nanocode-beside-codex-cli). Not run on the eval table: the login had expired and its tool could not renew it without a browser |
+| A Claude plan signed in on the Worker (`nanoeval plans`, `run --payer plan`) | Implemented, tested against a scripted Claude only: unit tests of the sealed record, the sign-in, the refresh after a `401` and what a run refuses, and an end-to-end lane on directory slots under local workerd where the command line signs in, a run is paid by the plan with a token refreshed on the way, a run without the option leaves the plan alone, a plan whose refresh is refused ends its rows as `environment` errors, and no file of the lane holds a token or the secret. Not run against Claude: no sign-in, refresh or model request of a real plan was made, under local workerd or on a deployed Worker |
 | Models through the gateway with one key (`TEMPO_KEY`), and a bearer token for an Anthropic endpoint (`ANTHROPIC_AUTH_TOKEN`) | Implemented, tested: unit tests, and end-to-end lanes where a scripted gateway serves a `codex` and a `claude` session, or a scripted Codex CLI and Claude Code, refuses anything but the key as a bearer token, and reports the cost of each response, which becomes the cost of the attempt. Run for real from a deployed Worker: `codex` and `claude` sessions, Codex CLI and Claude Code all answered and passed their rows, 14 attempts in three runs, and the $0.4556 of model spend that the runs recorded agrees with what the key's channel was charged, see [Deploy it](#deploy-it) |
 | Services on one Linux machine (`scripts/install-linux.sh`) | Implemented, tested: installed under a second name on other ports with the store, cache, layers and state on chosen paths, ran an import and a run through the installed services, and removed again |
 | A certificate bundle and variables for slots (`sandboxd --ca-bundle`, `--slot-env`) | Implemented, tested |
@@ -145,7 +146,7 @@ Each claims rows up to its own slots and memory and leaves when the run is finis
 
 Every krun slot gets a network of its own (`--network private`): its own loopback and ports, the internet, and no way in from another slot or from the machine. A hand dials `ws://127.0.0.1`, which nanocode accepts only on loopback, so each slot relays that one address to the Worker. `--network host` puts the slots on the machine's network instead, where they share its ports.
 
-Without an API key, a plan login works. `nanoeval worker --codex-login ~/.codex/auth.json` runs `codex` agents such as `--agent luna=codex:gpt-6-luna` on the ChatGPT plan signed in there, and `--claude-login ~/.claude/.credentials.json` does the same for `claude` agents. The access token is read once when the Worker starts and is never refreshed: sign in again with that tool and restart the Worker when it expires.
+Without an API key, a plan login works. `nanoeval worker --codex-login ~/.codex/auth.json` runs `codex` agents such as `--agent luna=codex:gpt-6-luna` on the ChatGPT plan signed in there, and `--claude-login ~/.claude/.credentials.json` does the same for `claude` agents. The access token is read once when the Worker starts and is never refreshed: sign in again with that tool and restart the Worker when it expires. A plan signed in on the Worker itself is refreshed by it and is chosen run by run, on a local Worker as on a deployed one: see [A Claude plan instead of a key](#a-claude-plan-instead-of-a-key).
 
 An agent whose harness is `codex-cli` or `claude-code` runs that vendor's command line inside the slot instead of a nanocode session outside it, on the same credentials of the Worker, and `nanoeval compare` puts the agents of one or more runs in one table:
 
@@ -275,7 +276,7 @@ Installed agents and `--verifier-cache` work in ns slots as in krun slots. A tas
 
 ## Deploy it
 
-The Worker runs on Cloudflare with its three Durable Object classes and one R2 bucket, and takes its models and its sandboxes from the [Tempo gateway](https://gateway.tempo-dev.workers.dev/docs) with one key, so that a run needs no machine of yours once its eval is imported. The table below says how much of that has run.
+The Worker runs on Cloudflare with its Durable Object classes and one R2 bucket, and takes its models and its sandboxes from the [Tempo gateway](https://gateway.tempo-dev.workers.dev/docs) with one key, so that a run needs no machine of yours once its eval is imported. The table below says how much of that has run.
 
 ```sh
 npx wrangler r2 bucket create nanoeval-blobs
@@ -314,6 +315,8 @@ node cli/nanoeval.ts runner --run RUN --slots 4
 | `OPENAI_API_KEY`, with `OPENAI_BASE_URL` | The same for `codex` agents |
 | `PUBLIC_URL` | The address that runners and hands dial, when it is not the one the run was created through |
 | `TEMPO_PRIVATE_KEY` | A wallet key for `--provider e2b`, see [Run it on E2B](#run-it-on-e2b) |
+| `PLAN_SECRET` | 32 characters or more that seal a Claude plan signed in with `nanoeval plans`, see [A Claude plan instead of a key](#a-claude-plan-instead-of-a-key) |
+| `CLAUDE_PLAN_URL` | One address in place of the hosts of Claude for the token, profile and Messages requests of a signed-in plan, for a Worker under local workerd whose network needs a forwarder. The end-to-end lane points it at its scripted Claude |
 
 **What it costs.** Model requests are charged per token, and the cost of an attempt is what the gateway reported with its responses: nanoeval reads `usage.cost`, in USD, from the last usage of each response (`message_delta` or the body of a Messages response, `response.usage` of a Responses one) and records it when the response ends, so an attempt that errors keeps what it spent. A request whose payment the gateway refuses in passing is sent again, and one it refuses because the key or its wallet is spent ends the rows not yet started as `budget` errors. What a response does not report is in no spend of the run: on 2026-11-12 a key paid $2.14 in charges that no response named, beside $6.83 through its channel. So a run reads the key's usage (`GET /api/keys/me`) when it starts and when it ends, and `status` prints what the key was charged in between, through its channel and outside it, beside what the run recorded. Another run on the same key in those minutes is in that figure too. The gateway leases an E2B sandbox by the second at E2B's price, and runs commands in it as root. A run pays `--sandbox-lease-sec` (300) when it opens one, as much again whenever less than `--lease-sec` (60) of the lease is left while rows need the sandbox, and terminates it when they are done. E2B bills a renewal from the moment it is made, so each one pays the seconds that were left a second time: a longer lease loses less to renewals and more at the end. **On 2026-11-12 the gateway sold no renewal of an E2B sandbox**, so buy the lease whole: `--sandbox-lease-sec` for as long as the run needs its sandboxes, up to `--sandbox-timeout-sec`. Nothing is refunded for the part a run does not use, a sandbox that is refused its renewal takes no more rows and is used to the end of its lease, and rows still in flight then start again in a new sandbox. A `desktop` sandbox cost $0.46408 for 3,300 s, which is $0.506 an hour. Every request to the gateway's compute API is first sent without the key and answered with its price, which is checked against `--sandbox-budget-usd` and listed under `payments` in the run's status before the request goes again with the key. What the gateway then refuses is written back, so the spend counts what it answered. A `desktop` sandbox was quoted $0.04228 for 300 s, and a run that ended inside one lease recorded $0.0445 for its sandbox: the lease and the fees of its calls.
 
@@ -326,6 +329,7 @@ node cli/nanoeval.ts runner --run RUN --slots 4
 | `codex:gpt-6-luna` and `claude:claude-haiku-5-5` on the four tasks, 3 slots | 8 of 8 passed in 2 min 55 s, for $0.0507 and $0.0103 of model spend |
 | `codex-cli:gpt-6-luna` and `claude-code:claude-haiku-5-5` on `fix-git` | 2 of 2 passed: Codex CLI 0.166.0 in 48 s for $0.0052 and Claude Code 2.1.318 in 25 s for $0.0051, their releases fetched in the sandbox |
 | `gpt-6.1-sol` and `claude-opus-5-5` at high effort on `fix-git`, each as a session and as its vendor's command | 4 of 4 passed, one attempt each, for $0.3843 in all: a smoke test, not a benchmark |
+| A Claude plan signed in on the Worker, and a run it pays for | Not run for real. Tested against a scripted Claude under local workerd |
 | A lease renewed | Not run for real: the gateway answered every renewal `502` before a price. Tested against the scripted gateway |
 | A run longer than one lease | Run for real: ten tasks in two sandboxes with leases of 240 s. A sandbox that was refused its renewal kept its row to the end of the lease, the row was claimed again in a third sandbox 12 s later, and the run ended with 9 passed, 1 failed and 1 lost claim for $0.1081 |
 | All 89 tasks of Terminal-Bench 2.1 with their solutions, four sandboxes of four slots, leases of 3,300 s | Run for real: 79 passed, 8 failed and 2 errored in 2,016 s for $1.8651, with no claim lost. Five of the failures were two defects of ns slots in a sandbox, fixed since: rerun, the five passed, which makes 84, 3 and 2, against 82, 4 and 3 on krun slots. [DECISIONS.md](DECISIONS.md#2026-11-12-the-whole-of-terminal-bench-21-on-leased-sandboxes) explains every row |
@@ -334,6 +338,32 @@ node cli/nanoeval.ts runner --run RUN --slots 4
 The key's usage was read before and after those four runs. Its payment channel had spent $0.465518, against $0.4556 of model spend and about $0.0021 of compute fees a run that the runs recorded, and the rest, about $0.0015, is a handful of list and status calls made by hand. Each lease took $0.04238 from the key's limit, outside the channel. So what a run records as spent matched what the key was charged. At the size of a benchmark it did not: over the three model arms the runs recorded $6.30, the channel had spent $6.83, and the wallet had paid another $2.14 in charges outside the channel that no response reported and no budget of a run saw, see [DECISIONS.md](DECISIONS.md#2026-11-12-three-model-arms-over-the-whole-of-terminal-bench-21). [DECISIONS.md](DECISIONS.md#2026-11-12-the-gateway-for-real-models-installed-agents-and-a-leased-sandbox) has every run.
 
 The gateway pays the network fee of opening a key's payment channel. When it cannot, the key pays it, and a key whose wallet holds only the machine token is refused with `503` until the wallet holds a little of a fee token: the gateway's message says which. A run meets that as `environment` errors, and the sandboxes it was refused are written back.
+
+### A Claude plan instead of a key
+
+A Worker can pay for `claude` sessions with a Claude subscription that its operator signs in once, in place of an API key or the gateway. Whether a subscription may be used this way is governed by the terms of its provider, and is the operator's call.
+
+```sh
+printf %s "$(openssl rand -hex 32)" | npx wrangler secret put PLAN_SECRET   # once, before the first sign-in: it seals it
+node cli/nanoeval.ts plans sign-in claude                    # prints the page of Claude to open
+node cli/nanoeval.ts plans complete --code 'CODE'            # the code that page shows once you approve, quoted: it holds a #
+node cli/nanoeval.ts plans                                   # claude plan: signed in as account ...
+node cli/nanoeval.ts run --eval terminal-bench-2.1 --only fix-git \
+  --agent haiku=claude:claude-haiku-5-5 --payer plan --sandboxes 0   # prints RUN, for a runner of yours
+node cli/nanoeval.ts plans sign-out claude                   # forgets the sign-in and revokes its refresh token
+```
+
+`nanoeval worker` needs no secret from you: it takes `PLAN_SECRET` from the environment, or makes one once and keeps it in a private file of its state directory. On a terminal `plans sign-in claude` asks for the code itself. Without one it prints the page and ends, and `plans complete` takes the code as `--code` or on standard input, so a script can drive the two steps. `sign-in` prints the time until which the code is taken.
+
+**What a run does with it.** `--payer plan` is kept with the run and shown by `status`, and every session of the run asks for the plan, the sessions of its judge too. Its agents and its judge are `claude` sessions: a `codex` agent or judge, and an installed agent (`claude-code`, `codex-cli`), are refused when the run is created. An installed agent takes its credential from the model endpoint of the run, which gives the key or the login file of the Worker, and a ChatGPT plan is not signed in on a Worker (below). A run is refused while no plan is signed in, before it has a row or a sandbox, with a message that names `nanoeval plans sign-in claude`. Without the option a run is paid as before, by the key, the gateway key or the login file of the Worker, whether or not a plan is signed in.
+
+**What is recorded.** A plan charges nothing per response. Every response still passes the meter of the run: its tokens are in `agent/model-requests.jsonl` and in the usage of the attempt, and it carries no cost. The model spend of such a run is what each session estimates from its tokens at list prices, as it is for a key whose responses name no cost. It is a measure of use, not a charge, and it is what `--model-budget-usd` bounds.
+
+**The token.** The Worker keeps the sign-in in a Durable Object of its own (`PlanVault`), sealed under a key derived from `PLAN_SECRET`: the access token, the refresh token and when they end. It refreshes an access token that ends within five minutes before it sends a request with it, and when Claude answers a request `401` it refreshes once and sends the request once more. The credential is added in the egress of the Worker, and no record, artifact, log or error of a run holds it. A refresh that Claude refuses signs the plan out, and one that fails any other way leaves the vault unable to tell whether its refresh token was used up: either way no request is paid until you sign in again. The request that asked is answered `401` with a message that names the plan, its row ends as an `environment` error with that message, the rows not yet started end the same way without starting, and after a new sign-in `run --rerun RUN --errored --payer plan` takes them up. A refresh token that Claude does not date is taken to last 30 days from the sign-in. What Claude answers once a plan's usage limit is reached was not observed. Nothing here sets it apart from another answer of the provider, so such a row ends as its session ends it, as an `agent` error.
+
+**The secret.** Keep `PLAN_SECRET` as it is: a Worker whose secret changes cannot open its sign-in. `plans` then answers that the envelope does not open, and `plans sign-out claude` forgets the sign-in so that a new one can be made.
+
+**A ChatGPT plan** is not signed in on a Worker. chatgpt.com refuses requests from Workers, so it would need the relay container of nanocode-egress beside the vault: a Cloudflare Container that `wrangler deploy` builds with Docker and that `wrangler.jsonc` lists under `containers` and `durable_objects`, and the device sign-in of ChatGPT in the command line. `nanoeval worker --codex-login` runs a local Worker on a ChatGPT plan through a relay process instead.
 
 ## Run it on E2B
 
@@ -416,6 +446,7 @@ NANOEVAL_E2E_MODEL=installed npm run e2e   # installed agents, with a scripted c
 NANOEVAL_E2E_STORE=r2 npm run e2e          # blobs in R2 through the Worker
 NANOEVAL_E2E_SCENARIO=judge npm run e2e    # final messages and a judge, with the scripted model
 NANOEVAL_E2E_SCENARIO=failures npm run e2e # failure kinds and fixtures, then a rerun of what errored
+NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=plan NANOEVAL_E2E_SLOTS=2 NANOEVAL_E2E_ATTEMPTS=1 npm run e2e  # a Claude plan signed in on the Worker pays, against a scripted Claude
 NANOEVAL_E2E_SCENARIO=restart npm run e2e  # the Worker killed and restarted during the run
 NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=midturn npm run e2e  # the Worker killed in a turn, which goes on; NANOEVAL_E2E_KILL=model or wait for the other two moments
 NANOEVAL_E2E_SCENARIO=forgotten npm run e2e  # the session objects removed under a running row: it is claimed again
@@ -452,7 +483,7 @@ CI runs these on a GitHub-hosted runner, which has no libkrunfw: the `krun` lane
 
 | Path | Holds |
 | --- | --- |
-| `worker/` | The Worker: routes, the `Evals`, `Run` and `Pool` objects, the R2 blob routes, the harness sessions |
+| `worker/` | The Worker: routes, the `Evals`, `Run`, `Pool` and `PlanVault` objects, the R2 blob routes, the harness sessions |
 | `src/` | Host-agnostic modules: the eval row and its versions, the run ledger, the runner protocol, tasks, results, admission, budget, providers |
 | `sandbox/` | `Runner.ts`, the task runner, and `Main.ts`, its entry when it is bundled into one file. `slot.sh`, one attempt in one slot. `Store.ts`, the blob store and the cache. `Converter.ts`, where an environment becomes a disk through the launcher. `Prune.ts`, what can go from the layer cache and from a directory store. `Sandboxd.ts`, the local sandbox daemon |
 | `krun/` | The Rust workspace: the libkrun binding, the launcher and the guest binary of the krun backend, the image converter (`nanoeval-krun image`), and `nanoeval-net`, the relay of a private slot |

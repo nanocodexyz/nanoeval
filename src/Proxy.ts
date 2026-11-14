@@ -29,7 +29,7 @@ export type Usage = {
   webSearches?: number
 }
 
-export type Refusal = 'passing' | 'spent'
+export type Refusal = 'passing' | 'plan' | 'spent'
 
 export type Session = { attempt: string; claim: number; judge?: number; run: string }
 

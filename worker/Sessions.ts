@@ -1,12 +1,14 @@
 import { env as bound } from 'cloudflare:workers'
 import { App, Forward } from 'nanocode-ts/cloudflare'
 import type * as Atif from '../src/Atif.ts'
+import * as Plans from '../src/Plans.ts'
 import * as Proxy from '../src/Proxy.ts'
 import * as Sql from '../src/Sql.ts'
 import * as Telemetry from '../src/Telemetry.ts'
 import { account, type Env } from './Env.ts'
 import * as Meter from './Meter.ts'
 import * as Storage from './Storage.ts'
+import * as Vault from './Vault.ts'
 
 export async function authorized(request: Request, env: Env): Promise<boolean> {
   const header = request.headers.get('authorization') ?? ''
@@ -51,13 +53,17 @@ export const nanocode = App.create<Env>({
         const name = dispatch.provider ?? 'claude'
         const headers = new Headers(request.headers)
         const source = new URL(request.url)
+        const login =
+          dispatch.subscription && dispatch.payer !== 'plan' ? plan(env, name) : undefined
+        const signed = dispatch.subscription && !login
         let target = request.url
 
-        if (dispatch.subscription) {
-          const credential = plan(env, name)
-          if (!credential) return refuse('no ' + name + ' plan login is set')
+        if (signed) {
+          if (name !== 'claude' || request.method !== 'POST')
+            return refuse('no ' + name + ' plan login is set')
+        } else if (login) {
           headers.delete('x-api-key')
-          for (const [header, value] of Object.entries(credential)) headers.set(header, value)
+          for (const [header, value] of Object.entries(login)) headers.set(header, value)
           if (name === 'codex' && env.CHATGPT_RELAY_URL) {
             target = env.CHATGPT_RELAY_URL.replace(/\/+$/, '') + source.pathname + source.search
             headers.set(Proxy.relaySecretHeader, env.CHATGPT_RELAY_SECRET ?? '')
@@ -90,32 +96,51 @@ export const nanocode = App.create<Env>({
           if (!answer.ok) throw new Error('the run answered ' + answer.status)
           return (await answer.json()) as { pauseMs?: number }
         }
-        return Meter.relay({
-          body: await request.arrayBuffer(),
-          headers,
-          hooks: {
-            ...(session
-              ? {
-                  refused: (refused: Meter.Refused) =>
-                    tell({ refused }).then(
-                      (answer) => answer.pauseMs,
-                      () => undefined,
-                    ),
-                }
-              : {}),
-            settle: async (outcome) => {
-              if (session) await tell({ outcome, path }).catch(() => {})
-            },
+        const hooks: Meter.Hooks = {
+          ...(session
+            ? {
+                refused: (refused: Meter.Refused) =>
+                  tell({ refused }).then(
+                    (answer) => answer.pauseMs,
+                    () => undefined,
+                  ),
+              }
+            : {}),
+          settle: async (outcome) => {
+            if (session) await tell({ outcome, path }).catch(() => {})
           },
-          method: request.method,
-          provider: name,
-          signal: request.signal,
-          url: target,
-        })
+        }
+        const body = await request.arrayBuffer()
+        const relay = (to: { headers: Headers; url: string }) =>
+          Meter.relay({
+            body,
+            headers: to.headers,
+            hooks,
+            method: request.method,
+            provider: name,
+            signal: request.signal,
+            url: to.url,
+          })
+        if (!signed) return relay({ headers, url: target })
+        try {
+          return await Plans.send(Vault.vault(env), {
+            endpoint: request.url,
+            headers: dispatch.headers,
+            relay,
+            ...(env.CLAUDE_PLAN_URL ? { url: env.CLAUDE_PLAN_URL } : {}),
+          })
+        } catch (error) {
+          if (!(error instanceof Plans.UnusableError)) throw error
+          await hooks.settle({ at: Date.now(), ms: 0, refusal: 'plan', status: 401 })
+          await hooks.refused?.({ kind: 'plan', text: error.message, tries: 0 })
+          return refuse(error.message)
+        }
       },
     }),
   hands: 'always',
-  subscription: (_account, env, provider) => plan(env, provider) !== undefined,
+  subscription: async (_account, env, provider) =>
+    plan(env, provider) !== undefined ||
+    (provider === 'claude' && (await Vault.unusable(env)) === undefined),
   workspace: false,
 })
 

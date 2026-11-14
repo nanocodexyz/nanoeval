@@ -30,6 +30,12 @@ export type Judge = {
   thinking?: string
 }
 
+export type Payer = 'deployment' | 'plan'
+
+export const payers: readonly Payer[] = ['deployment', 'plan']
+
+export const planSignIn = 'nanoeval plans sign-in claude'
+
 export type Config = {
   agents: readonly Agent[]
   attempts: number
@@ -46,6 +52,7 @@ export type Config = {
   }
   name: string
   only?: readonly string[]
+  payer?: Payer
   rerun?: { run: string; select: Ledger.Selection }
   sandbox: {
     backend: Backend
@@ -196,6 +203,22 @@ export function parse(value: unknown): Config {
     }
   }
 
+  const payer =
+    config.payer === undefined ? 'deployment' : choice<Payer>(config.payer, 'payer', payers)
+  const unpaid =
+    payer === 'plan'
+      ? [...agents, ...(judge ? [{ id: 'the judge', provider: judge.provider }] : [])].find(
+          (agent) => agent.provider !== 'claude' && agent.provider !== 'oracle',
+        )
+      : undefined
+  if (unpaid)
+    fail(
+      'payer plan pays for claude sessions with the Claude plan signed in on the Worker, and ' +
+        unpaid.id +
+        ' is ' +
+        unpaid.provider,
+    )
+
   if (typeof config.eval?.name !== 'string') fail('eval names the imported eval to run')
   const reference = Eval.reference(
     config.eval.name + (config.eval.version ? '@' + config.eval.version : ''),
@@ -240,6 +263,7 @@ export function parse(value: unknown): Config {
     },
     name: config.name,
     ...(config.only?.length ? { only: [...config.only] } : {}),
+    ...(payer === 'plan' ? { payer } : {}),
     ...(config.rerun === undefined
       ? {}
       : {

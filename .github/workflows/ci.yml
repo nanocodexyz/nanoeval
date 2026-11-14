@@ -59,6 +59,13 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: dir
           NANOEVAL_E2E_SCENARIO: failures
+      - name: End to end, directory slots, a Claude plan signed in on the Worker pays
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: plan
+          NANOEVAL_E2E_SLOTS: '2'
+          NANOEVAL_E2E_ATTEMPTS: '1'
       - name: End to end, directory slots, orchestrator restart
         run: npm run e2e
         env:

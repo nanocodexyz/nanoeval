@@ -5,11 +5,13 @@ import * as PoolObject from './Pool.ts'
 import { Run } from './Run.ts'
 import { AgentSession, authorized, nanocode } from './Sessions.ts'
 import * as Storage from './Storage.ts'
+import * as Vault from './Vault.ts'
 
 const { Evals: EvalsObject } = Evals
 const { Pool } = PoolObject
+const { PlanVault } = Vault
 
-export { AgentSession, EvalsObject as Evals, Pool, Run }
+export { AgentSession, EvalsObject as Evals, PlanVault, Pool, Run }
 
 const json = Storage.json
 
@@ -27,6 +29,7 @@ export default {
     if (!runner && !(await authorized(request, env))) return json({ error: 'unauthorized' }, 401)
     if (resource === 'evals') return Evals.route(request, env, path)
     if (resource === 'blobs') return Blobs.route(request, env, path)
+    if (resource === 'plans') return Vault.route(request, { env, path })
     const location = url.searchParams.get('location') ?? env.RUN_LOCATION_HINT
     const hint = locations.find((candidate) => candidate === location)
     if (location && !hint)
