@@ -90,6 +90,20 @@ test('a request that got no answer names the Worker only when it is the one that
     refusal(failed('connect ECONNREFUSED 127.0.0.1:8787')),
     'a request got no answer: connect ECONNREFUSED 127.0.0.1:8787',
   )
+  const both = Object.assign(new TypeError('fetch failed'), {
+    cause: new AggregateError([
+      new Error('connect ECONNREFUSED ::1:8787'),
+      new Error('connect ECONNREFUSED 127.0.0.1:8787'),
+    ]),
+  })
+  assert.equal(
+    refusal(both, 'http://localhost:8787'),
+    'no Worker answers at http://localhost:8787 (connect ECONNREFUSED ::1:8787, connect ECONNREFUSED 127.0.0.1:8787): start one with nanoeval worker, or name another with --url or NANOEVAL_URL',
+  )
+  assert.equal(
+    refusal(both, 'http://127.0.0.1:9999'),
+    'a request got no answer: connect ECONNREFUSED ::1:8787, connect ECONNREFUSED 127.0.0.1:8787',
+  )
 })
 
 test('the command prints the usage of one command, and names a command it does not know', () => {

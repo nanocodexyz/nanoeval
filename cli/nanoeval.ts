@@ -3028,10 +3028,15 @@ async function runId(api: Api, given: string): Promise<string> {
 export function refusal(error: unknown, worker?: string): string {
   if (!(error instanceof Error)) return String(error)
   if (error instanceof TypeError && error.message === 'fetch failed') {
-    const cause = error.cause instanceof Error ? error.cause.message : String(error.cause ?? '')
+    const reasons =
+      error.cause instanceof AggregateError
+        ? error.cause.errors.map((reason) => (reason instanceof Error ? reason.message : ''))
+        : [error.cause instanceof Error ? error.cause.message : String(error.cause ?? '')]
+    const cause = reasons.filter(Boolean).join(', ')
     const at = worker && URL.canParse(worker) ? new URL(worker) : undefined
     const port = at ? at.port || (at.protocol === 'https:' ? '443' : '80') : undefined
-    return at && cause.includes(at.hostname + ':' + port)
+    const hosts = at?.hostname === 'localhost' ? ['localhost', '127.0.0.1', '::1'] : [at?.hostname]
+    return at && hosts.some((host) => cause.includes(host + ':' + port))
       ? 'no Worker answers at ' +
           worker +
           ' (' +
