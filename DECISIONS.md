@@ -3498,3 +3498,107 @@ The command prints the id it took. When none fits it is refused before a run is 
 - `npm run lint`, `npm run check:types`, `npm test`.
 
 **Not verified.** A real terminal: the unit test passes the height in. A real judge. Whether a Harbor tool rejects a `result.json` with `stats.judge`: it is written only for runs with a judge, and `pass_at_k` is already there as a key Harbor does not have.
+
+## 2026-11-14: an attempt that hit its agent timeout has no cost, and the change that gives it one is nanocode's
+
+`status` says `spend: model $0.0022 estimated from tokens, without 3 attempts whose model calls have no cost` for a run in which three attempts ran into their agent timeout. This entry records why nanoeval cannot fill that in, and the change upstream that does.
+
+**What happens.** A session reports the cost of a turn in the event that ends it, `run.completed` or `run.failed`, and `Atif.usage` reads `cost_usd` there. The tokens come from the `model.call.completed` events before it. When the agent timeout ends a turn, nanoeval cancels it, and the brain ends it with `run.failed {"status": "cancelled", "cost_usd": null, "cost_status": "other"}`, read from the events of such an attempt on directory slots, though the model calls of the turn completed and were counted: one call of 65 input and 7 output tokens, where the same call in a turn that completed is priced at $0.00006525. The attempt keeps its tokens and has no cost, the spend of the run and `--model-budget-usd` leave it out, and the line above says how many attempts that is.
+
+**Why not price it here.** The prices are in nanocode (`crates/core/types-core/src/pricing`), compiled into the brain. nanocode-ts exports a model catalog without prices, and nanoeval sends models nothing of its own and keeps no table of theirs: a second price list here would drift from the one that prices every other turn of the same run. Through a gateway key each response carries what it was charged, and those attempts are priced already.
+
+**The change, in nanocodexyz/nanocode**, `crates/backends/claude/src/agent.rs` at master `86c465b4dca2`: `emit_run_finished` (lines 4948 to 4989) takes the usage of a turn from its result, which only a completed turn has, at line 4970. The usage of the turn so far lives in a local of `run_rounds` (line 7125) and is lost when the turn ends in an error. The patch keeps that usage in the caller (line 5914), passes it down through `run_locked` (7037) and `run_rounds` (7053), and lets `emit_run_finished` fall back to it, so a turn that was cancelled or failed reports the cost of the model calls it completed, as `estimated_from_usage` or `reported_by_provider`. A turn that ended before its first model call still reports no cost. **It is not tested and was not compiled**: it was written against the source and is recorded here for whoever lands it there.
+
+```diff
+--- a/crates/backends/claude/src/agent.rs
++++ b/crates/backends/claude/src/agent.rs
+@@ -3803,7 +3803,7 @@
+             running.settle_code_turn(&events, model_call_index).await;
+             let (reasoning_mode, effort) = running.run_labels();
+             let ns = started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+-            running.emit_run_finished(&events, &result, reasoning_mode, &effort, ns);
++            running.emit_run_finished(&events, &result, reasoning_mode, &effort, ns, None);
+         }
+         running.steering.acquire().await.remove(&key);
+         running.cancellations.update(|cancellations| {
+@@ -4952,6 +4952,7 @@
+         reasoning_mode: &str,
+         effort: &str,
+         ns: u64,
++        spent: Option<&TurnUsage>,
+     ) {
+         if let Err(error) = result {
+             self.emit(
+@@ -4967,7 +4968,11 @@
+             }
+             Err(_) => ("failed", AgentEventKind::RunFailed),
+         };
+-        let usage = result.as_ref().ok().and_then(TurnResult::usage);
++        let usage = result
++            .as_ref()
++            .ok()
++            .and_then(TurnResult::usage)
++            .or(spent);
+         let cost = usage.and_then(TurnUsage::estimated_cost);
+         self.emit(
+             events,
+@@ -5911,9 +5916,11 @@
+         self.publish_round_boundary(&conversation).await;
+         let body =
+             (!matches!(self.lineage.origin, Origin::Subagent)).then(|| self.wire_cache.keep_body());
++        let mut spent = Usage::default();
+         let execution: AgentFuture<'_, Result<TurnResult>> =
+-            Box::pin(self.run_locked(&mut conversation, &request, speed, &cancel));
++            Box::pin(self.run_locked(&mut conversation, &request, speed, &cancel, &mut spent));
+         let mut result = execution.await;
++        let spent = turn_usage(&spent);
+         drop(body);
+ 
+         let mut model_call_index = 0;
+@@ -6000,7 +6007,7 @@
+             result = result.map(|completed| self.retain_boundary(completed, snapshot));
+         }
+         let ns = started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+-        self.emit_run_finished(events, &result, reasoning_mode, &effort, ns);
++        self.emit_run_finished(events, &result, reasoning_mode, &effort, ns, Some(&spent));
+         result
+     }
+     fn stop_code_cells(
+@@ -7040,10 +7047,11 @@
+         request: &BackendPrompt,
+         speed: Option<crate::Speed>,
+         cancel: &Cancellation,
++        spent: &mut Usage,
+     ) -> Result<TurnResult> {
+         let mut journal = Journal::default();
+         let result = self
+-            .run_rounds(conversation, request, speed, cancel, &mut journal)
++            .run_rounds(conversation, request, speed, cancel, &mut journal, spent)
+             .await;
+         let flushed = self.defer_journal(&mut journal).await;
+         let result = result?;
+@@ -7057,6 +7065,7 @@
+         speed: Option<crate::Speed>,
+         cancel: &Cancellation,
+         journal: &mut Journal,
++        spent: &mut Usage,
+     ) -> Result<TurnResult> {
+         if request.cancel_on_admission {
+             cancel.cancel();
+@@ -7122,7 +7131,8 @@
+                     .unwrap_or_else(|| cursor.lifecycle_turn_id.clone()),
+             ));
+         }
+-        let mut usage = cursor.usage.clone();
++        let mut usage = spent;
++        *usage = cursor.usage.clone();
+         let mut pending = cursor.pending.clone();
+         if !cursor.prepared {
+             cursor.instruction_revision = request.prompt.instruction_revision();
+```
+
+With it, nothing changes in nanoeval: `Atif.usage` already reads `cost_usd` from `run.failed`. Until a nanocode-ts build carries it, the line in `status` stays, and it would stay afterwards for a session that reports usage and no cost for another reason.
+
+**Checked.** The events of an attempt that hit its timeout and of one that completed, from the exported job of a run on directory slots with the scripted model: the `run.failed` and `run.completed` payloads quoted above. That nanocode-ts `build-7968b53` exports no prices: `dist/models.js` names none. The source of nanocode at the commit of the pinned hand and at master, read for the two call sites and the function.
+
+**Not verified.** The patch: not compiled, not run. The Codex backend of nanocode (`crates/backends/codex`), whose cancelled turns were not read. A turn cancelled while a model call is in flight, whose tokens no event carries.
