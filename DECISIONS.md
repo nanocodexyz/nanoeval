@@ -3892,3 +3892,16 @@ The guest sees one CPU with AVX2, AVX-512 and FMA, and tesseract reports AVX512B
 **Checked** on dev-georgios: `krun/host/tests/stderr.rs` and `krun/net/tests/stderr.rs` run each binary with an unknown command and stderr on `/dev/full` and expect 125; the deployed binaries of `~/nc-live/runner/rt` exit 101 the same way. `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings` and `cargo test --locked` in `krun/`.
 
 **Release.** A runner machine takes it when its `NANOEVAL_KRUN` binaries are rebuilt from this commit.
+
+
+## 2026-11-14: a codex session's cell sees only the hand tools codex-cli has, on nanocode-ts `build-a7fdac2`
+
+`package.json` moves from build-67dea25 to build-a7fdac2 (nanocode-ts a7fdac2, nanocode 2dff921f7, WASM build e71a84e986fcb9e6929e), which keeps the `hedge` option of 67dea25 and the offline build of 93d19da. A nanox session (`codex`, Code Mode) on a nanocode hand had the hand's Claude Code tools in its cell: `ALL_TOOLS` listed Read, Edit, Write, Bash and TaskStop beside exec_command, write_stdin, apply_patch and view_image, and a gpt-6-luna TB2.1 trace called `tools.Bash` 13 times, while codex-cli (cx) offers only its own tools. nanocode 2922b399b and nanocode-ts a7fdac2 give a codex session a hand tool selection without those tools unless the host names one; Claude sessions keep them. The hand stays `nanocode-cli-0bbcb64`: the CLI hand has taken per-session tool selections since nanocode cd09093fb, and nothing in this change runs on the hand.
+
+`test/e2e.ts`: the scripted Responses model's cell prints `ALL_TOOLS`, and a run that served a codex request asserts every codex cell lists exec_command and none of Bash, Edit, Read, TaskOutput, TaskStop and Write, and that the exec description declares none of them. The CI lanes with `NANOEVAL_E2E_GATEWAY=1` run it.
+
+**Checked** on dev-georgios, Node 24.22.2, directory slots, gateway lane (`NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_GATEWAY=1`, extract-todos, uppercase-message, write-greeting, 3 slots, 1 attempt):
+
+- build-67dea25: fails, codex cells list `["apply_patch","exec_command","view_image","write_stdin","Read","Edit","Write","Bash","TaskStop","hands"]` (run a72bb212).
+- build-a7fdac2: `e2e passed: scripted-dir-gateway`, codex cells list `["apply_patch","exec_command","view_image","write_stdin","hands"]`; the Claude lane (no gateway) passes too.
+- `npm run lint`, `npm run check:types`, `npm test` (270 passed).

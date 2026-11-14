@@ -176,6 +176,8 @@ function sse(events: [string, unknown][]): string {
 }
 
 const longCells: { exec: string | undefined; received: string }[] = []
+const codexCells: (string[] | undefined)[] = []
+const codexExecs: (string | undefined)[] = []
 const midturnRequests: { decision: string; digest: string; last: string }[] = []
 let killDue: number | undefined
 let scriptedCalls = 0
@@ -244,13 +246,44 @@ function fake(
   )
 }
 
-function responses(body: { input?: unknown; model?: string }, cost: number): string {
+function execDescription(tools: unknown): string | undefined {
+  if (!Array.isArray(tools)) return undefined
+  for (const tool of tools as { description?: string; name?: string; tools?: unknown }[]) {
+    if (tool.name === 'exec') return tool.description
+    const nested = execDescription(tool.tools)
+    if (nested !== undefined) return nested
+  }
+  return undefined
+}
+
+function cellTools(input: unknown): string[] | undefined {
+  const outputs = (Array.isArray(input) ? input : []).flatMap(
+    (item: { output?: unknown; type?: string }) => {
+      if (item.type !== 'custom_tool_call_output') return []
+      if (typeof item.output === 'string') return [item.output]
+      if (Array.isArray(item.output))
+        return item.output.map((part: { text?: string }) => part.text ?? '')
+      return []
+    },
+  )
+  const listed = /cell tools: (\[[^\]]*\])/.exec(outputs.join(' '))
+  return listed ? (JSON.parse(listed[1]!) as string[]) : undefined
+}
+
+function responses(
+  body: { input?: unknown; model?: string; tools?: unknown },
+  cost: number,
+): string {
   const text = JSON.stringify(body.input ?? [])
   const id = ++scriptedCalls
   const solution = solutions.find(([marker]) => text.includes(marker))
   if (!solution) throw new Error('the scripted model has no solution for this prompt')
   const code =
-    'await tools.exec_command({ cmd: ' + JSON.stringify(solution[1]) + ' }); text("done")'
+    'await tools.exec_command({ cmd: ' +
+    JSON.stringify(solution[1]) +
+    ' }); text("cell tools: " + JSON.stringify(ALL_TOOLS.map((tool) => tool.name)))'
+  codexExecs.push(execDescription(body.tools))
+  if (text.includes('"custom_tool_call_output"')) codexCells.push(cellTools(body.input))
   const item = text.includes('"custom_tool_call_output"')
     ? {
         content: [{ annotations: [], text: 'The task is complete.', type: 'output_text' }],
@@ -1605,6 +1638,26 @@ async function main(): Promise<void> {
           firstByteMs +
           ' ms late',
       )
+    if (codexExecs.length > 0) {
+      const claudeTools = ['Bash', 'Edit', 'Read', 'TaskOutput', 'TaskStop', 'Write']
+      assert.ok(
+        codexCells.length > 0 &&
+          codexCells.every(
+            (cell) =>
+              cell?.includes('exec_command') && !cell.some((name) => claudeTools.includes(name)),
+          ),
+        'a codex session sees the hand tools codex-cli has and none of the Claude Code hand tools: ' +
+          JSON.stringify(codexCells),
+      )
+      assert.ok(
+        codexExecs.every(
+          (exec) =>
+            exec?.includes('### `exec_command`') &&
+            !claudeTools.some((name) => exec.includes('### `' + name + '`')),
+        ),
+        'the exec tool of a codex session declares none of the Claude Code hand tools',
+      )
+    }
     if (longCell) {
       assert.deepEqual(
         longCells.flatMap(
