@@ -3426,6 +3426,12 @@ async function main(): Promise<void> {
       const started = errored.filter((row) => row['runner'] !== null)
       assert.equal(started.length, 1, 'one row was running when the payment was refused')
       assert.match(started[0]!['failure'].message, /402/)
+      assert.ok(
+        started[0]!['failure'].at - status['refused'].at < 2 * config.limits.setupSec * 1000,
+        'the row that was running ends when the wait for the payment does, ' +
+          (started[0]!['failure'].at - status['refused'].at) +
+          ' ms after the refusal',
+      )
       for (const row of errored.filter((entry) => entry['runner'] === null)) {
         assert.equal(row['claims'], 0, 'a row that had not started is never claimed')
         assert.match(row['failure'].message, /^the payment for a model request was refused/)

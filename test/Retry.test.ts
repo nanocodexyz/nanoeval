@@ -146,3 +146,108 @@ test('an attempt whose every model request the relay failed is an error of the w
     'the model endpoint was not reached',
   )
 })
+
+test('a session that is answered nothing but refusals is ended when the wait of the run is over', () => {
+  const spent = { at: 1_000, message: 'The wallet holds 0 of the 3 its channel needs now.' }
+  const held = [
+    { at: 1_000, refusal: 'spent' as const, status: 402 },
+    { at: 9_000, refusal: 'spent' as const, status: 402 },
+  ]
+  assert.equal(Retry.refused({ now: 15_999, requests: held, spent, waitSec: 15 }), undefined)
+  assert.deepEqual(Retry.refused({ now: 16_000, requests: held, spent, waitSec: 15 }), {
+    at: 16_000,
+    kind: 'budget',
+    message:
+      'the run ended the turn: its model request was answered 402 after the payment was refused for 15 s: The wallet holds 0 of the 3 its channel needs now.',
+  })
+  assert.ok(
+    Retry.refused({ now: 16_000, requests: held, spent, waitSec: 15 })!.message.startsWith(
+      Retry.refusedPrefix,
+    ),
+  )
+  const late = [
+    { at: 500, status: 200 },
+    { at: 15_500, refusal: 'spent' as const, status: 402 },
+  ]
+  assert.equal(
+    Retry.refused({ now: 16_000, requests: late, spent, waitSec: 15 })?.kind,
+    'budget',
+    'a row first refused late in the wait of the run ends with it',
+  )
+  assert.equal(
+    Retry.refused({ now: 16_000, requests: held, waitSec: 15 }),
+    undefined,
+    'a refusal that a paid request of another row ended is not final',
+  )
+  assert.equal(
+    Retry.refused({
+      now: 16_000,
+      requests: [...held, { at: 15_900, status: 200 }],
+      spent,
+      waitSec: 15,
+    }),
+    undefined,
+  )
+  assert.equal(Retry.refused({ now: 16_000, requests: [], spent, waitSec: 15 }), undefined)
+
+  const passing = (at: number) => ({ at, refusal: 'passing' as const, status: 402 })
+  assert.equal(
+    Retry.refused({ now: 99_000, requests: [passing(1_000), passing(15_999)], waitSec: 15 }),
+    undefined,
+  )
+  assert.deepEqual(
+    Retry.refused({
+      now: 99_000,
+      requests: [{ at: 0, status: 200 }, passing(1_000), passing(8_000), passing(16_000)],
+      waitSec: 15,
+    }),
+    {
+      at: 99_000,
+      kind: 'agent',
+      message:
+        'the run ended the turn: its last 3 model requests were answered 402 and nothing else for 15 s',
+    },
+  )
+  assert.equal(
+    Retry.refused({
+      now: 99_000,
+      requests: [
+        { at: 1_000, status: 401 },
+        { at: 9_000, status: 403 },
+        { at: 30_000, status: 404 },
+      ],
+      waitSec: 15,
+    })?.message,
+    'the run ended the turn: its last 3 model requests were answered 401, 403, 404 and nothing else for 29 s',
+  )
+  assert.equal(
+    Retry.refused({ now: 9_999_000, requests: [{ at: 1_000, status: 404 }], waitSec: 15 }),
+    undefined,
+    'one refusal says nothing of a turn that asks nothing more, however long it goes on',
+  )
+  for (const status of [400, 408, 409, 413, 422, 429, 500, 502, 529, 530])
+    assert.equal(
+      Retry.refused({
+        now: 99_000,
+        requests: [
+          { at: 1_000, status },
+          { at: 30_000, status },
+        ],
+        waitSec: 15,
+      }),
+      undefined,
+      'a ' + status + ' is about one request or passes, and the session decides',
+    )
+  assert.equal(
+    Retry.refused({
+      now: 99_000,
+      requests: [
+        { at: 1_000, status: 401 },
+        { at: 2_000, status: 500 },
+        { at: 30_000, status: 401 },
+      ],
+      waitSec: 15,
+    }),
+    undefined,
+  )
+})

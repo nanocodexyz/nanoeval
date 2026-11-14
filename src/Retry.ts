@@ -1,13 +1,59 @@
+import type * as Proxy from './Proxy.ts'
 import type * as Result from './Result.ts'
 import * as Verdict from './Verdict.ts'
 
 export const queued = 'the turn never started'
+
+export const refusedPrefix = 'the run ended the turn'
+
+export const refusing: readonly number[] = [401, 402, 403, 404]
 
 export const stalledPrefix = 'the agent never reached its model'
 
 export const unansweredPrefix = 'the model endpoint never answered the agent'
 
 export const unreached: readonly number[] = [502, 530]
+
+export function refused(input: {
+  now: number
+  requests: readonly { at: number; refusal?: Proxy.Refusal; status: number }[]
+  spent?: { at: number; message: string }
+  waitSec: number
+}): Result.Failure | undefined {
+  const { requests, spent } = input
+  const tail = requests.slice(
+    requests.findLastIndex((request) => !refusing.includes(request.status)) + 1,
+  )
+  const first = tail[0]
+  const last = tail.at(-1)
+  if (!first || !last) return undefined
+  const waitMs = input.waitSec * 1000
+  if (last.refusal === 'spent' && spent && input.now - spent.at >= waitMs)
+    return {
+      at: input.now,
+      kind: 'budget',
+      message:
+        refusedPrefix +
+        ': its model request was answered 402 after the payment was refused for ' +
+        input.waitSec +
+        ' s: ' +
+        spent.message,
+    }
+  if (last.at - first.at < waitMs) return undefined
+  return {
+    at: input.now,
+    kind: 'agent',
+    message:
+      refusedPrefix +
+      ': its last ' +
+      tail.length +
+      ' model requests were answered ' +
+      [...new Set(tail.map((request) => request.status))].join(', ') +
+      ' and nothing else for ' +
+      Math.floor((last.at - first.at) / 1000) +
+      ' s',
+  }
+}
 
 export function stalled(input: {
   failure: Result.Failure

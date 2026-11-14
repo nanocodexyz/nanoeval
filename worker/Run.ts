@@ -901,6 +901,26 @@ export class Run extends DurableObject<Env> {
     })
   }
 
+  private refusedOut(row: Ledger.Attempt, now: number): Result.Failure | undefined {
+    const refused = this.meta()!.refused
+    return Retry.refused({
+      now,
+      requests: this.sql
+        .all(
+          "SELECT at, refusal, status FROM model_requests WHERE attempt = ? AND claim = ? AND status IS NOT NULL AND path NOT LIKE 'judge/%' ORDER BY id",
+          row.id,
+          row.claims,
+        )
+        .map((request) => ({
+          at: request['at'] as number,
+          ...(request['refusal'] === null ? {} : { refusal: request['refusal'] as Proxy.Refusal }),
+          status: request['status'] as number,
+        })),
+      ...(refused && !refused.plan ? { spent: { at: refused.at, message: refused.message } } : {}),
+      waitSec: this.config().limits.setupSec,
+    })
+  }
+
   private async unpaid(row: Ledger.Attempt, error: unknown): Promise<Refusal> {
     const reason =
       error instanceof Harness.RequestError && this.config().payer === 'plan'
@@ -926,7 +946,9 @@ export class Run extends DurableObject<Env> {
       throw new Refusal(404, 'the run has no such attempt')
     if (body.refused) {
       const pauseMs = this.refuse(body.refused)
-      return pauseMs === undefined ? {} : { pauseMs }
+      if (pauseMs !== undefined) return { pauseMs }
+      this.wake(body.attempt)
+      return {}
     }
     if (body.admit)
       return this.admit({
@@ -2853,12 +2875,21 @@ export class Run extends DurableObject<Env> {
       const earlier = current.failure ? (JSON.parse(current.failure) as Result.Failure) : undefined
       if (earlier?.kind === 'agent_timeout' || earlier?.kind === 'environment')
         return { state: 'timeout' }
+      if (earlier?.message.startsWith(Retry.refusedPrefix))
+        return { error: earlier.message, state: 'failed' }
       const report = await this.kept(current, Harness.turn(this.env, session, requestId))
       if (report.status === 'completed')
         return { message: report.ok?.message ?? '', state: 'completed' }
       if (report.status === 'failed' || report.status === 'cancelled')
         return { error: report.error ?? 'the turn ended as ' + report.status, state: 'failed' }
       const now = Date.now()
+      const refused = this.refusedOut(current, now)
+      if (refused) {
+        Ledger.update(this.sql, row.id, { failure: JSON.stringify(refused) })
+        Timeline.add(this.sql, { at: now, attempt: row.id, name: 'attempt.refused' })
+        await Harness.cancel(this.env, session, requestId)
+        return { error: refused.message, state: 'failed' }
+      }
       if (now > current.deadline_at!) {
         await Harness.cancel(this.env, session, requestId)
         Ledger.update(this.sql, row.id, {

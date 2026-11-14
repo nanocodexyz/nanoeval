@@ -186,10 +186,12 @@ const usage = `nanoeval <command>
             --step-retries times. One that is refused because the key or its channel is
             spent waits and is sent again, and no row starts while it waits; one still
             refused after --setup-sec ends its row as a budget error, and every row not yet
-            started with it. --key-deposit and --key-top-up set the deposit that the
-            channel of the Worker's TEMPO_KEY opens with and each automatic top-up, in the
-            key's token, when the run is created: size them for one hold of every model
-            request the run may have in flight at once.
+            started with it. The run ends the turn of such a row itself, and the turn of a
+            session that is answered nothing but 401, 402, 403 or 404 for --setup-sec, so
+            neither holds its slot to its agent timeout. --key-deposit and --key-top-up
+            set the deposit that the channel of the Worker's TEMPO_KEY opens with and each
+            automatic top-up, in the key's token, when the run is created: size them for
+            one hold of every model request the run may have in flight at once.
             --model-budget-usd bounds the model spend of the run. Every model request is
             admitted before it is sent: none once the budget is spent, and under it only
             while the requests in flight, each taken to cost what the largest response of
