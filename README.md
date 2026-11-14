@@ -126,7 +126,7 @@ The table says what was run. "The first version" is the flow before the eval tab
 
 ## Run it locally
 
-Requirements: Linux and Node 24. For `krun` evals and slots, which a runner takes by itself on a machine with KVM: `/dev/kvm`, libkrunfw 5, `mke2fs`, passt, and a Rust toolchain through rustup or a built launcher, see [krun slots](#krun-slots). No Docker or other container engine, on any machine. The first import or runner of a machine builds the launcher and `nanoeval-net` from `krun/` (about a minute) and later ones reuse them. `NANOEVAL_KRUN` names a directory with the built binaries instead.
+Requirements: Linux and Node 24. For `krun` evals and slots, which a runner takes by itself on a machine with KVM: `/dev/kvm`, libkrunfw 5, `mke2fs`, passt, and a Rust toolchain through rustup or a built launcher, see [krun slots](#krun-slots). `nanoeval runtime` and ns slots link the launcher statically, which also takes `musl-tools`. [A bare machine](#a-bare-machine) lists every package and step from a fresh Ubuntu. No Docker or other container engine, on any machine. The first import or runner of a machine builds the launcher and `nanoeval-net` from `krun/` (about a minute) and later ones reuse them. `NANOEVAL_KRUN` names a directory with the built binaries instead.
 
 ```sh
 npm ci
@@ -467,7 +467,7 @@ Three options are for a machine whose network stands between its slots and the i
 - Linux on x86_64 or aarch64 with `/dev/kvm` readable and writable by the user that runs the runner, usually through the `kvm` group.
 - [libkrunfw](https://github.com/containers/libkrunfw) 5 where the dynamic loader finds `libkrunfw.so.5`.
 - `mke2fs` from e2fsprogs.
-- A Rust toolchain through rustup. The first import or runner builds the launcher in `krun/` (about a minute) and later ones reuse it. `NANOEVAL_KRUN` names a directory with a built `nanoeval-krun`, `nanoeval-krun-guest` and `nanoeval-net` instead.
+- A Rust toolchain through rustup. `krun/rust-toolchain.toml` pins it, and the first cargo call there installs it. Outside `krun/` cargo answers only when rustup has a default toolchain (`rustup default`), and the tests ask `cargo --version` from the checkout: without a default they skip everything that needs the launcher. The first import or runner builds the launcher in `krun/` (about a minute) and later ones reuse it. `NANOEVAL_KRUN` names a directory with a built `nanoeval-krun`, `nanoeval-krun-guest` and `nanoeval-net` instead.
 - [passt](https://passt.top) installed as a system package (`apt install passt`), for the private network of slots and of a Dockerfile's `RUN` steps. A copy in a user's directory cannot sandbox itself where unprivileged user namespaces are restricted. `--network host` does not need it.
 
 The machine that imports needs the same things and nothing more: the launcher pulls images and builds Dockerfiles itself, see [DESIGN.md](DESIGN.md#image-disks). No Docker, containerd or podman is used or needed, and none is called if one is installed. A Dockerfile whose `RUN` steps install from a registry that the machine's network re-signs or keeps on its loopback builds when the import has the machine's policy, `--ca-bundle`, `--slot-env` and `--slot-forward`, which the installed command has from the installation. The disk keeps none of the three. Tasks that name an image need none.
@@ -481,11 +481,24 @@ Unpacked disks are kept in `~/.cache/nanoeval/disks` (`NANOEVAL_CACHE` moves the
 - Root, and a kernel with overlayfs, loop devices, namespaces and, for limits, cgroup v2 with the memory controller.
 - `unshare`, `setpriv`, `mount`, `losetup` and `mountpoint` from util-linux, `chroot` and `env --default-signal` from coreutils 8.31 or later, `mke2fs` and `pgrep`.
 - `ip` and `nft` for the private network, and a resolver that is not on the machine's loopback.
-- The launcher, as for krun slots. It needs neither KVM nor libkrunfw here, and `nanoeval runtime` builds one that is linked statically.
+- The launcher, as for krun slots. It needs neither KVM nor libkrunfw here, and `nanoeval runtime` builds one that is linked statically, with the musl C compiler of the machine that builds it (`musl-tools`: `x86_64-linux-musl-gcc`).
 
 Each slot gets its own mount, PID, IPC, UTS, cgroup and network namespaces, the task's memory and CPUs as cgroup limits, a root that grows to `storage_mb`, and a capability set without mounts and device nodes. It shares the machine's kernel, so it keeps attempts apart as a container does and less strongly than a microVM. [DESIGN.md](DESIGN.md#ns-slots) says what a slot may and may not do.
 
 Installed agents and `--verifier-cache` work in ns slots as in krun slots. A task that closes the network of a phase does not run there: only a microVM has the gate that closes it, so such a run is refused unless it names `--backend krun`.
+
+### A bare machine
+
+What a fresh Ubuntu 24.04 with `/dev/kvm` needs before `npm ci` and the commands above work with krun slots, in this order. Two bare 48-thread machines were brought up this way, in about a minute each before the first import:
+
+1. Packages: `sudo apt-get install build-essential ca-certificates curl e2fsprogs git musl-tools passt pkg-config xz-utils`. `musl-tools` is for the static launcher of `nanoeval runtime` and of ns slots, and `passt` must be the system package.
+2. KVM for the user that runs nanoeval: `sudo usermod -aG "$(stat -c %G /dev/kvm)" "$USER"`, then a new login. Not an ACL on `/dev/kvm`: udev writes the device's mode again when the first microVM starts, and the ACL is gone. On a machine that is thrown away after a job, `scripts/ci-machine.sh` opens KVM to every user with a udev rule instead, and installs the packages of step 1 that such a machine lacks and the libkrunfw of step 5.
+3. Node 24 from nodejs.org, checked against its `SHASUMS256.txt`.
+4. rustup (`curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none`). `(cd krun && cargo --version)` then installs the toolchain that `krun/rust-toolchain.toml` pins, with its musl targets, and `(cd krun && rustup default "$(rustup show active-toolchain | cut -d' ' -f1)")` makes it the default, so that cargo also answers outside `krun/`.
+5. libkrunfw 5: `libkrunfw-x86_64.tgz` of its [5.5.0 release](https://github.com/containers/libkrunfw/releases/tag/v5.5.0), SHA-256 `c169206b01c89fbe134f1728bf4f988702bc7f73b4cf73e6fdece447d6fceca1`, with `lib64/libkrunfw.so.5.5.0` installed in `/usr/local/lib`, a link `libkrunfw.so.5` beside it, and `sudo ldconfig`.
+6. `npm ci` in the checkout. The first import, runner or lane then builds the launcher, 42 s on 24 cores.
+
+An import of Terminal-Bench 2.1 on such a machine took 9 minutes, 18 GB of store and 16 GB of layers, and 89 of the 100 pulls an hour that Docker Hub gives an address without a login, see [Checks](#checks).
 
 ## Following nanocode
 
