@@ -327,7 +327,16 @@ export class Run extends DurableObject<Env> {
       }
       if (request.method === 'GET' && parts[0] === 'attempts' && parts[1]) {
         const row = Ledger.get(this.sql, decodeURIComponent(parts[1]))
-        if (!row) return json({ error: 'attempt not found' }, 404)
+        if (!row)
+          return json(
+            {
+              error:
+                'the run has no attempt ' +
+                decodeURIComponent(parts[1]) +
+                ': its attempts are named as status lists them, a00001 and on',
+            },
+            404,
+          )
         if (parts[2] === 'artifacts' && parts[3]) {
           const name = decodeURIComponent(parts[3])
           const body = this.artifact(row.id, name) ?? (await this.live(row, name))
@@ -425,7 +434,8 @@ export class Run extends DurableObject<Env> {
             'the eval ' +
             config.eval.name +
             ' cannot be read: ' +
-            ((await found.json()) as { error: string }).error,
+            ((await found.json()) as { error: string }).error +
+            '. nanoeval evals lists the evals of this Worker, and nanoeval import makes one',
         },
         400,
       )

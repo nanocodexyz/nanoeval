@@ -210,3 +210,24 @@ test('reasoning tokens are summed from the model calls that report them, and abs
   assert.equal(trajectory.final_metrics.extra.reasoning_tokens, 40)
   assert.equal(trajectory.steps[0]!.metrics!.extra['reasoning_tokens'], 40)
 })
+
+test('a run is refused when the Worker holds no credential for the models it names', () => {
+  const deployment: Route.Deployment = { claude: { payer: 'key' }, codex: null }
+  const users = [
+    { name: 'the agent haiku', provider: 'claude' as const },
+    { name: 'the agent luna', provider: 'codex' as const },
+    { name: 'the judge', provider: 'codex' as const },
+  ]
+  assert.equal(
+    Route.unserved(deployment, { plan: false, users }),
+    'the Worker holds no credential for the codex models of the agent luna and the judge: start nanoeval worker with OPENAI_API_KEY or TEMPO_KEY in its environment or with --codex-login FILE, or give a deployed Worker one of them as a secret. A run with --oracle needs none',
+  )
+  assert.equal(Route.unserved(deployment, { plan: false, users: users.slice(0, 1) }), undefined)
+  assert.equal(Route.unserved(deployment, { plan: false, users: [] }), undefined)
+  assert.equal(Route.unserved(deployment, { plan: true, users }), undefined)
+  assert.equal(Route.unserved(undefined, { plan: false, users }), undefined)
+  assert.match(
+    Route.unserved({ claude: null, codex: null }, { plan: false, users })!,
+    /^the Worker holds no credential for the claude models of the agent haiku: start nanoeval worker with ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or TEMPO_KEY in its environment or with --claude-login FILE,/,
+  )
+})

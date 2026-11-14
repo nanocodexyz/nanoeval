@@ -41,7 +41,11 @@ import * as Watch from './Watch.ts'
 
 const usage = `nanoeval <command>
 
-  sandboxd  --token T [--host 127.0.0.1] [--port 8788] [--root DIR] [--exec-timeout-ms 600000]
+  help      [COMMAND]
+            Print the usage of one command, or of every command. COMMAND --help prints the
+            same.
+  sandboxd  --token T [--host 127.0.0.1] [--port 8788] [--root output/sandboxes]
+            [--exec-timeout-ms 600000]
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
             [--store DIR] [--cache DIR]
             Serve this machine as a local sandbox provider: a run starts one task runner in
@@ -52,7 +56,7 @@ const usage = `nanoeval <command>
             this machine's /etc/hosts gives the address are in the slot's. --store names the
             directory blob store its runners read, and --cache where they keep verified blobs
             and unpacked environment disks.
-  worker    --token T [--host 127.0.0.1] [--port 8787] [--state DIR] [--tick-ms 500]
+  worker    --token T [--host 127.0.0.1] [--port 8787] [--state output/worker] [--tick-ms 500]
             [--sandbox-url URL --sandbox-token T] [--claude-login FILE] [--codex-login FILE]
             [--public-url URL] [--nanocode-ts DIR]
             Run the Worker under local workerd. Model API keys and base URLs are taken from
@@ -113,9 +117,10 @@ const usage = `nanoeval <command>
   import    DATASET --out DIR [--only ID]... [--limit N] [--sources DIR]
             Write the dataset's tasks as Harbor task directories instead, with dataset.json.
   evals     --url URL --token T
+            List the imported evals, each with its latest version and its count of tasks.
   eval      --url URL --token T NAME[@DIGEST] [--subsets FILE]
-            List the imported evals, or the versions and tasks of one, with the subsets
-            that subsets.json names for it.
+            List the versions and the tasks of one eval, with the subsets that
+            subsets.json names for it.
   run       --url URL --token T (--eval NAME[@DIGEST] [--only TASK]... [--only-file FILE]...
             [--subset NAME]... [--subsets FILE] [--limit N] | --task DIR...
             | --rerun RUN [--failed] [--errored] [--only TASK]... [--agent ID]...)
@@ -287,8 +292,11 @@ const usage = `nanoeval <command>
             Print the summary of a run: its eval and builds, who paid for the model of each
             agent and how its sessions reached it, the reruns it has, its counts and spend,
             one line an agent with outcomes, mean reward, pass@k, tokens and cost, a
-            line for the judge where attempts were judged, and one line an attempt. On a
-            terminal too short for that, one line a task with its pass counts instead:
+            line for the judge where attempts were judged, and one line an attempt. RUN is
+            the id of a run, the start of its id or its --name, here and wherever a command
+            takes a run that exists: timeline, attempt, export, cancel, compare, oracle,
+            run --rerun and --baseline. On a terminal too short for a line an attempt, one
+            line a task with its pass counts instead:
             --rows lists every attempt, --tasks prints one line a task anywhere. Where the
             run holds tasks that the list of unsound tasks names (see oracle), each agent
             has a second line with its counts and pass@k over the sound tasks alone, and
@@ -395,6 +403,8 @@ const usage = `nanoeval <command>
             interrupted, to be read only, from the Worker of the evaluation that runs or
             else from one of its own on the pinned package, and holds no evaluation up.
   cancel    --url URL --token T RUN
+            Cancel a run: its rows that have not ended end as cancelled, and its sandboxes
+            are closed.
   prune     [--dry-run] [--cache DIR]
             On this machine, remove the cached environment disks that no slot is using and
             the cached blobs.
@@ -588,7 +598,12 @@ async function baselines(
   for (const name of input.named) {
     const kind = Baseline.named(name)
     if (kind === 'id' || (kind === 'revision' && !input.hand)) {
-      ids.push(name)
+      ids.push(await runId(api, name))
+      continue
+    }
+    const begun = kind === 'revision' ? begins(name, (await api.runs()).runs) : undefined
+    if (begun) {
+      ids.push(begun)
       continue
     }
     const wanted: Baseline.Wanted = {
@@ -1565,8 +1580,11 @@ async function main(
       url: lab.url,
       wait: true,
     })
-  if (values.help) {
-    console.log(usage)
+  if (!lab && (values.help || named === 'help')) {
+    const topic = named === 'help' ? rest[0] : named
+    const text = help(usage, topic)
+    if (text === undefined) throw unknown(topic!)
+    console.log(text)
     return
   }
   const required = (value: string | undefined, name: string): string => {
@@ -2063,11 +2081,17 @@ async function main(
       'version',
     ].includes(command)
   ) {
+    if (command) throw unknown(command)
     console.log(usage)
-    process.exitCode = command ? 2 : 0
     return
   }
-  const access = { token: required(values.token, 'token'), url: required(values.url, 'url') }
+  if (!values.url)
+    throw new Error(
+      '--url is required, or NANOEVAL_URL: the address of the Worker, which nanoeval worker prints, http://127.0.0.1:8787 unless its --port names another',
+    )
+  if (!values.token)
+    throw new Error('--token is required, or NANOEVAL_TOKEN: the token the Worker was started with')
+  const access = { token: values.token, url: values.url }
   const api = client(access)
 
   if (command === 'plans') {
@@ -2498,7 +2522,8 @@ async function main(
           source: dataset.source,
         })
     }
-    const parent = values.rerun ? await api.config(values.rerun) : undefined
+    const rerun = values.rerun ? await runId(api, values.rerun) : undefined
+    const parent = rerun ? await api.config(rerun) : undefined
     let reference: Eval.Reference
     let only = values.only
     if (parent) reference = parent.eval
@@ -2578,7 +2603,7 @@ async function main(
       ...((values.payer ?? parent?.payer)
         ? { payer: (values.payer ?? parent?.payer) as Config.Payer }
         : {}),
-      ...(values.rerun ? { rerun: { run: values.rerun, select } } : {}),
+      ...(rerun ? { rerun: { run: rerun, select } } : {}),
       sandbox: {
         backend,
         disks: (values.disks ?? Config.disks(provider)) as 'keep' | 'remove',
@@ -2610,7 +2635,26 @@ async function main(
       },
     }
     const config = parent ? rerunConfig(own, { named, parent }) : own
-    const deployment = values.baseline?.length ? await api.routes() : undefined
+    const deployment = await api.routes()
+    const unserved = Route.unserved(deployment, {
+      plan: config.payer === 'plan',
+      users: [
+        ...config.agents.flatMap((agent) =>
+          agent.provider === 'oracle'
+            ? []
+            : [
+                {
+                  name: 'the agent ' + agent.id,
+                  provider: Installed.is(agent.provider)
+                    ? Installed.releases[agent.provider].provider
+                    : agent.provider,
+                },
+              ],
+        ),
+        ...(config.judge ? [{ name: 'the judge', provider: config.judge.provider }] : []),
+      ],
+    })
+    if (unserved) throw new Error(unserved)
     const asked = () =>
       Compare.planned(config.agents, {
         routes: (agent) => {
@@ -2741,7 +2785,11 @@ async function main(
     }
   }
 
-  const run = required(rest[0], 'RUN')
+  const run = await runId(api, required(rest[0], 'RUN'))
+  const runIds =
+    command === 'compare' || command === 'oracle'
+      ? [run, ...(await Promise.all(rest.slice(1).map((name) => runId(api, name))))]
+      : [run]
   if (command === 'compare') {
     const on = gates(values['fail-on'])
     if ((on.has('regression') || on.has('lost')) && !values.baseline?.length)
@@ -2749,7 +2797,9 @@ async function main(
         '--fail-on ' + [...on].join(',') + ' needs a baseline: name one with --baseline',
       )
     const runs = await Promise.all(
-      (values['with-reruns'] ? await withReruns(api, rest) : rest).map((id) => results(api, id)),
+      (values['with-reruns'] ? await withReruns(api, runIds) : runIds).map((id) =>
+        results(api, id),
+      ),
     )
     const baseline = await baselines(api, {
       named: values.baseline ?? [],
@@ -2809,7 +2859,9 @@ async function main(
   if (command === 'oracle') {
     const found = Unsound.check(
       await Promise.all(
-        (values['with-reruns'] ? await withReruns(api, rest) : rest).map((id) => api.results(id)),
+        (values['with-reruns'] ? await withReruns(api, runIds) : runIds).map((id) =>
+          api.results(id),
+        ),
       ),
       await unsoundList(values.unsound),
     )
@@ -2839,8 +2891,91 @@ async function main(
   }
 }
 
-export function refusal(error: unknown): string {
+export function help(text: string, command: string | undefined): string | undefined {
+  if (!command) return text
+  const kept: string[] = []
+  let keep = false
+  for (const line of text.split('\n').slice(2)) {
+    const head = /^  (\S+)/.exec(line)
+    if (head) keep = head[1] === command
+    if (keep) kept.push(line)
+  }
+  return kept.length ? 'nanoeval ' + command + '\n\n' + kept.join('\n') : undefined
+}
+
+export function commands(text: string): string[] {
+  return [
+    ...new Set(
+      text
+        .split('\n')
+        .slice(2)
+        .flatMap((line) => /^  (\S+)/.exec(line)?.[1] ?? []),
+    ),
+  ]
+}
+
+export class UnknownCommandError extends Error {
+  override name = 'Cli.UnknownCommandError'
+}
+
+function unknown(command: string): UnknownCommandError {
+  return new UnknownCommandError(
+    'no command is named ' +
+      command +
+      ': the commands are ' +
+      commands(usage).join(', ') +
+      '. nanoeval help COMMAND prints one',
+  )
+}
+
+const whole = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const shortId = /^[0-9a-f]{8}[0-9a-f-]*$/
+
+export function named(
+  given: string,
+  listed: readonly { id: string; name: string | null }[],
+): string {
+  if (whole.test(given)) return given
+  const found = listed.filter((run) => run.id.startsWith(given) || run.name === given)
+  if (found.length === 1) return found[0]!.id
+  throw new Error(
+    found.length
+      ? given +
+          ' names ' +
+          found.length +
+          ' runs, ' +
+          found.map((run) => run.id).join(' and ') +
+          ': name one by more of its id'
+      : 'no run of this Worker has an id that begins with ' +
+          given +
+          ', or that name: nanoeval runs lists them',
+  )
+}
+
+export function begins(given: string, listed: readonly { id: string }[]): string | undefined {
+  if (!shortId.test(given)) return undefined
+  const found = listed.filter((run) => run.id.startsWith(given))
+  return found.length === 1 ? found[0]!.id : undefined
+}
+
+async function runId(api: Api, given: string): Promise<string> {
+  return whole.test(given) ? given : named(given, (await api.runs()).runs)
+}
+
+export function refusal(error: unknown, worker?: string): string {
   if (!(error instanceof Error)) return String(error)
+  if (error instanceof TypeError && error.message === 'fetch failed') {
+    const cause = error.cause instanceof Error ? error.cause.message : String(error.cause ?? '')
+    const at = worker && URL.canParse(worker) ? new URL(worker) : undefined
+    const port = at ? at.port || (at.protocol === 'https:' ? '443' : '80') : undefined
+    return at && cause.includes(at.hostname + ':' + port)
+      ? 'no Worker answers at ' +
+          worker +
+          ' (' +
+          cause +
+          '): start one with nanoeval worker, or name another with --url or NANOEVAL_URL'
+      : 'a request got no answer' + (cause ? ': ' + cause : '')
+  }
   const code = (error as { code?: unknown }).code
   const stated =
     error.constructor === Error ||
@@ -2860,7 +2995,10 @@ export function refusal(error: unknown): string {
 if (import.meta.main)
   await (process.argv[2] === 'watch' ? Watch.main(process.argv.slice(3)) : main()).catch(
     (error: unknown) => {
-      console.error('nanoeval: ' + refusal(error))
-      process.exit(1)
+      const at = process.argv.indexOf('--url')
+      console.error(
+        'nanoeval: ' + refusal(error, at < 0 ? process.env['NANOEVAL_URL'] : process.argv[at + 1]),
+      )
+      process.exit(error instanceof UnknownCommandError ? 2 : 1)
     },
   )

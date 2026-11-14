@@ -52,6 +52,37 @@ export function planned(
   return input.plan ? { payer: 'plan' } : (deployment[input.provider] ?? undefined)
 }
 
+const credentials: Record<Proxy.Provider, { login: string; variables: readonly string[] }> = {
+  claude: {
+    login: '--claude-login FILE',
+    variables: ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'TEMPO_KEY'],
+  },
+  codex: { login: '--codex-login FILE', variables: ['OPENAI_API_KEY', 'TEMPO_KEY'] },
+}
+
+export function unserved(
+  deployment: Deployment | undefined,
+  input: { plan: boolean; users: readonly { name: string; provider: Proxy.Provider }[] },
+): string | undefined {
+  if (!deployment || input.plan) return undefined
+  for (const provider of ['claude', 'codex'] as const) {
+    const users = input.users.filter((user) => user.provider === provider)
+    if (!users.length || deployment[provider]) continue
+    return (
+      'the Worker holds no credential for the ' +
+      provider +
+      ' models of ' +
+      users.map((user) => user.name).join(' and ') +
+      ': start nanoeval worker with ' +
+      credentials[provider].variables.join(', ').replace(/, ([^,]*)$/, ' or $1') +
+      ' in its environment or with ' +
+      credentials[provider].login +
+      ', or give a deployed Worker one of them as a secret. A run with --oracle needs none'
+    )
+  }
+  return undefined
+}
+
 function host(url: unknown): string | undefined {
   if (typeof url !== 'string' || !url) return undefined
   if (!URL.canParse(url)) return 'another host'

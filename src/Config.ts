@@ -391,7 +391,10 @@ export function check(config: Config, tasks: readonly Eval.Task[]): void {
           config.sandbox.backend +
           ' backend runs ' +
           wanted +
-          ' environments',
+          ' environments: ' +
+          (task.environment.kind === 'dir'
+            ? 'run it with --backend dir, or import it again without --backend dir on a machine that builds disks'
+            : 'run it on krun or ns slots, or import it again with --backend dir'),
       )
     if (solved && !task.solution) fail(task.name + ' carries no solution for the oracle')
     if (task.verifier.judge && !config.judge)
