@@ -1,6 +1,7 @@
 export type Outcome = 'released' | 'superseded' | 'timeout'
 
 export type Holds = {
+  end(key: string): void
   has(key: string): boolean
   release(matches?: (key: string) => boolean): void
   size(): number
@@ -10,6 +11,7 @@ export type Holds = {
 export function create(): Holds {
   const held = new Map<string, (outcome: Outcome) => void>()
   return {
+    end: (key) => held.get(key)?.('superseded'),
     has: (key) => held.has(key),
     release(matches) {
       for (const [key, settle] of held) if (!matches || matches(key)) settle('released')

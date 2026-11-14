@@ -62,6 +62,10 @@ export type HeartbeatResponse = { ahead?: Ahead[]; finished: boolean; lost: stri
 
 export type Leave = { held: readonly Held[]; runner: number }
 
+export type Yield = { runner: number }
+
+export type Yielded = { yielded: boolean }
+
 export type Session = { name: string; token: string; url: string }
 
 export type Endpoint = { token: string; url: string }
@@ -69,6 +73,8 @@ export type Endpoint = { token: string; url: string }
 export type Ask = { instruction?: string; waitMs?: number }
 
 export type Standing = { location?: string; member: number; token: string }
+
+export type Enrol = { backend: string; machine?: string; network: string; noticeSec: number }
 
 export type Waiting = { capabilities?: Sandbox.Capabilities; done?: string; waitMs?: number }
 

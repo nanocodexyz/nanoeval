@@ -24,6 +24,18 @@ test('a held request ends when it is released, when its time is up, or when a la
   assert.equal(holds.size(), 0)
 })
 
+test('a held request that is ended answers as one that a later request replaced', async () => {
+  const holds = Hold.create()
+  const held = holds.wait('claim:1', 60_000)
+  const other = holds.wait('claim:2', 60_000)
+  holds.end('claim:1')
+  holds.end('claim:3')
+  assert.equal(await held, 'superseded')
+  assert.ok(!holds.has('claim:1') && holds.has('claim:2'))
+  holds.release()
+  assert.equal(await other, 'released')
+})
+
 test('a release after the hold ended changes nothing', async () => {
   const holds = Hold.create()
   const first = holds.wait('claim:1', 1)

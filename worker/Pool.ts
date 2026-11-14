@@ -12,7 +12,7 @@ import * as Members from '../src/Pool.ts'
 import type * as Protocol from '../src/Protocol.ts'
 import type * as Sandbox from '../src/Sandbox.ts'
 import * as Slot from '../src/Slot.ts'
-import * as SqlSetup from '../src/Sql.ts'
+import type * as SqlSetup from '../src/Sql.ts'
 import { locations, type Env } from './Env.ts'
 import * as Storage from './Storage.ts'
 
@@ -76,7 +76,7 @@ export class Pool extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
     this.sql = Storage.sql(ctx)
-    SqlSetup.setup(this.sql, Members.tables)
+    Members.setup(this.sql)
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -101,8 +101,8 @@ export class Pool extends DurableObject<Env> {
         return json({ error: 'unauthorized' }, 401)
       if (parts[2] === 'next') return json(await this.next(member.id, body as Protocol.Waiting))
       if (parts[2] === 'leave') {
-        const current = Members.get(this.sql, member.id)!
-        if (current.state === 'idle') await this.shut(current, 'the runner left')
+        const current = Members.get(this.sql, member.id)
+        if (current && Members.leaves(current)) await this.shut(current, 'the runner left')
         await this.schedule()
         return json({ left: true })
       }
@@ -133,6 +133,7 @@ export class Pool extends DurableObject<Env> {
         id: member.id,
         idleSec: member.idle_sec,
         idleUntil: member.idle_until,
+        machine: member.machine,
         paidUntil: member.paid_until,
         run: member.run,
         runs: member.runs,
@@ -198,18 +199,24 @@ export class Pool extends DurableObject<Env> {
     const backend = body['backend'] as Slot.Backend
     const network = body['network'] as Slot.Network
     const noticeSec = body['noticeSec']
+    const machine = body['machine']
     if (
       !(backend in Slot.networks) ||
       !Slot.networks[backend].includes(network) ||
       !Number.isSafeInteger(noticeSec) ||
-      (noticeSec as number) < 1
+      (noticeSec as number) < 1 ||
+      !(machine === undefined || (typeof machine === 'string' && /^[0-9a-f-]{36}$/.test(machine)))
     )
       return json(
-        { error: 'a standing runner names its backend, a network of it, and its notice' },
+        {
+          error:
+            'a standing runner names its backend, a network of it, its notice, and the machine of its members as a UUID',
+        },
         400,
       )
     const member = Members.enroll(this.sql, {
       idleSec: 0,
+      ...(machine === undefined ? {} : { machine: machine as string }),
       noticeSec: noticeSec as number,
       now: Date.now(),
       spec: { backend, kind: 'machine', network, provider: null, runtime: null, template: null },
@@ -239,8 +246,9 @@ export class Pool extends DurableObject<Env> {
       now: Date.now(),
     })
     for (;;) {
-      const member = Members.get(this.sql, id)!
-      if (member.state === 'closed' || member.state === 'failed') return { state: 'closed' }
+      const member = Members.get(this.sql, id)
+      if (!member || member.state === 'closed' || member.state === 'failed')
+        return { state: 'closed' }
       if (member.state === 'assigned' && member.assignment)
         return { config: JSON.parse(member.assignment) as Config.Runner, state: 'assigned' }
       const left = until - Date.now()

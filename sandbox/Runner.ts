@@ -45,6 +45,7 @@ export type Options = {
 
 export type Standing = {
   backend: Config.Backend
+  enroll?(): Promise<Protocol.Standing>
   leaseSec: number
   network: Slot.Network
   pollMs: number
@@ -55,7 +56,17 @@ export type Standing = {
 
 type Ready = { backend: Slot.Backend; capabilities: Sandbox.Capabilities }
 
-type Shared = { ready?: Ready; stop?: () => void; stopping: boolean }
+type Serving = { rows(): Work[]; wake(): void; yield(): void }
+
+type Shared = {
+  entering: { enter(): void; serving: Serving }[]
+  inside?: Serving
+  ready?: Ready
+  serving: Set<Serving>
+  stopping: boolean
+  stops: Set<() => void>
+  unpacking: Map<string, Promise<void>>
+}
 
 type Stage = 'agent' | 'attach' | 'cli' | 'judge' | 'prepare' | 'solve' | 'up' | 'verify'
 
@@ -64,6 +75,7 @@ type Work = {
   busy: boolean
   changed: number
   delay: number
+  down?: Promise<void>
   errors: number
   instruction?: string
   marks: Mark[]
@@ -141,6 +153,42 @@ function changed(directory: string, name: string, ms: number): Promise<void> {
   })
 }
 
+function admit(shared: Shared): void {
+  if (shared.inside || !shared.entering.length) return
+  const next = shared.entering.reduce((least, entry) =>
+    entry.serving.rows().length < least.serving.rows().length ? entry : least,
+  )
+  shared.entering.splice(shared.entering.indexOf(next), 1)
+  shared.inside = next.serving
+  next.enter()
+}
+
+function enter(shared: Shared, serving: Serving): Promise<void> {
+  return new Promise((resolve) => {
+    shared.entering.push({ enter: resolve, serving })
+    shared.inside?.yield()
+    setImmediate(() => admit(shared))
+  })
+}
+
+function exit(shared: Shared, serving: Serving): void {
+  if (shared.inside !== serving) return
+  shared.inside = undefined
+  admit(shared)
+}
+
+function rest(shared: Shared, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer)
+      shared.stops.delete(done)
+      resolve()
+    }
+    const timer = setTimeout(done, ms)
+    shared.stops.add(done)
+  })
+}
+
 async function setup(input: {
   backend: Config.Backend
   cache: string
@@ -199,7 +247,7 @@ async function setup(input: {
 async function ask(
   standing: Standing,
   input: { done?: string; log(line: string): void; shared: Shared },
-): Promise<Config.Runner | undefined> {
+): Promise<Config.Runner | 'closed' | undefined> {
   const { log, shared } = input
   const base = standing.url.replace(/\/+$/, '') + '/v1/pool/members/' + standing.pool.member
   const send = (path: string, body: unknown, signal?: AbortSignal) =>
@@ -215,10 +263,17 @@ async function ask(
   const query = standing.pool.location ? '?location=' + standing.pool.location : ''
   const waitMs = Math.floor((standing.leaseSec * 1000) / 3)
   let pause = standing.pollMs
+  let left: Promise<boolean> | undefined
   log('standing as member ' + standing.pool.member + ' of the pool')
   while (!shared.stopping) {
     const abort = new AbortController()
-    shared.stop = () => abort.abort()
+    const stop = () => {
+      left = leave(standing)
+      void left.then((gone) => {
+        if (!gone) abort.abort()
+      })
+    }
+    shared.stops.add(stop)
     const askedAt = Date.now()
     let answer: Protocol.Next | undefined
     try {
@@ -232,8 +287,9 @@ async function ask(
         abort.signal,
       )
       if (response.status === 401 || response.status === 404) {
-        log('the pool does not know this runner any more')
-        return undefined
+        shared.stops.delete(stop)
+        log('the pool does not know member ' + standing.pool.member + ' any more')
+        return 'closed'
       }
       if (response.ok) answer = (await response.json()) as Protocol.Next
       else
@@ -241,31 +297,89 @@ async function ask(
     } catch (error) {
       if (!shared.stopping) log('asking the pool failed: ' + String(error))
     }
-    shared.stop = undefined
+    shared.stops.delete(stop)
+    if (shared.stopping) {
+      if (answer?.state === 'assigned')
+        await fetch(
+          standing.url.replace(/\/+$/, '') + '/v1/runs/' + answer.config.run + '/runner/leave',
+          {
+            body: JSON.stringify({
+              held: [],
+              runner: answer.config.runner,
+            } satisfies Protocol.Leave),
+            headers: {
+              authorization: 'Bearer ' + answer.config.token,
+              'content-type': 'application/json',
+            },
+            method: 'POST',
+          },
+        ).then(
+          (response) => response.body?.cancel(),
+          () => {},
+        )
+      break
+    }
     if (answer?.state === 'assigned') return answer.config
     if (answer?.state === 'closed') {
-      log('the pool closed this runner')
-      return undefined
+      log('the pool closed member ' + standing.pool.member)
+      return 'closed'
     }
     if (answer) pause = standing.pollMs
     if (!shared.stopping && Date.now() - askedAt < waitMs) {
-      await new Promise((resolve) => setTimeout(resolve, pause))
+      await rest(shared, pause)
       if (!answer) pause = Math.min(pause * 2, Math.max(waitMs, standing.pollMs))
     }
   }
-  await send('/leave' + query, {}).catch(() => {})
+  if (!(await left)) await leave(standing)
   return undefined
+}
+
+async function leave(standing: Standing): Promise<boolean> {
+  const deadline = Date.now() + (standing.leaseSec * 1000) / 3
+  for (;;) {
+    const status = await fetch(
+      standing.url.replace(/\/+$/, '') +
+        '/v1/pool/members/' +
+        standing.pool.member +
+        '/leave' +
+        (standing.pool.location ? '?location=' + standing.pool.location : ''),
+      {
+        body: '{}',
+        headers: {
+          authorization: 'Bearer ' + standing.pool.token,
+          'content-type': 'application/json',
+        },
+        method: 'POST',
+      },
+    ).then(
+      async (response) => {
+        await response.body?.cancel()
+        return response.status
+      },
+      () => undefined,
+    )
+    if (status !== undefined && status < 500) return true
+    if (Date.now() > deadline) return false
+    await new Promise((resolve) => setTimeout(resolve, standing.pollMs))
+  }
 }
 
 export async function run(options: Options): Promise<void> {
   const log = options.log ?? ((line: string) => console.log(new Date().toISOString() + ' ' + line))
-  const shared: Shared = { stopping: false }
+  const shared: Shared = {
+    entering: [],
+    serving: new Set(),
+    stopping: false,
+    stops: new Set(),
+    unpacking: new Map(),
+  }
   const stop = () => {
     shared.stopping = true
-    shared.stop?.()
+    for (const stop of shared.stops) stop()
   }
   process.once('SIGINT', stop)
   process.once('SIGTERM', stop)
+  if (options.standing?.enroll) return stand(options, { log, shared, stop })
   let config = options.config
   let standing = options.standing
   let done: string | undefined
@@ -294,12 +408,107 @@ export async function run(options: Options): Promise<void> {
       setupSec: standing.setupSec,
     })
     const next = await ask(standing, { ...(done ? { done } : {}), log, shared })
-    if (!next) return
+    if (!next || next === 'closed') return
     config = { ...next, ...options.override, url: standing.url }
   }
 }
 
+async function stand(
+  options: Options,
+  input: { log(line: string): void; shared: Shared; stop(): void },
+): Promise<void> {
+  const { log, shared } = input
+  const standing = options.standing!
+  const waitMs = Math.floor((standing.leaseSec * 1000) / 3)
+  const loops = new Set<Promise<void>>()
+  let failure: { error: unknown } | undefined
+  let standby = 0
+  shared.ready = await setup({
+    backend: standing.backend,
+    cache: options.cache,
+    home: options.home,
+    network: standing.network,
+    pollMs: standing.pollMs,
+    setupSec: standing.setupSec,
+  })
+  const enroll = async (): Promise<Protocol.Standing | undefined> => {
+    for (let pause = standing.pollMs; !shared.stopping; ) {
+      try {
+        return await standing.enroll!()
+      } catch (error) {
+        if (error instanceof RefusedError) throw error
+        log('enrolling in the pool failed: ' + String(error))
+      }
+      await rest(shared, pause)
+      pause = Math.min(pause * 2, Math.max(waitMs, standing.pollMs))
+    }
+    return undefined
+  }
+  const loop = async (first: Protocol.Standing | undefined) => {
+    let done: string | undefined
+    let pool = first
+    for (;;) {
+      standby++
+      let next: Config.Runner | 'closed' | undefined
+      try {
+        pool ??= await enroll()
+        if (!pool) return
+        next = await ask({ ...standing, pool }, { ...(done ? { done } : {}), log, shared })
+      } finally {
+        standby--
+      }
+      done = undefined
+      if (!next) return
+      if (next === 'closed') {
+        pool = undefined
+        continue
+      }
+      if (!standby) start(undefined)
+      const config = { ...next, ...options.override, url: standing.url }
+      try {
+        await serve({ ...options, config }, shared)
+      } catch (error) {
+        await leave({ ...standing, pool })
+        throw error
+      }
+      if (shared.stopping || standby) {
+        await leave({ ...standing, pool })
+        return
+      }
+      done = config.run
+    }
+  }
+  const start = (pool: Protocol.Standing | undefined) => {
+    const running: Promise<void> = loop(pool)
+      .catch((error) => {
+        failure ??= { error }
+        input.stop()
+      })
+      .finally(() => loops.delete(running))
+    loops.add(running)
+  }
+  start(standing.pool)
+  while (loops.size) await Promise.all(loops)
+  if (failure) throw failure.error
+}
+
 async function serve(options: Options & { config: Config.Runner }, shared: Shared): Promise<void> {
+  const serving: Serving = { rows: () => [], wake() {}, yield() {} }
+  shared.serving.add(serving)
+  try {
+    await attend(options, { serving, shared })
+  } finally {
+    shared.serving.delete(serving)
+    exit(shared, serving)
+    for (const other of shared.serving) other.wake()
+  }
+}
+
+async function attend(
+  options: Options & { config: Config.Runner },
+  input: { serving: Serving; shared: Shared },
+): Promise<void> {
+  const { serving, shared } = input
   const { cache, home } = options
   const startedAt = Date.now()
   const log = options.log ?? ((line: string) => console.log(new Date().toISOString() + ' ' + line))
@@ -321,8 +530,9 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
   ]
   const work = new Map<string, Work>()
   const up = new Set<Work>()
-  const unpacking = new Map<string, Promise<void>>()
+  const unpacking = shared.unpacking
   const config = options.config
+  const everything = () => [...shared.serving].flatMap((other) => other.rows())
   const holdMs = Math.floor((config.leaseSec * 1000) / 3)
   const reported: Mark[] = []
   let claimAt = 0
@@ -465,7 +675,9 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
   const slotLog = (item: Work, name: 'agent' | 'hand' | 'solve' | 'up' | 'verify', bytes: number) =>
     shell(slots.log(item.row.slot, name, bytes))
 
-  const down = async (item: Work, evict: boolean) => {
+  const down = (item: Work, evict: boolean) => (item.down ??= takeDown(item, evict))
+
+  const takeDown = async (item: Work, evict: boolean) => {
     const disk = await text(Path.join(directory(item), 'disk'))
     const marked =
       evict &&
@@ -482,6 +694,7 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
     claimAt = 0
     frees++
     signal()
+    for (const other of shared.serving) if (other !== serving) other.wake()
   }
 
   const forget = async (prefix: string) => {
@@ -496,7 +709,7 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
 
   const reclaim = async () => {
     const held = new Set(
-      [...work.values()].flatMap((item) =>
+      everything().flatMap((item) =>
         item.row.task.environment.kind === 'disk' ? [item.row.task.environment.disk.digest] : [],
       ),
     )
@@ -1014,7 +1227,10 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
     }
   const { backend, capabilities } = shared.ready
   prefetch(config.ahead)
+  const others = new Set(everything().map((item) => item.row.slot))
+  serving.rows = () => [...work.values()]
   for (const name of await Fs.readdir(Path.join(home, 'slots'))) {
+    if (others.has(name)) continue
     const saved = await text(Path.join(home, 'slots', name, 'row.json'))
     if (!saved) {
       await output(slots.down(name, 'keep'), env)
@@ -1083,16 +1299,18 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
         : ', its sandbox ends at ' + new Date(config.endsAt).toISOString()),
   )
 
-  const load = async (): Promise<Admission.Load> => ({
-    ...(capacity.freeDiskMb === undefined ? {} : { freeDiskMb: await freeDiskMb([home, cache]) }),
-    memoryMb: [...work.values()].reduce(
-      (total, item) => total + Admission.clamp(item.row.task.resources.memoryMb, capacity),
-      0,
-    ),
-    running: work.size,
-    starting: [...work.values()].filter((item) => item.stage === 'prepare' || item.stage === 'up')
-      .length,
-  })
+  const load = async (): Promise<Admission.Load> => {
+    const rows = everything()
+    return {
+      ...(capacity.freeDiskMb === undefined ? {} : { freeDiskMb: await freeDiskMb([home, cache]) }),
+      memoryMb: rows.reduce(
+        (total, item) => total + Admission.clamp(item.row.task.resources.memoryMb, capacity),
+        0,
+      ),
+      running: rows.length,
+      starting: rows.filter((item) => item.stage === 'prepare' || item.stage === 'up').length,
+    }
+  }
   const report = (current: Admission.Load): Protocol.Report => ({
     ...(current.freeDiskMb === undefined ? {} : { freeDiskMb: current.freeDiskMb }),
     running: current.running,
@@ -1104,8 +1322,37 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
   let claiming = false
   let beating = false
   let drained = false
+  let holding = false
+  let idleMs = config.pollMs
+  let over = false
+  let yielding = false
   const beatMs = (config.leaseSec * 1000) / 3
-  shared.stop = signal
+  serving.wake = () => {
+    claimAt = 0
+    frees++
+    idleMs = config.pollMs
+    signal()
+  }
+  serving.yield = () => {
+    if (!holding || yielding) return
+    yielding = true
+    void (async () => {
+      try {
+        while (holding && !shared.stopping) {
+          const { yielded } = await call<Protocol.Yielded>('/yield', {
+            runner: config.runner,
+          } satisfies Protocol.Yield)
+          if (yielded) break
+          await rest(shared, config.pollMs)
+        }
+      } catch (error) {
+        log('the held claim was not ended: ' + String(error))
+      } finally {
+        yielding = false
+      }
+    })()
+  }
+  shared.stops.add(signal)
   while (!shared.stopping && !((finished || drained || fault !== undefined) && !work.size)) {
     const now = Date.now()
     for (const item of work.values()) if (!item.busy && now >= item.next) void step(item)
@@ -1144,7 +1391,9 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
       const freed = frees
       void (async () => {
         let next = Date.now() + config.pollMs
+        await enter(shared, serving)
         try {
+          if (shared.stopping || over) return
           let current = await load()
           if (
             config.disks === 'remove' &&
@@ -1157,13 +1406,16 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
           const offer = Admission.offer(current, capacity)
           if (offer.slots > 0 || Admission.starved(current, capacity)) {
             const sentAt = Date.now()
+            const waitMs = shared.serving.size > 1 || shared.entering.length ? 0 : holdMs
+            holding = waitMs > 0
             const answer = await call<Protocol.ClaimResponse>('/claims', {
               offer,
               report: report(current),
               runner: config.runner,
               ...(reported.length ? { timeline: { marks: reported.splice(0), sentAt } } : {}),
-              waitMs: holdMs,
+              waitMs,
             } satisfies Protocol.ClaimRequest)
+            holding = false
             const claimed: Mark = { at: sentAt, ms: Date.now() - sentAt, name: 'attempt.claim' }
             finished = answer.finished
             if (answer.drained !== undefined) {
@@ -1199,11 +1451,18 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
               }
             }
             prefetch(answer.ahead)
-            if (answer.rows.length || Date.now() - sentAt >= holdMs) next = 0
+            if (answer.rows.length || (waitMs > 0 && Date.now() - sentAt >= holdMs)) next = 0
+            else if (!waitMs) {
+              next = Date.now() + idleMs
+              idleMs = Math.min(idleMs * 2, Math.max(holdMs, config.pollMs))
+            }
+            if (answer.rows.length) idleMs = config.pollMs
           }
         } catch (error) {
           log('claim failed: ' + String(error))
         } finally {
+          holding = false
+          exit(shared, serving)
           claiming = false
           claimAt = frees === freed ? next : 0
           signal()
@@ -1229,14 +1488,15 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
     }
     signalled = false
   }
-  shared.stop = undefined
+  over = true
+  shared.stops.delete(signal)
 
   if (shared.stopping) {
     log('stopping: releasing ' + work.size + ' attempts')
     await call('/leave', { held: held(), runner: config.runner } satisfies Protocol.Leave).catch(
       () => {},
     )
-    for (const item of [...up]) await down(item, false).catch(() => {})
+    for (const item of up) await down(item, false).catch(() => {})
   } else {
     await call('/leave', { held: [], runner: config.runner } satisfies Protocol.Leave).catch(
       () => {},

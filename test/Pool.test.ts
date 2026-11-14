@@ -253,6 +253,125 @@ test('a standing runner of a machine is idle again by its own word and is closed
   )
 })
 
+test('a machine has a member for each run it serves and one more that stands by', () => {
+  const sql = open()
+  const machine: Pool.Spec = {
+    ...spec,
+    kind: 'machine',
+    provider: null,
+    runtime: null,
+    template: null,
+  }
+  const wanted: Pool.Wanted = { ...machine, backend: 'auto' }
+  const stand = (name: string | undefined, now: number) => {
+    const member = Pool.enroll(sql, {
+      idleSec: 0,
+      ...(name === undefined ? {} : { machine: name }),
+      noticeSec: 10,
+      now,
+      spec: machine,
+      token: 't',
+      usd: 0,
+    })
+    Pool.seen(sql, { capabilities, id: member.id, now })
+    return member
+  }
+  const holding = (...ids: number[]) => ({ holding: (id: number) => ids.includes(id) })
+
+  const first = stand('one', 0)
+  assert.equal(take(sql, { now: 1000, run: 'run-a', wanted })!.id, first.id)
+  const second = stand('one', 1000)
+  assert.equal(
+    take(sql, { now: 2000, run: 'run-a', wanted }),
+    undefined,
+    'a run that has a member of a machine is not handed another member of it',
+  )
+  assert.equal(
+    take(sql, { now: 2000, run: 'run-b', wanted })!.id,
+    second.id,
+    'a run that is created while the machine has a run is handed the member that stands by',
+  )
+  const third = stand('one', 2000)
+  const other = stand('two', 2000)
+  assert.equal(
+    take(sql, { now: 3000, run: 'run-a', wanted })!.id,
+    other.id,
+    'a member of another machine is one more runner of the run',
+  )
+
+  assert.deepEqual(
+    Pool.due(sql, { ...holding(third.id), now: 60_000 }).map((due) => due.member.id),
+    [other.id],
+    'a member with a run stays while a member of its machine asks for one',
+  )
+  assert.equal(Pool.wakeAt(sql), 12_001)
+  assert.deepEqual(
+    Pool.due(sql, { ...holding(), now: 12_000 }).map((due) => due.member.id),
+    [],
+    'and for the notice after the last of them asked',
+  )
+  assert.deepEqual(
+    Pool.due(sql, { ...holding(), now: 12_001 }).map((due) => [due.member.id, due.reason]),
+    [
+      [first.id, 'the runner stopped asking for a run while it had one'],
+      [second.id, 'the runner stopped asking for a run while it had one'],
+      [third.id, 'the runner stopped asking for a run'],
+      [other.id, 'the runner stopped asking for a run while it had one'],
+    ],
+  )
+
+  assert.equal(Pool.leaves(Pool.get(sql, first.id)!), true, 'a runner leaves with its run')
+  assert.equal(Pool.end(sql, { id: first.id }), true)
+  assert.equal(Pool.get(sql, first.id), undefined, 'a runner that left is no member any more')
+  assert.equal(Pool.end(sql, { error: 'lost', id: second.id }), true)
+  assert.equal(Pool.get(sql, second.id)!.state, 'failed')
+
+  const sandbox = enroll(sql)
+  assert.equal(Pool.leaves(sandbox), false, 'only its run gives a sandbox back')
+  assert.deepEqual(
+    Pool.due(sql, { ...holding(third.id, other.id), now: 500_000 }),
+    [],
+    "a sandbox that a run has is the run's to end",
+  )
+})
+
+test('the members of a pool made before machines were named stay, and one with a run that asks no more is closed', () => {
+  const sql = Rows.database()
+  sql.run(Pool.tables[0]!.replace(/,\s+machine TEXT/, ''))
+  sql.run(
+    `INSERT INTO members (state, spec, token, capabilities, created_at, seen_at, idle_sec, notice_sec, usd, run, runs)
+      VALUES ('assigned', ?, 't', ?, 0, 5000, 0, 60, 0, 'run-a', 1), ('idle', ?, 't', ?, 0, 5000, 0, 60, 0, NULL, 3),
+        ('closed', ?, 't', ?, 0, 5000, 0, 60, 0, NULL, 2)`,
+    ...Array.from({ length: 3 }, () => [
+      JSON.stringify({ ...spec, kind: 'machine', provider: null, runtime: null, template: null }),
+      JSON.stringify(capabilities),
+    ]).flat(),
+  )
+  Pool.setup(sql)
+  Pool.setup(sql)
+  assert.deepEqual(
+    Pool.all(sql).map((member) => [member.id, member.state, member.machine]),
+    [
+      [1, 'assigned', null],
+      [2, 'idle', null],
+      [3, 'closed', null],
+    ],
+  )
+  assert.equal(Pool.wakeAt(sql), 65_001)
+  const due = Pool.due(sql, { holding: (id) => id === 2, now: 65_001 })
+  assert.deepEqual(
+    due.map((entry) => [entry.member.id, entry.action]),
+    [[1, 'close']],
+    'the member whose runner was stopped with a run is closed, and the one that asks stays',
+  )
+  assert.equal(Pool.end(sql, { id: 1 }), true)
+  assert.deepEqual(
+    Pool.all(sql).map((member) => member.id),
+    [2],
+    'the runners that left before are no members either',
+  )
+})
+
 test('what the pool pays is kept by member', () => {
   const sql = open()
   Pool.pay(sql, { at: 1, detail: '{"description":"compute.renew"}', member: 1, usd: 0.004 })

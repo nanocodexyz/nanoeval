@@ -29,6 +29,7 @@ export type Member = {
   idle_sec: number
   idle_until: number | null
   lease_sec: number | null
+  machine: string | null
   notice_sec: number
   paid_until: number | null
   run: string | null
@@ -72,7 +73,8 @@ export const tables = [
     run TEXT,
     runs INTEGER NOT NULL DEFAULT 0,
     assignment TEXT,
-    error TEXT
+    error TEXT,
+    machine TEXT
   )`,
   `CREATE TABLE IF NOT EXISTS payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,6 +84,12 @@ export const tables = [
     detail TEXT NOT NULL
   )`,
 ]
+
+export function setup(sql: Sql.Sql): void {
+  for (const statement of tables) sql.run(statement)
+  if (!sql.all('PRAGMA table_info(members)').some((column) => column['name'] === 'machine'))
+    sql.run('ALTER TABLE members ADD COLUMN machine TEXT')
+}
 
 export function wanted(sandbox: Config.Config['sandbox']): Wanted {
   const machine = sandbox.max === 0
@@ -126,8 +134,8 @@ export function get(sql: Sql.Sql, id: number): Member | undefined {
 export function enroll(sql: Sql.Sql, input: enroll.Input): Member {
   sql.run(
     `INSERT INTO members (state, spec, token, handle, capabilities, created_at, seen_at, expires_at,
-      paid_until, idle_sec, lease_sec, notice_sec, usd, run, runs)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      paid_until, idle_sec, lease_sec, notice_sec, usd, run, runs, machine)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     input.run === undefined ? 'idle' : 'assigned',
     JSON.stringify(input.spec),
     input.token,
@@ -143,6 +151,7 @@ export function enroll(sql: Sql.Sql, input: enroll.Input): Member {
     input.usd,
     input.run ?? null,
     input.run === undefined ? 0 : 1,
+    input.machine ?? null,
   )
   return get(sql, sql.all('SELECT MAX(id) AS id FROM members')[0]!['id'] as number)!
 }
@@ -154,6 +163,7 @@ export declare namespace enroll {
     handle?: Sandbox.Handle
     idleSec: number
     leaseSec?: number
+    machine?: string
     noticeSec: number
     now: number
     paidUntil?: number | null
@@ -167,10 +177,17 @@ export declare namespace enroll {
 export function take(sql: Sql.Sql, input: take.Input): Taken | undefined {
   const standing = (candidate: Member) =>
     input.holding(candidate.id) || input.now - candidate.seen_at <= candidate.notice_sec * 1000
-  const fitting = all(sql).filter(
+  const members = all(sql)
+  const serving = new Set(
+    members
+      .filter((member) => member.state === 'assigned' && member.run === input.run)
+      .map((member) => member.machine),
+  )
+  const fitting = members.filter(
     (candidate) =>
       candidate.state === 'idle' &&
       candidate.capabilities !== null &&
+      !(candidate.machine !== null && serving.has(candidate.machine)) &&
       standing(candidate) &&
       fits(JSON.parse(candidate.spec) as Spec, input.wanted) &&
       (candidate.handle === null ||
@@ -257,6 +274,10 @@ export declare namespace settle {
   }
 }
 
+export function leaves(member: Member): boolean {
+  return member.state === 'idle' || (member.state === 'assigned' && member.handle === null)
+}
+
 export function end(sql: Sql.Sql, input: end.Input): boolean {
   const member = get(sql, input.id)
   if (!member || member.state === 'closed' || member.state === 'failed') return false
@@ -267,6 +288,7 @@ export function end(sql: Sql.Sql, input: end.Input): boolean {
     idle_until: null,
     state: input.error === undefined ? 'closed' : 'failed',
   })
+  sql.run("DELETE FROM members WHERE state = 'closed' AND handle IS NULL AND error IS NULL")
   return true
 }
 
@@ -293,6 +315,20 @@ export function unrenewed(sql: Sql.Sql, input: { error: string; id: number }): v
   update(sql, input.id, { error: input.error, unrenewed: 1 })
 }
 
+function machine(members: readonly Member[], member: Member): Member[] {
+  return member.machine === null
+    ? [member]
+    : members.filter(
+        (other) =>
+          other.machine === member.machine &&
+          (other.state === 'assigned' || other.state === 'idle'),
+      )
+}
+
+function askedUntil(members: readonly Member[]): number {
+  return Math.max(...members.map((member) => member.seen_at + member.notice_sec * 1000))
+}
+
 function horizon(member: Member): number {
   return Math.min(member.idle_until ?? 0, member.expires_at ?? Infinity)
 }
@@ -310,7 +346,18 @@ export function renewal(member: Member, defaultLeaseSec: number): number {
 
 export function due(sql: Sql.Sql, input: due.Input): Due[] {
   const found: Due[] = []
-  for (const member of all(sql)) {
+  const members = all(sql)
+  for (const member of members) {
+    if (member.state === 'assigned' && member.handle === null) {
+      const runner = machine(members, member)
+      if (!runner.some((other) => input.holding(other.id)) && input.now > askedUntil(runner))
+        found.push({
+          action: 'close',
+          member,
+          reason: 'the runner stopped asking for a run while it had one',
+        })
+      continue
+    }
     if (member.state !== 'idle') continue
     if (member.handle === null) {
       if (!input.holding(member.id) && input.now - member.seen_at > member.notice_sec * 1000)
@@ -341,7 +388,10 @@ export function wakeAt(sql: Sql.Sql): number | undefined {
   const sooner = (at: number) => {
     if (least === undefined || at < least) least = at
   }
-  for (const member of all(sql)) {
+  const members = all(sql)
+  for (const member of members) {
+    if (member.state === 'assigned' && member.handle === null)
+      sooner(askedUntil(machine(members, member)) + 1)
     if (member.state !== 'idle') continue
     if (member.handle === null) {
       sooner(member.seen_at + member.notice_sec * 1000 + 1)

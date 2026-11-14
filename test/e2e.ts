@@ -59,7 +59,8 @@ const out = Path.resolve('output/e2e', label)
 const largeTestBytes = 3 * 1024 * 1024
 const ending = scenario === 'ending'
 const attached =
-  ending || ['lost', 'machine', 'resume', 'runners', 'standing', 'stopped'].includes(scenario)
+  ending ||
+  ['lost', 'machine', 'resume', 'runners', 'shared', 'standing', 'stopped'].includes(scenario)
 const alone = scenario === 'alone'
 const refusedPassing = scenario === 'refused'
 const spent = scenario === 'spent'
@@ -77,6 +78,7 @@ const midturnSleepSec = 20
 const midturnYieldMs = 10_000
 const sandboxLeaseSec = Number(process.env['NANOEVAL_E2E_SANDBOX_LEASE_SEC'] ?? leaseSec)
 const seededDisk = 'e'.repeat(64)
+const shared = scenario === 'shared'
 const standing = scenario === 'standing'
 const planned = scenario === 'plan'
 const planSecret = Crypto.randomBytes(32).toString('hex')
@@ -92,6 +94,7 @@ const claudePlan = {
   revoked: 0,
 }
 const stopped = scenario === 'stopped'
+const stood = shared || standing || stopped
 const warm = scenario === 'warm'
 const installed = model === 'installed'
 const fakeCli = Path.resolve('test/fixtures/fake-cli.sh')
@@ -519,15 +522,17 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
           ? fake(request.url!, body)
           : scripted(body, turnLost ? MockGateway.modelUsd['/v1/messages'] : undefined)
         if (
-          (turnLost || stopped) &&
+          (shared || stopped || turnLost) &&
           !parked &&
           !body.model?.includes('sonnet') &&
           JSON.stringify(body.messages ?? []).includes('"tool_result"')
         ) {
           parked = true
           await released
-          response.destroy()
-          return
+          if (!shared) {
+            response.destroy()
+            return
+          }
         }
         const kill = midturn && killAt !== 'cell' ? midturnKills[killAt] : undefined
         if (kill && killDue === undefined && midturnRequests.at(-1)!.decision === kill.after) {
@@ -1121,7 +1126,7 @@ async function main(): Promise<void> {
       console.log('e2e passed: ' + label)
       return
     }
-    if (standing || stopped) {
+    if (stood) {
       stand('a')
       await standingBy(api)
     }
@@ -1229,7 +1234,7 @@ async function main(): Promise<void> {
         ),
       )
       attach(created.id, 'b')
-    } else if (attached && !standing && !stopped) {
+    } else if (attached && !stood) {
       attach(created.id, 'a')
       if (scenario !== 'resume') attach(created.id, 'b')
     }
@@ -1249,6 +1254,17 @@ async function main(): Promise<void> {
     let lostAt: number | undefined
     let backAt: number | undefined
     let stoppedAt: number | undefined
+    let beside: { id: string } | undefined
+    let besideStatus: Record<string, any> | undefined
+    let besidePool: Record<string, any>[] | undefined
+    const members = async () => (await api.pool())['members'] as Record<string, any>[]
+    const standingAlone = () =>
+      waitFor('one member of the runner to stand by alone', async () => {
+        const found = await members()
+        return found.length === 1 && found[0]!['state'] === 'idle' && found[0]!['holding']
+          ? found[0]
+          : undefined
+      })
     for (;;) {
       status = await api.status(created.id)
       if (status['state'] === 'finished') break
@@ -1375,8 +1391,28 @@ async function main(): Promise<void> {
           [],
           'a runner that is stopped takes every slot down',
         )
+        assert.deepEqual(
+          await members(),
+          [],
+          'a runner that is stopped with a run leaves the pool with every member it had',
+        )
         stand('b')
         release()
+      }
+      if (shared && parked && !beside)
+        beside = await api.create({ ...config, name: config.name + '-beside' })
+      if (shared && beside && !restarted) {
+        const other = await api.status(beside.id)
+        if (other['state'] === 'finished') {
+          restarted = true
+          besideStatus = other
+          assert.equal(status['state'], 'running', 'the first run still has a row in flight')
+          release()
+        } else if (other['counts'].active > 0) {
+          const found = await members()
+          if (found.length === 3 && (await api.status(beside.id))['state'] === 'running')
+            besidePool = found
+        }
       }
       if (lostAt !== undefined && status['lostClaims'] > 0) backAt ??= Date.now()
       if (Date.now() - started > 20 * 60_000)
@@ -1384,7 +1420,9 @@ async function main(): Promise<void> {
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
     if (
-      ['fleet', 'forgotten', 'lost', 'midturn', 'restart', 'resume', 'stopped'].includes(scenario)
+      ['fleet', 'forgotten', 'lost', 'midturn', 'restart', 'resume', 'shared', 'stopped'].includes(
+        scenario,
+      )
     )
       assert.ok(restarted, 'the ' + scenario + ' happened during the run')
     const wallMs = Date.now() - started
@@ -1483,7 +1521,7 @@ async function main(): Promise<void> {
 
     assert.deepEqual(status['eval'], { name: evalName, version: version.digest })
     if (attached) {
-      for (const runner of standing || stopped ? [] : runners) {
+      for (const runner of stood ? [] : runners) {
         if (runner.child.exitCode === null && runner.child.signalCode === null)
           await new Promise((resolve) => runner.child.once('exit', resolve))
       }
@@ -2180,6 +2218,63 @@ async function main(): Promise<void> {
       assert.ok(status['counts'].passed > 0, 'the model solves at least one task')
     }
 
+    if (shared) {
+      const other = besideStatus!
+      assert.deepEqual(
+        other['counts'],
+        status['counts'],
+        'a run that is created while the runner is busy ends as the run before it',
+      )
+      assert.equal(status['lostClaims'] + other['lostClaims'], 0)
+      for (const run of [status, other])
+        assert.equal(run['runners'].length, 1, 'each run has the machine as one runner')
+      assert.deepEqual(
+        besidePool?.map((member) => member['state']).sort(),
+        ['assigned', 'assigned', 'idle'],
+        'a runner with two runs has a member for each and one more that stands by',
+      )
+      assert.equal(
+        new Set(besidePool!.map((member) => member['machine'])).size,
+        1,
+        'the members are those of one machine',
+      )
+      const claims: [number, number][] = []
+      for (const [run, rows] of [
+        [created.id, status['attempts']],
+        [beside!.id, other['attempts']],
+      ] as [string, { id: string }[]][])
+        for (const row of rows)
+          for (const claim of (await api.attempt(run, row.id))['claims'] as Record<string, any>[])
+            claims.push([claim['claimedAt'], 1], [claim['endedAt'], -1])
+      claims.sort((left, right) => left[0] - right[0] || left[1] - right[1])
+      let most = 0
+      for (let index = 0, held = 0; index < claims.length; index++) {
+        held += claims[index]![1]
+        most = Math.max(most, held)
+      }
+      assert.equal(most, slots, 'the rows of both runs fill the slots of the runner, and no more')
+      const marks = (await api.timeline(created.id)).marks
+      const last = Math.max(
+        ...marks.filter((mark) => mark.name === 'attempt.claimed').map((mark) => mark.at),
+      )
+      assert.ok(
+        other['createdAt'] + other['start'].claimMs < last,
+        'a row of the second run was claimed before the last row of the first',
+      )
+      console.log(
+        'shared: the second run claimed ' +
+          other['start'].claimMs +
+          ' ms after it was created and finished after ' +
+          (other['finishedAt'] - other['createdAt']) +
+          ' ms, beside a run with a row in flight',
+      )
+      await standingAlone()
+      const first = runners[0]!
+      const exited = new Promise<number | null>((resolve) => first.child.once('exit', resolve))
+      first.child.kill('SIGTERM')
+      assert.equal(await exited, 0)
+      assert.deepEqual(await members(), [], 'a runner that is stopped leaves the pool')
+    }
     if (stopped) {
       const again = details.filter((detail) => detail['attempt'].claims > 1)
       assert.equal(again.length, 1, 'the row the stopped runner held was claimed again')
@@ -2570,8 +2665,7 @@ async function main(): Promise<void> {
       }
     }
     if (standing) {
-      const member = await standingBy(api)
-      assert.equal(member['runs'], 1)
+      const member = await standingAlone()
       assert.ok(
         status['start'].claimMs < 2000,
         'a row was claimed ' + status['start'].claimMs + ' ms after the run was created',
@@ -2592,15 +2686,28 @@ async function main(): Promise<void> {
           ' ' +
           JSON.stringify(again['start']),
       )
-      assert.equal((await standingBy(api))['runs'], 2)
-      runners[0]!.child.kill('SIGTERM')
-      await waitFor('the pool to close the runner that left', async () =>
-        ((await api.pool())['members'] as { state: string }[]).every(
-          (entry) => entry.state === 'closed',
-        )
-          ? true
-          : undefined,
-      )
+      const before = await standingAlone()
+      assert.ok(before['id'] > member['id'], 'each run was handed to a member of its own')
+      await api.pool('close')
+      const after = await waitFor('the runner to enrol again', async () => {
+        const found = await members()
+        return found.length === 1 && found[0]!['id'] > before['id'] && found[0]!['holding']
+          ? found[0]
+          : undefined
+      })
+      assert.equal(after['machine'], before['machine'], 'the same runner enrolled again')
+      const third = await api.create({ ...config, name: config.name + '-enrolled' })
+      const enrolled = await waitFor('the run of the runner that enrolled again', async () => {
+        const current = await api.status(third.id)
+        return current['state'] === 'finished' ? current : undefined
+      })
+      assert.deepEqual(enrolled['counts'], status['counts'])
+      await standingAlone()
+      const runner = runners[0]!
+      const exited = new Promise<number | null>((resolve) => runner.child.once('exit', resolve))
+      runner.child.kill('SIGTERM')
+      assert.equal(await exited, 0, 'a standing runner that is stopped exits 0')
+      assert.deepEqual(await members(), [], 'a runner that is stopped leaves the pool')
     }
 
     const job = JSON.parse(files['result.json']!)

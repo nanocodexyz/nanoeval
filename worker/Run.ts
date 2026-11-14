@@ -1947,6 +1947,12 @@ export class Run extends DurableObject<Env> {
     if (resource === 'hello') return json(await this.hello(body as unknown as Protocol.Hello))
     if (resource === 'claims') return json(await this.claim(body as Protocol.ClaimRequest))
     if (resource === 'heartbeat') return json(this.heartbeat(body as Protocol.Heartbeat))
+    if (resource === 'yield') {
+      const key = 'claim:' + this.known((body as Protocol.Yield).runner).id
+      const yielded = this.holds.has(key)
+      this.holds.end(key)
+      return json({ yielded } satisfies Protocol.Yielded)
+    }
     if (resource === 'leave') return json(await this.leave(body as Protocol.Leave))
     if (resource === 'rows' && id && action) {
       const row = this.fenced(id, String(body['claim'] ?? ''))
@@ -2176,6 +2182,7 @@ export class Run extends DurableObject<Env> {
       seen_at: Date.now(),
       ...(runner.state === 'refused' ? {} : { state: 'left' }),
     })
+    this.holds.end('claim:' + runner.id)
     for (const row of this.rows())
       if (row.runner === runner.id && Ledger.active(row)) await this.lose(row, 'released')
     this.ctx.waitUntil(this.tick())

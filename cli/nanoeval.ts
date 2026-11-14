@@ -174,7 +174,10 @@ const usage = `nanoeval <command>
             leaves once no row that is left does.
             With --standing it attaches to the deployment instead: it sets its slots up once,
             waits in the pool, and a run created with --sandboxes 0 and its backend and
-            network is handed to it the moment it is created, one run after another.
+            network is handed to it the moment it is created. It serves several runs at
+            once: their rows share its slots and its memory, and a run that is created
+            while every slot is busy waits for the next free one. It enrols again when the
+            pool closes it, and leaves the pool when it is stopped.
   pool      --url URL --token T [--close] [--location HINT]
             List the runners and sandboxes the deployment keeps between runs, and what it
             paid for them while no run had them. --close terminates the idle ones now. A
@@ -391,17 +394,26 @@ export function client(options: { token: string; url: string }) {
       ).json() as Promise<Record<string, any>>,
     results: async (run: string) =>
       (await (await call('/v1/runs/' + run + '/results')).json()) as Compare.Run,
-    standing: async (
-      body: { backend: string; network: string; noticeSec: number },
-      location?: string,
-    ) =>
-      (await (
-        await call('/v1/pool/members' + (location ? '?location=' + location : ''), {
+    standing: async (body: Protocol.Enrol, location?: string) => {
+      const response = await fetch(
+        base + '/v1/pool/members' + (location ? '?location=' + location : ''),
+        {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: {
+            authorization: 'Bearer ' + options.token,
+            'content-type': 'application/json',
+          },
           body: JSON.stringify(body),
-        })
-      ).json()) as Protocol.Standing,
+        },
+      )
+      if (response.ok) return (await response.json()) as Protocol.Standing
+      const said =
+        'the pool answered ' +
+        response.status +
+        ' to a runner that enrols: ' +
+        (await response.text())
+      throw response.status < 500 ? new Runner.RefusedError(said) : new Error(said)
+    },
     status: async (run: string) =>
       (await call('/v1/runs/' + run)).json() as Promise<Record<string, any>>,
     timeline: async (run: string) =>
@@ -1264,7 +1276,10 @@ async function main(): Promise<void> {
     await Fs.mkdir(home, { recursive: true })
     const leaseSec = Number(values['lease-sec'])
     const network = (values.network ?? Config.network({ backend })) as Config.Runner['network']
-    const pool = await api.standing({ backend, network, noticeSec: leaseSec }, values.location)
+    const machine = crypto.randomUUID()
+    const enroll = () =>
+      api.standing({ backend, machine, network, noticeSec: leaseSec }, values.location)
+    const pool = await enroll()
     process.chdir(home)
     Object.assign(process.env, hostPolicy)
     await Runner.run({
@@ -1278,6 +1293,7 @@ async function main(): Promise<void> {
       },
       standing: {
         backend,
+        enroll,
         leaseSec,
         network,
         pollMs: Number(values['poll-ms'] ?? '250'),

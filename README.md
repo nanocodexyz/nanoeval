@@ -37,6 +37,7 @@ The table says what was run. "The first version" is the flow before the eval tab
 | A timeline of every run: what the run, its sandbox and its runners did from its creation to the first claim, the first model request and each verdict (`nanoeval status`, `nanoeval timeline RUN`, `timeline.json` of an exported job) | Implemented, tested: unit tests, and read on a deployed Worker for every run of [How fast a run starts](#how-fast-a-run-starts) |
 | No polling where a run starts: a claim, the attach of a hand and the end of a turn are requests the run holds until there is an answer, and a runner follows its slots by file events | Implemented, tested end to end: every lane runs on it |
 | Standing runners (`nanoeval runner --standing`) and the pool of a deployment (`nanoeval pool`): a run is handed to a runner that is already there | Implemented, tested: unit tests for the table, and an end-to-end lane where two runs are handed to one runner and claim 10 to 13 ms after they are created. Run for real: 20 runs handed to a krun runner on a Linux machine, the first row claimed 0.11 to 0.39 s after each was created |
+| A standing runner with several runs at once: their rows share its slots, a run created while it is busy is handed to it at once and waits for a free slot, and the runner enrols again when the pool closes it and leaves the pool when it is stopped | Implemented, tested: unit tests for the table, and end-to-end lanes on directory slots where a second run is created while the runner has a row in flight and finishes beside it, and where the pool is closed under an idle runner. Two runs at once also ran on krun slots under local workerd. **Not run on a deployed Worker** |
 | A sandbox kept warm between runs (`run --warm-sec`): its runner stands by with its disks unpacked, and the pool renews and terminates it | Implemented, tested against the scripted gateway on directory and ns slots: the second run pays for no sandbox and fetches no disk, the pool renews the lease while the sandbox is idle and terminates it when the idle time ends, and every charge is recorded once. Run for real: one run on a kept sandbox claimed 0.55 s after it was created, and the pool terminated two sandboxes at the end of their idle time. **The pool has not paid a renewal for real**: the gateway sold none |
 | A runner lost during a run: its rows are claimed again, at most `--claims` times, and nothing scores twice | Implemented, tested end to end: a killed runner's rows end scored by the other runner, with the lost claims recorded |
 | A runner stopped during a run: its rows go back at once, it is handed none on its way out, and it leaves no slot | Implemented, tested end to end on directory slots: a standing runner is stopped later than `--setup-sec` with a row in flight, and the runner started after it finishes the row on its second claim, within seconds and not a lease |
@@ -408,6 +409,7 @@ A run keeps a timeline, and `nanoeval status` prints the first of each step as a
 
 ```sh
 # A machine of yours stands by for any run with --sandboxes 0 and its backend: the run is handed to it when it is created.
+# It serves several such runs at once in its --slots, and a run created while they are busy waits for the next free one.
 node cli/nanoeval.ts runner --standing --backend krun --slots 4
 node cli/nanoeval.ts run --eval terminal-bench-2.1 --agent luna=codex:gpt-6-luna --sandboxes 0 --backend krun --wait
 
@@ -453,6 +455,7 @@ NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=midturn npm run e2e  # the Worker
 NANOEVAL_E2E_SCENARIO=forgotten npm run e2e  # the session objects removed under a running row: it is claimed again
 NANOEVAL_E2E_SCENARIO=runners npm run e2e  # two attached runners with separate caches
 NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=standing npm run e2e  # a standing runner that two runs are handed to
+NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=shared NANOEVAL_E2E_SLOTS=2 npm run e2e  # a standing runner with the rows of two runs in its slots
 NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=stopped NANOEVAL_E2E_SLOTS=6 npm run e2e  # a standing runner stopped during a run, and another started
 NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_GATEWAY=1 NANOEVAL_E2E_SCENARIO=warm npm run e2e  # a leased sandbox kept for a second run, then ended by the pool
 NANOEVAL_E2E_SCENARIO=lost NANOEVAL_E2E_LEASE_SEC=3 npm run e2e  # a runner killed: its rows are claimed again
