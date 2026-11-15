@@ -4538,10 +4538,14 @@ async function main(): Promise<void> {
           'the trunk alone is sent a turn to work and a turn to check',
         )
         assert.equal(new Set(turns.map((turn) => turn.session)).size, 1)
-        assert.equal(branchRequests.length, 4)
-        assert.equal(usage.modelCalls, 4, 'the usage of the attempt is that of one session')
-        assert.equal(usage.inputTokens, 4 * 100)
-        assert.equal(usage.outputTokens, 4 * 7)
+        assert.equal(
+          branchRequests.length,
+          6,
+          'the trunk asks three times to work and three times to check: for a call, for its answer and, at the finish check of the turn, for its answer again',
+        )
+        assert.equal(usage.modelCalls, 6, 'the usage of the attempt is that of one session')
+        assert.equal(usage.inputTokens, 6 * 100)
+        assert.equal(usage.outputTokens, 6 * 7)
       } else {
         assert.equal(record.fork?.reason, 'unverified', 'the trunk forks when its check fails')
         assert.ok(artifacts.includes(Branch.forkRecord))
@@ -4559,14 +4563,18 @@ async function main(): Promise<void> {
         assert.equal(turns.length, 6, 'the trunk and two forked branches each work and check')
         assert.equal(new Set(turns.map((turn) => turn.session)).size, 3)
         assert.ok(turns.every((turn) => turn.deadline !== null))
-        assert.equal(branchRequests.length, 12)
+        assert.equal(
+          branchRequests.length,
+          18,
+          'the trunk and two forked branches each ask three times to work and three times to check',
+        )
         assert.equal(
           usage.modelCalls,
-          12,
+          18,
           'the usage of the attempt counts the trunk and every branch',
         )
-        assert.equal(usage.inputTokens, 12 * 100)
-        assert.equal(usage.outputTokens, 12 * 7)
+        assert.equal(usage.inputTokens, 18 * 100)
+        assert.equal(usage.outputTokens, 18 * 7)
         assert.match(await read('agent/branch-0/trajectory.json'), /SELF-CHECK: FAIL/)
         assert.match(await read('agent/branch-1/trajectory.json'), /claim-pass/)
       }
