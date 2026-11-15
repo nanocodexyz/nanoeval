@@ -170,6 +170,9 @@ test('a test command is a test runner or test script at the end of the command l
     'timeout 600 pytest -q',
     'PYTHONPATH=. pytest tests',
     './run_tests.sh',
+    "cd /app && python3 solve.py && python3 -c \"\nimport json;d=json.load(open('out.json'))\nassert d['a'] < d['b']\nprint('ok')\"",
+    "python3 -I -c 'import x; assert x.ok()'",
+    'pytest -q -k "a or b; c"',
   ])
     assert.ok(Branch.testCommand(command), command)
   for (const command of [
@@ -183,6 +186,14 @@ test('a test command is a test runner or test script at the end of the command l
     'ls',
     'echo ok > test_a.py',
     "printf '%s\n' 'exit 0' > greeting_test.sh",
+    'python3 -c "print(1)"',
+    'python3 -O -c "assert False"',
+    'PYTHONOPTIMIZE=1 python3 -c "assert False"',
+    'python3 -c "assert d == 1"; rm -rf /tmp/chk',
+    'python3 -c "assert d == 1"; ls /app',
+    'python3 -I /tmp/chk/verify.py; rm -rf /tmp/chk',
+    'python3 -c "assert x" || true',
+    'echo "pytest -q"',
   ])
     assert.ok(!Branch.testCommand(command), command)
 })
@@ -263,6 +274,98 @@ test('a self-check is verified by its last test command after the last file writ
     ]),
     { command: 'pytest -q', exitCode: 0 },
     'a command that outlived its first call ends in write_stdin',
+  )
+})
+
+const nested = (
+  cell: string,
+  index: number,
+  input: { [key: string]: unknown },
+  result: unknown,
+): Atif.SessionEvent[] => {
+  const id = cell + '/code-' + index
+  const tool = 'command' in input ? 'Bash' : 'Write'
+  const common = { call_id: id, parent_call_id: cell, tool, turn_id: Branch.checkRequestId }
+  return [
+    event(Branch.checkRequestId, 'tool.call', { ...common, arguments: input, model_call_index: 0 }),
+    event(Branch.checkRequestId, 'tool.result', {
+      ...common,
+      duration_ns: 1,
+      metadata: null,
+      result: { text: '' },
+      started_after_ns: 1,
+      status: 'completed',
+      structured_result: result,
+    }),
+  ]
+}
+
+const bash = (output: { code: number; stdout?: string }) => ({
+  background: false,
+  exit_code: output.code,
+  interrupted: false,
+  message: null,
+  output_bytes: null,
+  output_file: null,
+  status: 'completed',
+  stderr: '',
+  stdout: output.stdout ?? '',
+  task_id: null,
+  truncated: false,
+})
+
+const cell = (id: string, code: string, calls: readonly Atif.SessionEvent[]) => [
+  event(Branch.checkRequestId, 'tool.call', {
+    arguments: { code },
+    call_id: id,
+    tool: 'exec',
+  }),
+  ...calls,
+  event(Branch.checkRequestId, 'tool.result', {
+    call_id: id,
+    metadata: { _nanocode_code: { nested_call_count: 2, origin_call_id: id, running: false } },
+    result: { content_blocks: [{ text: 'Script completed\n', type: 'text' }] },
+    status: 'completed',
+    structured_result: null,
+    tool: 'exec',
+    turn_id: Branch.checkRequestId,
+  }),
+]
+
+test('a self-check in a Code Mode cell is verified by its nested Bash call, which reports its own exit code', () => {
+  const check =
+    "cd /app && python3 solve.py /app/input.mp4 && python3 -c \"\nimport tomllib;d=tomllib.load(open('/app/output.toml','rb'));print(d);assert set(d)=={'start','end'}\nprint('ok')\""
+  assert.deepEqual(
+    evidenceOf(
+      cell('toolu_a', 'await tools.Bash({command: check})', [
+        ...nested('toolu_a', 1, { file_path: '/tmp/chk/notes.txt', content: 'x' }, 'File created'),
+        ...nested('toolu_a', 2, { command: check }, bash({ code: 0, stdout: '{...}\nok\n' })),
+        ...nested('toolu_a', 3, { command: 'ls /tmp; cat /app/output.toml' }, bash({ code: 0 })),
+      ]),
+    ),
+    { command: check, exitCode: 0 },
+  )
+  assert.equal(
+    evidenceOf(
+      cell('toolu_b', 'await tools.Bash({command: check})', [
+        ...nested(
+          'toolu_b',
+          1,
+          { command: 'cd /tmp && python3 -I /tmp/chk/verify.py; rm -rf /tmp/chk' },
+          bash({ code: 0, stdout: 'acc 0.63 acc_ok True\n' }),
+        ),
+      ]),
+    ),
+    undefined,
+    'the status of a check followed by a cleanup is the status of the cleanup',
+  )
+  assert.equal(
+    evidenceOf(
+      cell('toolu_c', 'await tools.Bash({command: check})', [
+        ...nested('toolu_c', 1, { command: check }, bash({ code: 1 })),
+      ]),
+    ),
+    undefined,
   )
 })
 
