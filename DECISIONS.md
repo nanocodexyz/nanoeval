@@ -7548,3 +7548,26 @@ Hosted Hand (5 cores, Linux x86_64, no `/dev/kvm`), Node 24.22.3, nanocode-ts `b
 **Measured.** `Branch.evidence` over the 15 sessions above, each read from the run's artifacts: 0 of 15 with evidence at `4b71b88`, 1 of 15 with this change (the trunk of a00070, `cd /app && python3 jump_analyzer.py ... && python3 -c "...assert..."`). The other 12 checks end with a cleanup after `;` or print a result without an assertion, so they stay unverified by rule. The sentence added to the prompt addresses those, and is not measured.
 
 **Checked.** `test/Branch.test.ts` takes a Code Mode cell in the shape of the run's events (anonymized): a scratch `Write`, the check, then `ls`, which is verified, the check followed by `; rm -rf`, which is not, and the check with exit status 1, which is not. Every `run` step of `ci.yml` from a fresh clone of `b320bf4` on the hosted Hand (5 cores, no `/dev/kvm`, not root), the five jobs side by side: `check` 5 of 5, `e2e-dir` 68 of 68, `e2e-krun` 36 of 36 and `e2e-ns` with `e2e-revision` 18 of 18 (the krun and ns lanes skip themselves here), `krun` 3 of 3. This commit differs from `b320bf4` in this paragraph only.
+
+## 2026-11-15: an independent verifier picks the branch, and a Worker refuses agent keys it does not know
+
+**Problem.** B1 run `66b976fa` (arm `nanol3`, lazy3) wrote no `agent/fork.json` on any row. Every row ran three eager branches, and `Branch.choose` kept branch 0 in 34 of 35 rows. The branches' self-verdicts were 95 pass, 9 unknown and 1 fail of 105, with 6 false PASS rows (protein-assembly x3, video-processing x3). Root cause: the Worker writes `fork.json` (`worker/Run.ts` `branched`), not the hand. The W7L line (`91fb866`, and likewise `a0ab14d` W7M and `657938f` W7N) never got the lazy commits `f509fa4` and `f57fb71`. A lazy-aware CLI sent `lazy: true`, and that Worker's `Config.parse` rebuilt the agent from the keys it knew, silently dropping `lazy`.
+
+**Behavior.**
+- The lazy gate and the inline-assertion evidence fix are ported onto the W7M line.
+- `Config.parse` refuses an agent key outside `Config.agentKeys`, so a CLI that is newer than the Worker fails the run instead of running another arm.
+- `picker=verify` (off by default): each completed branch's slot is forked live into a probe slot `<base>-v<i>`. A fresh session `<session>-verifier-<i>` attaches there with the task instruction and a log of the branch's writes and commands (exit codes, trimmed output). It does not get the branch's messages, its reasoning or its self-verdict. It probes freely and ends with `VERIFIER:`, `CONFIDENCE:` and `OUTPUT:`. Branches self-check no more.
+- `Picker.choose` orders branches by verdict, then agreement on `OUTPUT` with other branches, then confidence, then index. `agent/branches.json` `picker` records each verification, the agreement counts, the model and the criteria that decided the pick (`evidence`).
+- `picker=verify_lazy`: the trunk is verified, and two branches fork only unless it got PASS with confidence of at least 70 (fork reason `verifier_fail` or `verifier_unsure`).
+- `verifier_model=<id>`: `claude-opus-5-5` by default for claude agents.
+- The hidden verifier never reaches a probe slot: tests are copied in only by `slot.sh verify`, which runs on branch slots after the pick. A runner grades the branches not kept after the pick, for analysis only (`agent/branch-grades.json`).
+- The verifiers' usage is in the attempt's usage and trajectories (`agent/verifier-<i>/`). `agent/picker-usage.json` splits verifier USD from branch USD, metered at billed prices when the meter priced the requests.
+- A runner advertises `picker` when it can fork live, and a picker run refuses a runner that cannot. A picker row reserves two slots per branch.
+
+**Checked.** Hosted Hand (Linux x86_64, no KVM), Node 24.22.3, nanocode-ts `build-771f891`, 2026-11-15:
+- `NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=picker npm run e2e`: passed. Verifiers ran in `-v0`, `-v1` and `-v2`, with verdicts fail, fail, pass. Branch 2 was kept on evidence `verifier`. Branches 0 and 1 were graded after the pick at reward 0. 18 model calls in total.
+- `picker-lazy`: passed. The trunk's verifier said FAIL, the row forked for `verifier_fail` and branch 2 was kept.
+- `branches`, `lazy` and `lazy-pass`: passed. The lazy lanes now count three requests per turn, as on this line.
+- `npm test` 567 tests, `npm run check:types` and `vp check` pass.
+
+**Not verified.** A real model, and a krun or ns live fork into a probe slot (no KVM here). The box smoke and the pilot measure these.
