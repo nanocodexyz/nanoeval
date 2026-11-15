@@ -7544,6 +7544,7 @@ Hosted Hand (5 cores, Linux x86_64, no `/dev/kvm`), Node 24.22.3, nanocode-ts `b
 - `test/Branch.test.ts`: the test command, the evidence (exit status, `|| true`, a pipe, a count of failures, a write after the test, the request, `write_stdin`), the fork reasons and `forkAt`, `settle`, the spec and the configuration.
 
 - Every `run` step of `ci.yml` from a fresh clone of this commit on the hosted Hand (5 cores, no `/dev/kvm`, not root), the five jobs side by side: `check` 5 of 5, `e2e-dir` 67 of 68, `e2e-krun` 36 of 36 and `e2e-ns` with `e2e-revision` 18 of 18 (the krun and ns lanes skip themselves here), `krun` 3 of 3. The one failure was the lane `lost` ("the lost happened during the run", 15 s) while the four other jobs loaded the machine; run alone from the same clone afterwards it passed 3 of 3. It does not touch branches.
+- After the rebase onto `a02708f`, every `run` step of `ci.yml` again from a fresh clone of `f509fa4`, same machine, the five jobs side by side: `check` 5 of 5, `e2e-dir` 68 of 68 (the lane `lost` passed this time), `e2e-krun` 36 of 36, `e2e-ns` with `e2e-revision` 18 of 18, `krun` 3 of 3.
 
 ### Not verified
 
