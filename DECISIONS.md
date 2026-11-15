@@ -6902,3 +6902,24 @@ On a machine of 5 cores without KVM, from a fresh clone of the commit with this 
 **Not run.** An installed agent that falls back through the endpoint, end to end or on a deployed Worker: the scripted command of the lanes asks for one model, and the check is `Fallback.served(...).includes(model)` over the unit-tested list. A rerun of the refused rows on the fixed Worker, which is what says how Claude Code does on its fallback model. Whether Claude Code falls back to a model outside the table in a case not seen here: such a request is refused and is now counted as the run's error, not the agent's.
 
 **Limits.** The 18 rows are from one run read before its end. A request the endpoint refuses counts among the model requests of its row, so a row whose every other request was answered `502` or `530` is no longer read as one the endpoint never answered. A request for a fallback model is paced as the declared model is, and where the run prices requests from a list it is priced as the declared model.
+
+## 2026-11-15: the rows a run had refused their fallback model, rerun on a deployed Worker that serves it
+
+**What ran.** The entry above left one thing not run: an installed agent that falls back through the endpoint on a deployed Worker. It ran within the hour. The change, on `b48388c`, was deployed to the Worker of the run that entry measures, and `run --rerun RUN --errored --agent ID` made a run of the 27 rows of Claude Code 2.1.318 that had errored there, on `claude-opus-5-5` at high effort through the same Claude plan login, 27 krun slots on 12 hardware threads of the same bare-metal machine. Each row was claimed once, and the run had finished 13 minutes after its rows were claimed.
+
+**Measured.** 18 of the 27 rows are the ones the endpoint had refused. All 18 made their first 2 or 3 requests to `claude-opus-5-5`, were stopped for safety, and then asked for the other model: 9 for `claude-opus-5` (`dna-assembly`, `dna-insert`, `protein-assembly`) and 9 for `claude-opus-4-8` (`break-filter-js-from-html`, `crack-7z-hash`, `vulnerable-secret`). Every such request was answered `200`, 298 of them, 7 to 29 a row, and no request of the 27 rows was refused a model. Of the 18, 13 passed and 5 failed, where all 18 had been errors. The nanocode session had 11 passes and 7 fails on the same 18 rows in the first run.
+
+| Task | Claude Code, rerun, attempts 1 / 2 / 3 | nanocode session, first run, attempts 1 / 2 / 3 |
+| --- | --- | --- |
+| `break-filter-js-from-html` | passed / passed / passed | passed / passed / passed |
+| `crack-7z-hash` | passed / passed / passed | passed / passed / failed |
+| `dna-assembly` | passed / passed / passed | passed / passed / failed |
+| `dna-insert` | failed / failed / failed | failed / failed / failed |
+| `protein-assembly` | passed / failed / failed | passed / failed / failed |
+| `vulnerable-secret` | passed / passed / passed | passed / passed / passed |
+
+The other 9 rows were no refusal in the first run: the 6 rows of `qemu-alpine-ssh` and `qemu-startup` errored again on the package archive that is gone, and `mailman`, `polyglot-c-py` and `caffe-cifar-10` passed. In all: 16 passed, 5 failed, 6 errored.
+
+**What it says.** On these six tasks the two sides now run on the same models, and the pair reads 13 passes of 18 against 11, not 0 scored against 11. The 18 errors of the first run were the run's, as the entry above classed them.
+
+**Not run.** A second rerun, so nothing here says how much these outcomes vary: 2 of the 6 tasks differ between the sides by one attempt each. The case the classification is for, a model outside the list on a deployed Worker: no row asked for one. An end-to-end lane in which the scripted command falls back.
