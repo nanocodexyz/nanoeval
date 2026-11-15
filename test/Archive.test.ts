@@ -56,7 +56,6 @@ async function world() {
       host: '127.0.0.1',
       port: name === 'archive.test' ? archive.port : mirror.port,
     }),
-    port: 0,
   })
   const close = () => {
     opened.close()
@@ -116,27 +115,51 @@ test('a name without an archive, and a request that is no read, are refused', as
   close()
 })
 
+test('a request in the form a proxy is sent is answered as one that names the mirror as its host', async () => {
+  const { address, close, log, seen } = await world()
+  const answer = await get(address, 'mirror.test', 'http://mirror.test' + pool)
+  assert.deepEqual([answer.status, answer.body], [200, 'the package'])
+  assert.equal(
+    (await get(address, address, 'http://MIRROR.test:80' + index)).body,
+    'the signed index',
+  )
+  assert.deepEqual(seen, [
+    'GET mirror.test' + pool,
+    'GET archive.test' + pool,
+    'GET mirror.test' + index,
+  ])
+  assert.deepEqual(await Archive.served(log), ['mirror.test' + pool])
+  assert.equal((await get(address, 'mirror.test', 'http://other.test' + pool)).status, 421)
+  assert.equal((await get(address, 'mirror.test', 'ftp://mirror.test' + pool)).status, 421)
+  assert.equal(seen.length, 3)
+  close()
+})
+
 test('an archive that is not named an address listens on a loopback address of its own', async () => {
   const log = Path.join(Fs.mkdtempSync(Path.join(Os.tmpdir(), 'nanoeval-archive-')), 'archive.log')
-  const [first, second] = await Promise.all([
-    Archive.open({ log, port: 0 }),
-    Archive.open({ log, port: 0 }),
-  ])
+  const [first, second] = await Promise.all([Archive.open({ log }), Archive.open({ log })])
   assert.match(first.address, /^127(\.[0-9]{1,3}){3}:[0-9]+$/)
   assert.notEqual(first.address.split(':')[0], second.address.split(':')[0])
   first.close()
   second.close()
 })
 
-test('the names a slot is given are each mirror and the hosts its service record names', async () => {
-  const asked: string[] = []
-  const names = await Archive.names(async (name) => {
-    asked.push(name)
-    if (name !== '_http._tcp.deb.debian.org') throw new Error('ENODATA')
-    return [{ name: 'Mirror.Example.Net.' }, { name: 'mirror.example.net' }]
-  })
-  assert.deepEqual(asked, ['_http._tcp.deb.debian.org', '_http._tcp.security.debian.org'])
-  assert.deepEqual(names, ['deb.debian.org', 'mirror.example.net', 'security.debian.org'])
+test('an archive listens on a port that nothing holds, never on the port of the mirrors', async () => {
+  const log = Path.join(Fs.mkdtempSync(Path.join(Os.tmpdir(), 'nanoeval-archive-')), 'archive.log')
+  const held = Http.createServer()
+  await new Promise<void>((resolve) => held.listen(0, '0.0.0.0', resolve))
+  const taken = (held.address() as Net.AddressInfo).port
+  const [first, second] = await Promise.all([
+    Archive.open({ address: '127.0.0.1', log }),
+    Archive.open({ address: '127.0.0.1', log }),
+  ])
+  const ports = [first, second].map((opened) => Number(opened.address.split(':')[1]))
+  assert.notEqual(ports[0], ports[1])
+  for (const port of ports) assert.ok(port !== Archive.port && port !== taken)
+  await assert.rejects(Archive.open({ address: '127.0.0.1', log, port: taken }), /EADDRINUSE/)
+  first.close()
+  second.close()
+  held.close()
 })
 
 test('the archives of this build are those of Debian', () => {
