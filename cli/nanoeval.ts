@@ -724,10 +724,15 @@ const efforts = { pattern: Config.efforts.join('|'), value: Config.efforts.join(
 
 const agentOptions: readonly AgentOption[] = [
   {
-    ...count,
     name: 'branches',
-    read: (text) => ({ branches: Number(text) }),
-    write: (agent) => agent.branches,
+    pattern: '(?:lazy)?[0-9]+',
+    read: (text) => ({
+      branches: Number(text.replace(/^lazy/, '')),
+      ...(text.startsWith('lazy') ? { lazy: true as const } : {}),
+    }),
+    value: '[lazy]N',
+    write: (agent) =>
+      agent.branches === undefined ? undefined : (agent.lazy ? 'lazy' : '') + agent.branches,
   },
   {
     ...scopes,

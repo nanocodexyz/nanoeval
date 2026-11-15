@@ -761,7 +761,10 @@ test('a dir slot forks into branches that start from what its workspace held and
       })),
     ),
   )
-  await assert.rejects(Sandbox.run(sandbox, slots.fork('trunk', 'trunk-b1')), /is not up/)
+  await assert.rejects(
+    Sandbox.run(sandbox, slots.fork('trunk', { branch: 'trunk-b1', when: 'start' })),
+    /is not up/,
+  )
   await Sandbox.run(
     sandbox,
     slots.up('trunk', { backend: 'dir', cpus: 1, memoryMb: 256, network: 'host', storageMb: 1024 }),
@@ -773,7 +776,7 @@ test('a dir slot forks into branches that start from what its workspace held and
     'echo before-the-fork > ' + Sandbox.quote(home + '/slots/trunk/work/state'),
   )
   for (const branch of ['trunk-b1', 'trunk-b2'])
-    await Sandbox.run(sandbox, slots.fork('trunk', branch))
+    await Sandbox.run(sandbox, slots.fork('trunk', { branch, when: 'start' }))
   for (const branch of ['trunk-b1', 'trunk-b2']) {
     assert.equal(await wait(async () => (await status()).slots[branch]!.up), 'exit:0')
     assert.equal(

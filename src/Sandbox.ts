@@ -8,6 +8,7 @@ export type Capabilities = {
   cgroup: boolean
   cpus: number
   fork?: boolean
+  fork_live?: boolean
   hand?: string
   kernel: string
   krun: boolean
