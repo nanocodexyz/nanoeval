@@ -22,6 +22,7 @@ import * as Store from '../sandbox/Store.ts'
 import * as Arms from '../src/Arms.ts'
 import type * as Atif from '../src/Atif.ts'
 import * as Branch from '../src/Branch.ts'
+import type * as Cascade from '../src/Cascade.ts'
 import * as Compare from '../src/Compare.ts'
 import * as Config from '../src/Config.ts'
 import type * as Eval from '../src/Eval.ts'
@@ -100,8 +101,10 @@ const direct = scenario === 'direct'
 const lazyFork = scenario === 'lazy'
 const lazyPass = scenario === 'lazy-pass'
 const lazying = lazyFork || lazyPass
-const pickerLazy = scenario === 'picker-lazy'
+const cascading = scenario === 'cascade'
+const pickerLazy = scenario === 'picker-lazy' || cascading
 const picking = scenario === 'picker' || pickerLazy
+const fixModels: { handoff: boolean; model: string }[] = []
 const branching = scenario === 'branches' || lazying || picking
 const verifierPrompts: { others: number; pass: boolean; pwd: string }[] = []
 const branchRequests: { check: boolean; done: boolean }[] = []
@@ -429,6 +432,9 @@ function responses(
   })()
   const solution = solutions.find(([marker]) => text.includes(marker))
   if (!solution) throw new Error('the scripted model has no solution for this prompt')
+  const handedOver = text.includes('Another agent already worked on this task in this sandbox')
+  if (cascading && !text.includes('You are an independent verifier'))
+    fixModels.push({ handoff: handedOver, model: body.model ?? '' })
   const checking = branching
     ? input.findLastIndex(
         (item) => item['role'] === 'user' && JSON.stringify(item).includes('SELF-CHECK: PASS if'),
@@ -463,19 +469,21 @@ function responses(
           ' }); text(JSON.stringify(result))'
         : 'await tools.exec_command({ cmd: ' +
           JSON.stringify(
-            arrived !== undefined
-              ? arrived === 2
-                ? 'test -f README.md && ' + solution[1]
-                : solution[2]
-              : lazyPass
-                ? solution[1]
-                : branching
-                  ? 'case "$PWD" in *-b2/*) test -f README.md && ' +
-                    solution[1] +
-                    ' ;; *) ' +
-                    solution[2] +
-                    ' ;; esac'
-                  : solution[1],
+            handedOver
+              ? solution[1]
+              : arrived !== undefined
+                ? arrived === 2
+                  ? 'test -f README.md && ' + solution[1]
+                  : solution[2]
+                : lazyPass
+                  ? solution[1]
+                  : branching
+                    ? 'case "$PWD" in *-b2/*) test -f README.md && ' +
+                      solution[1] +
+                      ' ;; *) ' +
+                      solution[2] +
+                      ' ;; esac'
+                    : solution[1],
           ) +
           ' }); text("cell tools: " + JSON.stringify(ALL_TOOLS.map((tool) => tool.name)))'
   const tools = [
@@ -1933,7 +1941,10 @@ async function main(): Promise<void> {
                 ? [
                     branching
                       ? {
-                          branches: 3,
+                          branches: cascading ? 2 : 3,
+                          ...(cascading
+                            ? { fixModel: 'gpt-fix', fixProvider: 'codex' as const }
+                            : {}),
                           id: 'branched',
                           ...(lazying ? { lazy: true as const } : {}),
                           model: 'gpt-right',
@@ -4661,6 +4672,89 @@ async function main(): Promise<void> {
       })
       assert.equal(refused.status, 400)
       assert.match(await refused.text(), /no failed attempt to rerun/)
+      await pass()
+      return
+    }
+
+    if (cascading) {
+      const detail = details[0]!
+      assert.equal(details.length, 1)
+      assert.equal(
+        detail['attempt'].outcome,
+        'passed',
+        'the fix finished the task the executor left wrong: ' +
+          JSON.stringify(detail['attempt'].failure),
+      )
+      const read = (name: string) => api.artifact(created.id, detail['attempt'].id, name)
+      const record = JSON.parse(await read('agent/branches.json')) as Branch.Record
+      assert.equal(record.chosen, 1, 'the fix branch is graded')
+      assert.equal(record.fork?.reason, 'verifier_fail', 'the verifier failed the executor')
+      assert.equal(record.picker?.evidence, 'cascade')
+      assert.deepEqual(
+        record.picker?.verifications.map((verification) => verification?.verdict ?? null),
+        ['fail', null],
+        'only the executor is verified, never the fix',
+      )
+      assert.deepEqual(
+        record.picker?.cheatScan,
+        { probeHiddenPaths: 0, verifierHiddenReads: 0 },
+        'the cascade verifier is scanned for hidden reads like any verifier',
+      )
+      assert.deepEqual(JSON.parse(await read(Picker.probes)) as number[], [0])
+      const gate = JSON.parse(await read(Picker.gate)) as Picker.Gate & { cascade?: true }
+      assert.equal(gate.decision, 'fork')
+      assert.equal(gate.cascade, true)
+      const turns = (await read('agent/turns.jsonl'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { request_id: string; session: string })
+      assert.deepEqual(
+        turns.map((turn) => turn.request_id).sort(),
+        ['attempt', 'attempt', Picker.requestId],
+        'the executor, one verifier and the fix each took one turn',
+      )
+      assert.ok(fixModels.some((request) => request.handoff))
+      assert.ok(
+        fixModels.every((request) => request.model === (request.handoff ? 'gpt-fix' : 'gpt-right')),
+        'the fix asks its own model and the executor the model of the agent: ' +
+          JSON.stringify(fixModels),
+      )
+      const first = codexInputs.find((input) =>
+        input.includes('Another agent already worked on this task in this sandbox'),
+      )!
+      assert.match(first, /Verdict of the check: FAIL, confidence 90/)
+      assert.match(first, /greeting.txt wrong/)
+      assert.ok(!first.includes('cell tools:'), 'the handoff carries no transcript of the executor')
+      const paths = (await read('agent/model-requests.jsonl'))
+        .trim()
+        .split('\n')
+        .map((line) => (JSON.parse(line) as { path: string }).path)
+      assert.ok(
+        paths.some((path) => path.startsWith('fix/')),
+        'the fix is metered under fix/',
+      )
+      assert.ok(paths.some((path) => path.startsWith(Picker.path)))
+      assert.ok(paths.some((path) => !path.startsWith('fix/') && !path.startsWith(Picker.path)))
+      const spent = JSON.parse(await read(Picker.usageRecord)) as Picker.Usage & {
+        cascade: Cascade.Usage
+      }
+      assert.equal(spent.verifierCalls, 1)
+      assert.equal(spent.cascade.escalated, true)
+      assert.equal(spent.cascade.handoff, 'continue')
+      assert.equal(spent.cascade.reason, 'verifier_fail')
+      assert.equal(spent.cascade.executorTimedOut, false)
+      assert.equal(spent.cascade.verifierUsd, spent.verifierUsd)
+      assert.ok(
+        Math.abs(spent.cascade.execUsd + spent.cascade.fixUsd - spent.branchUsd) < 1e-9,
+        'the executor and the fix share what the branches spent',
+      )
+      console.log(
+        scenario +
+          ': the verifier failed the executor, the fix on ' +
+          [...new Set(fixModels.filter((request) => request.handoff).map((r) => r.model))].join() +
+          ' went on in its sandbox and passed; usage ' +
+          JSON.stringify(spent.cascade),
+      )
       await pass()
       return
     }

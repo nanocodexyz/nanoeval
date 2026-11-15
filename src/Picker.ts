@@ -128,8 +128,23 @@ export type Usage = {
 
 export const path = 'verifier/'
 
-export function model(agent: { model: string; provider: string; verifierModel?: string }): string {
-  return agent.verifierModel ?? (agent.provider === 'claude' ? defaultModel : agent.model)
+export function model(agent: {
+  model: string
+  provider: string
+  verifierModel?: string
+  verifierProvider?: string
+}): string {
+  return (
+    agent.verifierModel ??
+    ((agent.verifierProvider ?? agent.provider) === 'claude' ? defaultModel : agent.model)
+  )
+}
+
+export function provider(agent: {
+  provider: string
+  verifierProvider?: 'claude' | 'codex'
+}): 'claude' | 'codex' {
+  return agent.verifierProvider ?? (agent.provider as 'claude' | 'codex')
 }
 
 export function session(name: string, index: number): string {

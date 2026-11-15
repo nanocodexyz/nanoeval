@@ -334,7 +334,16 @@ const usage = `nanoeval <command>
             brief_finish, fold_finish, low_effort_rounds, brief_final, lean_cells,
             escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens,
             persist_finish, skip_finish_check, late_finish_check_ms, result_effort,
-            stop_at_target, yield_floor_ms, yield_share.
+            stop_at_target, yield_floor_ms, yield_share, fix_provider, fix_model, fix_thinking,
+            verifier_provider, verifier_thinking, executor_share, verifier_share.
+            An agent with :branches=2:picker=verify_lazy that names :fix_provider=claude|codex
+            and :fix_model=MODEL runs a cascade: its own model works first, until
+            :executor_share=N percent of the agent time (50); the verifier, on
+            :verifier_provider and with :verifier_thinking where named, then checks it within
+            :verifier_share=N percent (10); anything but a confident pass has MODEL (with
+            :fix_thinking) go on in a live fork of the same sandbox, from a short handoff, and
+            that fork is graded (nano-cv=codex:MODEL:low:branches=2:picker=verify_lazy:
+            verifier_model=claude-haiku-5-5:fix_provider=claude:fix_model=claude-opus-5-5).
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
@@ -746,6 +755,12 @@ const model = { pattern: '[^:]+', value: 'MODEL' }
 
 const on = { pattern: 'on', value: 'on' }
 
+const percent = { pattern: '[0-9]+', value: '1..100' }
+
+const providers = { pattern: 'claude|codex', value: 'claude|codex' }
+
+const thinkings = { pattern: '[a-z]+', value: 'EFFORT' }
+
 const scopes = { pattern: 'return_once|session', value: 'return_once|session' }
 
 const efforts = { pattern: Config.efforts.join('|'), value: Config.efforts.join('|') }
@@ -884,6 +899,48 @@ const agentOptions: readonly AgentOption[] = [
     name: 'yield_share',
     read: (text) => ({ yieldShare: Number(text) }),
     write: (agent) => agent.yieldShare,
+  },
+  {
+    ...providers,
+    name: 'fix_provider',
+    read: (text) => ({ fixProvider: text as 'claude' | 'codex' }),
+    write: (agent) => agent.fixProvider,
+  },
+  {
+    ...model,
+    name: 'fix_model',
+    read: (text) => ({ fixModel: text }),
+    write: (agent) => agent.fixModel,
+  },
+  {
+    ...thinkings,
+    name: 'fix_thinking',
+    read: (text) => ({ fixThinking: text }),
+    write: (agent) => agent.fixThinking,
+  },
+  {
+    ...providers,
+    name: 'verifier_provider',
+    read: (text) => ({ verifierProvider: text as 'claude' | 'codex' }),
+    write: (agent) => agent.verifierProvider,
+  },
+  {
+    ...thinkings,
+    name: 'verifier_thinking',
+    read: (text) => ({ verifierThinking: text }),
+    write: (agent) => agent.verifierThinking,
+  },
+  {
+    ...percent,
+    name: 'executor_share',
+    read: (text) => ({ executorShare: Number(text) }),
+    write: (agent) => agent.executorShare,
+  },
+  {
+    ...percent,
+    name: 'verifier_share',
+    read: (text) => ({ verifierShare: Number(text) }),
+    write: (agent) => agent.verifierShare,
   },
 ]
 
@@ -3438,6 +3495,12 @@ async function main(
                     ? Installed.provider(agent.provider, agent.api)
                     : agent.provider,
                 },
+                ...(agent.fixProvider
+                  ? [{ name: 'the fix of ' + agent.id, provider: agent.fixProvider }]
+                  : []),
+                ...(agent.verifierProvider
+                  ? [{ name: 'the verifier of ' + agent.id, provider: agent.verifierProvider }]
+                  : []),
               ],
         ),
         ...(config.judge ? [{ name: 'the judge', provider: config.judge.provider }] : []),

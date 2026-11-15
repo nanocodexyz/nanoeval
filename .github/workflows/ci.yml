@@ -191,6 +191,11 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: dir
           NANOEVAL_E2E_SCENARIO: picker-lazy
+      - name: End to end, directory slots, a cascade whose verifier fails the executor hands its sandbox to a fix on another model
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: cascade
       - name: End to end, directory slots, an agent that takes a preflight whose facts reach its first prompt
         run: npm run e2e
         env:

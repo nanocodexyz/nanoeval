@@ -7812,7 +7812,7 @@ A directory slot has no image. Its verifier root is an empty directory, an artif
 - In the e2e lanes `picker` and `picker-lazy`, every verifier overwrites the graded file in its probe slot, and the kept branch still passes, which proves probes cannot change what is graded. The lanes also assert that the cheat scan is 0 and 0, and they run on the krun and ns backends too, where those can run.
 
 **Checked.** Hosted Hand, 2026-11-15, on main `16c5e5d`:
-- `npm test`, `npm run check:types` and `vp check`.
+- `npm test` (607 tests, 602 pass, 5 skipped, 0 fail), `npm run check:types` and `vp check`.
 - Dir e2e lanes `branches`, `lazy`, `lazy-pass`, `picker` and `picker-lazy`.
 - The fresh-clone ci.yml result for this head is recorded in the entry after this one.
 - The krun and ns lanes skip on the hosted Hand (no KVM). They need a KVM box.
@@ -7825,3 +7825,24 @@ A directory slot has no image. Its verifier root is an empty directory, an artif
 - Every verifier first counts the `.vmark-*` files in its workdir, then leaves one of its own. The lanes assert that every verifier counted 0. Three verifiers sharing one slot, or one verifier reaching another's slot, would count at least 1. The check holds on every backend.
 - The `pwd` check stays as an extra assertion on directory slots.
 - Unchanged, on every backend: `agent/probes.json` lists each branch once, the cheat scan is 0 and 0, and the kept branch passes after every verifier vandalised the graded file in its probe slot.
+
+## 2026-11-15: a cascade hands the sandbox of a cheap executor to a stronger fix when the verifier does not pass it
+
+**Problem.** `picker=verify_lazy` forks two more branches of the same model when its verifier does not pass the trunk. A cheaper arm would run a cheap model first and spend a stronger one only where the verifier says the work is not done, and the stronger one would start from the sandbox the cheap one left, not from scratch.
+
+**Behavior.** Opt-in agent keys, after `:yield_share=N`, in this order: `:fix_provider=claude|codex`, `:fix_model=MODEL`, `:fix_thinking=EFFORT`, `:verifier_provider=claude|codex`, `:verifier_thinking=EFFORT`, `:executor_share=1..100`, `:verifier_share=1..100` (`fixProvider`, `fixModel`, `fixThinking`, `verifierProvider`, `verifierThinking`, `executorShare`, `verifierShare` in a run configuration). An agent without them runs as before: every new branch of `worker/Run.ts` depends on `fixModel`, except the verifier's provider and thinking, which fall back to the agent's.
+- A `fixModel` needs `picker=verify_lazy`, `branches=2` and a `fixProvider`. `fixProvider` and `fixThinking` need a `fixModel`; `verifierProvider` and `verifierThinking` need a picker; a share needs a `fixModel`, and `executorShare + verifierShare` must stay below 100. A `verifierProvider` other than the agent's needs a `verifierModel`, since the default verifier model of a codex agent is its own model.
+- The executor is branch 0 on the agent's own provider, model and thinking. Its turn carries a deadline at `executorShare` percent of the agent time (50 by default), and the Worker cancels it there and records it as `timeout`, which the gate reads as `unverified`.
+- The verifier is the verify_lazy verifier, in its probe slot, unchanged except that its provider is `verifierProvider` (else the agent's), its model `Picker.model` (now taking the verifier's provider into account), its thinking `verifierThinking` (else the agent's), its payer that of its provider, and its limit the lesser of the verifier limit and `verifierShare` percent of the agent time (10 by default). `Picker.forkReason` and the 70 confidence threshold decide keep or fork as before. A kept executor is graded as it is.
+- On a fork, branch 1 is a live fork of the executor's slot, as for verify_lazy. Its session's first turn goes to `fixProvider` with `fixModel` and `fixThinking`; a nanocode-ts session takes its provider and model from its first turn, and the hand and the runner do not depend on the provider, so no slot or runner code changed. The prompt is `Cascade.handoff`: the instruction, then a note that another agent worked in this sandbox and was found not done, with the verifier's verdict, confidence and the last 3,000 characters of its message, and no transcript. The executor's escalation and refusal-fallback options do not go with the fix's turn.
+- After the fork, branch 1 is graded when it completed, or timed out after it called a tool; else branch 0 (`Cascade.pick`). Branch 1 is never verified, and `picker.evidence` is `cascade`.
+- Model requests of a session with branch 1 or above in a cascade are metered under `fix/` (the branch number of `Proxy.session`), and `served()` prices them with `fixModel`.
+- `agent/gate.json` adds `cascade: true`. `agent/picker-usage.json` keeps `branchUsd`, `verifierCalls` and `verifierUsd` as written without a cascade and adds `cascade`: `execUsd`, `verifierUsd`, `fixUsd`, `escalated`, `handoff: "continue"`, `reason` and `executorTimedOut`. `execUsd + fixUsd = branchUsd`.
+- The cheat scan of probe slots and verifier calls covers the cascade verifier unchanged: it is the same session, request id and probe slot.
+
+**Checked.** Linux dev machine, 2026-11-15, on `099ad72`:
+- `NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=cascade npm run e2e`: passed. The verifier failed the executor (`verifier_fail`), the fix on `gpt-fix` got the handoff with the verdict and no transcript, finished in place and passed; branch 1 was graded, only branch 0 was probed, the cheat scan was 0 and 0, and `fix/`, `verifier/` and unprefixed requests were metered.
+- `picker` and `picker-lazy`: passed, unchanged.
+- `test/Cascade.test.ts` (the keys' round trip and refusals, the deadline split, the stage of each branch, the handoff, the pick and the usage record), `npm test` (607 tests, 602 pass, 5 skipped, 0 fail), `npm run check:types` and `vp check`.
+
+**Not verified.** A real model, an executor cancelled at its share of the time, a fix on another provider than the executor's, and a live fork of a krun or ns slot (no KVM here).
