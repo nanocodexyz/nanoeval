@@ -448,7 +448,7 @@ function responses(
       JSON.stringify(
         '[ "$(cat greeting.txt)" = \'hello from nanoeval\' ] && echo vcheck-$((40 + 2))-ok || echo vcheck-$((40 + 2))-bad',
       ) +
-      ' }); text(String(at.output).trim() + " " + JSON.stringify(result) + " cell tools: " + JSON.stringify(ALL_TOOLS.map((tool) => tool.name)))'
+      ' }); await tools.exec_command({ cmd: "printf vandal > greeting.txt" }); text(String(at.output).trim() + " " + JSON.stringify(result) + " cell tools: " + JSON.stringify(ALL_TOOLS.map((tool) => tool.name)))'
     : checking !== -1 && lazying
       ? 'const at = await tools.exec_command({ cmd: "pwd" }); const masked = String(at.output).includes("-b1/"); await tools.exec_command({ cmd: ' +
         JSON.stringify(
@@ -1822,7 +1822,7 @@ async function main(): Promise<void> {
       throw new Error('the ' + scenario + ' scenario runs on directory slots, without the gateway')
     if ((branching || preflighted) && gateway)
       throw new Error('the ' + scenario + ' scenario runs without the gateway')
-    if ((lazying || picking) && backend !== 'dir')
+    if (lazying && backend !== 'dir')
       throw new Error('the ' + scenario + ' scenario runs on directory slots')
     if (midturn && (backend !== 'dir' || !midturnKills[killAt]))
       throw new Error(
@@ -4649,13 +4649,23 @@ async function main(): Promise<void> {
     if (picking) {
       const detail = details[0]!
       assert.equal(details.length, 1)
-      assert.equal(detail['attempt'].outcome, 'passed', JSON.stringify(detail['attempt'].failure))
+      assert.equal(
+        detail['attempt'].outcome,
+        'passed',
+        'every verifier overwrote greeting.txt in its probe slot, and the kept branch still passed: ' +
+          JSON.stringify(detail['attempt'].failure),
+      )
       const read = (name: string) => api.artifact(created.id, detail['attempt'].id, name)
       const artifacts = detail['artifacts'] as string[]
       const record = JSON.parse(await read('agent/branches.json')) as Branch.Record
       const picked = record.picker
       assert.ok(picked, 'the record of the branches says how the verifier picked')
       assert.equal(picked.model, 'gpt-right', 'a codex verifier runs the model of the agent')
+      assert.deepEqual(
+        picked.cheatScan,
+        { probeHiddenPaths: 0, verifierHiddenReads: 0 },
+        'no probe slot holds the hidden tests, and no verifier read a path under them',
+      )
       assert.deepEqual(
         picked.verifications.map((verification) => verification?.verdict),
         ['fail', 'fail', 'pass'],
@@ -4677,11 +4687,17 @@ async function main(): Promise<void> {
         )
         assert.ok(artifacts.includes(Branch.forkRecord))
       } else assert.equal(record.fork, undefined)
-      assert.equal(
-        new Set(verifierPrompts.map((prompt) => prompt.pwd)).size,
-        3,
-        'each branch was verified in its own probe slot',
+      assert.deepEqual(
+        JSON.parse(await read(Picker.probes)) as number[],
+        [0, 1, 2],
+        'each branch was verified in a probe slot forked live from it, once',
       )
+      if (backend === 'dir')
+        assert.equal(
+          new Set(verifierPrompts.map((prompt) => prompt.pwd)).size,
+          3,
+          'each branch was verified in its own probe slot',
+        )
       assert.ok(
         verifierPrompts.every((prompt) => /-v[0-2]\//.test(prompt.pwd + '/')),
         'every verifier probed in its own probe slot: ' + JSON.stringify(verifierPrompts),

@@ -143,3 +143,23 @@ test('a picker needs branches, and verifier_model needs a picker', () => {
   assert.equal(Picker.model(agent!), 'claude-sonnet-5-5')
   assert.equal(Picker.model({ model: 'm', provider: 'claude' }), Picker.defaultModel)
 })
+
+test('the cheat scan finds a verifier call that reads a path under the hidden tests or solution', () => {
+  const call = (id: string, tool: string, args: { [key: string]: unknown }) => ({
+    event: { event: { payload: { arguments: args, call_id: id, tool }, type: 'tool.call' } },
+    request_id: Picker.requestId,
+  })
+  const events = [
+    call('1', 'exec_command', { cmd: 'cat /tests/test.sh' }),
+    call('2', 'exec_command', { cmd: 'ls /app/tests && pytest /app/tests' }),
+    call('3', 'Read', { file_path: '/solution/solve.sh' }),
+    call('4', 'exec_command', { cmd: 'python3 -c "open(\'/oracle\')"' }),
+    call('5', 'exec_command', { cmd: 'echo my-tests/solution' }),
+  ] as never
+  const found = Picker.hiddenReads(events, { requestId: Picker.requestId })
+  assert.deepEqual(found, [
+    'cat /tests/test.sh',
+    '/solution/solve.sh',
+    'python3 -c "open(\'/oracle\')"',
+  ])
+})

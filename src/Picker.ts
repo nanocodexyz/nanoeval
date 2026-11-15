@@ -17,6 +17,77 @@ export const usageRecord = 'agent/picker-usage.json'
 
 export const grades = 'agent/branch-grades.json'
 
+export const gate = 'agent/gate.json'
+
+export const probeScan = 'agent/probe-scan.json'
+
+export type ProbeScan = { [index: string]: string[] }
+
+const hidden = /(?:^|[\s'"`=:(<>|;&,])\/(?:tests|solution|oracle)(?:\/|$|[\s'"`;|&)>,])/
+
+export function hiddenReads(
+  events: readonly Atif.SessionEvent[],
+  options: { requestId: string },
+): string[] {
+  const found: string[] = []
+  for (const entry of events) {
+    if (entry.request_id !== options.requestId) continue
+    const event = entry.event.event ?? entry.event.update?.event
+    if (event?.type !== 'tool.call') continue
+    const input = Branch.argumentsOf(event.payload['arguments'])
+    const said = [
+      ...Object.values(input).filter((value): value is string => typeof value === 'string'),
+      JSON.stringify(event.payload['arguments'] ?? ''),
+    ]
+    const hit = said.find((value) => hidden.test(value))
+    if (hit !== undefined) found.push(hit.slice(0, 300))
+  }
+  return found
+}
+
+export type GateVerifier = {
+  confidence: number
+  error?: string
+  evidence: string
+  message: string
+  model: string
+  output?: string
+  passConfidence: number
+  usd: number
+  verdict: Verdict
+}
+
+export type Gate = {
+  at: number
+  decision: 'fork' | 'keep'
+  reason?: Branch.Reason
+  verifier: GateVerifier | null
+}
+
+export function gateOf(
+  verification: Verification | undefined,
+  input: { at: number; model: string; reason: Branch.Reason | undefined },
+): Gate {
+  return {
+    at: input.at,
+    decision: input.reason ? 'fork' : 'keep',
+    ...(input.reason ? { reason: input.reason } : {}),
+    verifier: verification
+      ? {
+          confidence: verification.confidence,
+          ...(verification.error ? { error: verification.error } : {}),
+          evidence: 'independent verifier in a probe slot, from the instruction and the branch log',
+          message: message(0),
+          model: input.model,
+          ...(verification.output ? { output: verification.output } : {}),
+          passConfidence,
+          usd: verification.usd,
+          verdict: verification.verdict,
+        }
+      : null,
+  }
+}
+
 export const graceSec = 900
 
 export const passConfidence = 70
@@ -30,6 +101,7 @@ export type Verdict = 'fail' | 'pass' | 'unsure'
 export type Verification = {
   confidence: number
   error?: string
+  hiddenReads?: string[]
   output?: string
   usage?: Atif.Usage
   usd: number
@@ -42,6 +114,7 @@ export type Evidence = string
 
 export type Record = {
   agreement: number[]
+  cheatScan: { probeHiddenPaths: number; verifierHiddenReads: number }
   evidence: Evidence
   model: string
   verifications: (Verification | null)[]

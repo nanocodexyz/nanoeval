@@ -69,7 +69,7 @@ export function valid(count: unknown): count is number {
 export const forkRecord = 'agent/fork.json'
 export const lazyShare = 0.6
 
-export type Fork = { at: number; reason: Reason }
+export type Fork = { at: number; reason: Reason; verifier?: Picker.GateVerifier }
 
 export type Reason = 'time' | 'unverified' | 'verifier_fail' | 'verifier_unsure'
 

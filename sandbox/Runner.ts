@@ -1435,6 +1435,15 @@ async function attend(
             )
           return pending(item)
         }
+        const scan: Picker.ProbeScan = {}
+        for (const index of probing)
+          scan[index] = (
+            (await text(Path.join(home, 'slots', Picker.slot(item.row.slot, index), 'hidden'))) ??
+            ''
+          )
+            .split('\n')
+            .filter(Boolean)
+        await upload(item, Picker.probeScan, JSON.stringify(scan, null, 2) + '\n')
         for (const index of probing) {
           const session = await rowCall<Protocol.Session>(item, 'session', {
             branch: index,

@@ -3166,9 +3166,12 @@ export class Run extends DurableObject<Env> {
       error?: string,
     ): Promise<{ verification: Picker.Verification }> => {
       let usage: Atif.Usage | undefined
+      let hiddenReads: string[] = []
       if (report)
         try {
-          usage = Atif.usage(await Harness.events(this.env, name, Picker.requestId))
+          const events = await Harness.events(this.env, name, Picker.requestId)
+          usage = Atif.usage(events)
+          hiddenReads = Picker.hiddenReads(events, { requestId: Picker.requestId })
         } catch (failure) {
           if (!(failure instanceof Harness.LostError)) throw failure
         }
@@ -3180,6 +3183,7 @@ export class Run extends DurableObject<Env> {
       const verification: Picker.Verification = {
         ...parsed,
         ...(error ? { error } : {}),
+        hiddenReads,
         ...(usage ? { usage } : {}),
         usd: usage?.costUsd ?? 0,
       }
@@ -3697,8 +3701,17 @@ export class Run extends DurableObject<Env> {
                 now,
                 startedAt,
               })
+          const gate =
+            agent.picker && trunk !== undefined && (reason || !verifying)
+              ? Picker.gateOf(verifications[0], { at: now, model: Picker.model(agent), reason })
+              : undefined
+          if (gate) this.putArtifact(row.id, Picker.gate, JSON.stringify(gate, null, 2) + '\n')
           if (reason) {
-            const record: Branch.Fork = { at: now, reason }
+            const record: Branch.Fork = {
+              at: now,
+              reason,
+              ...(gate?.verifier ? { verifier: gate.verifier } : {}),
+            }
             this.putArtifact(row.id, Branch.forkRecord, JSON.stringify(record, null, 2) + '\n')
             return { agent: { state: 'fork' } }
           }
@@ -3736,8 +3749,18 @@ export class Run extends DurableObject<Env> {
       if (agent.picker) {
         const choice = Picker.choose(branches, verifications)
         chosen ??= choice.chosen
+        const scan = this.textArtifact(current.id, Picker.probeScan)
         picked = {
           agreement: choice.agreement,
+          cheatScan: {
+            probeHiddenPaths: scan
+              ? Object.values(JSON.parse(scan) as Picker.ProbeScan).flat().length
+              : 0,
+            verifierHiddenReads: verifications.reduce(
+              (total, verification) => total + (verification?.hiddenReads?.length ?? 0),
+              0,
+            ),
+          },
           evidence: chosen === choice.chosen ? choice.evidence : 'verifier',
           model: Picker.model(agent),
           verifications: verifications.map((verification) => verification ?? null),
