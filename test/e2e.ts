@@ -249,6 +249,7 @@ const longCells: { exec: string | undefined; received: string }[] = []
 const codexCells: (string[] | undefined)[] = []
 const codexExecs: (string | undefined)[] = []
 const codexInputs: string[] = []
+const jobMentions: string[] = []
 const budgetLog: { cost: number; search: boolean }[] = []
 let budgetFlying = 0
 let budgetPeak = 0
@@ -1153,6 +1154,8 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
           budgetPeak = Math.max(budgetPeak, ++budgetFlying)
           await new Promise((resolve) => setTimeout(resolve, 1000)).finally(() => budgetFlying--)
         }
+        if (!body.fake_cli && JSON.stringify(body).includes('job_start'))
+          jobMentions.push(codex ? 'codex' : 'claude')
         const reply = body.fake_cli
           ? fake(codex && !chat ? '/v1/responses' : request.url!, body)
           : budgeted || searching
@@ -1322,6 +1325,8 @@ async function main(): Promise<void> {
             return undefined
           }
           if (lapse && ++lapseAnswers === 4) return undefined
+          if (!body['fake_cli'] && JSON.stringify(body).includes('job_start'))
+            jobMentions.push(path === '/v1/responses' ? 'codex' : 'claude')
           return body['fake_cli']
             ? fake(path, body, cost)
             : path === '/v1/responses'
@@ -1753,6 +1758,12 @@ async function main(): Promise<void> {
                         id: 'direct',
                         model: 'gpt-right',
                         orchestration: 'direct' as const,
+                        provider: 'codex',
+                      },
+                      {
+                        id: 'jobs',
+                        model: 'gpt-right',
+                        orchestration: 'jobs' as const,
                         provider: 'codex',
                       },
                     ]
@@ -2697,6 +2708,11 @@ async function main(): Promise<void> {
           firstByteMs +
           ' ms late',
       )
+    assert.deepEqual(
+      jobMentions,
+      direct ? ['codex', 'codex'] : [],
+      'the job tools reach the model only in the two requests of the codex-jobs session, never a codex or claude one',
+    )
     if (codexExecs.length > 0) {
       const claudeTools = ['Bash', 'Edit', 'Read', 'TaskOutput', 'TaskStop', 'Write']
       assert.ok(
@@ -3935,7 +3951,13 @@ async function main(): Promise<void> {
       for (const detail of details) {
         const agent = detail['result'].agent.id as string
         assert.equal(detail['attempt'].outcome, 'passed', JSON.stringify(detail['attempt'].failure))
-        const called = (await api.artifact(created.id, detail['attempt'].id, 'agent/events.jsonl'))
+        const events = await api.artifact(created.id, detail['attempt'].id, 'agent/events.jsonl')
+        assert.equal(
+          events.includes('job_start'),
+          agent === 'jobs',
+          'the cells of the ' + agent + ' agent list the job tools only for codex-jobs',
+        )
+        const called = events
           .trim()
           .split('\n')
           .map((line) => JSON.parse(line).event?.event)
@@ -3949,8 +3971,8 @@ async function main(): Promise<void> {
       }
       assert.deepEqual(
         [names('exec').length, names('wait').length, names('exec_command').length],
-        [2, 2, 2],
-        'a session with direct tools is given exec_command and neither exec nor wait, and the session beside it exec and wait',
+        [4, 4, 2],
+        'a session with direct tools is given exec_command and neither exec nor wait, and the two Code Mode sessions beside it exec and wait',
       )
       assert.ok(
         names('exec_command').every((request) => !request.tools.includes('exec')),
@@ -3959,6 +3981,19 @@ async function main(): Promise<void> {
       assert.ok(
         names('exec').every((request) => request.cells.includes('exec_command')),
         'a session in Code Mode is told with exec which tools its cells call',
+      )
+      const jobs = ['job_start', 'job_wait', 'job_kill']
+      assert.equal(
+        names('exec').filter((request) => jobs.every((name) => request.cells.includes(name)))
+          .length,
+        2,
+        'the exec tool of the codex-jobs session declares job_start, job_wait and job_kill, and that of the codex session none',
+      )
+      assert.deepEqual(
+        codexCells.map((cell) => jobs.filter((name) => cell?.includes(name)).length).sort(),
+        [0, 3],
+        'ALL_TOOLS of a codex-jobs cell holds the job tools and that of a codex cell none: ' +
+          JSON.stringify(codexCells),
       )
       assert.ok(
         directRequests.every(
