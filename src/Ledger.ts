@@ -150,8 +150,8 @@ export function queue(sql: Sql.Sql, secOf?: (task: string) => number): Attempt[]
     .map((row, index) => ({ index, row }))
     .sort(
       (left, right) =>
-        left.row.n - right.row.n ||
         seconds.get(right.row.task)! - seconds.get(left.row.task)! ||
+        left.row.n - right.row.n ||
         left.index - right.index,
     )
     .map((entry) => entry.row)

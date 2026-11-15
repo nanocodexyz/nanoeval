@@ -6001,3 +6001,26 @@ From fresh clones of this change, before this entry had its counts, which are th
 **What changed.** The stub holds a run while a file `held` of its lab exists, when its scenario names the revision under `held`. The test writes the file before it starts the watcher and removes it once it has read that the second watcher waits and that no line was recorded. The run then ends by itself, as before.
 
 **Checked.** On that machine, by a user who is not root. The five tests of the file pass before and after, in 47 s each time. With the second watcher started 3 s late by hand, the test as it was failed 2 of 2 with the output above, and as it is passes 2 of 2. With a watcher that takes the job of a run that still runs, by hand, the test as it is fails 1 of 1 at `still runs as process N`.
+
+## 2026-11-15: every attempt of a longer task is claimed before any attempt of a shorter one
+
+**The defect.** Rows were granted by attempt number, then longest worst case. With three attempts a task, the third attempt of the longest row waited for two whole waves of every other task, and the last row to end ends the run. One oracle arm of Terminal-Bench 2.1, 89 tasks and three attempts each, 267 rows, 28 krun slots: the three waves began 0 s, 155 s and 466 s after the first claim, the third attempt of the longest row (1,806 s, a solution that runs to its agent timeout) was claimed after 594 s, and the run took 2,399 s.
+
+**What changed.** `Ledger.queue` orders the unclaimed rows by longest worst case first, then by attempt number, then by id. Every attempt of the task with the longest timeouts is offered before any attempt of a task with shorter ones, and tasks with the same timeouts still get all their first attempts before a second one. The share of runners that begin with a whole-machine row is unchanged.
+
+**Measured.** Before and after on the same arm: the oracle on all 89 tasks of Terminal-Bench 2.1, three attempts, one run each side, 267 rows a run, one bare-metal machine with KVM (24 cores, 48 hardware threads), one runner with 28 krun slots pinned to 28 hardware threads, a local Worker. Before is main at ac039b7, after is that commit with this change to the queue and nothing else.
+
+| | Before | After |
+| --- | ---: | ---: |
+| First claim to last verdict | 2,399 s | 2,203 s |
+| The three attempts of the longest row were claimed after | 33 s, 274 s, 594 s | 367 s, 389 s, 395 s |
+| Rows passed, failed, errored | 247, 13, 7 | 247, 13, 7 |
+| Slot-seconds of the 267 rows | 31,031 | 32,702 |
+
+The run ended 197 s sooner, 8.2 % of the run before. The rows whose outcome differs between the two runs: caffe-cifar-10 #2 (failed before, passed after); portfolio-optimization #3 (passed before, failed after); torch-tensor-parallelism #1 (errored before, passed after); torch-tensor-parallelism #2 (passed before, errored after).
+
+**Simulated.** A slot model with the durations each task had before (the mean of its three attempts), no contention between slots: at 28 slots the order before ends after 2,397 s and the order after at 2,204 s, and with the durations of two real arms of the same benchmark, one attempt a task taken three times, the run that needed 25 slots to end within an hour needs 20, and the other needs 16 either way and ends 4 to 12 % sooner from 20 slots up. The order follows the timeouts a task declares, not how long it ran: claiming the longest measured row first would end the same arms at the longest row itself.
+
+**Losses.** A run that ends early, by its model budget or by a cancel, has no longer given every task one attempt before any task its second: the tasks with the longest timeouts have all their attempts and the shortest may have none. The three attempts of a task now run at the same time, on one machine when one runner has the slots: their disk is unpacked once as before, and what they build or download they build or download three times at once (the three attempts of the longest build took 1,497, 1,483, 1,451 s side by side, against 1,556, 1,447, 1,422 s when they ran apart). The first verdicts come later, since the rows with the longest timeouts go first in all three attempts: after one minute the run before had ended 19 rows and after five minutes 98, the run after 12 and 56.
+
+**Checked.** The unit test of the queue order. On the machine of the measurement, from a fresh clone of the change: the directory lanes with one runner, two attached runners, the free disk floor, memory packing, a standing runner with the rows of two runs, and the two model budget lanes, and the krun lanes with a model, the oracle, the free disk floor, memory packing and two attached runners, 12 of 12 passed. `npm test`: 423 tests, 418 passed, 5 skipped. Not run: the other lanes of the workflow at this change, and a run with a model.

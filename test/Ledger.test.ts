@@ -432,7 +432,7 @@ test('as many runners begin with a row that needs a whole machine as the share o
   )
 })
 
-test('rows are claimed longest timeouts first within an attempt number, and only those the runner accepts', () => {
+test('rows are claimed longest timeouts first, every attempt of a longer task before a shorter one, and only those the runner accepts', () => {
   const sql = open([
     { agent: 'agent', n: 1, task: 'small' },
     { agent: 'agent', n: 1, task: 'big' },
@@ -446,7 +446,7 @@ test('rows are claimed longest timeouts first within an attempt number, and only
   )
   assert.deepEqual(
     Ledger.queue(sql, (task) => seconds[task]!).map((row) => row.id),
-    ['a00004', 'a00001', 'a00002', 'a00003'],
+    ['a00004', 'a00003', 'a00001', 'a00002'],
   )
   const claimed = Ledger.claim(sql, {
     accepts: (row) => row.task !== 'large',
