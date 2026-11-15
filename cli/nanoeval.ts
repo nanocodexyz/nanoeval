@@ -35,6 +35,7 @@ import * as Retry from '../src/Retry.ts'
 import * as Route from '../src/Route.ts'
 import type * as Runs from '../src/Runs.ts'
 import * as Sandbox from '../src/Sandbox.ts'
+import * as Scorecard from '../src/Scorecard.ts'
 import * as Slot from '../src/Slot.ts'
 import * as Subset from '../src/Subset.ts'
 import * as Task from '../src/Task.ts'
@@ -46,6 +47,7 @@ import * as Login from './Login.ts'
 import * as Plan from './Plan.ts'
 import * as Revision from './Revision.ts'
 import * as Runtime from './Runtime.ts'
+import * as Command from './Scorecard.ts'
 import * as Watch from './Watch.ts'
 
 const usage = `nanoeval <command>
@@ -541,6 +543,27 @@ const usage = `nanoeval <command>
             run made with --agent-max-sec says its agent time limit, and one made with
             --verifier-max-sec its verifier time limit and the rows whose verifier that
             limit ended, which are in neither class of errors.
+  scorecard --url URL --token T --run RUN [--run RUN]... --ref ARM [--exclude-tasks FILE]
+            [--seed N] [--draws N] --out DIR
+            Write DIR/scorecard.json and DIR/scorecard.html, one page with no outside
+            asset, from the stored rows of the runs: the config and the results of each,
+            and nothing else. The page holds each run with its eval, builds and attempts,
+            the whole spec of every arm, and the matched set: the task#attempts that have
+            a verdict (passed, failed or errored) in every arm. A cancelled row and a row
+            that no runner claimed are not attempts, and each arm counts its rows outside
+            the set apart. Over the set an arm has its outcomes, pass rate, USD an attempt
+            and a pass at the cost the Worker recorded, output tokens and model calls an
+            attempt, and against the arm that --ref names the difference of the pass rates
+            and the ratio of USD a pass. Pass rate, difference, USD a pass and ratio carry
+            a 95 % interval from a task-clustered bootstrap: a draw resamples the tasks
+            with replacement, the same tasks for every arm, and the attempts within each
+            task. --draws is the number of draws, 2000 unless named, and --seed seeds the
+            generator, 1 unless named: the same rows, seed and draws write the same files.
+            --exclude-tasks names a file with one task name a line, whose rows are in no
+            count; the page lists them with the digest of the file. Arms of several runs
+            are compared when the runs share one eval digest, and an arm id that several
+            runs hold is named ID@RUN. A run of another eval digest and an empty matched
+            set are errors.
   revision  [--nanocode REV|DIR|pinned] [--nanocode-ts REV|DIR|pinned] [--sdk REV|DIR|pinned]
             [--sdk-fallback pinned] [--lab DIR] [--hand-profile release]
             [--nanocode-repository URL|DIR] [--nanocode-ts-repository URL|DIR] [--build-only]
@@ -1981,11 +2004,13 @@ async function main(
       days: { type: 'string' },
       detach: { default: false, type: 'boolean' },
       disks: { type: 'string' },
+      draws: { type: 'string' },
       'dry-run': { default: false, type: 'boolean' },
       e2b: { type: 'string' },
       'ends-in-sec': { type: 'string' },
       errored: { default: false, type: 'boolean' },
       eval: { type: 'string' },
+      'exclude-tasks': { type: 'string' },
       'exec-timeout-ms': { default: '600000', type: 'string' },
       help: { default: false, short: 'h', type: 'boolean' },
       'fail-on': { multiple: true, type: 'string' },
@@ -2029,6 +2054,7 @@ async function main(
       provider: { default: 'local', type: 'string' },
       'public-url': { type: 'string' },
       'pull-wait': { type: 'string' },
+      ref: { type: 'string' },
       'relay-url-file': { type: 'string' },
       publish: { default: false, type: 'boolean' },
       pushed: { type: 'string' },
@@ -2053,6 +2079,7 @@ async function main(
       'sandbox-timeout-sec': { type: 'string' },
       sandboxes: { default: '1', type: 'string' },
       'secret-command': { type: 'string' },
+      seed: { type: 'string' },
       'setup-sec': { default: '600', type: 'string' },
       'slot-env': { type: 'string' },
       standing: { default: false, type: 'boolean' },
@@ -2654,6 +2681,7 @@ async function main(
       'runner',
       'runs',
       'sandbox',
+      'scorecard',
       'status',
       'timeline',
       'version',
@@ -2718,6 +2746,56 @@ async function main(
     if (action === 'complete') await api.planComplete(await code())
     if (action === 'sign-out') await api.planSignOut()
     console.log(planSummary((await api.plans()).claude))
+    return
+  }
+
+  if (command === 'scorecard') {
+    const named = tokens.flatMap((token) =>
+      token.kind === 'option' && token.name === 'run' && token.value !== undefined
+        ? [token.value]
+        : [],
+    )
+    if (!named.length) throw new Error('--run is required')
+    const reference = required(values.ref, 'ref')
+    const out = required(values.out, 'out')
+    const draws = Command.whole(values.draws, 'draws')
+    const seed = Command.whole(values.seed, 'seed')
+    const ids = await Promise.all(named.map((name) => runId(api, name)))
+    const runs = await Promise.all(
+      ids.map(async (id): Promise<Scorecard.Run> => {
+        const [config, results] = await Promise.all([api.config(id), api.results(id)])
+        return {
+          agents: config.agents,
+          attempts: config.attempts,
+          eval: results.eval,
+          id,
+          name: results.name,
+          nanocode: results.nanocode,
+          results: results.attempts,
+          state: results.state,
+        }
+      }),
+    )
+    const card = Scorecard.build(runs, {
+      command: Command.command({
+        draws,
+        exclude: values['exclude-tasks'],
+        out,
+        reference,
+        runs: ids,
+        seed,
+        url: values.url,
+      }),
+      commit: checkout(),
+      draws,
+      exclude: values['exclude-tasks']
+        ? await Command.exclusion(values['exclude-tasks'])
+        : undefined,
+      reference,
+      seed,
+    })
+    const files = await Command.write(card, out)
+    process.stdout.write(Scorecard.text(card) + 'scorecard written to ' + files.html + '\n')
     return
   }
 
