@@ -171,6 +171,11 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: dir
           NANOEVAL_E2E_SCENARIO: branches
+      - name: End to end, directory slots, an agent that takes a preflight whose facts reach its first prompt
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: preflight
       - name: End to end, directory slots, a session that starts a subagent
         run: npm run e2e
         env:
@@ -539,6 +544,14 @@ jobs:
         env:
           NANOEVAL_E2E_MODEL: installed
           NANOEVAL_E2E_SCENARIO: closed
+      - name: End to end, krun slots, an agent that branches into three sessions on forked microVMs, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: branches
+      - name: End to end, krun slots, an agent that takes a preflight in its microVM, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: preflight
       - name: End to end, krun slots, verifier cache, skipped where krun cannot run
         run: npm run e2e
         env:
@@ -693,6 +706,16 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: ns
           NANOEVAL_E2E_SCENARIO: network
+      - name: End to end, ns slots, an agent that branches into three sessions on forked slots, skipped where the test is not root and no guest can boot
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: ns
+          NANOEVAL_E2E_SCENARIO: branches
+      - name: End to end, ns slots, an agent that takes a preflight in its slot, skipped where the test is not root and no guest can boot
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: ns
+          NANOEVAL_E2E_SCENARIO: preflight
       - name: End to end, ns slots, verifier cache, skipped where the test is not root and no guest can boot
         run: npm run e2e
         env:

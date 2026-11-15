@@ -88,10 +88,13 @@ const capped = scenario === 'capped'
 const direct = scenario === 'direct'
 const branching = scenario === 'branches'
 const branchRequests: { check: boolean; done: boolean }[] = []
+const branchSessions = new Map<string, number>()
 const subagent = scenario === 'subagent'
 const subagentKills: Record<string, string> = { child: 'step-child', parent: 'step-parent' }
 const subagentKill = subagent ? subagentKills[killAt] : undefined
 const subagentTask = 'SUBAGENT-TASK: write greeting.txt as the instruction of the task says.'
+const preflighted = scenario === 'preflight'
+const preflightInputs: string[] = []
 const refusedPassing = scenario === 'refused'
 const spent = scenario === 'spent'
 const funded = scenario === 'funded'
@@ -381,6 +384,7 @@ function responses(
   body: {
     input?: unknown
     model?: string
+    prompt_cache_key?: string
     tools?: { description?: string; name?: string }[]
   },
   cost?: number,
@@ -388,6 +392,14 @@ function responses(
   const input = (Array.isArray(body.input) ? body.input : []) as Record<string, any>[]
   const text = JSON.stringify(input)
   const id = ++scriptedCalls
+  if (preflighted) preflightInputs.push(text)
+  const arrived = (() => {
+    if (!branching || backend === 'dir') return undefined
+    const key = body.prompt_cache_key
+    if (key === undefined) throw new Error('a branch asks its model without a prompt_cache_key')
+    if (!branchSessions.has(key)) branchSessions.set(key, branchSessions.size)
+    return branchSessions.get(key)!
+  })()
   const solution = solutions.find(([marker]) => text.includes(marker))
   if (!solution) throw new Error('the scripted model has no solution for this prompt')
   const checking = branching
@@ -412,13 +424,17 @@ function responses(
         ' }); text(JSON.stringify(result))'
       : 'await tools.exec_command({ cmd: ' +
         JSON.stringify(
-          branching
-            ? 'case "$PWD" in *-b2/*) test -f README.md && ' +
+          arrived !== undefined
+            ? arrived === 2
+              ? 'test -f README.md && ' + solution[1]
+              : solution[2]
+            : branching
+              ? 'case "$PWD" in *-b2/*) test -f README.md && ' +
                 solution[1] +
                 ' ;; *) ' +
                 solution[2] +
                 ' ;; esac'
-            : solution[1],
+              : solution[1],
         ) +
         ' }); text("cell tools: " + JSON.stringify(ALL_TOOLS.map((tool) => tool.name)))'
   const tools = [
@@ -1181,7 +1197,7 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
             ? metered(body)
             : codex && midturnPair
               ? pairwise(body)
-              : codex && (direct || branching)
+              : codex && (direct || branching || preflighted)
                 ? responses(body)
                 : scripted(body, turnLost ? MockGateway.modelUsd['/v1/messages'] : undefined)
         if (
@@ -1421,7 +1437,10 @@ async function main(): Promise<void> {
     ...((model === 'scripted' || installed || scenario === 'judge') && !mock && !loginLane
       ? { ANTHROPIC_API_KEY: 'scripted' }
       : {}),
-    ...((direct || branching || installed || midturnPair) && upstream.url && !mock && !loginLane
+    ...((direct || branching || installed || midturnPair || preflighted) &&
+    upstream.url &&
+    !mock &&
+    !loginLane
       ? { OPENAI_API_KEY: 'scripted-openai', OPENAI_BASE_URL: upstream.url }
       : {}),
     ...(model === 'anthropic' ? { ANTHROPIC_API_KEY: process.env['ANTHROPIC_API_KEY']! } : {}),
@@ -1694,8 +1713,10 @@ async function main(): Promise<void> {
       )
     )
       throw new Error('the ' + scenario + ' scenario runs on the scripted model')
-    if ((direct || branching || subagent) && (backend !== 'dir' || gateway))
+    if ((direct || subagent) && (backend !== 'dir' || gateway))
       throw new Error('the ' + scenario + ' scenario runs on directory slots, without the gateway')
+    if ((branching || preflighted) && gateway)
+      throw new Error('the ' + scenario + ' scenario runs without the gateway')
     if (midturn && (backend !== 'dir' || !midturnKills[killAt]))
       throw new Error(
         'the midturn scenario runs on directory slots, with NANOEVAL_E2E_KILL cell, model, pair or wait',
@@ -1719,7 +1740,7 @@ async function main(): Promise<void> {
     const lost = 'tasks/write-greeting'
     const directories = judged
       ? ['final-answer', 'judged-answer'].map((name) => Path.join('test/fixtures', name))
-      : alone || branching || direct || midturn || subagent
+      : alone || branching || direct || midturn || preflighted || subagent
         ? [Path.join('tasks', 'write-greeting')]
         : packing
           ? ['extract-todos', 'uppercase-message', 'write-greeting'].map((name) =>
@@ -1783,8 +1804,17 @@ async function main(): Promise<void> {
               ]
             : midturnPair
               ? [{ id: 'right', model: 'gpt-right', provider: 'codex' }]
-              : branching
-                ? [{ branches: 3, id: 'branched', model: 'gpt-right', provider: 'codex' }]
+              : branching || preflighted
+                ? [
+                    branching
+                      ? { branches: 3, id: 'branched', model: 'gpt-right', provider: 'codex' }
+                      : {
+                          id: 'probed',
+                          model: 'gpt-right',
+                          preflight: true as const,
+                          provider: 'codex',
+                        },
+                  ]
                 : direct
                   ? [
                       { id: 'cells', model: 'gpt-right', provider: 'codex' },
@@ -1986,6 +2016,7 @@ async function main(): Promise<void> {
         failures ||
         midturn ||
         packing ||
+        preflighted ||
         slotGone ||
         subagent
           ? 1
@@ -4101,13 +4132,18 @@ async function main(): Promise<void> {
       assert.equal(detail['attempt'].outcome, 'passed', JSON.stringify(detail['attempt'].failure))
       const read = (name: string) => api.artifact(created.id, detail['attempt'].id, name)
       const record = JSON.parse(await read('agent/branches.json')) as Branch.Record
-      assert.equal(record.chosen, 2, 'the only branch whose self-check passed is kept')
-      assert.deepEqual(
-        record.branches.map((branch) =>
-          branch.state === 'completed' ? branch.verdict : branch.state,
-        ),
-        ['fail', 'fail', 'pass'],
+      const verdicts = record.branches.map((branch) =>
+        branch.state === 'completed' ? branch.verdict : branch.state,
       )
+      assert.equal(verdicts.filter((verdict) => verdict === 'pass').length, 1, verdicts.join(' '))
+      if (backend === 'dir') assert.deepEqual(verdicts, ['fail', 'fail', 'pass'])
+      assert.equal(
+        record.chosen,
+        verdicts.indexOf('pass'),
+        'the only branch whose self-check passed is kept',
+      )
+      if (backend !== 'dir')
+        assert.equal(branchSessions.size, 3, 'each branch asks its model in its own session')
       assert.equal(
         branchRequests.length,
         12,
@@ -4118,13 +4154,15 @@ async function main(): Promise<void> {
       assert.equal(usage.modelCalls, 12, 'the usage of the attempt counts every branch')
       assert.equal(usage.inputTokens, 12 * 100)
       assert.equal(usage.outputTokens, 12 * 7)
-      for (const index of [0, 1]) {
+      for (const index of [0, 1, 2].filter((index) => index !== record.chosen)) {
         assert.match(await read('agent/branch-' + index + '/trajectory.json'), /SELF-CHECK: FAIL/)
       }
       assert.match(await read('agent/trajectory.json'), /SELF-CHECK: PASS/)
       assert.match(await read('verifier/test-stdout.txt'), /greeting.txt is correct/)
       console.log(
-        'branches: 3 branches forked from one slot, branch ' +
+        'branches: 3 branches forked from one ' +
+          backend +
+          ' slot, branch ' +
           record.chosen +
           ' kept by its self-check and verified alone; usage ' +
           usage.modelCalls +
@@ -4133,6 +4171,47 @@ async function main(): Promise<void> {
           ' input and ' +
           usage.outputTokens +
           ' output tokens across every branch',
+      )
+      await pass()
+      return
+    }
+
+    if (preflighted) {
+      const detail = details[0]!
+      assert.equal(details.length, 1)
+      assert.equal(detail['attempt'].outcome, 'passed', JSON.stringify(detail['attempt'].failure))
+      const facts = await api.artifact(created.id, detail['attempt'].id, 'agent/preflight.txt')
+      for (const line of [
+        /^os: .*; arch \S+; user \S+; cwd \S+$/m,
+        /^cpus: \d+ \(nproc\)/m,
+        /^memory: [0-9.]+ GiB total/m,
+        /^disk: [0-9.]+ GiB free at /m,
+        /^missing: /m,
+        /^network: pypi\.org (reachable|unreachable)$/m,
+      ])
+        assert.match(facts, line)
+      if (backend !== 'dir') {
+        assert.match(facts, /^os: Alpine Linux .*; cwd \/app$/m, 'the probe runs in the guest')
+        assert.match(facts, /^missing: .*\bpython3\b/m, 'the probe sees the tools of the guest')
+      }
+      const prompt = preflightInputs[0] ?? ''
+      assert.ok(
+        prompt.includes('<environment_facts>') &&
+          prompt.includes(JSON.stringify(facts.trim().split('\n')[0]!).slice(1, -1)),
+        'the first prompt of the session carries the facts of the probe',
+      )
+      assert.match(
+        await api.artifact(created.id, detail['attempt'].id, 'verifier/test-stdout.txt'),
+        /greeting.txt is correct/,
+      )
+      console.log(
+        'preflight: the probe ran in the ' +
+          backend +
+          ' slot as ' +
+          /user ([^;\s]+)/.exec(facts)![1] +
+          ' and its ' +
+          facts.trim().split('\n').length +
+          ' lines reached the first prompt',
       )
       await pass()
       return

@@ -838,7 +838,8 @@ cmd_preflight() {
       ;;
     krun | ns)
       mapfile -t options < <(guest_options "$dir")
-      vm "$dir" exec "${options[@]}" -- timeout -k 10 "$seconds" sh
+      cd "$dir"
+      timeout -k 10 "$seconds" "$krun/nanoeval-krun" exec "${options[@]}" -- sh
       ;;
   esac
 }

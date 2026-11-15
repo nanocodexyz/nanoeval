@@ -6379,3 +6379,18 @@ Tokens are priced at 0.15 and 0.50 USD a million for the first two rows and 0.30
 ### Not verified
 
 No end-to-end lane: the scripted model of the lanes does not serve a session over chat completions, so the unit test of the list is the only check that runs without a model. `@cf/zai-org/glm-5.3` itself, Cloudflare's own address without a base URL, a deployed Worker, ns slots, a session with direct tools on krun slots and more than one attempt did not run. A session cannot name another model of Workers AI: nanocode-ts opens the chat transport for `glm-5.3` only, so a route that serves another name has to rename it, outside the repository.
+
+## 2026-11-15: a preflight lane and a branches lane for every backend, and the preflight bound on the host
+
+**What was wrong.** `slot.sh preflight` on krun and ns slots ran `timeout -k 10 SECONDS sh` inside the guest. A task image without `timeout` (one without coreutils or a busybox that has it) fails the probe with exit 127, and the attempt fails before its first turn. The bound also did not cover the exec client itself, so a hung guest socket was not bounded. No lane ran a preflight end to end, and the branches lane refused every backend but directory slots, since its scripted model told the branches apart by the `-b2` in `$PWD`, which a guest does not see.
+
+**What changed.**
+
+- `cmd_preflight` runs `timeout -k 10 SECONDS nanoeval-krun exec ... -- sh` from the slot directory, as `cmd__agent` and `cmd__solve` do. The guest needs only `sh`.
+- `test/e2e.ts` has a `preflight` scenario: one codex agent with `preflight: true` on write-greeting. It asserts that the attempt passed, that `agent/preflight.txt` holds the os, cpus, memory, disk, missing and network lines, that the first model request carries `<environment_facts>` and the first line of the facts, and that the verifier saw the greeting. On krun and ns slots it also asserts `Alpine Linux`, `cwd /app` and `python3` among the missing tools, which only the guest gives.
+- The `branches` scenario runs on every backend without the gateway. On krun and ns slots the scripted model tells the branches apart by `prompt_cache_key`, one per session, and gives the right greeting to the third session that asks. The lane asserts one passing verdict, the kept branch equal to it, three sessions, and a failing self-check in each other branch. Directory slots keep the `-b2` rule and the exact verdicts fail, fail, pass.
+- ci.yml gains the preflight lane on directory slots, and both lanes on krun and ns slots.
+
+**Checked,** on the hosted Hand (5 cores, no KVM, Node 24.22.3), a fresh clone of main at `fa3176f` with this change: `npm run lint`, `npm run check:types`, `npm test` (443 tests, 438 pass, 5 skipped, 0 fail), `npm run dry-run`. All 56 e2e-dir steps of ci.yml passed (FAILS 0) on the tree before the rebase onto `fa3176f`. After it, the preflight lane (`e2e passed: scripted-dir-preflight`, 23 lines of facts), the branches lane (branch 2 kept, 12 model calls, 1,200 input and 84 output tokens) and the first directory lane passed again. A debug run of the branches lane showed 3 distinct `prompt_cache_key` values with 4 requests each.
+
+**Not verified.** The krun and ns lanes. The hosted Hand has no /dev/kvm, and an ns run as root stops at import: a Dockerfile environment is built in a microVM. No boxctl box was available: the quota of 3 active boxes stayed full from 01:17 to 02:40 UTC, and the one box created in that window failed with SERVERS_OUT_OF_STOCK. The fork path (`cp --reflink=auto --sparse=always` of `upper.ext4` while the base guest runs) is unchanged and unproven on a VM. The two new krun lanes and two new ns lanes are the check to run on the next machine with KVM.
