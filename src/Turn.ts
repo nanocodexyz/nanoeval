@@ -5,6 +5,9 @@ export type Turn = {
   briefFinish?: true
   cellYieldMs?: number
   deadline?: { atMs: number; limitMs: number }
+  escalateContextTokens?: number
+  escalateModel?: string
+  escalateToolErrors?: number
   foldFinish?: true
   hand?: string
   leanCells?: true
@@ -17,6 +20,7 @@ export type Turn = {
   refusalFallback?: Config.RefusalFallback
   requestId: string
   thinking?: string
+  toolResultTokens?: number
 }
 
 export const record = 'agent/turns.jsonl'
@@ -29,6 +33,17 @@ function levers(turn: Turn): Record<string, true> {
     ...(turn.leanCells ? { lean_cells: true as const } : {}),
     ...(turn.lowEffortRounds ? { low_effort_rounds: true as const } : {}),
   }
+}
+
+function escalate(turn: Turn): { escalate?: Record<string, number | string> } {
+  const named = {
+    ...(turn.escalateContextTokens === undefined
+      ? {}
+      : { context_tokens: turn.escalateContextTokens }),
+    ...(turn.escalateModel === undefined ? {} : { model: turn.escalateModel }),
+    ...(turn.escalateToolErrors === undefined ? {} : { tool_errors: turn.escalateToolErrors }),
+  }
+  return Object.keys(named).length ? { escalate: named } : {}
 }
 
 export function deadline(
@@ -47,9 +62,11 @@ export function sent(turn: Turn, input: { at: number; session: string }): string
       deadline: turn.deadline
         ? { at_ms: turn.deadline.atMs, limit_ms: turn.deadline.limitMs }
         : null,
+      ...escalate(turn),
       ...(turn.refusalFallback ? { refusal_fallback: turn.refusalFallback } : {}),
       request_id: turn.requestId,
       session: input.session,
+      ...(turn.toolResultTokens === undefined ? {} : { tool_result_tokens: turn.toolResultTokens }),
     }) + '\n'
   )
 }
@@ -67,6 +84,7 @@ export function body(turn: Turn): Record<string, unknown> {
     ...(turn.deadline
       ? { deadline: { at_ms: turn.deadline.atMs, limit_ms: turn.deadline.limitMs } }
       : {}),
+    ...escalate(turn),
     model: turn.model,
     ...(turn.payer ? { payer: turn.payer } : {}),
     prompt: turn.prompt,
@@ -75,6 +93,7 @@ export function body(turn: Turn): Record<string, unknown> {
     request_id: turn.requestId,
     ...(turn.provider === 'codex' ? { subagents: false } : {}),
     ...(turn.thinking ? { thinking: turn.thinking } : {}),
+    ...(turn.toolResultTokens === undefined ? {} : { tool_result_tokens: turn.toolResultTokens }),
     ...(turn.provider === 'codex' ? { web_search: false } : {}),
   }
 }
