@@ -4,7 +4,7 @@ export const checkRequestId = 'self-check'
 export const record = 'agent/branches.json'
 
 export const prompt =
-  'Before you finish, check your work: run the tests and checks you can, your own or ones the environment has, fix anything that fails, and leave the solution in place. End your reply with one line that says SELF-CHECK: PASS if everything you checked passes, or SELF-CHECK: FAIL if anything still fails.'
+  'Before you finish, check your work: run the tests and checks you can, your own or ones the environment has, fix anything that fails, and leave the solution in place. Run your final check as a command of its own, with nothing after it, so its exit status shows whether it passes. End your reply with one line that says SELF-CHECK: PASS if everything you checked passes, or SELF-CHECK: FAIL if anything still fails.'
 
 export type Verdict = 'fail' | 'pass' | 'unknown'
 
@@ -104,16 +104,56 @@ const runner = new RegExp(
 
 const inert = /\s(--collect-only|--help|--list|--version|-h|-V)(\s|$)/
 
+const inline = /^(\w+=\S*\s+)*(\S*\/)?python[0-9.]*\s+(-[A-NP-Za-z]+\s+)*-c\s+\S[\s\S]*\bassert\b/
+
 const failures = /\b[1-9][0-9]* (errors?|failed|failing|failures?)\b|^FAILED\b|test result: FAILED/m
 
+function masked(command: string): string {
+  let escaped = false
+  let quote: string | undefined
+  return [...command]
+    .map((char) => {
+      if (escaped) {
+        escaped = false
+        return '_'
+      }
+      if (char === '\\' && quote !== "'") {
+        escaped = true
+        return quote === undefined ? char : '_'
+      }
+      if (quote === undefined) {
+        if (char === '"' || char === "'") quote = char
+        return char
+      }
+      if (char !== quote) return '_'
+      quote = undefined
+      return char
+    })
+    .join('')
+}
+
+function split(command: string, separator: RegExp): string[] {
+  const parts: string[] = []
+  let start = 0
+  for (const found of masked(command).matchAll(separator)) {
+    parts.push(command.slice(start, found.index))
+    start = found.index + found[0].length
+  }
+  return [...parts, command.slice(start)]
+}
+
+function check(stage: string): boolean {
+  return runner.test(stage) || (inline.test(stage) && !stage.includes('PYTHONOPTIMIZE'))
+}
+
 export function testCommand(command: string): boolean {
-  if (command.includes('||') || inert.test(command)) return false
-  const last = command.split(/;|\n|(?<![&<>])&(?![&>])/).findLast((part) => part.trim() !== '')
+  if (masked(command).includes('||') || inert.test(command)) return false
+  const last = split(command, /;|\n|(?<![&<>])&(?![&>])/g).findLast((part) => part.trim() !== '')
   if (last === undefined) return false
   const pipefail = command.includes('pipefail')
-  return last.split('&&').some((step) => {
-    const stages = step.split('|')
-    return (pipefail ? stages : stages.slice(-1)).some((stage) => runner.test(stage.trim()))
+  return split(last, /&&/g).some((step) => {
+    const stages = split(step, /\|/g)
+    return (pipefail ? stages : stages.slice(-1)).some((stage) => check(stage.trim()))
   })
 }
 
