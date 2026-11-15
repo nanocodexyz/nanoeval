@@ -58,6 +58,7 @@ export type Config = {
     attachSec: number
     claims: number
     leaseSec: number
+    noDeadline?: true
     setupSec: number
     stepRetries: number
     verifierMaxSec?: number
@@ -333,6 +334,8 @@ export function parse(value: unknown): Config {
     fail('key holds a deposit above zero, a topUp of at least zero, or both')
   const budget = config.budget ?? fail('budget is required')
   const limits = config.limits ?? fail('limits is required')
+  if (limits.noDeadline !== undefined && typeof limits.noDeadline !== 'boolean')
+    fail('limits.noDeadline is true or false')
   if (sandbox.leaseSec !== undefined && !(sandbox.leaseSec >= limits.leaseSec))
     fail('sandbox.leaseSec is at least limits.leaseSec, the notice a renewal is given')
   return {
@@ -362,6 +365,7 @@ export function parse(value: unknown): Config {
       attachSec: integer(limits.attachSec, 'limits.attachSec', 1),
       claims: integer(limits.claims, 'limits.claims', 1),
       leaseSec: integer(limits.leaseSec, 'limits.leaseSec', 1),
+      ...(limits.noDeadline ? { noDeadline: true as const } : {}),
       setupSec: integer(limits.setupSec, 'limits.setupSec', 1),
       stepRetries: integer(limits.stepRetries, 'limits.stepRetries', 0),
       ...(limits.verifierMaxSec === undefined

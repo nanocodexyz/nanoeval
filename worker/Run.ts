@@ -34,6 +34,7 @@ import type * as Runs from '../src/Runs.ts'
 import * as Sandbox from '../src/Sandbox.ts'
 import * as SqlSetup from '../src/Sql.ts'
 import * as Timeline from '../src/Timeline.ts'
+import * as Turn from '../src/Turn.ts'
 import * as Verdict from '../src/Verdict.ts'
 import * as Blobs from './Blobs.ts'
 import type { Env } from './Env.ts'
@@ -3259,10 +3260,13 @@ export class Run extends DurableObject<Env> {
     const agent = this.agentOf(row)
     if (agent.provider !== 'claude' && agent.provider !== 'codex')
       throw new Refusal(409, 'the agent of the attempt is not a session')
-    const limitMs = this.task(row.task).agent.timeoutSec * 1000
+    const deadline = Turn.deadline(this.config().limits, {
+      limitMs: this.task(row.task).agent.timeoutSec * 1000,
+      now: Date.now(),
+    })
     try {
       return await Harness.submit(this.env, input.session, {
-        deadline: { atMs: Date.now() + limitMs, limitMs },
+        ...(deadline ? { deadline } : {}),
         hand: Protocol.handName,
         model: agent.model,
         ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),

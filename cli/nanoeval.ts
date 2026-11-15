@@ -167,7 +167,7 @@ const usage = `nanoeval <command>
             [--sandbox-budget-usd 0] [--model-budget-usd N] [--setup-sec 600] [--attach-sec 60]
             [--model-price MODEL=INPUT,CACHED,OUTPUT]...
             [--model-requests-per-min [MODEL=]REQUESTS]... [--agent-max-sec N]
-            [--verifier-max-sec N]
+            [--verifier-max-sec N] [--no-deadline]
             [--lease-sec 60] [--claims 3] [--step-retries 3] [--poll-ms 250]
             [--disks keep|remove] [--free-disk-mb N] [--verifier-cache] [--name NAME] [--wait]
             [--key-deposit N] [--key-top-up N]
@@ -248,6 +248,10 @@ const usage = `nanoeval <command>
             solution needs longer to verify can not pass under it. No task and no verifier
             changes. Every attempt of such a run carries verifierMaxSec, and a baseline
             under another limit is passed over and refused as for --agent-max-sec.
+            --no-deadline sends the sessions of the run no deadline with their turns: the
+            model is not told its time limit, and the run still ends an agent at it. A run
+            sends the deadline unless this is named, and a rerun of a run that sent none
+            sends none.
             --model-requests-per-min gives the requests a minute the endpoint answers for a
             model, or for each model of the run where none is named: the run then sends
             the requests for that model, of every agent and the judge on it, one such
@@ -1635,6 +1639,7 @@ export function rerunConfig(
       attachSec: from('attach-sec', own.limits.attachSec, parent.limits.attachSec),
       claims: from('claims', own.limits.claims, parent.limits.claims),
       leaseSec: from('lease-sec', own.limits.leaseSec, parent.limits.leaseSec),
+      ...(own.limits.noDeadline || parent.limits.noDeadline ? { noDeadline: true as const } : {}),
       setupSec: from('setup-sec', own.limits.setupSec, parent.limits.setupSec),
       stepRetries: from('step-retries', own.limits.stepRetries, parent.limits.stepRetries),
       ...(verifierMaxSec === undefined ? {} : { verifierMaxSec }),
@@ -1845,6 +1850,7 @@ async function main(
       'nanocode-ts': { type: 'string' },
       'nanocode-ts-repository': { default: Revision.repositories.nanocodeTs, type: 'string' },
       network: { type: 'string' },
+      'no-deadline': { default: false, type: 'boolean' },
       only: { multiple: true, type: 'string' },
       'only-file': { multiple: true, type: 'string' },
       'opened-at': { type: 'string' },
@@ -3020,6 +3026,7 @@ async function main(
         attachSec: Number(values['attach-sec']),
         claims: Number(values.claims),
         leaseSec: Number(values['lease-sec']),
+        ...(values['no-deadline'] ? { noDeadline: true as const } : {}),
         setupSec: Number(values['setup-sec']),
         stepRetries: Number(values['step-retries']),
         ...(values['verifier-max-sec']
@@ -3146,6 +3153,7 @@ async function main(
     const created = await api.create(config, values.location ? { location: values.location } : {})
     for (const [flag, limit] of [
       ['--agent-max-sec', 'agentMaxSec'],
+      ['--no-deadline', 'noDeadline'],
       ['--verifier-max-sec', 'verifierMaxSec'],
     ] as const)
       if (
@@ -3156,7 +3164,7 @@ async function main(
         throw new Error(
           'the Worker made run ' +
             created.id +
-            ' without the limit of ' +
+            ' without ' +
             flag +
             ', which a Worker of an earlier nanoeval does not know: the run was cancelled. Start the Worker of this checkout',
         )

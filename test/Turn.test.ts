@@ -46,6 +46,12 @@ test('a turn carries the agent deadline as host policy, in milliseconds', () => 
   assert.equal('deadline' in Turn.body(turn), false)
 })
 
+test('a run sends the deadline of the agent unless its limits say it sends none', () => {
+  const input = { limitMs: 900_000, now: 1_800_000_000_000 }
+  assert.deepEqual(Turn.deadline({}, input), { atMs: 1_800_000_900_000, limitMs: 900_000 })
+  assert.equal(Turn.deadline({ noDeadline: true }, input), undefined)
+})
+
 test('a claude-direct session asks for the claude orchestration and no codex one', () => {
   const body = Turn.body({
     ...turn,
