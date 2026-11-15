@@ -14,7 +14,12 @@ export type Turn = {
 export function body(turn: Turn): Record<string, unknown> {
   return {
     ...(turn.hand ? { hand: turn.hand } : {}),
-    ...(turn.orchestration ? { codex_orchestration: turn.orchestration } : {}),
+    ...(turn.orchestration && turn.provider === 'claude'
+      ? { claude_orchestration: turn.orchestration }
+      : {}),
+    ...(turn.orchestration && turn.provider === 'codex'
+      ? { codex_orchestration: turn.orchestration }
+      : {}),
     model: turn.model,
     ...(turn.payer ? { payer: turn.payer } : {}),
     prompt: turn.prompt,

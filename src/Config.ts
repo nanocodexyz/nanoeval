@@ -229,7 +229,15 @@ export function parse(value: unknown): Config {
     ])
     if (agent.orchestration !== undefined) {
       choice(agent.orchestration, 'orchestration', ['direct', 'jobs'])
-      if (provider !== 'codex') fail(agent.id + ' has an orchestration, which only codex takes')
+      if (provider === 'claude' && agent.orchestration !== 'direct')
+        fail(
+          agent.id +
+            ' has the orchestration ' +
+            agent.orchestration +
+            ', and claude takes only direct',
+        )
+      if (provider !== 'codex' && provider !== 'claude')
+        fail(agent.id + ' has an orchestration, which only codex and claude take')
     }
     if (agent.preflight !== undefined) {
       if (agent.preflight !== true) fail(agent.id + ' has a preflight that is not true')

@@ -174,9 +174,31 @@ test('an agent names a session harness or an installed command', () => {
     () =>
       Config.parse({
         ...config,
-        agents: [{ id: 'x', model: 'm', orchestration: 'direct', provider: 'claude' }],
+        agents: [{ id: 'x', model: 'm', orchestration: 'jobs', provider: 'claude' }],
       }),
-    /x has an orchestration, which only codex takes/,
+    /x has the orchestration jobs, and claude takes only direct/,
+  )
+  assert.deepEqual(
+    Config.parse({
+      ...config,
+      agents: [{ id: 'x', model: 'm', orchestration: 'direct', provider: 'claude' }],
+    }).agents.map((agent) => [agent.provider, agent.orchestration]),
+    [['claude', 'direct']],
+  )
+  assert.deepEqual(parseAgent('nanod=claude-direct:claude-opus-5-5:high'), {
+    id: 'nanod',
+    model: 'claude-opus-5-5',
+    orchestration: 'direct',
+    provider: 'claude',
+    thinking: 'high',
+  })
+  assert.equal(
+    agentText(parseAgent('nanod=claude-direct:claude-opus-5-5:high')),
+    'nanod=claude-direct:claude-opus-5-5:high',
+  )
+  assert.equal(
+    agentText(parseAgent('nano=claude:claude-opus-5-5:high')),
+    'nano=claude:claude-opus-5-5:high',
   )
   assert.throws(
     () =>

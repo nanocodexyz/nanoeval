@@ -271,7 +271,9 @@ const usage = `nanoeval <command>
             runtime nanocode (NANOEVAL_NANOCODE on the runner names another build).
             A codex session calls the hand's tools directly, as Codex CLI does; codex-code-mode
             has it call them from JavaScript cells (exec and wait) instead, and codex-jobs from
-            cells that also get nanocode's job tools. codex-direct is codex.
+            cells that also get nanocode's job tools. codex-direct is codex. A claude session
+            calls the hand's tools from Code Mode cells; claude-direct gives its model the
+            hand's Claude Code tools (Bash, Edit, Read, TaskStop, Write) directly instead.
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
@@ -634,6 +636,7 @@ export function parseAgent(text: string): Config.Agent {
   const match = new RegExp(
     '^([^=]+)=(' +
       [
+        'claude-direct',
         'claude',
         'codex-code-mode',
         'codex-direct',
@@ -645,7 +648,8 @@ export function parseAgent(text: string): Config.Agent {
   ).exec(text)
   if (!match) throw new Error('an agent is ID=HARNESS:MODEL[:THINKING][:branches=N], not ' + text)
   const codex = Object.hasOwn(orchestrations, match[2]!)
-  const orchestration = orchestrations[match[2]!]
+  const claudeDirect = match[2] === 'claude-direct'
+  const orchestration = claudeDirect ? 'direct' : orchestrations[match[2]!]
   const installed = Installed.harness(match[2]!)
   return {
     ...(installed?.api ? { api: installed.api } : {}),
@@ -654,7 +658,11 @@ export function parseAgent(text: string): Config.Agent {
     model: match[4]!,
     ...(orchestration ? { orchestration } : {}),
     ...(match[3] ? { preflight: true as const } : {}),
-    provider: codex ? 'codex' : (installed?.kind ?? (match[2] as 'claude')),
+    provider: codex
+      ? 'codex'
+      : claudeDirect
+        ? 'claude'
+        : (installed?.kind ?? (match[2] as 'claude')),
     ...(match[5] ? { thinking: match[5] } : {}),
   }
 }
@@ -857,6 +865,7 @@ async function baselines(
 }
 
 function harnessText(agent: Config.Agent): string {
+  if (agent.provider === 'claude' && agent.orchestration === 'direct') return 'claude-direct'
   if (agent.provider !== 'codex') return Installed.name(agent)
   if (agent.orchestration === 'direct') return 'codex'
   return agent.orchestration ? 'codex-' + agent.orchestration : 'codex-code-mode'

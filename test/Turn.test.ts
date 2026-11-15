@@ -38,6 +38,18 @@ test('a codex session is created without web search and without subagents, as co
   })
 })
 
+test('a claude-direct session asks for the claude orchestration and no codex one', () => {
+  const body = Turn.body({
+    ...turn,
+    model: 'claude-opus-5-5',
+    orchestration: 'direct',
+    provider: 'claude',
+  })
+  assert.equal(body['claude_orchestration'], 'direct')
+  assert.equal('codex_orchestration' in body, false)
+  assert.equal('subagents' in body, false)
+})
+
 test('a claude session keeps the web search and subagents of its app, as Claude Code has WebSearch and Task', () => {
   const body = Turn.body({ ...turn, model: 'claude-opus-5-5', provider: 'claude' })
   assert.equal('subagents' in body, false)
