@@ -1,6 +1,7 @@
 import * as Compare from './Compare.ts'
 import * as Price from './Price.ts'
 import type * as Result from './Result.ts'
+import * as Retry from './Retry.ts'
 
 export type Class = 'agent' | 'cancelled' | 'infrastructure'
 
@@ -16,6 +17,8 @@ export const classes: Record<Result.FailureKind, Class> = {
 }
 
 export const unrecorded = 'unrecorded'
+
+export const unserved = 'model not served'
 
 export type Arm = {
   agent: string
@@ -102,8 +105,10 @@ export function arms(given: readonly Compare.Run[], prices: Price.List = {}): Ar
         arm[attempt.outcome]++
         if (attempt.outcome === 'errored') {
           const kind = attempt.failure?.kind
-          const kinds = arm.errors[kind ? classes[kind] : 'infrastructure']
-          kinds[kind ?? unrecorded] = (kinds[kind ?? unrecorded] ?? 0) + 1
+          const refused = attempt.failure !== undefined && Retry.modelRefused(attempt.failure)
+          const kinds = arm.errors[kind && !refused ? classes[kind] : 'infrastructure']
+          const key = refused ? unserved : (kind ?? unrecorded)
+          kinds[key] = (kinds[key] ?? 0) + 1
         } else {
           const task = tasks.get(attempt.task.name) ?? { passed: 0, scored: 0 }
           tasks.set(attempt.task.name, task)

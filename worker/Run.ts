@@ -8,6 +8,7 @@ import * as Budget from '../src/Budget.ts'
 import * as Config from '../src/Config.ts'
 import * as E2b from '../src/E2b.ts'
 import * as Eval from '../src/Eval.ts'
+import * as Fallback from '../src/Fallback.ts'
 import * as Gateway from '../src/Gateway.ts'
 import * as Harbor from '../src/Harbor.ts'
 import * as Hold from '../src/Hold.ts'
@@ -1761,16 +1762,25 @@ export class Run extends DurableObject<Env> {
         if (typeof parsed === 'object' && parsed !== null) value = parsed as Record<string, unknown>
       } catch {}
       const model = this.agentOf(row).model
-      if (value && value['model'] !== model)
+      if (value && !Fallback.served({ model, provider }).includes(value['model'] as string)) {
+        this.record({
+          attempt: row.id,
+          claim: row.claims,
+          listed: false,
+          outcome: { at: Date.now(), ms: 0, refusal: 'model', status: 400 },
+          path,
+          provider,
+        })
         return Response.json(
           {
             error: {
-              message: 'model ' + String(value['model']) + ' is not served in this run',
+              message: Fallback.refusal(value['model']),
               type: 'invalid_request_error',
             },
           },
           { status: 400 },
         )
+      }
       const limit = Number(this.env.NANOEVAL_REPLY_LIMIT ?? 0)
       if (value && path === 'responses' && limit > 0 && !value['max_output_tokens']) {
         value['max_output_tokens'] = limit
@@ -3579,7 +3589,11 @@ export class Run extends DurableObject<Env> {
         .map((request) =>
           request['refusal'] === null ? {} : { refusal: request['refusal'] as Proxy.Refusal },
         )
-      end = { failure: Retry.rejected({ failure, requests }) ?? failure, reward: null }
+      end = {
+        failure:
+          Retry.rejected({ failure, requests }) ?? Retry.unserved({ failure, requests }) ?? failure,
+        reward: null,
+      }
     } else throw new Refusal(400, 'finishing an attempt reports a verifier or a failure')
     if (row.session && row.phase === 'run' && this.submitted(row))
       for (const name of this.branchSessions(row)) await this.halt(name)

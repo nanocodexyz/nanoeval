@@ -33,7 +33,7 @@ export type Usage = {
   webUsd?: number
 }
 
-export type Refusal = 'budget' | 'login' | 'passing' | 'plan' | 'spent'
+export type Refusal = 'budget' | 'login' | 'model' | 'passing' | 'plan' | 'spent'
 
 export type Tools = { calls: number; unpriced: number; usd?: number }
 
@@ -113,7 +113,7 @@ export function token(headers: Headers): string | undefined {
   return headers.get('x-api-key') ?? undefined
 }
 
-export function refusal(body: string): Exclude<Refusal, 'budget' | 'login'> | undefined {
+export function refusal(body: string): Exclude<Refusal, 'budget' | 'login' | 'model'> | undefined {
   let problem: { code?: unknown; type?: unknown } | null
   try {
     problem = JSON.parse(body) as { code?: unknown; type?: unknown } | null

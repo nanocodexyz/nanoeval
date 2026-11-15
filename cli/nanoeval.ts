@@ -31,6 +31,7 @@ import * as Pins from '../src/Pins.ts'
 import * as Price from '../src/Price.ts'
 import * as Protocol from '../src/Protocol.ts'
 import * as Result from '../src/Result.ts'
+import * as Retry from '../src/Retry.ts'
 import * as Route from '../src/Route.ts'
 import type * as Runs from '../src/Runs.ts'
 import * as Sandbox from '../src/Sandbox.ts'
@@ -1304,6 +1305,21 @@ export function summary(
           .join(''),
     )
   lines.push(...(options.unsound ?? []))
+  const unserved = ((status['attempts'] ?? []) as Record<string, any>[]).filter(
+    (attempt) =>
+      attempt['outcome'] === 'errored' &&
+      attempt['failure'] &&
+      Retry.modelRefused(attempt['failure']),
+  )
+  if (unserved.length)
+    lines.push(
+      Arms.unserved +
+        ': ' +
+        unserved.length +
+        (unserved.length === 1 ? ' attempt of ' : ' attempts of ') +
+        [...new Set(unserved.map((attempt) => String(attempt['agent'])))].sort().join(' and ') +
+        ' errored because the run refused a model that the agent asked for, an infrastructure error and no failure of the agent',
+    )
   const judges = Object.values(status['agents'] as Record<string, any>).flatMap((row) =>
     row.judge?.attempts ? [row.judge] : [],
   )
