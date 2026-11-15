@@ -7,6 +7,7 @@ import type * as Config from '../src/Config.ts'
 import * as Logins from '../src/Logins.ts'
 import * as Pins from '../src/Pins.ts'
 import * as Plans from '../src/Plans.ts'
+import * as Picker from '../src/Picker.ts'
 import * as Proxy from '../src/Proxy.ts'
 import * as Sql from '../src/Sql.ts'
 import * as Telemetry from '../src/Telemetry.ts'
@@ -95,8 +96,11 @@ export const nanocode = App.create<Env>({
 
         const session = Proxy.session(dispatch.authority.session_name ?? '')
         const path =
-          (session?.judge === undefined ? '' : 'judge/') +
-          new URL(target).pathname.replace(/^\/+/, '')
+          (session?.judge !== undefined
+            ? 'judge/'
+            : session?.verifier !== undefined
+              ? Picker.path
+              : '') + new URL(target).pathname.replace(/^\/+/, '')
         const tell = async (body: Record<string, unknown>): Promise<Meter.Admission> => {
           const answer = await env.RUNS.get(env.RUNS.idFromName(session!.run)).fetch(
             'https://run.internal/metered',

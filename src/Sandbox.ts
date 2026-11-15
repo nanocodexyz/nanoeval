@@ -13,6 +13,7 @@ export type Capabilities = {
   kernel: string
   krun: boolean
   kvm: boolean
+  picker?: boolean
   memory_mb: number
   network: Slot.Network | 'none'
   ns: boolean

@@ -28,6 +28,7 @@ import * as Loop from '../src/Loop.ts'
 import type * as Ledger from '../src/Ledger.ts'
 import * as Pace from '../src/Pace.ts'
 import * as Pins from '../src/Pins.ts'
+import * as Picker from '../src/Picker.ts'
 import * as Price from '../src/Price.ts'
 import * as Protocol from '../src/Protocol.ts'
 import * as Result from '../src/Result.ts'
@@ -758,7 +759,23 @@ const agentOptions: readonly AgentOption[] = [
         ? { branches: Number(text.slice('lazy'.length)), lazy: true }
         : { branches: Number(text) },
     value: '[lazy]N',
-    write: (agent) => (agent.branches ? (agent.lazy ? 'lazy' : '') + agent.branches : undefined),
+    write: (agent) =>
+      agent.branches
+        ? (agent.lazy && agent.picker !== 'verify_lazy' ? 'lazy' : '') + agent.branches
+        : undefined,
+  },
+  {
+    name: 'picker',
+    pattern: 'verify|verify_lazy',
+    read: (text) => ({ picker: text as Picker.Kind }),
+    value: 'verify|verify_lazy',
+    write: (agent) => agent.picker,
+  },
+  {
+    ...model,
+    name: 'verifier_model',
+    read: (text) => ({ verifierModel: text }),
+    write: (agent) => agent.verifierModel,
   },
   {
     ...scopes,
