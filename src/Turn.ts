@@ -8,6 +8,7 @@ export type Turn = {
   escalateContextTokens?: number
   escalateModel?: string
   escalateToolErrors?: number
+  finishCheckMinRequests?: number
   foldFinish?: true
   hand?: string
   lateFinishCheckMs?: number
@@ -48,6 +49,9 @@ function losses(turn: Turn): Record<string, number | string> {
     ...(turn.lateFinishCheckMs === undefined
       ? {}
       : { late_finish_check_ms: turn.lateFinishCheckMs }),
+    ...(turn.finishCheckMinRequests === undefined
+      ? {}
+      : { finish_check_min_requests: turn.finishCheckMinRequests }),
     ...(turn.resultEffort ? { result_effort: turn.resultEffort } : {}),
     ...(turn.yieldFloorMs === undefined ? {} : { yield_floor_ms: turn.yieldFloorMs }),
     ...(turn.yieldShare === undefined ? {} : { yield_share: turn.yieldShare }),

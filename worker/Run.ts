@@ -3310,6 +3310,9 @@ export class Run extends DurableObject<Env> {
       ...(agent.escalateToolErrors === undefined
         ? {}
         : { escalateToolErrors: agent.escalateToolErrors }),
+      ...(agent.finishCheckMinRequests === undefined
+        ? {}
+        : { finishCheckMinRequests: agent.finishCheckMinRequests }),
       ...(agent.foldFinish ? { foldFinish: true } : {}),
       hand: Protocol.handName,
       ...(agent.lateFinishCheckMs === undefined
