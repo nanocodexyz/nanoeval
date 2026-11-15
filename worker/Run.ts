@@ -3153,6 +3153,7 @@ export class Run extends DurableObject<Env> {
       if (agent.provider === 'claude' || agent.provider === 'codex')
         for (const name of this.branchSessions(row))
           await this.ask(row, {
+            ...(this.branches(row) > 1 ? {} : { limitMs: task.agent.timeoutSec * 1000 }),
             prompt: agent.preflight
               ? Preflight.prompt({ facts: body.facts!, instruction: body.instruction! })
               : body.instruction!,
@@ -3254,15 +3255,16 @@ export class Run extends DurableObject<Env> {
 
   private async ask(
     row: Ledger.Attempt,
-    input: { prompt: string; requestId: string; session: string },
+    input: { limitMs?: number; prompt: string; requestId: string; session: string },
   ): Promise<Harness.Report> {
     const agent = this.agentOf(row)
     if (agent.provider !== 'claude' && agent.provider !== 'codex')
       throw new Refusal(409, 'the agent of the attempt is not a session')
-    const limitMs = this.task(row.task).agent.timeoutSec * 1000
     try {
       return await Harness.submit(this.env, input.session, {
-        deadline: { atMs: Date.now() + limitMs, limitMs },
+        ...(input.limitMs === undefined
+          ? {}
+          : { deadline: { atMs: Date.now() + input.limitMs, limitMs: input.limitMs } }),
         hand: Protocol.handName,
         model: agent.model,
         ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
