@@ -6975,3 +6975,15 @@ So on this machine a row puts about half the bytes and a fifth of the writes on 
 - A runner that measures its home and refuses a slow one. The speed is easy to measure, but the number to hold it against is not there: one arm gives 260 MB a row in six minutes and peaks of 82 to 175 MB/s from single rows, and nothing says what a different model or eval writes.
 
 **For the next machine.** Before an arm with many slots, give the runner's home a disk that holds nothing else, and keep the Worker's state off it. On the machine above that was two commands, a filesystem on an unused disk and `--home` there, and it is what moved the arm. The README says so where it lists what goes where.
+
+## 2026-11-15: the release of an installed agent is copied into a home on another filesystem than the cache
+
+**The defect.** `slot.sh agents` keeps each release of an installed agent once in the cache and gives every home a tree of hard links to it, `cp -al`, with `cp -a` behind it for when the links fail. They always fail when the home is on another filesystem than the cache. `cp -al` has made the directory by then and leaves it, so the fallback found the directory there and copied the release inside it: `agents/fx/any/any/fx`, where the slot runs `agents/fx/any/fx`. The entry above tells an operator to give the runner's home a disk of its own, which is exactly this layout.
+
+**Measured.** One probe on a bare-metal machine with KVM (48 hardware threads), nanoeval `5ab804b`, the runner's home on an NVMe disk of its own and the cache on the disks the system boots from: 4 rows of fx 0.0.17 on 4 krun slots, and 4 of 4 ended `fx exited with 127: /opt/nanoeval/agents/fx/any/fx: not found`. With the cache's `agents` directory moved to the filesystem of the home, the same 4 rows ran their agent: 82 model requests, no such error. On a machine of 5 cores without KVM the same call with the cache on a tmpfs and the home on its disk left `gnu/gnu/claude` for `gnu/claude`.
+
+**What changed.** When the links fail, `slot.sh` removes what they left and then copies. Nothing else: a home on the filesystem of the cache still gets hard links.
+
+**Checked.** Two unit tests call `slot.sh agents` with a release in a file: one with the cache on a tmpfs and the home on the disk, skipped on a machine that has no second filesystem to write to, and one with a `cp` in front of the machine's that makes the directory and fails when asked for links, so that the case is tested where there is one filesystem only. Both failed before the change, the entry not found, and pass after it. From a fresh clone of main with this commit, on the machine of 5 cores: `npm run lint`, both type checks, `npm run dry-run` and `npm test`.
+
+**Not run.** The fix on the machine that showed the defect, and an end-to-end lane: the lanes of installed agents name their command as a file of the machine, which is copied and never linked, so no lane reaches this line.

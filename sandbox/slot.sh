@@ -454,7 +454,10 @@ cmd_agents() {
           mv "$tmp/out" "$store/$libc"
           rm -rf "$tmp"
         fi
-        cp -al "$store/$libc" "$target.new/$libc" 2>/dev/null || cp -a "$store/$libc" "$target.new/$libc"
+        if ! cp -al "$store/$libc" "$target.new/$libc" 2>/dev/null; then
+          rm -rf "${target:?}.new/$libc"
+          cp -a "$store/$libc" "$target.new/$libc"
+        fi
       fi
       shift 4
     done

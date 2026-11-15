@@ -1554,3 +1554,84 @@ test('a slot installs a release of an agent only when its checksum matches', () 
   )
   assert.equal(execFileSync(entry, { encoding: 'utf8' }), 'released\n')
 })
+
+function released(input: { cache: string; home: string; path?: string }) {
+  Fs.mkdirSync(input.home, { recursive: true })
+  Fs.copyFileSync(Path.resolve('sandbox/slot.sh'), Path.join(input.home, 'slot.sh'))
+  const release = Path.join(input.home, 'release')
+  Fs.writeFileSync(release, '#!/bin/sh\necho released\n')
+  const result = spawnSync(
+    'bash',
+    [
+      '-c',
+      Slot.create({ home: input.home }).agents('claude-code', {
+        binaries: [
+          {
+            arch: Os.arch() === 'arm64' ? 'aarch64' : 'x86_64',
+            libc: 'gnu',
+            sha256: Crypto.createHash('sha256').update(Fs.readFileSync(release)).digest('hex'),
+            url: 'file://' + release,
+          },
+        ],
+        entry: 'claude',
+        format: 'file',
+        provider: 'claude',
+        source: 'release',
+        version: '1.0.0',
+      }),
+    ],
+    {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        ...(input.path ? { PATH: input.path + ':' + process.env['PATH'] } : {}),
+        NANOEVAL_AGENT_CLAUDE_CODE: '',
+        NANOEVAL_CACHE: input.cache,
+      },
+    },
+  )
+  return { entry: Path.join(input.home, 'rt/agents/claude-code/gnu/claude'), result }
+}
+
+test('a slot installs a release whose hard links into its home fail half way', () => {
+  const bin = Path.join(root, 'half', 'bin')
+  Fs.mkdirSync(bin, { recursive: true })
+  const cp = execFileSync('bash', ['-c', 'command -v cp'], { encoding: 'utf8' }).trim()
+  Fs.writeFileSync(
+    Path.join(bin, 'cp'),
+    '#!/bin/sh\nif [ "$1" = -al ]; then mkdir -p "$3"; exit 1; fi\nexec ' + cp + ' "$@"\n',
+    { mode: 0o755 },
+  )
+  const { entry, result } = released({
+    cache: Path.join(root, 'half', 'cache'),
+    home: Path.join(root, 'half', 'sandbox'),
+    path: bin,
+  })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(execFileSync(entry, { encoding: 'utf8' }), 'released\n')
+})
+
+const memory = ['/dev/shm'].find((directory) => {
+  try {
+    Fs.accessSync(directory, Fs.constants.W_OK)
+    return Fs.statSync(directory).dev !== Fs.statSync(root).dev
+  } catch {
+    return false
+  }
+})
+
+test(
+  'a slot installs a release from a cache on another filesystem than its home',
+  { skip: memory ? false : 'this machine has no second filesystem to write to' },
+  () => {
+    const cache = Fs.mkdtempSync(Path.join(memory!, 'nanoeval-installed-'))
+    try {
+      const { entry, result } = released({ cache, home: Path.join(root, 'apart', 'sandbox') })
+      assert.equal(result.status, 0, result.stderr)
+      assert.equal(execFileSync(entry, { encoding: 'utf8' }), 'released\n')
+      assert.equal(Fs.statSync(entry).nlink, 1)
+    } finally {
+      Fs.rmSync(cache, { force: true, recursive: true })
+    }
+  },
+)
