@@ -300,9 +300,12 @@ const usage = `nanoeval <command>
             an agent without them sends nothing. A claude or claude-direct agent that ends in
             :brief_final=on has every turn of its sessions ask nanocode for a final message of
             three lines at most (nano-st-bf=claude:claude-opus-5-5:high:cell_yield_ms=120000:
-            brief_finish=on:fold_finish=on:brief_final=on). The options come in this order
-            where several are named: branches, refusal_fallback, cell_yield_ms, brief_finish,
-            fold_finish, low_effort_rounds, brief_final.
+            brief_finish=on:fold_finish=on:brief_final=on), and one that ends in :lean_cells=on
+            for short code cells, bounded reads of output and no second read of an unchanged
+            file (nano-st-lean=claude:claude-opus-5-5:medium:cell_yield_ms=120000:
+            brief_finish=on:fold_finish=on:brief_final=on:lean_cells=on). The options come in
+            this order where several are named: branches, refusal_fallback, cell_yield_ms,
+            brief_finish, fold_finish, low_effort_rounds, brief_final, lean_cells.
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
@@ -740,6 +743,12 @@ const agentOptions: readonly AgentOption[] = [
     name: 'brief_final',
     read: () => ({ briefFinal: true }),
     write: (agent) => (agent.briefFinal ? on.value : undefined),
+  },
+  {
+    ...on,
+    name: 'lean_cells',
+    read: () => ({ leanCells: true }),
+    write: (agent) => (agent.leanCells ? on.value : undefined),
   },
 ]
 

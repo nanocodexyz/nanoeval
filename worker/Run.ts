@@ -3330,6 +3330,7 @@ export class Run extends DurableObject<Env> {
       ...(deadline ? { deadline } : {}),
       ...(agent.foldFinish ? { foldFinish: true } : {}),
       hand: Protocol.handName,
+      ...(agent.leanCells ? { leanCells: true } : {}),
       ...(agent.lowEffortRounds ? { lowEffortRounds: true } : {}),
       model: agent.model,
       ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),

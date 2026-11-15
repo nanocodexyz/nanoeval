@@ -27,6 +27,7 @@ export type Agent = {
   foldFinish?: true
   id: string
   lazy?: true
+  leanCells?: true
   lowEffortRounds?: true
   model: string
   orchestration?: Orchestration
@@ -52,7 +53,13 @@ export const payers: readonly Payer[] = ['deployment', 'plan']
 
 export type RefusalFallback = 'return_once' | 'session'
 
-export const finishLevers = ['briefFinal', 'briefFinish', 'foldFinish', 'lowEffortRounds'] as const
+export const finishLevers = [
+  'briefFinal',
+  'briefFinish',
+  'foldFinish',
+  'leanCells',
+  'lowEffortRounds',
+] as const
 
 export const planSignIn = 'nanoeval plans sign-in claude'
 
@@ -300,6 +307,7 @@ export function parse(value: unknown): Config {
       ...(agent.foldFinish ? { foldFinish: true as const } : {}),
       id: agent.id,
       ...(agent.lazy ? { lazy: true as const } : {}),
+      ...(agent.leanCells ? { leanCells: true as const } : {}),
       ...(agent.lowEffortRounds ? { lowEffortRounds: true as const } : {}),
       model: agent.model,
       ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),

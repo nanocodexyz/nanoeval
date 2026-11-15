@@ -70,7 +70,7 @@ test('an agent names the ways its sessions end a turn at less cost', () => {
   ])
     assert.throws(
       () => parseAgent(text),
-      /\[:cell_yield_ms=N\]\[:brief_finish=on\]\[:fold_finish=on\]\[:low_effort_rounds=on\]\[:brief_final=on\], not x=/,
+      /\[:cell_yield_ms=N\]\[:brief_finish=on\]\[:fold_finish=on\]\[:low_effort_rounds=on\]\[:brief_final=on\]\[:lean_cells=on\], not x=/,
     )
   assert.deepEqual(
     Config.parse({
@@ -189,7 +189,10 @@ test('an agent names a final message of three lines at most', () => {
     'x=claude:claude-opus-5-5:brief_final=on:cell_yield_ms=120000',
     'x=claude:claude-opus-5-5:brief_final=on:brief_final=on',
   ])
-    assert.throws(() => parseAgent(text), /\[:low_effort_rounds=on\]\[:brief_final=on\], not x=/)
+    assert.throws(
+      () => parseAgent(text),
+      /\[:low_effort_rounds=on\]\[:brief_final=on\]\[:lean_cells=on\], not x=/,
+    )
   assert.deepEqual(
     Config.parse({
       ...config,
@@ -244,6 +247,110 @@ test('a turn sends brief_final as true for an agent that names it, and nothing f
         (name) => Turn.body(all)[name],
       ),
       [true, true, true, true],
+    )
+  }
+})
+
+test('an agent names lean code cells', () => {
+  const all =
+    'nano-st-lean=claude:claude-opus-5-5:medium:cell_yield_ms=120000:brief_finish=on:fold_finish=on:brief_final=on:lean_cells=on'
+  assert.deepEqual(parseAgent(all), {
+    briefFinal: true,
+    briefFinish: true,
+    cellYieldMs: 120000,
+    foldFinish: true,
+    id: 'nano-st-lean',
+    leanCells: true,
+    model: 'claude-opus-5-5',
+    provider: 'claude',
+    thinking: 'medium',
+  })
+  for (const text of [
+    all,
+    'a=claude:claude-opus-5-5:lean_cells=on',
+    'b=claude-direct:claude-opus-5-5:high:lean_cells=on',
+    'c=claude+preflight:claude-opus-5-5:low_effort_rounds=on:lean_cells=on',
+    'd=claude:claude-opus-5-5:high:branches=2:refusal_fallback=session:cell_yield_ms=5000:brief_finish=on:fold_finish=on:low_effort_rounds=on:brief_final=on:lean_cells=on',
+  ])
+    assert.equal(agentText(parseAgent(text)), text)
+  assert.deepEqual(parseAgent('a=claude:claude-opus-5-5:lean_cells=on'), {
+    id: 'a',
+    leanCells: true,
+    model: 'claude-opus-5-5',
+    provider: 'claude',
+  })
+  for (const text of [
+    'x=claude:claude-opus-5-5:lean_cells=off',
+    'x=claude:claude-opus-5-5:lean_cells=true',
+    'x=claude:claude-opus-5-5:lean_cells=',
+    'x=claude:claude-opus-5-5:lean_cells',
+    'x=claude:claude-opus-5-5:lean_cells=on:brief_final=on',
+    'x=claude:claude-opus-5-5:lean_cells=on:brief_finish=on',
+    'x=claude:claude-opus-5-5:lean_cells=on:cell_yield_ms=120000',
+    'x=claude:claude-opus-5-5:lean_cells=on:lean_cells=on',
+  ])
+    assert.throws(() => parseAgent(text), /\[:brief_final=on\]\[:lean_cells=on\], not x=/)
+  assert.deepEqual(
+    Config.parse({
+      ...config,
+      agents: [
+        parseAgent('nano=claude:claude-opus-5-5:medium'),
+        parseAgent(all),
+        parseAgent('nanod=claude-direct:claude-opus-5-5:lean_cells=on'),
+      ],
+    }).agents.map((agent) => [
+      agent.id,
+      agent.briefFinal,
+      agent.briefFinish,
+      agent.foldFinish,
+      agent.leanCells,
+      agent.lowEffortRounds,
+    ]),
+    [
+      ['nano', undefined, undefined, undefined, undefined, undefined],
+      ['nano-st-lean', true, true, true, true, undefined],
+      ['nanod', undefined, undefined, undefined, true, undefined],
+    ],
+  )
+  assert.equal(Config.finishLevers.includes('leanCells'), true)
+  assert.throws(
+    () =>
+      Config.parse({
+        ...config,
+        agents: [parseAgent('nanox=codex:gpt-6-luna:high:lean_cells=on')],
+      }),
+    /nanox has a leanCells, which only a claude session takes/,
+  )
+})
+
+test('a turn sends lean_cells as true for an agent that names it, and nothing for one that does not', () => {
+  const input = { at: 1_800_000_000_000, session: 'run-a00001' }
+  for (const orchestration of [undefined, 'direct'] as const) {
+    const plain = { ...turn, ...(orchestration ? { orchestration } : {}) }
+    assert.equal('lean_cells' in Turn.body(plain), false)
+    assert.equal('lean_cells' in JSON.parse(Turn.sent(plain, input)), false)
+    const others = {
+      ...plain,
+      briefFinal: true,
+      briefFinish: true,
+      foldFinish: true,
+      lowEffortRounds: true,
+    } as const
+    assert.equal('lean_cells' in Turn.body(others), false)
+    assert.equal('lean_cells' in JSON.parse(Turn.sent(others, input)), false)
+    const named = { ...plain, leanCells: true } as const
+    assert.equal(Turn.body(named).lean_cells, true)
+    assert.equal(JSON.parse(Turn.sent(named, input)).lean_cells, true)
+    assert.deepEqual(
+      Object.keys(Turn.body(named)).filter((key) => key !== 'lean_cells'),
+      Object.keys(Turn.body(plain)),
+    )
+    const all = { ...others, leanCells: true } as const
+    assert.deepEqual(
+      ['brief_final', 'brief_finish', 'fold_finish', 'lean_cells', 'low_effort_rounds'].map(
+        (name) => Turn.body(all)[name],
+      ),
+      [true, true, true, true, true],
     )
   }
 })

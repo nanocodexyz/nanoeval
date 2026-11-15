@@ -7,6 +7,7 @@ export type Turn = {
   deadline?: { atMs: number; limitMs: number }
   foldFinish?: true
   hand?: string
+  leanCells?: true
   lowEffortRounds?: true
   model: string
   orchestration?: 'direct' | 'jobs'
@@ -25,6 +26,7 @@ function levers(turn: Turn): Record<string, true> {
     ...(turn.briefFinal ? { brief_final: true as const } : {}),
     ...(turn.briefFinish ? { brief_finish: true as const } : {}),
     ...(turn.foldFinish ? { fold_finish: true as const } : {}),
+    ...(turn.leanCells ? { lean_cells: true as const } : {}),
     ...(turn.lowEffortRounds ? { low_effort_rounds: true as const } : {}),
   }
 }
