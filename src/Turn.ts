@@ -12,6 +12,13 @@ export type Turn = {
   thinking?: string
 }
 
+export function deadline(
+  limits: Pick<Config.Config['limits'], 'noDeadline'>,
+  input: { limitMs: number; now: number },
+): Turn['deadline'] {
+  return limits.noDeadline ? undefined : { atMs: input.now + input.limitMs, limitMs: input.limitMs }
+}
+
 export function body(turn: Turn): Record<string, unknown> {
   return {
     ...(turn.hand ? { hand: turn.hand } : {}),

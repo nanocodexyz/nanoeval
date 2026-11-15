@@ -83,6 +83,11 @@ test('a run may bound the time of the agent in every row: the smaller of the tas
   assert.equal(Config.parse(config({ agentMaxSec: 600 })).limits.agentMaxSec, 600)
   for (const agentMaxSec of [0, -1, 1.5, '600', null])
     assert.throws(() => Config.parse(config({ agentMaxSec })), /limits.agentMaxSec/)
+  assert.equal('noDeadline' in Config.parse(config({})).limits, false)
+  assert.equal('noDeadline' in Config.parse(config({ noDeadline: false })).limits, false)
+  assert.equal(Config.parse(config({ noDeadline: true })).limits.noDeadline, true)
+  for (const noDeadline of [0, 'yes', null])
+    assert.throws(() => Config.parse(config({ noDeadline })), /limits.noDeadline/)
 
   const task = { agent: { timeoutSec: 1800 }, verifier: { env: {}, timeoutSec: 900 } }
   const short = { agent: { timeoutSec: 300 }, verifier: { env: {}, timeoutSec: 900 } }

@@ -262,6 +262,20 @@ test('a rerun keeps the limit on the agent of its run unless the command names o
   )
 })
 
+test('a rerun of a run that sent no deadline sends none, and so does one whose command says so', () => {
+  const silent = { ...parent, limits: { ...parent.limits, noDeadline: true as const } }
+  const named = new Set(['rerun', 'errored', 'name'])
+  assert.equal(rerunConfig(own, { named, parent: silent }).limits.noDeadline, true)
+  assert.equal('noDeadline' in rerunConfig(own, { named, parent }).limits, false)
+  assert.equal(
+    rerunConfig(
+      { ...own, limits: { ...own.limits, noDeadline: true } },
+      { named: new Set([...named, 'no-deadline']), parent },
+    ).limits.noDeadline,
+    true,
+  )
+})
+
 test('a rerun keeps the limit on the verifier of its run unless the command names one', () => {
   const bounded = { ...parent, limits: { ...parent.limits, verifierMaxSec: 240 } }
   const named = new Set(['rerun', 'errored', 'name'])
