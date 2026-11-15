@@ -1428,7 +1428,7 @@ async function main(): Promise<void> {
         ...(refusedPassing
           ? { refusals: { passing: 3 } }
           : spent
-            ? { refusals: { spentAfter: 2 } }
+            ? { refusals: { spentAfter: 3 } }
             : funded
               ? { refusals: { spentAfter: 2, spentTimes: 2 } }
               : {}),
@@ -4198,7 +4198,7 @@ async function main(): Promise<void> {
       }
       assert.match(status['refused'].message, /^The wallet holds 0 of the 3 its channel needs now/)
       assert.equal(status['lostClaims'], 0)
-      assert.equal(mock!.modelCosts.length, 2)
+      assert.equal(mock!.modelCosts.length, 3)
       assert.ok(mock!.paymentRefusals.length >= 2, 'a refused payment is sent again while it waits')
       assert.ok(mock!.paymentRefusals.every((type) => type.endsWith('/payment-failed')))
       assert.ok(
