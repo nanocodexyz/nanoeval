@@ -956,3 +956,62 @@ test('a task that is another task in the eval version of the baseline is left ou
     ['same'],
   )
 })
+
+test('sides under different limits on the time of the agent are named, and refused unless asked for', () => {
+  const luna = { id: 'luna', model: 'gpt-6-luna', provider: 'codex' as const }
+  const outcomes = ['passed', 'failed'] as const
+  const bounded = (id: string, agentMaxSec: number): Compare.Run => {
+    const run = arm(id, luna, { outcomes, route: gateway })
+    return { ...run, attempts: run.attempts.map((attempt) => ({ ...attempt, agentMaxSec })) }
+  }
+  const plain = arm('run-plain', luna, { outcomes, route: gateway })
+  const [change] = Compare.changes(plain, bounded('run-600', 600))
+  assert.deepEqual(change!.pair.differs, [
+    "agent time limit the task's own in the baseline and 600 s in the run",
+  ])
+  assert.match(
+    Compare.unlike([change!.pair])!,
+    /^luna differs from the baseline: agent time limit the task's own in the baseline and 600 s in the run\. /,
+  )
+  assert.ok(
+    lines(Compare.against(plain, bounded('run-600', 600))).some((line) =>
+      line.startsWith(
+        "UNLIKE: agent time limit the task's own in the baseline and 600 s in the run: ",
+      ),
+    ),
+  )
+  assert.deepEqual(
+    Compare.changes(bounded('run-900', 900), bounded('run-600', 600))[0]!.pair.differs,
+    ['agent time limit 900 s in the baseline and 600 s in the run'],
+  )
+  assert.deepEqual(
+    Compare.changes(bounded('run-a', 600), bounded('run-b', 600))[0]!.pair.differs,
+    [],
+  )
+  assert.deepEqual(
+    Compare.pairs(
+      Compare.members([bounded('run-600', 600)]),
+      Compare.planned([luna], { routes: () => [gateway] }),
+    ).map((pair) => pair.differs),
+    [["agent time limit 600 s in the baseline and the task's own in the run"]],
+    'a run that is not made yet is known by the limit it asks for',
+  )
+  assert.deepEqual(
+    Compare.pairs(
+      Compare.members([bounded('run-600', 600)]),
+      Compare.planned([luna], { agentMaxSec: 600, routes: () => [gateway] }),
+    ).map((pair) => pair.differs),
+    [[]],
+  )
+  const solved = { id: 'oracle', model: 'solution', provider: 'oracle' as const }
+  const solutions = arm('run-solved', solved, { outcomes })
+  assert.deepEqual(
+    Compare.changes(solutions, {
+      ...solutions,
+      attempts: solutions.attempts.map((attempt) => ({ ...attempt, agentMaxSec: 600 })),
+      id: 'run-solved-600',
+    })[0]!.pair.differs,
+    ["agent time limit the task's own in the baseline and 600 s in the run"],
+    'the solutions under a limit are not the solutions without one',
+  )
+})

@@ -163,7 +163,7 @@ const usage = `nanoeval <command>
             [--sandbox-timeout-sec N] [--sandbox-lease-sec 300] [--runtime | --runtime-blob SHA256]
             [--sandbox-budget-usd 0] [--model-budget-usd N] [--setup-sec 600] [--attach-sec 60]
             [--model-price MODEL=INPUT,CACHED,OUTPUT]...
-            [--model-requests-per-min [MODEL=]REQUESTS]...
+            [--model-requests-per-min [MODEL=]REQUESTS]... [--agent-max-sec N]
             [--lease-sec 60] [--claims 3] [--step-retries 3] [--poll-ms 250]
             [--disks keep|remove] [--free-disk-mb N] [--verifier-cache] [--name NAME] [--wait]
             [--key-deposit N] [--key-top-up N]
@@ -225,6 +225,13 @@ const usage = `nanoeval <command>
             response of an agent or a judge on that model that carries no cost is priced
             from its tokens when it ends: the price counts in the spend and against the
             budget as a reported cost does, and the attempt says its cost is by list.
+            --agent-max-sec bounds the time of the agent in every row of the run: the agent
+            of a row has the smaller of its task's own agent timeout and this many seconds,
+            and one that is not done by then is an agent timeout, verified and scored as
+            any other. No task and no verifier changes. Every attempt of such a run
+            carries agentMaxSec, arms and the scorecard of a loop print the limit, and a
+            baseline under another limit, or under none, is not the baseline of the run:
+            a rule passes it over and one named by its id is refused until --unlike.
             --model-requests-per-min gives the requests a minute the endpoint answers for a
             model, or for each model of the run where none is named: the run then sends
             the requests for that model, of every agent and the judge on it, one such
@@ -435,7 +442,8 @@ const usage = `nanoeval <command>
             --results reads a run from a file that holds what the Worker answers for
             /v1/runs/RUN/results, and needs no Worker. An attempt whose usage names no cost
             is priced from its tokens with --model-price, as run --model-price does when
-            the run is made, and the line says which costs are at list prices.
+            the run is made, and the line says which costs are at list prices. An arm of a
+            run made with --agent-max-sec says its agent time limit.
   revision  [--nanocode REV|DIR|pinned] [--nanocode-ts REV|DIR|pinned] [--sdk REV|DIR|pinned]
             [--sdk-fallback pinned] [--lab DIR] [--hand-profile release]
             [--nanocode-repository URL|DIR] [--nanocode-ts-repository URL|DIR] [--build-only]
@@ -683,6 +691,7 @@ async function candidate(api: Api, id: string): Promise<Baseline.Candidate> {
     eval: status['eval'],
     id,
     members: Compare.planned(config.agents, {
+      agentMaxSec: config.limits.agentMaxSec,
       routes: (agent) => (status['agents']?.[agent.id]?.routes ?? []) as Route.Route[],
       run: id,
     }),
@@ -1527,6 +1536,7 @@ export function rerunConfig(
   const { named, parent } = input
   const from = <T>(flag: string, mine: T, theirs: T): T => (named.has(flag) ? mine : theirs)
   const modelUsd = from('model-budget-usd', own.budget.modelUsd, parent.budget.modelUsd)
+  const agentMaxSec = from('agent-max-sec', own.limits.agentMaxSec, parent.limits.agentMaxSec)
   const paces = from('model-requests-per-min', own.paces, parent.paces)
   const prices = from('model-price', own.prices, parent.prices)
   const freeDiskMb = from('free-disk-mb', own.sandbox.freeDiskMb, parent.sandbox.freeDiskMb)
@@ -1542,6 +1552,7 @@ export function rerunConfig(
       sandboxUsd: from('sandbox-budget-usd', own.budget.sandboxUsd, parent.budget.sandboxUsd),
     },
     limits: {
+      ...(agentMaxSec === undefined ? {} : { agentMaxSec }),
       attachSec: from('attach-sec', own.limits.attachSec, parent.limits.attachSec),
       claims: from('claims', own.limits.claims, parent.limits.claims),
       leaseSec: from('lease-sec', own.limits.leaseSec, parent.limits.leaseSec),
@@ -1702,6 +1713,7 @@ async function main(
     options: {
       agent: { multiple: true, type: 'string' },
       'allow-empty': { default: false, type: 'boolean' },
+      'agent-max-sec': { type: 'string' },
       'attach-sec': { default: '60', type: 'string' },
       attempts: { type: 'string' },
       backend: { type: 'string' },
@@ -2917,6 +2929,7 @@ async function main(
         : {}),
       ...(selection.limit === undefined || parent ? {} : { limit: selection.limit }),
       limits: {
+        ...(values['agent-max-sec'] ? { agentMaxSec: Number(values['agent-max-sec']) } : {}),
         attachSec: Number(values['attach-sec']),
         claims: Number(values.claims),
         leaseSec: Number(values['lease-sec']),
@@ -2991,6 +3004,7 @@ async function main(
     if (unserved) throw new Error(unserved)
     const asked = () =>
       Compare.planned(config.agents, {
+        agentMaxSec: config.limits.agentMaxSec,
         routes: (agent) => {
           const paid = Route.planned(deployment, {
             plan: config.payer === 'plan',
@@ -3039,6 +3053,17 @@ async function main(
       if (refusal) throw new Error(refusal)
     }
     const created = await api.create(config, values.location ? { location: values.location } : {})
+    if (
+      config.limits.agentMaxSec !== undefined &&
+      (await api.config(created.id)).limits.agentMaxSec !== config.limits.agentMaxSec
+    ) {
+      await api.cancel(created.id)
+      throw new Error(
+        'the Worker made run ' +
+          created.id +
+          ' without the limit of --agent-max-sec, which a Worker of an earlier nanoeval does not know: the run was cancelled. Start the Worker of this checkout',
+      )
+    }
     console.log(
       'run ' +
         created.id +

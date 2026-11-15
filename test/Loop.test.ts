@@ -291,3 +291,26 @@ test('the command refuses a loop it cannot make in one line, before it starts an
   )
   assert.equal(served.status, 1)
 })
+
+test('the scorecard of a loop under a limit on the time of its agents says the limit of every arm', () => {
+  const bounded = run('d0000000-0000-4000-8000-000000000000', 'bounded', [
+    ...twice('a', () => 'passed').map((attempt) => ({ ...attempt, agentMaxSec: 600 })),
+    ...steady,
+  ])
+  const card = Loop.scorecard(bounded, { baseline: [], prices: {}, slots: 5, wallSec: 125 })
+  assert.deepEqual(
+    card.arms.map((arm) => [arm.agent, arm.agentLimits]),
+    [
+      ['a', ['600 s']],
+      ['b', ["the task's own"]],
+    ],
+  )
+  const [header, , a, b] = Loop.text(card).split('\n')
+  assert.match(header!, / \| Wall time \| Agent time limit \| Infrastructure errors \| /)
+  assert.match(a!, / \| 1 s \| 600 s \| 0 \| /)
+  assert.match(b!, / \| 1 s \| the task's own \| 0 \| /)
+  assert.doesNotMatch(
+    Loop.text(Loop.scorecard(main, { baseline: [], prices: {}, slots: 5, wallSec: 125 })),
+    /Agent time limit/,
+  )
+})

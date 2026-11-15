@@ -1760,6 +1760,8 @@ async function main(): Promise<void> {
     }
     const packing = scenario === 'packing'
     const derived = scenario === 'threads'
+    const bounded = scenario === 'bounded'
+    const boundSec = 10
     const lost = 'tasks/write-greeting'
     const directories = judged
       ? ['final-answer', 'judged-answer'].map((name) => Path.join('test/fixtures', name))
@@ -1769,33 +1771,35 @@ async function main(): Promise<void> {
           ? ['extract-todos', 'uppercase-message', 'write-greeting'].map((name) =>
               Path.join('tasks', name),
             )
-          : failures
-            ? [
-                ...[
-                  'large-tests',
-                  'no-reward',
-                  'slow-agent',
-                  'unreported-tests',
-                  ...(backend === 'dir'
-                    ? []
-                    : ['background-process', 'memory-limit', 'plain-user']),
-                ].map((name) => Path.join('test/fixtures', name)),
-                lost,
-              ]
-            : isolated
-              ? [Network.fixture]
-              : closed
-                ? ['closed-agent', 'closed-network', 'closed-verifier'].map((name) =>
-                    Path.join('test/fixtures', name),
-                  )
-                : cached
-                  ? [Path.join('test/fixtures', 'cached-verifier')]
-                  : slotGone
-                    ? [Path.join('test/fixtures', underAgent ? 'slow-solution' : 'slow-verifier')]
-                    : [
-                        ...taskNames.map((name) => Path.join('tasks', name)),
-                        ...(unsound ? [Path.join('test/fixtures', 'stale-solution')] : []),
-                      ]
+          : bounded
+            ? [Path.join('test/fixtures', 'long-agent'), Path.join('tasks', 'write-greeting')]
+            : failures
+              ? [
+                  ...[
+                    'large-tests',
+                    'no-reward',
+                    'slow-agent',
+                    'unreported-tests',
+                    ...(backend === 'dir'
+                      ? []
+                      : ['background-process', 'memory-limit', 'plain-user']),
+                  ].map((name) => Path.join('test/fixtures', name)),
+                  lost,
+                ]
+              : isolated
+                ? [Network.fixture]
+                : closed
+                  ? ['closed-agent', 'closed-network', 'closed-verifier'].map((name) =>
+                      Path.join('test/fixtures', name),
+                    )
+                  : cached
+                    ? [Path.join('test/fixtures', 'cached-verifier')]
+                    : slotGone
+                      ? [Path.join('test/fixtures', underAgent ? 'slow-solution' : 'slow-verifier')]
+                      : [
+                          ...taskNames.map((name) => Path.join('tasks', name)),
+                          ...(unsound ? [Path.join('test/fixtures', 'stale-solution')] : []),
+                        ]
     const agents: Config.Agent[] =
       model === 'oracle'
         ? [oracle]
@@ -1855,6 +1859,7 @@ async function main(): Promise<void> {
                       },
                     ]
                   : alone ||
+                      bounded ||
                       cached ||
                       closed ||
                       derived ||
@@ -1872,6 +1877,7 @@ async function main(): Promise<void> {
                         {
                           id:
                             alone ||
+                            bounded ||
                             cached ||
                             closed ||
                             derived ||
@@ -2044,6 +2050,7 @@ async function main(): Promise<void> {
       agents,
       attempts:
         alone ||
+        bounded ||
         branching ||
         cached ||
         closed ||
@@ -2076,6 +2083,7 @@ async function main(): Promise<void> {
       ...(planned ? { payer: 'plan' as const } : {}),
       ...(funded ? { key: { topUp: 5 } } : {}),
       limits: {
+        ...(bounded ? { agentMaxSec: boundSec } : {}),
         attachSec: 60,
         claims: 3,
         leaseSec: noticeSec,
@@ -4066,6 +4074,60 @@ async function main(): Promise<void> {
       assert.ok(
         Math.abs(status['spend'].modelUsd - mock!.modelCosts.reduce((all, usd) => all + usd, 0)) <
           1e-9,
+      )
+      await pass()
+      return
+    }
+
+    if (bounded) {
+      const byTask = Object.fromEntries(
+        details.map((detail) => [detail['attempt'].task as string, detail]),
+      )
+      const long = byTask['fixtures/long-agent']!
+      const short = byTask['nanoeval/write-greeting']!
+      const own = Object.fromEntries(
+        imported.tasks.map((task) => [task.name, task.agent.timeoutSec]),
+      )
+      assert.ok(
+        own['fixtures/long-agent']! > 3 * boundSec && own['nanoeval/write-greeting']! > boundSec,
+        'both tasks allow their agent more than the run does',
+      )
+      assert.equal((await api.config(created.id)).limits.agentMaxSec, boundSec)
+      assert.deepEqual(
+        details.map((detail) => detail['result'].agentMaxSec),
+        [boundSec, boundSec],
+        'every attempt of the run carries the limit of the run',
+      )
+      assert.equal(long['result'].outcome, 'failed')
+      assert.equal(long['result'].reward, 0, 'a row that the limit ended is verified and scored')
+      assert.deepEqual(
+        [long['result'].failure.kind, long['result'].failure.message],
+        ['agent_timeout', 'the agent did not finish within ' + boundSec + ' s'],
+      )
+      const agentSec =
+        (long['result'].timing.agentExecution.finishedAt -
+          long['result'].timing.agentExecution.startedAt) /
+        1000
+      assert.ok(
+        agentSec >= boundSec && agentSec < 3 * boundSec,
+        'the agent was ended at the limit of the run, not at the ' +
+          own['fixtures/long-agent'] +
+          ' s of its task: ' +
+          agentSec,
+      )
+      assert.ok(long['result'].timing.verifier, 'its verifier ran')
+      assert.equal(short['result'].outcome, 'passed', JSON.stringify(short['result'].failure))
+      const [arm] = Arms.arms([await api.results(created.id)])
+      assert.deepEqual(arm!.agentLimits, [boundSec + ' s'])
+      assert.match(Arms.line(arm!), new RegExp(', agent time limit ' + boundSec + ' s, errors: '))
+      console.log(
+        'bounded: a run that allows every agent ' +
+          boundSec +
+          ' s ended the agent of a task that allows ' +
+          own['fixtures/long-agent'] +
+          ' s after ' +
+          agentSec.toFixed(1) +
+          ' s as an agent timeout, verified it, and passed the row that was done in time',
       )
       await pass()
       return

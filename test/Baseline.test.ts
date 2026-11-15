@@ -259,3 +259,26 @@ test('the latest run that fits is taken, and a search that finds none says what 
     /: no run is listed\. /,
   )
 })
+
+test('a run under another limit on the time of its agents, or under none, is no baseline by rule', () => {
+  const bounded = (agentMaxSec?: number) =>
+    Compare.planned([luna], { agentMaxSec, routes: () => [], run: 'a' })
+  const asked = {
+    ...wanted,
+    members: Compare.planned([luna], { agentMaxSec: 600, routes: () => [] }),
+  }
+  assert.equal(
+    Baseline.misfit(candidate('a', { members: bounded() }), asked),
+    "under another limit on the agent's time",
+  )
+  assert.equal(
+    Baseline.misfit(candidate('a', { members: bounded(900) }), asked),
+    "under another limit on the agent's time",
+  )
+  assert.equal(
+    Baseline.misfit(candidate('a', { members: bounded(600) }), wanted),
+    "under another limit on the agent's time",
+    'a bounded run is no baseline of a run that bounds nothing',
+  )
+  assert.equal(Baseline.misfit(candidate('a', { members: bounded(600) }), asked), undefined)
+})

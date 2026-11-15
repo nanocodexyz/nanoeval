@@ -247,3 +247,17 @@ test('the list of runs has a line for each run', () => {
       'id-2  finished  passed 3, failed 0, errored 1 of 4  created 1970-01-01T00:00:01.000Z  tb21-small@aaaaaaaaaaaa  second',
   )
 })
+
+test('a rerun keeps the limit on the agent of its run unless the command names one', () => {
+  const bounded = { ...parent, limits: { ...parent.limits, agentMaxSec: 600 } }
+  const named = new Set(['rerun', 'errored', 'name'])
+  assert.equal(rerunConfig(own, { named, parent: bounded }).limits.agentMaxSec, 600)
+  assert.equal('agentMaxSec' in rerunConfig(own, { named, parent }).limits, false)
+  assert.equal(
+    rerunConfig(
+      { ...own, limits: { ...own.limits, agentMaxSec: 300 } },
+      { named: new Set([...named, 'agent-max-sec']), parent: bounded },
+    ).limits.agentMaxSec,
+    300,
+  )
+})

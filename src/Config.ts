@@ -54,6 +54,7 @@ export type Config = {
   key?: { deposit?: number; topUp?: number }
   limit?: number
   limits: {
+    agentMaxSec?: number
     attachSec: number
     claims: number
     leaseSec: number
@@ -129,6 +130,15 @@ export function network(sandbox: Pick<Config['sandbox'], 'backend'>): Slot.Netwo
 export function harness(agent: Pick<Agent, 'provider'>): Harness {
   if (agent.provider === 'oracle') return 'oracle'
   return Installed.is(agent.provider) ? 'installed' : 'session'
+}
+
+export function bounded<Task extends Pick<Eval.Task, 'agent'>>(
+  limits: Pick<Config['limits'], 'agentMaxSec'>,
+  task: Task,
+): Task {
+  return limits.agentMaxSec === undefined || task.agent.timeoutSec <= limits.agentMaxSec
+    ? task
+    : { ...task, agent: { ...task.agent, timeoutSec: limits.agentMaxSec } }
 }
 
 export function lifetimeSec(
@@ -325,6 +335,9 @@ export function parse(value: unknown): Config {
         }),
     ...(config.limit === undefined ? {} : { limit: integer(config.limit, 'limit', 1) }),
     limits: {
+      ...(limits.agentMaxSec === undefined
+        ? {}
+        : { agentMaxSec: integer(limits.agentMaxSec, 'limits.agentMaxSec', 1) }),
       attachSec: integer(limits.attachSec, 'limits.attachSec', 1),
       claims: integer(limits.claims, 'limits.claims', 1),
       leaseSec: integer(limits.leaseSec, 'limits.leaseSec', 1),

@@ -60,3 +60,53 @@ test('the funding of the key is a deposit above zero, a top-up of at least zero,
   for (const key of [{}, { deposit: 0 }, { topUp: -1 }, { deposit: '5' }, null])
     assert.throws(() => Config.parse(config(key)), /key holds a deposit/)
 })
+
+test('a run may bound the time of the agent in every row: the smaller of the task and the run', () => {
+  const config = (limits: Record<string, unknown>) => ({
+    agents,
+    attempts: 1,
+    budget: { sandboxUsd: 0 },
+    eval: { name: 'samples' },
+    limits: { attachSec: 60, claims: 3, leaseSec: 60, setupSec: 600, stepRetries: 3, ...limits },
+    name: 'bounded',
+    sandbox: {
+      backend: 'krun',
+      disks: 'keep',
+      max: 0,
+      network: 'private',
+      pollMs: 250,
+      provider: 'local',
+    },
+  })
+  assert.equal(Config.parse(config({})).limits.agentMaxSec, undefined)
+  assert.equal('agentMaxSec' in Config.parse(config({})).limits, false)
+  assert.equal(Config.parse(config({ agentMaxSec: 600 })).limits.agentMaxSec, 600)
+  for (const agentMaxSec of [0, -1, 1.5, '600', null])
+    assert.throws(() => Config.parse(config({ agentMaxSec })), /limits.agentMaxSec/)
+
+  const task = { agent: { timeoutSec: 1800 }, verifier: { env: {}, timeoutSec: 900 } }
+  const short = { agent: { timeoutSec: 300 }, verifier: { env: {}, timeoutSec: 900 } }
+  assert.equal(Config.bounded({}, task), task, 'a run that names no limit hands the task on')
+  assert.equal(
+    Config.bounded({ agentMaxSec: 600 }, short),
+    short,
+    'a task under the limit is itself',
+  )
+  assert.equal(Config.bounded({ agentMaxSec: 300 }, short), short)
+  assert.deepEqual(Config.bounded({ agentMaxSec: 600 }, task), {
+    agent: { timeoutSec: 600 },
+    verifier: { env: {}, timeoutSec: 900 },
+  })
+  assert.equal(task.agent.timeoutSec, 1800, 'the task is not changed')
+  const limits = { agentMaxSec: 600, setupSec: 600 }
+  assert.equal(Config.rowSec(limits, Config.bounded(limits, task)), 600 + 600 + 900)
+  assert.equal(Config.rowSec(limits, task), 600 + 1800 + 900)
+  assert.equal(
+    Config.lifetimeSec(
+      Config.parse(config(limits)),
+      [task, short].map((each) => Config.bounded(limits, each)),
+    ),
+    600 + (600 + 600 + 900) + (600 + 300 + 900),
+    'the lifetime of a sandbox of the run is counted with the bounded rows',
+  )
+})

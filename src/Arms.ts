@@ -1,6 +1,6 @@
 import * as Compare from './Compare.ts'
 import * as Price from './Price.ts'
-import type * as Result from './Result.ts'
+import * as Result from './Result.ts'
 
 export type Class = 'agent' | 'cancelled' | 'infrastructure'
 
@@ -19,6 +19,7 @@ export const unrecorded = 'unrecorded'
 
 export type Arm = {
   agent: string
+  agentLimits: string[]
   cachedTokens: number
   costUsd: number | null
   errored: number
@@ -65,6 +66,7 @@ export function arms(given: readonly Compare.Run[], prices: Price.List = {}): Ar
     for (const [agent, attempts] of own) {
       const arm: Arm = {
         agent,
+        agentLimits: Result.limits(attempts),
         cachedTokens: 0,
         costUsd: null,
         errored: 0,
@@ -199,6 +201,14 @@ export function perPass(arm: Arm): string {
   return arm.usdPerPass === null ? 'no pass' : usd(arm.usdPerPass)
 }
 
+export function limited(arm: Arm): string {
+  return arm.agentLimits.join(' and ')
+}
+
+export function bounded(found: readonly Arm[]): boolean {
+  return found.some((arm) => limited(arm) !== Result.ownLimit)
+}
+
 function waited(arm: Arm): string {
   return arm.waits + ' (' + Math.round(arm.waitSec) + ' s)'
 }
@@ -244,6 +254,7 @@ export function line(arm: Arm): string {
       : '') +
     ', wall time ' +
     Compare.duration(arm.wallSec) +
+    (bounded([arm]) ? ', agent time limit ' + limited(arm) : '') +
     (arm.waits ? ', model waits ' + waited(arm) : '') +
     ', errors: infrastructure ' +
     infrastructure(arm) +
@@ -269,6 +280,7 @@ export function table(found: readonly Arm[]): string {
         'Input tokens (cached)',
         'Output tokens',
         'Wall time',
+        ...(bounded(found) ? ['Agent time limit'] : []),
         'Model waits',
         'Infrastructure errors',
         'Agent or model errors',
@@ -289,6 +301,7 @@ export function table(found: readonly Arm[]): string {
           : 'not recorded',
         arm.metered ? number(arm.outputTokens) : 'not recorded',
         Compare.duration(arm.wallSec),
+        ...(bounded(found) ? [limited(arm)] : []),
         arm.waits ? waited(arm) : '0',
         infrastructure(arm),
         agent(arm),

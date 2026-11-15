@@ -30,6 +30,7 @@ export type Attempt = {
     provider: 'claude' | 'codex' | 'oracle' | Installed.Kind
     thinking?: string
   }
+  agentMaxSec?: number
   claims?: number
   failure?: Failure
   finishedAt: number
@@ -115,6 +116,16 @@ export function timeout(attempt: {
 }
 
 export const afterTimeout = 'after the agent timeout'
+
+export const ownLimit = "the task's own"
+
+export function limit(agentMaxSec: number | undefined): string {
+  return agentMaxSec === undefined ? ownLimit : agentMaxSec + ' s'
+}
+
+export function limits(attempts: readonly Pick<Attempt, 'agentMaxSec'>[]): string[] {
+  return [...new Set(attempts.map((attempt) => limit(attempt.agentMaxSec)))].sort()
+}
 
 export function late(state: string, failure: Failure): string {
   return state + ' ' + afterTimeout + ' (' + failure.message + ')'

@@ -69,6 +69,10 @@ export function misfit(candidate: Candidate, wanted: Wanted): string | undefined
     (candidate.nanocode.hands.length !== 1 || candidate.nanocode.hands[0] !== rule.hand)
   )
     return 'on other builds'
+  const limits = (members: readonly Compare.Member[]) =>
+    [...new Set(members.flatMap((member) => member.limits))].sort().join(' ')
+  if (limits(candidate.members) !== limits(wanted.members))
+    return "under another limit on the agent's time"
   const pairs = Compare.pairs(candidate.members, wanted.members)
   if (pairs.some((pair) => pair.by !== 'kind')) return 'without these agents'
   if (pairs.some((pair) => pair.differs.length)) return 'on another model route'

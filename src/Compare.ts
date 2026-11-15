@@ -43,6 +43,7 @@ export type Member = {
   agent: Result.Attempt['agent']
   attempts: Result.Attempt[]
   label: string
+  limits: string[]
   routes: Route.Route[]
   runs: string[]
 }
@@ -458,6 +459,7 @@ export function members(runs: readonly Run[]): Member[] {
           agent: attempt.agent,
           attempts: [],
           label: attempt.agent.id,
+          limits: [],
           routes: [],
           runs: [],
         }
@@ -466,19 +468,26 @@ export function members(runs: readonly Run[]): Member[] {
       member.attempts.push(attempt)
       if (!member.runs.includes(run.id)) member.runs.push(run.id)
     }
-  for (const member of found)
+  for (const member of found) {
+    member.limits = Result.limits(member.attempts)
     member.routes = Route.distinct(member.attempts.map((attempt) => attempt.route))
+  }
   return found
 }
 
 export function planned(
   agents: readonly Result.Attempt['agent'][],
-  input: { routes: (agent: Result.Attempt['agent']) => readonly Route.Route[]; run?: string },
+  input: {
+    agentMaxSec?: number | undefined
+    routes: (agent: Result.Attempt['agent']) => readonly Route.Route[]
+    run?: string
+  },
 ): Member[] {
   return agents.map((agent) => ({
     agent,
     attempts: [],
     label: agent.id,
+    limits: [Result.limit(input.agentMaxSec)],
     routes: Route.distinct(input.routes(agent)),
     runs: input.run === undefined ? [] : [input.run],
   }))
@@ -546,6 +555,11 @@ function match(member: Member, sides: Sides): { found: Member[]; pair: Pair } {
   const lack = (name: Recorded, side: 'both' | 'left' | 'right') => {
     if (side !== 'right') missing.baseline.push(name)
     if (side !== 'left') missing.run.push(name)
+  }
+  if (found.length) {
+    const before = unique(found.flatMap((each) => each.limits))
+    if (before.join(' ') !== member.limits.join(' '))
+      differs.push(said('agent time limit', { after: member.limits, before }))
   }
   if (found.length && member.agent.provider !== 'oracle') {
     const kinds = unique(found.map((each) => kind(each.agent)))

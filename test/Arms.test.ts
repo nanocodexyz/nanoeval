@@ -79,6 +79,7 @@ test('an arm is its passes, its two pass rates, its cost, its tokens, its time a
   assert.deepEqual(rest, [])
   assert.deepEqual(arm, {
     agent: 'fx',
+    agentLimits: ["the task's own"],
     cachedTokens: 8 * 600_000,
     costUsd: arm!.costUsd,
     errored: 6,
@@ -237,4 +238,30 @@ test('an arm sums the model requests its run held or asked again, and the second
   assert.match(Arms.line(arm!), /, wall time 1 s, model waits 5 \(11 s\), errors: /)
   assert.match(Arms.table([arm!]), / \| 1 s \| 5 \(11 s\) \| 0 \| /)
   assert.doesNotMatch(Arms.line(Arms.arms([open])[0]!), /model waits/)
+})
+
+test('an arm of a run that bounds the time of its agents says the limit, and a table that holds one says it of every arm', () => {
+  const bounded = run('bounded', [
+    { ...row('a', 1, { outcome: 'passed' }), agentMaxSec: 600 },
+    { ...row('b', 1, { kind: 'agent_timeout', outcome: 'failed' }), agentMaxSec: 600 },
+  ])
+  const [arm] = Arms.arms([bounded])
+  const [plain] = Arms.arms([open])
+  assert.deepEqual(arm!.agentLimits, ['600 s'])
+  assert.match(Arms.line(arm!), /, wall time 1 s, agent time limit 600 s, errors: /)
+  assert.doesNotMatch(Arms.line(plain!), /agent time limit/)
+  assert.doesNotMatch(Arms.table([plain!]), /Agent time limit/)
+  const table = Arms.table([arm!, plain!]).split('\n')
+  assert.match(table[0]!, / \| Wall time \| Agent time limit \| Model waits \| /)
+  assert.match(table[2]!, / \| 1 s \| 600 s \| 0 \| /)
+  assert.match(table[3]!, / \| 2 min 5 s \| the task's own \| 0 \| /)
+  const mixed = run('mixed', [
+    { ...row('a', 1, { outcome: 'passed' }), agentMaxSec: 600 },
+    row('b', 1, { outcome: 'passed' }),
+  ])
+  assert.match(
+    Arms.line(Arms.arms([mixed])[0]!),
+    /, agent time limit 600 s and the task's own, errors: /,
+    'rows under two limits are one arm that says both',
+  )
 })

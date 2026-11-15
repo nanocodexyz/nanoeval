@@ -498,7 +498,7 @@ export class Run extends DurableObject<Env> {
         for (const task of tasks)
           for (const agent of config.agents) seeds.push({ agent: agent.id, n, task: task.name })
 
-    const byName = new Map(tasks.map((task) => [task.name, task]))
+    const byName = new Map(tasks.map((task) => [task.name, Config.bounded(config.limits, task)]))
     const longest =
       config.sandbox.provider === 'e2b'
         ? E2b.maxTimeoutSec
@@ -642,7 +642,7 @@ export class Run extends DurableObject<Env> {
     let spec = this.specs.get(name)
     if (!spec) {
       const row = this.sql.all('SELECT body FROM tasks WHERE name = ?', name)[0]!
-      spec = JSON.parse(row['body'] as string) as Eval.Task
+      spec = Config.bounded(this.config().limits, JSON.parse(row['body'] as string) as Eval.Task)
       this.specs.set(name, spec)
     }
     return spec
@@ -3772,6 +3772,9 @@ export class Run extends DurableObject<Env> {
     )[0]!
     const result: Result.Attempt = {
       agent,
+      ...(config.limits.agentMaxSec === undefined
+        ? {}
+        : { agentMaxSec: config.limits.agentMaxSec }),
       ...(row.claims > 1 ? { claims: row.claims } : {}),
       ...(end.failure ? { failure: end.failure } : {}),
       finishedAt: now,
