@@ -7630,3 +7630,14 @@ The four levers give at most $0.1191 a pass, 53 % of the fall, and leave nanocod
 **Checked.** `npm run lint`, `npm run check:types`, `npm test` in the tree of this commit on a machine with 5 cores and no KVM. The unit test holds the recorded shape of the row.
 
 **Not verified.** The end-to-end lane that strands a row (its assertion names the new kind) on krun or ns slots, and a deployed Worker.
+
+## 2026-11-15: a scorecard counts a row that no runner took apart, and it is no attempt
+
+**Problem.** The scorecard left a cancelled row out of the verdicts and took every other errored row as one. A row that no runner took now ends under the kind `unscheduled` (the entry above), and a run made before that kind ends such a row as `environment` with the message that `Result.unscheduledPrefix` starts. Neither is an attempt of the arm: no slot ran for it. As an errored verdict it lowered the pass rate of the arm whose rows the runners did not reach.
+
+**Behavior.** `Scorecard.verdict` is false for a row that `Result.unscheduled` names, in both forms, as it is for a cancelled row. Such a row is in no matched set. An arm of `scorecard.json` holds `unscheduled`, the count of these rows outside the excluded tasks, beside `cancelled`, which no longer holds them. The text ends each arm in `, cancelled N, unscheduled N`, and the page has a column for it and says so under Method.
+
+**Checked.** In the tree of this commit before it was made: `node --test test/Scorecard.test.ts` (13 of 13), with one new test: a row of the kind and a row of the earlier message are no verdict, an `environment` row with another message is one, and a run of two arms with one such row and one cancelled row counts 1 and 1 and matches the one task#attempt left.
+
+**Not verified.** A scorecard of a real run that holds such a row.
+

@@ -550,8 +550,8 @@ const usage = `nanoeval <command>
             and nothing else. The page holds each run with its eval, builds and attempts,
             the whole spec of every arm, and the matched set: the task#attempts that have
             a verdict (passed, failed or errored) in every arm. A cancelled row and a row
-            that no runner claimed are not attempts, and each arm counts its rows outside
-            the set apart. Over the set an arm has its outcomes, pass rate, USD an attempt
+            that no runner took (unscheduled) are not attempts: each arm counts them apart,
+            and its rows outside the set. Over the set an arm has its outcomes, pass rate, USD an attempt
             and a pass at the cost the Worker recorded, output tokens and model calls an
             attempt, and against the arm that --ref names the difference of the pass rates
             and the ratio of USD a pass. Pass rate, difference, USD a pass and ratio carry
@@ -737,8 +737,7 @@ const agentOptions: readonly AgentOption[] = [
         ? { branches: Number(text.slice('lazy'.length)), lazy: true }
         : { branches: Number(text) },
     value: '[lazy]N',
-    write: (agent) =>
-      agent.branches ? (agent.lazy ? 'lazy' : '') + agent.branches : undefined,
+    write: (agent) => (agent.branches ? (agent.lazy ? 'lazy' : '') + agent.branches : undefined),
   },
   {
     ...scopes,

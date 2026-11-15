@@ -5,7 +5,7 @@ import * as Os from 'node:os'
 import * as Path from 'node:path'
 import { test } from 'node:test'
 import * as Command from '../cli/Scorecard.ts'
-import type * as Result from '../src/Result.ts'
+import * as Result from '../src/Result.ts'
 import * as Scorecard from '../src/Scorecard.ts'
 
 type Given = { cancelled?: true; outcome?: Result.Attempt['outcome']; usd?: number }
@@ -115,6 +115,48 @@ test('a cancelled row is no verdict, and an errored row is one', () => {
       ),
     /the matched set is empty/,
   )
+})
+
+test('a row that no runner took is no verdict and is counted apart from a cancelled one', () => {
+  const none = (kind: Result.FailureKind, message: string): Result.Attempt => ({
+    ...row('b', 't2#1', { outcome: 'errored' }),
+    failure: { at: 0, kind, message },
+  })
+  const named = none('unscheduled', 'no runner of the run could take the row for 600 s')
+  const earlier = none('environment', Result.unscheduledPrefix + '600 s')
+  assert.equal(Scorecard.verdict(named), false)
+  assert.equal(Scorecard.verdict(earlier), false)
+  assert.equal(Scorecard.verdict(none('environment', 'the slot did not start')), true)
+  for (const lost of [named, earlier]) {
+    const card = Scorecard.build(
+      [
+        run(
+          'r1',
+          ['a', 'b'],
+          [
+            row('a', 't1#1'),
+            row('a', 't2#1'),
+            row('a', 't3#1'),
+            row('b', 't1#1'),
+            lost,
+            row('b', 't3#1', { cancelled: true }),
+          ],
+        ),
+      ],
+      options,
+    )
+    const [a, b] = card.arms as [Scorecard.Arm, Scorecard.Arm]
+    assert.deepEqual(
+      [a.matched, a.unmatched, a.cancelled, a.unscheduled, a.errored],
+      [1, 2, 0, 0, 0],
+    )
+    assert.deepEqual(
+      [b.matched, b.unmatched, b.cancelled, b.unscheduled, b.errored],
+      [1, 0, 1, 1, 0],
+    )
+    assert.match(Scorecard.text(card), /, cancelled 1, unscheduled 1\n/)
+    assert.match(Scorecard.html(card), /<th[^>]*>Unscheduled<\/th>/)
+  }
 })
 
 const mixed = () => {

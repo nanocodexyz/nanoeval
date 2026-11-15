@@ -1,6 +1,6 @@
 import type * as Config from './Config.ts'
 import type * as Pins from './Pins.ts'
-import type * as Result from './Result.ts'
+import * as Result from './Result.ts'
 
 export class InvalidError extends Error {
   override name = 'Scorecard.InvalidError'
@@ -42,6 +42,7 @@ export type Arm = {
   spec: Config.Agent
   uncosted: number
   unmatched: number
+  unscheduled: number
   usdPerAttempt: number | null
   usdPerPass: Estimate | null
 }
@@ -74,7 +75,10 @@ export type Cell = { passed: boolean; usd: number }
 export type Draw = { passRate: number; usdPerPass: number }
 
 export function verdict(attempt: Pick<Result.Attempt, 'failure' | 'outcome'>): boolean {
-  return !(attempt.outcome === 'errored' && attempt.failure?.kind === 'cancelled')
+  return (
+    !(attempt.outcome === 'errored' && attempt.failure?.kind === 'cancelled') &&
+    !Result.unscheduled(attempt)
+  )
 }
 
 export function key(attempt: Pick<Result.Attempt, 'index' | 'task'>): string {
@@ -198,10 +202,12 @@ export function build(runs: readonly Run[], options: build.Options): Card {
       }
       return {
         agent,
-        cancelled: kept.length - verdicts.size,
+        cancelled: kept.filter((attempt) => !verdict(attempt) && !Result.unscheduled(attempt))
+          .length,
         excluded: rows.length - kept.length,
         label: ids.filter((id) => id === agent.id).length > 1 ? agent.id + '@' + run.id : agent.id,
         run: run.id,
+        unscheduled: kept.filter(Result.unscheduled).length,
         verdicts,
       }
     })
@@ -291,6 +297,7 @@ export function build(runs: readonly Run[], options: build.Options): Card {
         spec: member.agent,
         uncosted: uncosted[at]!,
         unmatched: member.verdicts.size - rows.length,
+        unscheduled: member.unscheduled,
         usdPerAttempt: costed(at)
           ? cells[at]!.flat().reduce((sum, cell) => sum + cell.usd, 0) / rows.length
           : null,
@@ -420,7 +427,9 @@ export function text(card: Card): string {
           ', unmatched ' +
           arm.unmatched +
           ', cancelled ' +
-          arm.cancelled,
+          arm.cancelled +
+          ', unscheduled ' +
+          arm.unscheduled,
       ),
     ].join('\n') + '\n'
   )
@@ -494,6 +503,7 @@ export function html(card: Card): string {
       'Matched',
       'Unmatched',
       'Cancelled',
+      'Unscheduled',
       'Of excluded tasks',
       'Matched rows without a cost',
     ],
@@ -503,6 +513,7 @@ export function html(card: Card): string {
       String(arm.matched),
       String(arm.unmatched),
       String(arm.cancelled),
+      String(arm.unscheduled),
       String(arm.excluded),
       String(arm.uncosted),
     ]),
@@ -589,7 +600,7 @@ export function html(card: Card): string {
     tasks +
     '\n<h2>Excluded tasks</h2>\n' +
     excluded +
-    '\n<h2>Method</h2>\n<p>A row with the outcome passed, failed or errored has a verdict. A cancelled row and a row that no runner claimed are not attempts. The matched set holds every task#attempt with a verdict in every arm, and every figure of an arm is over its rows of that set. USD is the cost that the Worker recorded for the row. A row without a model call costs nothing, and an arm with a row whose model calls have no cost shows no cost.</p>\n<p>Each interval is the ' +
+    '\n<h2>Method</h2>\n<p>A row with the outcome passed, failed or errored has a verdict. A cancelled row and a row that no runner took, which ends as unscheduled, are not attempts, and each is counted apart. The matched set holds every task#attempt with a verdict in every arm, and every figure of an arm is over its rows of that set. USD is the cost that the Worker recorded for the row. A row without a model call costs nothing, and an arm with a row whose model calls have no cost shows no cost.</p>\n<p>Each interval is the ' +
     percentLevel +
     ' % percentile interval of ' +
     card.draws +
