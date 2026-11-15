@@ -6,6 +6,7 @@ import type { AddressInfo } from 'node:net'
 import * as Os from 'node:os'
 import * as Path from 'node:path'
 import { after, before, test } from 'node:test'
+import { workerVariables } from '../cli/nanoeval.ts'
 import * as Revision from '../cli/Revision.ts'
 import * as Proxy from '../src/Proxy.ts'
 
@@ -123,6 +124,28 @@ test('the variables that serve a provider are the ones the Worker takes its key 
       variables.filter((name) => Proxy.key({ [name]: 'value' }, provider) !== undefined).sort(),
       [...Revision.keys[provider]].sort(),
     )
+})
+
+test('a local Worker is handed the model variables of the environment and no other', () => {
+  const handed = [
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_AUTH_TOKEN',
+    'ANTHROPIC_BASE_URL',
+    'NANOEVAL_REPLY_LIMIT',
+    'OPENAI_API_KEY',
+    'OPENAI_BASE_URL',
+    'TEMPO_GATEWAY_URL',
+    'TEMPO_KEY',
+    'WORKERS_AI_ACCOUNT_ID',
+  ]
+  const set = (names: readonly string[]) => Object.fromEntries(names.map((name) => [name, name]))
+  assert.deepEqual(workerVariables(set([...handed, 'HOME', 'TEMPO_PRIVATE_KEY'])), set(handed))
+  for (const provider of ['claude', 'codex'] as const)
+    for (const name of Revision.keys[provider]) assert.ok(handed.includes(name), name)
+  assert.deepEqual(
+    workerVariables({ OPENAI_API_KEY: 'key', OPENAI_BASE_URL: '', WORKERS_AI_ACCOUNT_ID: 'id' }),
+    { OPENAI_API_KEY: 'key', WORKERS_AI_ACCOUNT_ID: 'id' },
+  )
 })
 
 test('an evaluation is refused when no credential serves an agent or the judge', () => {

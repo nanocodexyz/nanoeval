@@ -81,7 +81,9 @@ const usage = `nanoeval <command>
             ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN (sent as a bearer token),
             ANTHROPIC_BASE_URL, OPENAI_API_KEY and OPENAI_BASE_URL, and TEMPO_KEY with
             TEMPO_GATEWAY_URL pays for the models of both providers and for the sandboxes of
-            run --provider gateway where a provider has no key of its own. A login
+            run --provider gateway where a provider has no key of its own.
+            WORKERS_AI_ACCOUNT_ID names the Cloudflare account of a codex agent whose model
+            nanocode asks over chat completions on Workers AI (glm-5.3). A login
             file (~/.claude/.credentials.json, ~/.codex/auth.json) makes that provider's
             agents run on the plan signed in there. The Worker asks this command for the
             token of each model request, and the command refreshes the login as its tool
@@ -1613,6 +1615,25 @@ export function blobStore(
     : Store.directory(Path.resolve(name ?? Store.defaultRoot()))
 }
 
+export function workerVariables(
+  environment: Record<string, string | undefined>,
+): Record<string, string> {
+  const vars: Record<string, string> = {}
+  for (const name of [
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_AUTH_TOKEN',
+    'ANTHROPIC_BASE_URL',
+    'NANOEVAL_REPLY_LIMIT',
+    'OPENAI_API_KEY',
+    'OPENAI_BASE_URL',
+    'TEMPO_GATEWAY_URL',
+    'TEMPO_KEY',
+    'WORKERS_AI_ACCOUNT_ID',
+  ])
+    if (environment[name]) vars[name] = environment[name]
+  return vars
+}
+
 async function main(
   lab?: Revision.Lab,
   given: { hand?: (revision: string) => Promise<string>; values?: Record<string, unknown> } = {},
@@ -1837,18 +1858,10 @@ async function main(
   }
 
   if (command === 'worker') {
-    const vars: Record<string, string> = { ACCESS_TOKEN: required(values.token, 'token') }
-    for (const name of [
-      'ANTHROPIC_API_KEY',
-      'ANTHROPIC_AUTH_TOKEN',
-      'ANTHROPIC_BASE_URL',
-      'NANOEVAL_REPLY_LIMIT',
-      'OPENAI_API_KEY',
-      'OPENAI_BASE_URL',
-      'TEMPO_GATEWAY_URL',
-      'TEMPO_KEY',
-    ])
-      if (process.env[name]) vars[name] = process.env[name]
+    const vars: Record<string, string> = {
+      ACCESS_TOKEN: required(values.token, 'token'),
+      ...workerVariables(process.env),
+    }
     if (values['sandbox-url']) {
       vars['LOCAL_SANDBOX_URL'] = values['sandbox-url']
       vars['LOCAL_SANDBOX_TOKEN'] = required(values['sandbox-token'], 'sandbox-token')

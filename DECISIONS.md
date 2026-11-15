@@ -6341,3 +6341,41 @@ The rank correlation of the two models' pass rates over tasks is 0.50 on the 87 
 - The bounds of step 2, the five arms of step 3 and the three bands of step 4 are choices. Three earlier forms of the rule are kept with their figures outside the repository: without the bound on recorded rows two tasks took 47 % of the slot-seconds, and with a fixed count for each band instead of a share the difference of the two models came out as +16.7.
 
 **Not verified.** No run was made through `--subset hourly` or `--subset ten-minute`: the names were resolved with `src/Subset.ts` against the 89 task names of an import, and every figure above is computed from recorded rows, none from a run of the lists. The oracle arm of `hourly` by itself was not run. The times are a model, not a measurement, and leave out the rate at which a model route answers.
+
+## 2026-11-15: a codex session of glm-5.3 asks its model over chat completions
+
+A route that serves chat completions only ran fx, opencode and pi, and no nanocode session: a `codex` session speaks Responses and a `claude` session Messages. nanocode has a chat completions transport of its own for one model, `glm-5.3` on Workers AI: the pinned nanocode-ts opens such a session with the Cloudflare account of `WORKERS_AI_ACCOUNT_ID`, and the session then posts to `/client/v4/accounts/ID/ai/v1/chat/completions` with the model `@cf/zai-org/glm-5.3`, streamed, with nanocode's own prompts, tools and effort. The Worker already forwards that request like any other of a `codex` session, to `OPENAI_BASE_URL` when one is set, with `OPENAI_API_KEY` as the bearer token, and meters its usage. Only `nanoeval worker` stood in the way: it hands the Worker a fixed list of the variables of its environment, and the account was not in it, so every such row ended at once as an agent error, `the Workers AI gateway needs cloudflare_account_id`. It is in the list now. `nanoeval revision` starts that command, so it takes the variable the same way, and a deployed Worker takes it as it takes any other.
+
+The list is now a function, `workerVariables`, so that a unit test holds it. The test gives it an environment with every variable of the list and two more, one of them a wallet key, and asks for exactly the list back, that every variable a provider's key is read from is in the list, and that an empty variable is left out. With the account taken out of the list the test fails.
+
+### Why not a translator in the Worker
+
+The other way to put a session on such a route is to translate a `claude` session's Messages requests into chat completions. That was built outside the repository and measured, and it stays outside. A translator decides what the model is sent where the two APIs differ: five system blocks become one message, an image in a tool result has to move into a user message, the session's `thinking: disabled` has no field to go to, a keep-alive of the prompt cache has nothing to keep warm. nanoeval sends models only nanocode's native prompts and tool text, and those choices would be nanoeval's. Such a row also carries a model name that is not the model: a `claude` session starts only for a model nanocode knows.
+
+### What ran
+
+The route in every run was Workers AI through a forwarder outside the repository that holds the credential and answers on the path above. It serves `@cf/zai-org/glm-5.3-flash` and not `@cf/zai-org/glm-5.3`, so it renamed the model: the rows are labelled `glm-5.3` and were answered by the flash model.
+
+With this change and without it: one Linux machine with 5 cores and no KVM, x86_64, directory slots, four rows at a time, the three fixture tasks, one attempt, `nanoeval revision` with the three variables set, at `a35ddf7` and at `a35ddf7` with this change, nanocode-ts `build-8a77345`, hand `nanocode-cli-92f4e0d`. At that commit `codex` is a session with direct tools and `codex-code-mode` one in Code Mode.
+
+| Checkout | Agent | Rows | Passed | Input tokens (cached) / output |
+| --- | --- | --- | --- | --- |
+| `a35ddf7` | `codex:glm-5.3` | 3 | 0: each an agent error at once, `the Workers AI gateway needs cloudflare_account_id`, no model request | none |
+| with the change | `codex:glm-5.3` | 3 | 3 | 46,143 (15,360) / 494 |
+| with the change | `codex-code-mode:glm-5.3` | 3 | 3 | 89,365 (54,528) / 1,208 |
+
+The six rows of the second run were answered 24 times and refused 86 times with `429`: the route allows that model 20 requests a minute for all its users, and others were on it. nanocode asked again each time, and the run took 4 min 03 s. By tokens at 0.15 and 0.50 USD a million, cached tokens at the input price, the six rows cost 0.021 USD. The run's own figure, 0.1175 USD, is an estimate from the tokens at the list price of the name `glm-5.3`.
+
+Before that, with the one line of the list alone: one 48-thread Linux machine with KVM, x86_64, krun slots, two rows at a time, the four tasks of the entry of fx, opencode and pi (`fix-git`, `code-from-image`, `openssl-selfsigned-cert`, `log-summary-date-ranges`), one attempt, at `ac039b7`, nanocode-ts `build-d5b21f1`. At that commit `codex` was a session in Code Mode.
+
+| Arm | Passed | Cost for a pass by tokens, USD | Input tokens (cached) / output | Model calls | Agent time |
+| --- | --- | --- | --- | --- | --- |
+| `codex:glm-5.3`, nanocode's chat transport, effort low | 4 of 4 | 0.0127 | 315,068 (281,088) / 7,214 | 43 | 1 min 50 s |
+| `claude` session through the translator, `@cf/zai-org/glm-5.3-flash` | 3 of 3, the fourth row unfinished when the machine ended | 0.0237 | 398,682 (347,392) / 22,472 | 37 | 3 min 44 s |
+| `claude` session through the translator, `@cf/deepseek-ai/deepseek-v4.1-flash-1017` | 4 of 4 | 0.0190 | 217,484 (199,680) / 9,051 | 29 | 1 min 34 s |
+
+Tokens are priced at 0.15 and 0.50 USD a million for the first two rows and 0.30 and 1.20 for the third, cached tokens at the input price, as in the entry of fx, opencode and pi, whose fx passed the same four tasks on the same route in 7 min 34 s of agent time. Without the variable, the same `codex:glm-5.3` row ended at once as the agent error above, one row. The translator's first form sent images as a note: `code-from-image` then ran 4.6 minutes on both models without ending, 79 and 28 model calls, and was cancelled; with the image moved into a user message it passed in 6 and 5 calls. One reply of the flash model through the translator took 145 s unstreamed and the forwarder ended it; the session asked again.
+
+### Not verified
+
+No end-to-end lane: the scripted model of the lanes does not serve a session over chat completions, so the unit test of the list is the only check that runs without a model. `@cf/zai-org/glm-5.3` itself, Cloudflare's own address without a base URL, a deployed Worker, ns slots, a session with direct tools on krun slots and more than one attempt did not run. A session cannot name another model of Workers AI: nanocode-ts opens the chat transport for `glm-5.3` only, so a route that serves another name has to rename it, outside the repository.
