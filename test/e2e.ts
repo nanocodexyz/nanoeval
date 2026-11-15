@@ -5148,13 +5148,8 @@ async function main(): Promise<void> {
         JSON.parse(await read('agent/trajectory.json')).steps.map(
           (step: { source: string }) => step.source,
         ),
-        [
-          'user',
-          ...asked.slice(killAt === 'model' ? 2 : 1).map(() => 'agent'),
-          ...(midturnPair ? [] : ['user']),
-          'agent',
-        ],
-        'the trajectory has the instruction once, a step for each response and, in a claude session, the finish check before the last one',
+        ['user', ...asked.slice(killAt === 'model' ? 2 : 1).map(() => 'agent'), 'user', 'agent'],
+        'the trajectory has the instruction once, a step for each response and the finish check before the last one',
       )
       const events = await read('agent/events.jsonl')
       assert.ok(
