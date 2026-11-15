@@ -329,12 +329,12 @@ It reads the config and the results of each run from the Worker and nothing else
 | Runs | Id, name, state, attempts a task, rows, and the harness and hand builds the Worker recorded |
 | Arm specs | Provider, model, effort and every other option of the agent, as the run config holds it, with the run of the arm |
 | Matched set | The task#attempts with a verdict (passed, failed or errored) in every arm. A cancelled row and a row that no runner claimed are not attempts |
-| Rows apart | For each arm: its rows with a verdict outside the matched set, its cancelled rows, its rows of excluded tasks and its matched rows without a cost |
+| Rows apart | For each arm: its rows with a verdict outside the matched set, its cancelled rows, its rows of excluded tasks and its matched rows whose cost is not recorded |
 | An arm on the matched set | Passed, failed, errored, pass rate, USD an attempt, USD a pass, output tokens an attempt, model calls an attempt |
 | Against `--ref` | The difference of the pass rates in points and the ratio of USD a pass |
 | Tasks | The passes of each arm on the matched attempts of each task |
 
-USD is the cost the Worker recorded for the row. A row without a model call costs nothing, and an arm with a matched row whose model calls have no cost shows no cost instead of a sum.
+USD is the cost the Worker recorded for the row. A row without a model call costs nothing. A row whose model calls carry no cost, and a row whose agent ran and left no usage, have a cost that is not recorded: an arm with such a matched row shows `not recorded` instead of a sum, never 0, and its pass rate stands. A line under the table of arms counts the matched rows of each arm by their cost basis.
 
 Pass rate, difference, USD a pass and ratio carry a 95 % percentile interval from a task-clustered bootstrap. A draw resamples the tasks with replacement, the same tasks for every arm, then resamples the attempts of each drawn task within each arm. `--draws` is the number of draws, 2000 unless named, and `--seed` seeds the generator, 1 unless named. The same rows, seed and draws write the same two files, and the page ends with the command line, without the token, and the commit of nanoeval. A draw without a pass has no finite USD a pass: it sorts above every other draw, and a bound that falls on one reads `no bound`.
 
