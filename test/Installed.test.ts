@@ -742,8 +742,8 @@ test('the command of nanocode is the runtime of the slot and reads the endpoint 
     'high',
     '--ephemeral',
     '--no-tempo-tools',
-    '--context-window',
-    String(Installed.leaderboard.contextWindow),
+    '--hedge-cap-percent',
+    '0',
     "Write it's done.",
   ])
   assert.match(
@@ -767,6 +767,8 @@ test('the command of nanocode is the runtime of the slot and reads the endpoint 
     'claude',
     '--ephemeral',
     '--no-tempo-tools',
+    '--hedge-cap-percent',
+    '0',
     '--context-window',
     String(Installed.leaderboard.contextWindow),
     '--max-output-tokens',
@@ -789,6 +791,18 @@ test('the command of nanocode is the runtime of the slot and reads the endpoint 
     provider: 'nanocode-codex',
     thinking: 'high',
   })
+})
+
+test('a nanocode codex agent keeps the catalog window of its model and sends no hedged request', () => {
+  const out = run({ kind: 'nanocode-codex', model: 'gpt-6-luna', thinking: 'high' }, runtime(false))
+  const args = out
+    .split('\n')
+    .filter((line) => line.startsWith('argument:'))
+    .map((line) => line.slice('argument:'.length))
+
+  assert.ok(!args.includes('--context-window'), args.join(' '))
+  assert.ok(!out.includes('NANOCODE_CONTEXT_WINDOW'), out)
+  assert.equal(args[args.indexOf('--hedge-cap-percent') + 1], '0')
 })
 
 test('the output of nanocode is its final message and an ATIF trajectory', () => {

@@ -616,8 +616,13 @@ export function script(agent: Agent, options: { url: string }): string {
           ...(agent.thinking ? ['--thinking ' + quote(agent.thinking)] : []),
           '--ephemeral',
           '--no-tempo-tools',
-          '--context-window ' + leaderboard.contextWindow,
-          ...(harness === 'claude' ? ['--max-output-tokens ' + leaderboard.replyLimit] : []),
+          '--hedge-cap-percent 0',
+          ...(harness === 'claude'
+            ? [
+                '--context-window ' + leaderboard.contextWindow,
+                '--max-output-tokens ' + leaderboard.replyLimit,
+              ]
+            : []),
           '"$prompt" </dev/null',
         ].join(' '),
       ].join('\n') + '\n'
