@@ -44,6 +44,17 @@ test('the funding of the key is a deposit above zero, a top-up of at least zero,
     },
   })
   assert.equal(Config.parse(config(undefined)).key, undefined)
+  assert.equal(Config.parse(config(undefined)).sandbox.slots, 4)
+  const derived = config(undefined)
+  assert.equal(
+    Config.parse({ ...derived, sandbox: { ...derived.sandbox, slots: undefined } }).sandbox.slots,
+    undefined,
+    'a run may name no slot count: each runner then takes its own',
+  )
+  assert.throws(
+    () => Config.parse({ ...derived, sandbox: { ...derived.sandbox, slots: 0 } }),
+    /sandbox.slots/,
+  )
   assert.deepEqual(Config.parse(config({ deposit: 5, topUp: 0 })).key, { deposit: 5, topUp: 0 })
   assert.deepEqual(Config.parse(config({ topUp: 2 })).key, { topUp: 2 })
   for (const key of [{}, { deposit: 0 }, { topUp: -1 }, { deposit: '5' }, null])

@@ -158,7 +158,7 @@ const usage = `nanoeval <command>
             [--baseline RUN|latest]... [--with-reruns] [--unlike]
             [--fail-on regression|lost|any-failure]...
             (--agent ID=HARNESS:MODEL[:THINKING]... | --oracle) [--judge PROVIDER:MODEL[:THINKING]]
-            [--attempts 1] [--provider local|e2b|gateway] [--backend auto|krun|ns|dir] [--slots 4]
+            [--attempts 1] [--provider local|e2b|gateway] [--backend auto|krun|ns|dir] [--slots N]
             [--sandboxes 1] [--memory-mb N] [--network private|host] [--template NAME]
             [--sandbox-timeout-sec N] [--sandbox-lease-sec 300] [--runtime | --runtime-blob SHA256]
             [--sandbox-budget-usd 0] [--model-budget-usd N] [--setup-sec 600] [--attach-sec 60]
@@ -179,7 +179,10 @@ const usage = `nanoeval <command>
             first N of them, and a name or a pattern that finds no task is refused.
             Task runners claim the rows: the run starts one in each sandbox it opens
             (--sandboxes, with --slots attempts at once each), and nanoeval runner attaches
-            more from any machine. --sandboxes 0 waits for attached runners only. With
+            more from any machine. --sandboxes 0 waits for attached runners only. Without
+            --slots, a runner of the local provider has one slot for each hardware thread
+            it may use, by its CPU affinity and the CPU quota of its control groups, and a
+            run on e2b or gateway takes 4. With
             --backend auto, the default, each runner boots environment disks in microVMs
             (krun) where its machine has KVM and in namespaces (ns) where it has root. A task
             that closes the network of its agent or verifier needs --backend krun. --task
@@ -309,8 +312,10 @@ const usage = `nanoeval <command>
             [--free-disk-mb N] [--poll-ms N] [--store DIR] [--cache DIR]
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
             Attach a task runner on this machine to a run: it claims rows up to its own
-            capacity, fetches their blobs by digest, boots each environment disk under a
-            copy-on-write disk of its own, and reports to the run until the run is finished.
+            capacity (--slots, else the slot count of the run, else one slot for each
+            hardware thread it may use), fetches their blobs by digest, boots each
+            environment disk under a copy-on-write disk of its own, and reports to the run
+            until the run is finished.
             With --ends-in-sec, the machine is one that ends then: the runner takes a row
             only while the setup, agent and verifier timeouts of the row end before that, and
             leaves once no row that is left does.
@@ -1527,6 +1532,7 @@ export function rerunConfig(
   const freeDiskMb = from('free-disk-mb', own.sandbox.freeDiskMb, parent.sandbox.freeDiskMb)
   const leaseSec = from('sandbox-lease-sec', own.sandbox.leaseSec, parent.sandbox.leaseSec)
   const memoryMb = from('memory-mb', own.sandbox.memoryMb, parent.sandbox.memoryMb)
+  const slots = from('slots', own.sandbox.slots, parent.sandbox.slots ?? own.sandbox.slots)
   const template = from('template', own.sandbox.template, parent.sandbox.template)
   const warm = from('warm-sec', own.sandbox.warm, parent.sandbox.warm)
   return {
@@ -1556,7 +1562,7 @@ export function rerunConfig(
       pollMs: from('poll-ms', own.sandbox.pollMs, parent.sandbox.pollMs),
       provider: from('provider', own.sandbox.provider, parent.sandbox.provider),
       ...(own.sandbox.runtime ? { runtime: own.sandbox.runtime } : {}),
-      slots: from('slots', own.sandbox.slots, parent.sandbox.slots),
+      ...(slots === undefined ? {} : { slots }),
       ...(template === undefined ? {} : { template }),
       ...(own.sandbox.timeoutSec === undefined ? {} : { timeoutSec: own.sandbox.timeoutSec }),
       ...(own.sandbox.verifierCache || parent.sandbox.verifierCache
@@ -1686,7 +1692,7 @@ async function main(
   lab?: Revision.Lab,
   given: {
     hand?: (revision: string) => Promise<string>
-    loop?: { first: boolean; startedAt: number }
+    loop?: { first: boolean; slots: number; startedAt: number }
     values?: Record<string, unknown>
   } = {},
 ): Promise<void> {
@@ -2105,7 +2111,7 @@ async function main(
             (settings.judge.thinking ? ':' + settings.judge.thinking : '')
         if (!values['model-budget-usd'] && settings.modelUsd !== undefined)
           quick['model-budget-usd'] = String(settings.modelUsd)
-        if (!values.slots) quick['slots'] = String(settings.slots)
+        if (!values.slots && settings.slots !== undefined) quick['slots'] = String(settings.slots)
       }
       Object.assign(values, quick)
       log(
@@ -2212,7 +2218,13 @@ async function main(
                 ).id,
               ),
         ...(command === 'loop'
-          ? { loop: { first: looped.baseline !== undefined, startedAt } }
+          ? {
+              loop: {
+                first: looped.baseline !== undefined,
+                slots: Number(looped.slots ?? values.slots),
+                startedAt,
+              },
+            }
           : {}),
         values: { ...quick, ...looped },
       })
@@ -2938,7 +2950,7 @@ async function main(
         pollMs: Number(values['poll-ms'] ?? '250'),
         provider,
         ...(runtime ? { runtime } : {}),
-        slots: Number(values.slots ?? '4'),
+        ...(values.slots || provider !== 'local' ? { slots: Number(values.slots ?? '4') } : {}),
         ...(values.template ? { template: values.template } : {}),
         ...(values['sandbox-timeout-sec']
           ? { timeoutSec: Number(values['sandbox-timeout-sec']) }
@@ -3082,7 +3094,7 @@ async function main(
               attempts: config.attempts,
               ...(config.judge ? { judge: config.judge } : {}),
               ...(config.budget.modelUsd === undefined ? {} : { modelUsd: config.budget.modelUsd }),
-              slots: config.sandbox.slots,
+              ...(config.sandbox.slots === undefined ? {} : { slots: config.sandbox.slots }),
             } satisfies Revision.Settings,
             spend: status['spend'],
           })
@@ -3104,7 +3116,7 @@ async function main(
           const card = Loop.scorecard(ended, {
             baseline: refusal ? [] : baseline,
             prices: Price.list(values['model-price'] ?? []),
-            slots: config.sandbox.slots,
+            slots: given.loop.slots,
             wallSec: (Date.now() - given.loop.startedAt) / 1000,
           })
           const file = Path.join(out, 'scorecard.json')

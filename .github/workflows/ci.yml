@@ -228,6 +228,11 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: dir
           NANOEVAL_E2E_SCENARIO: packing
+      - name: End to end, directory slots, a runner that is given no slot count and is pinned to two hardware threads
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: threads
       - name: End to end, directory slots, a task that closes its network is refused
         run: npm run e2e
         env:

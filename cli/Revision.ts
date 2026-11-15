@@ -76,7 +76,7 @@ export type Settings = {
   attempts: number
   judge?: Config.Judge
   modelUsd?: number
-  slots: number
+  slots?: number
 }
 
 export type Recorded = {

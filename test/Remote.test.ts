@@ -82,6 +82,14 @@ test('a sandbox lifetime is the longest its slots can stay busy, after its setup
     600 + 2 * row,
   )
   assert.equal(
+    Config.lifetimeSec(
+      { ...config(4, 2), sandbox: { max: 2 } as Config.Config['sandbox'] },
+      [1, 2, 3, 4, 5].map(() => task(900, 300)),
+    ),
+    600 + 3 * row,
+    'a run that names no slot count sizes a sandbox for one row at a time',
+  )
+  assert.equal(
     Config.lifetimeSec(config(1, 0), [task(60, 30, true)]),
     600 + 600 + 60 + 3 * 30,
     'a judged verifier runs twice around the judge',

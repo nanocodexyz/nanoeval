@@ -6531,3 +6531,59 @@ And nothing printed the time of the whole loop or its infrastructure errors over
 **Not run.** A loop with a model. A loop on krun or ns slots, so the backend taken from the machine was read by unit tests only. The tasks of `hourly` or `ten-minute` themselves, and so the wall time of a loop that means anything: the entry on the two lists puts six arms at three attempts at 27 to 58 minutes on 36 slots by a model of the slots. One slot a thread under six arms of real agents, on any machine: whether that is the right count was not measured. An import of the benchmark from nothing by the loop itself, and a loop with `--nanocode`.
 
 **Limits.** Nothing bounds the wall time of a loop but the timeouts of its tasks. The arms share the slots of one run and the claim order of its rows, so no arm has slots of its own and an arm of slow rows holds the others up. The verdict of an arm is that of `compare`, all its tasks together, and at 3 attempts on `hourly` shows 6 to 12 points and nothing smaller. Two loops in one lab run one after the other, as two evaluations do.
+
+## 2026-11-15: a runner that is given no slot count takes one slot for each hardware thread it may use
+
+**The defect.** `run --slots` and `runner --slots` defaulted to 4 on every machine. The oracle arm of Terminal-Bench 2.1 in the entry on the claim order above, 89 tasks and three attempts each, took 2,203 s at 28 slots that were named by hand for 28 hardware threads. With no option the same arm is 7,920 s in the slot model of that entry, 2.2 hours and 3.6 times as long, on the same machine.
+
+**Measured: where more slots stop helping.** One sweep, one run a point, before this change: the oracle on the 68 sound tasks of Terminal-Bench 2.1 whose oracle row is under 100 s, three attempts each, 204 rows a point, main at `ac039b7`, one bare-metal machine with KVM (24 cores, 48 hardware threads), one runner with krun slots pinned to 28 hardware threads, a local Worker. Each point ran beside the last 3 to 7 rows of a full arm on the same threads, the point at 14 slots also beside a model arm of 8 slots, and the point at 56 beside one of 16 slots from its third minute.
+
+| Slots on 28 threads | Rows that ended | Wall | Rows a minute | Mean row | Rows that did not pass |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 14 | 202 | 356 s | 34.0 | 21.1 s | 3 failed in the same minutes, all three fetch from one outside service; 2 cancelled, a verifier that hangs in its own tests |
+| 28 | 204 | 283 s | 43.3 | 29.1 s | 1 failed: a verifier that measures speed |
+| 56 | 203 | 271 s | 44.9 | 52.6 s | 1 failed: the same verifier; 1 cancelled, the verifier that hangs |
+
+From 14 to 28 slots the rows a minute rise by 27 % and a row takes 1.38 times as long. From 28 to 56 they rise by 4 % and a row takes 1.8 times as long. At one slot a thread 23.4 of the 28 threads were busy. The point at 14 slots is a floor, since more other work ran beside it. One slot for each hardware thread is where the throughput of rows that compute stopped growing.
+
+**What changed.**
+
+- A run names a slot count or none. `Config.sandbox.slots` and the `slots` a runner is configured with are optional, `nanoeval run` on the local provider sends none unless `--slots` names one, and `nanoeval runner` takes the count of its run unless its own `--slots` names one.
+- A runner with no count has one slot for each hardware thread it may use (`sandbox/Cpus.ts`, after `sandbox/Memory.ts`): the fewest of the threads that are online, the threads in the `Cpus_allowed_list` of its own status in `/proc`, which is its affinity as `taskset` or a cpuset left it, and the `cpu.max` of its control group and of every group above it, rounded down and never under one. That number is the `cpus` of the capabilities it says hello with, which were the threads online before. Its log says so: `N slots, one for each hardware thread this runner may use`.
+- Admission is what it was. The count is a count of rows, a row takes one slot whatever CPUs its task declares, and memory is admitted as before. A count that is named is untouched.
+- The run uses the count in two more places. `Config.lifetimeSec` sizes the life of a sandbox for one row at a time when no count is named, the longest it can be needed. The disks a runner is told to fetch ahead are as many as its slots: the count of the run, or the `cpus` the runner said hello with.
+
+**What the default does to what already ran.**
+
+- The lanes of this repository: none changes. `test/e2e.ts` puts a slot count in every run it creates (`NANOEVAL_E2E_SLOTS`, 4 in the test itself when the variable is not set) and passes `--slots` to every runner it attaches or stands, and `test/revision.ts` names `--slots` and `slots = 3` in its lab. The lane added here is the only one that names none. A runner of the workflow has 4 hardware threads, where the count is the 4 it was.
+- A machine with fewer than 4 threads has fewer slots than before: 2 on 2 threads, where 4 ran. For rows that compute that is the measurement above. For rows that wait for a model it may end later than before, which was not measured: `--slots` names more.
+- A machine with many threads and little memory: the count no longer limits the rows there and memory does, as it was built to. A runner admits rows by the memory their tasks declare into 80 % of the lower of its machine's memory and the limit of its control groups, so a runner of 16 threads and 16 GB admits 6 rows of 2 GB at once where its 16 slots would take 16 and the default before took 4, and a row that does not fit is passed over as before.
+- `nanoeval loop` names a count of its own, the threads of the machine it runs on, and is unchanged. Its scorecard now takes that count from the loop and not from the configuration of the run, which may hold none.
+- Two runners on one machine each take the count of the threads they may use: `--sandboxes 2` on the local provider, or two `nanoeval runner` processes that are not pinned apart, have twice as many slots as the machine has threads, where they had 8 before. Each also admits its own 80 % of the memory, as before. `--slots` for each, or an affinity for each, divides the machine.
+
+**Not changed.** A run on `e2b` or `gateway` still takes 4 when `--slots` names none. The run buys such a sandbox for a life it computes from the count before a sandbox exists, and no run of this change was made on either. The constant is still there for them.
+
+`Protocol.version` is not raised. A runner of an earlier commit works with a Worker of this one for every run that names a slot count, and for any run when the runner names its own (`runner --slots`). Handed a run that names none while it names none either, such a runner offers no slot and claims nothing, by the code and not run. Raising the number would refuse every runner of an earlier commit for every run, where one configuration fails. A Worker of an earlier commit refuses a run that names no count with its message about `sandbox.slots`.
+
+**Built, modelled and held back: admitting rows by the CPUs their tasks declare.** The first version of this change also had a runner with no count admit rows against CPUs as against memory: a row took the CPUs its task declares out of the runner's threads, and a row that did not fit was passed over for the rows behind it. It ran in unit tests and in a lane on directory slots, and never in an arm. The slot model of the entry on the claim order (no contention between slots, a row takes the mean of the three attempts its task had in the arm at 28 named slots, the queue order of main), with the CPUs each task declares, 83 tasks one, 3 tasks two, 3 tasks four:
+
+| Hardware threads | A count of that many, plain (this change) | Rows admitted by CPUs, passed over (held back) | Rows admitted by CPUs, claims stop at a row that waits (dropped) |
+| ---: | ---: | ---: | ---: |
+| 4 | 7,920 s | 12,613 s | 14,748 s |
+| 8 | 4,072 s | 6,431 s | 6,636 s |
+| 14 | 2,826 s | 3,780 s | 4,254 s |
+| 16 | 2,640 s | 3,408 s | 3,860 s |
+| 20 | 2,418 s | 2,746 s | 3,365 s |
+| 28 | 2,204 s | 2,122 s | 2,774 s |
+| 36 | 2,038 s | 1,984 s | 2,485 s |
+| 48 | 1,951 s | 1,920 s | 2,218 s |
+
+The model has it 3.7 % sooner than the plain count on 28 threads, and 14 % later on 20, 29 % later on 16 and 59 % later on 4, where a task of four CPUs runs alone: the six tasks of several CPUs hold 2 or 4 threads for rows of 72 to 1,475 s, 16,700 thread-seconds more over the arm than a plain count gives them. The model cannot say what a plain count pays for the same rows in threads that are shared, since its durations were measured with 28 rows on 28 threads. So it is held back until one arm measures it: the oracle on the 89 tasks, three attempts, on 16 threads, with CPU admission against `--slots 16`. It lands if that arm ends within 5 % of the plain count, and is dropped with its numbers if not.
+
+**Checked.** On one bare-metal machine with KVM (24 cores, 48 hardware threads), pinned with `taskset` to 4 of its threads, Node 24, from a fresh clone of main at `e5ccad0` with this change and without this entry, each once: `npm ci`, lint, both type checks, the dry run and `npm test`: 447 tests, 442 passed, 5 skipped, none failed, with the unit tests of the affinity list, of the quota, of the two together and of the whole threads (`test/Cpus.test.ts`), of a configuration that names no count, of the life of a sandbox without one and of a rerun of a run without one. Eleven directory lanes, 11 of 11 passed. The new lane (`NANOEVAL_E2E_SCENARIO=threads`) pins itself with `taskset` to one hardware thread fewer than it has rows, creates a run that names no slot count, and asks that its runner says hello with that many `cpus` and that as many rows ran at once: its runner had 2 threads and ran at most 2 of 3 rows at once, where the default before would have run all 3. The others: memory packing; three tasks with the scripted model; the oracle; two attached runners; a standing runner that two runs are handed to; a standing runner with the rows of two runs; a standing runner stopped during a run; a runner lost; a runner restarted; and the scripted gateway, which was cut off from outside together with the script that ran the lanes the first time, and passed when it was started again.
+
+On krun slots on the same 4 threads, the oracle on the four tasks of the `smoke` subset of Terminal-Bench 2.1, three attempts, 12 rows a run, two runs each way in turn. With no `--slots` the runner said `4 slots, one for each hardware thread this runner may use` on the machine of 48, and the runs took 63 s, the first on that machine with the disks of the tasks still packed, and 36 s. With `--slots 4` they took 36 s and 34 s. 12 of 12 rows passed in each of the four.
+
+Then the commit itself, with this entry, on main as it had moved, on the same threads: lint, both type checks, `npm test`, the new lane again and the loop lane of the workflow (`node test/revision.ts loop`).
+
+**Not run.** An arm of the 89 tasks with no `--slots`: the count a runner takes for itself ran in the lane and in two runs of 12 rows, and an arm on a machine of N threads with no option is the arm with `--slots N` by the code. The krun and ns lanes of the workflow at this change. A run on `e2b` or `gateway`. A machine with fewer than 4 threads. A CPU quota that is not a whole number, outside the unit test.

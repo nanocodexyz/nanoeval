@@ -2097,13 +2097,17 @@ export class Run extends DurableObject<Env> {
     }).catch(() => {})
   }
 
-  private ahead(): Protocol.Ahead[] {
+  private ahead(runner: number): Protocol.Ahead[] {
     const found = new Map<string, Protocol.Ahead>()
     const config = this.config()
+    const capabilities = this.known(runner).capabilities
+    const slots =
+      config.sandbox.slots ??
+      (capabilities ? (JSON.parse(capabilities) as Sandbox.Capabilities).cpus : 0)
     for (const row of Ledger.queue(this.sql, (task) =>
       Config.rowSec(config.limits, this.task(task)),
     )) {
-      if (found.size >= config.sandbox.slots) break
+      if (found.size >= slots) break
       const environment = this.task(row.task).environment
       if (environment.kind === 'disk') found.set(environment.disk.digest, environment)
     }
@@ -2113,7 +2117,7 @@ export class Run extends DurableObject<Env> {
   private runnerConfig(runner: number, pool?: Protocol.Standing): Config.Runner {
     const meta = this.meta()!
     const config = this.config()
-    const ahead = this.ahead()
+    const ahead = this.ahead(runner)
     const life = this.life(this.known(runner))
     return {
       ...(ahead.length ? { ahead } : {}),
@@ -2135,7 +2139,7 @@ export class Run extends DurableObject<Env> {
       protocol: Protocol.version,
       run: meta.id,
       runner,
-      slots: config.sandbox.slots,
+      ...(config.sandbox.slots === undefined ? {} : { slots: config.sandbox.slots }),
       token: meta.runnerToken,
       url: meta.publicUrl,
       ...(config.sandbox.verifierCache ? { verifierCache: true as const } : {}),
@@ -2954,7 +2958,7 @@ export class Run extends DurableObject<Env> {
       claimed.reduce((sum, row) => sum + this.task(row.task).resources.memoryMb, 0),
       claimed.length,
     )
-    const ahead = waiting ? this.ahead() : []
+    const ahead = waiting ? this.ahead(runner) : []
     return {
       ...response,
       ...(ahead.length ? { ahead } : {}),
@@ -2978,7 +2982,7 @@ export class Run extends DurableObject<Env> {
       seen_at: Date.now(),
       ...(runner.state === 'lost' ? { error: null, state: 'ready' } : {}),
     })
-    const ahead = this.ahead()
+    const ahead = this.ahead(runner.id)
     return {
       ...(ahead.length ? { ahead } : {}),
       finished: this.finished(),

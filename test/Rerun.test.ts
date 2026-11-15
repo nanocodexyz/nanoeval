@@ -114,6 +114,18 @@ test('what the command of a rerun names wins over its run', () => {
     parent: { ...own, budget: { sandboxUsd: 0 }, name: 'first' },
   })
   assert.deepEqual(plain, own, 'a run without the optional settings hands none on')
+  const { slots: _slots, ...unnamed } = own.sandbox
+  const first = { ...own, name: 'first', sandbox: unnamed }
+  assert.equal(
+    rerunConfig({ ...own, sandbox: unnamed }, { named: new Set(), parent: first }).sandbox.slots,
+    undefined,
+    'a rerun of a run that names no slot count names none: its runners take their own',
+  )
+  assert.equal(
+    rerunConfig(own, { named: new Set(), parent: first }).sandbox.slots,
+    own.sandbox.slots,
+    'the slot count a rerun has for its provider stands where its run named none',
+  )
 })
 
 test('a retried row is exported under a name of its own, and a row that is no retry keeps its name', () => {

@@ -20,6 +20,7 @@ import * as Task from '../src/Task.ts'
 import type * as Timeline from '../src/Timeline.ts'
 import * as Verdict from '../src/Verdict.ts'
 import * as Converter from './Converter.ts'
+import * as Cpus from './Cpus.ts'
 import * as Disks from './Disks.ts'
 import * as Host from './Host.ts'
 import * as Memory from './Memory.ts'
@@ -275,6 +276,7 @@ async function setup(input: {
     backend,
     capabilities: {
       ...probed,
+      cpus: Cpus.threads(probed.cpus, await Cpus.limit(Cpus.host)),
       hand: await placed,
       memory_mb: Math.min(probed.memory_mb, limited?.limitMb ?? probed.memory_mb),
     },
@@ -1463,7 +1465,7 @@ async function attend(
   const capacity: Admission.Capacity = {
     ...(config.freeDiskMb === undefined ? {} : { freeDiskMb: config.freeDiskMb }),
     memoryMb: config.memoryMb ?? Math.floor(capabilities.memory_mb * hostUtilization),
-    slots: config.slots,
+    slots: config.slots ?? capabilities.cpus,
   }
   log(
     'runner ' +
@@ -1472,7 +1474,9 @@ async function attend(
       config.run +
       ': ' +
       capacity.slots +
-      ' slots, ' +
+      ' slots' +
+      (config.slots === undefined ? ', one for each hardware thread this runner may use' : '') +
+      ', ' +
       capacity.memoryMb +
       ' MB' +
       (config.memoryMb === undefined

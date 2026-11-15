@@ -77,7 +77,7 @@ export type Config = {
     pollMs: number
     provider: 'e2b' | 'gateway' | 'local'
     runtime?: Eval.Blob
-    slots: number
+    slots?: number
     template?: string
     timeoutSec?: number
     verifierCache?: true
@@ -102,7 +102,7 @@ export type Runner = {
   ready?: true
   run: string
   runner: number
-  slots: number
+  slots?: number
   token: string
   url: string
   verifierCache?: true
@@ -136,7 +136,7 @@ export function lifetimeSec(
   rows: readonly Pick<Eval.Task, 'agent' | 'setupTimeoutSec' | 'verifier'>[],
 ): number {
   const lanes = Array.from(
-    { length: Math.max(config.sandbox.max, 1) * config.sandbox.slots },
+    { length: Math.max(config.sandbox.max, 1) * (config.sandbox.slots ?? 1) },
     () => 0,
   )
   const longest = rows
@@ -407,7 +407,7 @@ export function parse(value: unknown): Config {
                 : fail('sandbox.runtime.digest is a SHA-256 in hex'),
             },
           }),
-      slots: integer(sandbox.slots, 'sandbox.slots', 1),
+      ...(sandbox.slots === undefined ? {} : { slots: integer(sandbox.slots, 'sandbox.slots', 1) }),
       ...(typeof sandbox.template === 'string' ? { template: sandbox.template } : {}),
       ...(sandbox.timeoutSec === undefined
         ? {}

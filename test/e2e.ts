@@ -15,6 +15,7 @@ import * as Revision from '../cli/Revision.ts'
 import * as Runtime from '../cli/Runtime.ts'
 import type * as Dataset from '../datasets/Dataset.ts'
 import * as Converter from '../sandbox/Converter.ts'
+import * as Cpus from '../sandbox/Cpus.ts'
 import * as Runner from '../sandbox/Runner.ts'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
 import * as Store from '../sandbox/Store.ts'
@@ -1758,12 +1759,13 @@ async function main(): Promise<void> {
       })
     }
     const packing = scenario === 'packing'
+    const derived = scenario === 'threads'
     const lost = 'tasks/write-greeting'
     const directories = judged
       ? ['final-answer', 'judged-answer'].map((name) => Path.join('test/fixtures', name))
       : alone || branching || direct || midturn || preflighted || subagent
         ? [Path.join('tasks', 'write-greeting')]
-        : packing
+        : packing || derived
           ? ['extract-todos', 'uppercase-message', 'write-greeting'].map((name) =>
               Path.join('tasks', name),
             )
@@ -1855,6 +1857,7 @@ async function main(): Promise<void> {
                   : alone ||
                       cached ||
                       closed ||
+                      derived ||
                       failures ||
                       isolated ||
                       midturn ||
@@ -1871,6 +1874,7 @@ async function main(): Promise<void> {
                             alone ||
                             cached ||
                             closed ||
+                            derived ||
                             failures ||
                             isolated ||
                             midturn ||
@@ -1913,6 +1917,16 @@ async function main(): Promise<void> {
         yield item
       }
     }
+    const pinned = (Cpus.allowed(Fs.readFileSync(Cpus.host.status, 'utf8')) ?? []).slice(
+      0,
+      directories.length - 1,
+    )
+    if (derived)
+      assert.equal(
+        spawnSync('taskset', ['-pc', pinned.join(','), String(process.pid)]).status,
+        0,
+        'the lane pins itself, and so the runner it starts, to one hardware thread fewer than it has rows',
+      )
     const importStarted = Date.now()
     const imported = await Import.cases(cases(), options)
     const importMs = Date.now() - importStarted
@@ -2033,6 +2047,7 @@ async function main(): Promise<void> {
         branching ||
         cached ||
         closed ||
+        derived ||
         direct ||
         failures ||
         midturn ||
@@ -2097,7 +2112,7 @@ async function main(): Promise<void> {
               }),
             }
           : {}),
-        slots,
+        ...(derived ? {} : { slots }),
         timeoutSec: 3600,
         ...(cached ? { verifierCache: true as const } : {}),
         ...(warm ? { warm: { idleSec: 2 * noticeSec + 2, usd: 1 } } : {}),
@@ -4499,6 +4514,32 @@ async function main(): Promise<void> {
       assert.ok(detail['result'].sandbox.memoryMb < machine)
       console.log(
         'alone: ' + detail['result'].sandbox.memoryMb + ' MB of a machine with ' + machine + ' MB',
+      )
+      await pass()
+      return
+    }
+
+    if (derived) {
+      assert.deepEqual(
+        details.map((detail) => detail['attempt'].outcome),
+        directories.map(() => 'passed'),
+      )
+      const threads = Cpus.threads(pinned.length, await Cpus.limit(Cpus.host))
+      assert.ok(threads < total, 'the lane has more rows than its runner has threads')
+      assert.equal(
+        status['sandboxes'][0].capabilities.cpus,
+        threads,
+        'a runner reports the hardware threads it may use, by its affinity and the quota of its control groups',
+      )
+      assert.equal(peak, threads, 'a runner that is given no slot count fills one slot a thread')
+      console.log(
+        'threads: a runner that was given no slot count and may use ' +
+          threads +
+          ' hardware threads ran at most ' +
+          peak +
+          ' of ' +
+          total +
+          ' rows at once',
       )
       await pass()
       return
