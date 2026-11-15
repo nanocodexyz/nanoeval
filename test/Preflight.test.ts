@@ -33,6 +33,7 @@ test('an agent takes a preflight with +preflight after a session harness', () =>
   assert.deepEqual(parseAgent('nanoxp=codex+preflight:gpt-6-luna:high'), {
     id: 'nanoxp',
     model: 'gpt-6-luna',
+    orchestration: 'direct',
     preflight: true,
     provider: 'codex',
     thinking: 'high',
@@ -55,7 +56,7 @@ test('an agent takes a preflight with +preflight after a session harness', () =>
   assert.equal(parseAgent('nanox=codex:gpt-6-luna:high').preflight, undefined)
   for (const text of [
     'nanoxp=codex+preflight:gpt-6-luna:high',
-    'nanoxdp=codex-direct+preflight:gpt-6-luna:high',
+    'nanoxcp=codex-code-mode+preflight:gpt-6-luna:high',
     'nanox=codex:gpt-6-luna:high',
   ])
     assert.equal(agentText(parseAgent(text)), text)

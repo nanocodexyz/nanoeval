@@ -44,6 +44,27 @@ test('an agent names a session harness or an installed command', () => {
     provider: 'codex',
     thinking: 'high',
   })
+  assert.deepEqual(parseAgent('nanox=codex:gpt-6-luna:high'), {
+    id: 'nanox',
+    model: 'gpt-6-luna',
+    orchestration: 'direct',
+    provider: 'codex',
+    thinking: 'high',
+  })
+  assert.deepEqual(parseAgent('nanoxc=codex-code-mode:gpt-6-luna:high'), {
+    id: 'nanoxc',
+    model: 'gpt-6-luna',
+    provider: 'codex',
+    thinking: 'high',
+  })
+  assert.equal(
+    agentText(parseAgent('nanoxd=codex-direct:gpt-6-luna:high')),
+    'nanoxd=codex:gpt-6-luna:high',
+  )
+  assert.equal(
+    agentText(parseAgent('nanoxc=codex-code-mode:gpt-6-luna:high')),
+    'nanoxc=codex-code-mode:gpt-6-luna:high',
+  )
   assert.deepEqual(parseAgent('nanoxj=codex-jobs:gpt-6-luna:high'), {
     id: 'nanoxj',
     model: 'gpt-6-luna',
@@ -137,14 +158,16 @@ test('an agent names a session harness or an installed command', () => {
     ...config,
     agents: [
       parseAgent('nanox=codex:gpt-6-luna:high'),
-      parseAgent('nanoxd=codex-direct:gpt-6-luna:high'),
+      parseAgent('nanoxc=codex-code-mode:gpt-6-luna:high'),
+      { id: 'plain', model: 'gpt-6-luna', provider: 'codex' },
     ],
   }).agents
   assert.deepEqual(
     arms.map((agent) => [agent.id, agent.provider, agent.orchestration]),
     [
-      ['nanox', 'codex', undefined],
-      ['nanoxd', 'codex', 'direct'],
+      ['nanox', 'codex', 'direct'],
+      ['nanoxc', 'codex', undefined],
+      ['plain', 'codex', undefined],
     ],
   )
   assert.throws(

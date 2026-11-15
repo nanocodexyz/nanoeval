@@ -60,6 +60,7 @@ test('an agent spec branches its session with :branches=N, and the run checks th
     branches: 3,
     id: 'nanoxb3',
     model: 'gpt-6-luna',
+    orchestration: 'direct',
     provider: 'codex',
     thinking: 'high',
   })
@@ -67,6 +68,7 @@ test('an agent spec branches its session with :branches=N, and the run checks th
     branches: 3,
     id: 'nanoxpb3',
     model: 'gpt-6-luna',
+    orchestration: 'direct',
     preflight: true,
     provider: 'codex',
     thinking: 'high',
