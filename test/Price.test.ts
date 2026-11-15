@@ -61,14 +61,14 @@ test('usage is priced by its uncached input, its cached input and its output tok
     0.4 * 2 + 0.6 * 0.5 + 0.2 * 10,
   )
   assert.equal(Price.usd(price, { cachedTokens: 0, inputTokens: 0, outputTokens: 0 }), 0)
-  assert.equal(
-    Price.usd(price, {
-      cacheWriteTokens: 300_000,
-      cachedTokens: 600_000,
-      inputTokens: 1_000_000,
-      outputTokens: 0,
-    }),
-    0.4 * 2 + 0.6 * 0.5,
+  const input = Price.usd(price, {
+    cacheWriteTokens: 300_000,
+    cachedTokens: 600_000,
+    inputTokens: 1_000_000,
+    outputTokens: 0,
+  })
+  assert.ok(
+    Math.abs(input - (0.4 * 2 + 0.6 * 0.5)) < 1e-12,
     'a price without write amounts prices a written token as input',
   )
 })
@@ -80,24 +80,22 @@ test('a price with write amounts prices cache writes by their lifetime', () => {
     outputUsd: 20,
     writeUsd: { fiveMinutes: 5, oneHour: 8 },
   }
-  assert.equal(
-    Price.usd(price, {
-      cacheWriteHourTokens: 100_000,
-      cacheWriteTokens: 300_000,
-      cachedTokens: 600_000,
-      inputTokens: 1_000_000,
-      outputTokens: 50_000,
-    }),
-    0.1 * 4 + 0.6 * 0.2 + 0.2 * 5 + 0.1 * 8 + 0.05 * 20,
-  )
-  assert.equal(
-    Price.usd(price, {
-      cacheWriteTokens: 300_000,
-      cachedTokens: 600_000,
-      inputTokens: 1_000_000,
-      outputTokens: 0,
-    }),
-    0.1 * 4 + 0.6 * 0.2 + 0.3 * 5,
+  const priced = Price.usd(price, {
+    cacheWriteHourTokens: 100_000,
+    cacheWriteTokens: 300_000,
+    cachedTokens: 600_000,
+    inputTokens: 1_000_000,
+    outputTokens: 50_000,
+  })
+  assert.ok(Math.abs(priced - (0.1 * 4 + 0.6 * 0.2 + 0.2 * 5 + 0.1 * 8 + 0.05 * 20)) < 1e-12)
+  const unnamed = Price.usd(price, {
+    cacheWriteTokens: 300_000,
+    cachedTokens: 600_000,
+    inputTokens: 1_000_000,
+    outputTokens: 0,
+  })
+  assert.ok(
+    Math.abs(unnamed - (0.1 * 4 + 0.6 * 0.2 + 0.3 * 5)) < 1e-12,
     'a write without a lifetime is a 5 minute write',
   )
 })
