@@ -37,7 +37,7 @@ test('the command prints a refusal as one line and exits 1', () => {
   const agent = run('run', ...there, '--eval', 'samples', '--agent', 'bad')
   assert.equal(
     agent.stderr,
-    'nanoeval: an agent is ID=HARNESS:MODEL[:THINKING][:branches=[lazy]N][:refusal_fallback=return_once|session][:cell_yield_ms=N][:brief_finish=on][:fold_finish=on][:low_effort_rounds=on][:brief_final=on][:lean_cells=on][:escalate_model=MODEL][:escalate_tool_errors=N][:escalate_context_tokens=N][:tool_result_tokens=N][:skip_finish_check=on][:late_finish_check_ms=N][:result_effort=low|medium|high|xhigh|max][:stop_at_target=on][:yield_floor_ms=N][:yield_share=N], not bad\n',
+    'nanoeval: an agent is ID=HARNESS:MODEL[:THINKING][:branches=[lazy]N][:picker=verify|verify_lazy][:verifier_model=MODEL][:refusal_fallback=return_once|session][:cell_yield_ms=N][:brief_finish=on][:fold_finish=on][:low_effort_rounds=on][:brief_final=on][:lean_cells=on][:escalate_model=MODEL][:escalate_tool_errors=N][:escalate_context_tokens=N][:tool_result_tokens=N][:skip_finish_check=on][:late_finish_check_ms=N][:result_effort=low|medium|high|xhigh|max][:stop_at_target=on][:yield_floor_ms=N][:yield_share=N], not bad\n',
   )
   assert.equal(agent.status, 1)
   const option = run('run', '--tag', 'x')

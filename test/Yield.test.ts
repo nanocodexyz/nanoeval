@@ -62,7 +62,7 @@ test('an agent names the yield time of the cells of its sessions', () => {
   ])
     assert.throws(
       () => parseAgent(text),
-      /an agent is ID=HARNESS:MODEL\[:THINKING\]\[:branches=N\]\[:refusal_fallback=return_once\|session\]\[:cell_yield_ms=N\]\[:brief_finish=on\]\[:fold_finish=on\]\[:low_effort_rounds=on\]\[:brief_final=on\]\[:lean_cells=on\]\[:escalate_model=MODEL\]\[:escalate_tool_errors=N\]\[:escalate_context_tokens=N\]\[:tool_result_tokens=N\]\[:skip_finish_check=on\]\[:late_finish_check_ms=N\]\[:result_effort=low\|medium\|high\|xhigh\|max\]\[:stop_at_target=on\]\[:yield_floor_ms=N\]\[:yield_share=N\], not x=/,
+      /an agent is ID=HARNESS:MODEL\[:THINKING\]\[:branches=\[lazy\]N\]\[:picker=verify\|verify_lazy\]\[:verifier_model=MODEL\]\[:refusal_fallback=return_once\|session\]\[:cell_yield_ms=N\]\[:brief_finish=on\]\[:fold_finish=on\]\[:low_effort_rounds=on\]\[:brief_final=on\]\[:lean_cells=on\]\[:escalate_model=MODEL\]\[:escalate_tool_errors=N\]\[:escalate_context_tokens=N\]\[:tool_result_tokens=N\]\[:skip_finish_check=on\]\[:late_finish_check_ms=N\]\[:result_effort=low\|medium\|high\|xhigh\|max\]\[:stop_at_target=on\]\[:yield_floor_ms=N\]\[:yield_share=N\], not x=/,
     )
   assert.deepEqual(
     Config.parse({
