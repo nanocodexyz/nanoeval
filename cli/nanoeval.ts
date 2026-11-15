@@ -219,9 +219,10 @@ const usage = `nanoeval <command>
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
             puts what it printed before the instruction, in an <environment_facts> block.
-            fx is named with the API its model is asked over, fx-chat (chat completions),
-            fx-messages (Anthropic Messages) or fx-responses (OpenAI Responses), since its
-            command line speaks all three and the run adds the credential of that provider.
+            fx and opencode are named with the API their model is asked over, as in fx-chat
+            (chat completions), fx-messages (Anthropic Messages) or fx-responses (OpenAI
+            Responses), since their command lines speak all three and the run adds the
+            credential of that provider.
             With --payer plan, the Claude plan signed in on the Worker (nanoeval plans) pays
             for the sessions of the run, its judge included, in place of the Worker's own
             credential: its agents and its judge are claude sessions, nothing is charged per

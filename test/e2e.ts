@@ -170,11 +170,12 @@ const stood = shared || standing || stopped || taken
 const warm = scenario === 'warm'
 const installed = model === 'installed'
 const fakeCli = Path.resolve('test/fixtures/fake-cli.sh')
-const installedKind = process.env['NANOEVAL_E2E_AGENT'] as 'fx' | undefined
+const installedKind = process.env['NANOEVAL_E2E_AGENT'] as 'fx' | 'opencode' | undefined
 const fakeClis = (file: string) => ({
   NANOEVAL_AGENT_CLAUDE_CODE: file,
   NANOEVAL_AGENT_CODEX_CLI: file,
   NANOEVAL_AGENT_FX: file,
+  NANOEVAL_AGENT_OPENCODE: file,
 })
 const fakeUsage = {
   'claude-code': {

@@ -242,6 +242,12 @@ jobs:
           NANOEVAL_E2E_BACKEND: dir
           NANOEVAL_E2E_MODEL: installed
           NANOEVAL_E2E_AGENT: fx
+      - name: End to end, directory slots, opencode with a scripted command over chat completions and Messages
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_MODEL: installed
+          NANOEVAL_E2E_AGENT: opencode
       - name: End to end, directory slots, installed agents, failure kinds and a rerun
         run: npm run e2e
         env:
@@ -577,6 +583,11 @@ jobs:
         env:
           NANOEVAL_E2E_MODEL: installed
           NANOEVAL_E2E_AGENT: fx
+      - name: End to end, krun slots, opencode with a scripted command over chat completions and Messages, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_MODEL: installed
+          NANOEVAL_E2E_AGENT: opencode
       - name: End to end, krun slots, installed agents, failure kinds and a rerun, skipped where krun cannot run
         run: npm run e2e
         env:

@@ -10,6 +10,7 @@ export type Kind =
   | 'fx'
   | 'nanocode-claude'
   | 'nanocode-codex'
+  | 'opencode'
   | 'stock-claude'
   | 'stock-codex'
 
@@ -45,6 +46,7 @@ export const kinds: readonly Kind[] = [
   'fx',
   'nanocode-claude',
   'nanocode-codex',
+  'opencode',
   'stock-claude',
   'stock-codex',
 ]
@@ -57,6 +59,7 @@ const claude =
   'https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.318'
 const codex = 'https://github.com/openai/codex/releases/download/rust-v0.166.0'
 const fx = 'https://github.com/vercel-labs/fx/releases/download/v0.0.17'
+const opencode = 'https://github.com/sst/opencode/releases/download/v1.19.5'
 const leaderboardClaude =
   'https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.300'
 const leaderboardCodex = 'https://github.com/openai/codex/releases/download/rust-v0.162.1'
@@ -148,6 +151,39 @@ export const releases: Record<Kind, Release> = {
     provider: 'codex',
     source: 'runtime',
     version: 'runtime-' + Slot.runtime.sha256.slice(0, 12),
+  },
+  opencode: {
+    binaries: [
+      {
+        arch: 'aarch64',
+        libc: 'gnu',
+        sha256: 'fae5be262d693b7c5e562856cc473e59e741772936db0c0600ac0d5ed5bd088b',
+        url: opencode + '/opencode-linux-arm64.tar.gz',
+      },
+      {
+        arch: 'aarch64',
+        libc: 'musl',
+        sha256: '3522eccafd30d84a2d770b72a56d4877c576b9072b36a5a9ea0fa30ed82b896e',
+        url: opencode + '/opencode-linux-arm64-musl.tar.gz',
+      },
+      {
+        arch: 'x86_64',
+        libc: 'gnu',
+        sha256: '588310a336fa3b9df36b3f0225b26f679d453efaad0cf3d66c3651ef3ec1647a',
+        url: opencode + '/opencode-linux-x64.tar.gz',
+      },
+      {
+        arch: 'x86_64',
+        libc: 'musl',
+        sha256: 'e8d5be23bf8f3f69bc3206f3311215c049329cd6afa7c06d733987cc2d33b568',
+        url: opencode + '/opencode-linux-x64-musl.tar.gz',
+      },
+    ],
+    entry: 'opencode',
+    format: 'tar.gz',
+    provider: 'api',
+    source: 'release',
+    version: '1.19.5',
   },
   'stock-claude': {
     binaries: [
@@ -310,6 +346,70 @@ function fxAsk(agent: Agent, url: string): string {
   )
 }
 
+function build(kind: Kind, name: string): string[] {
+  const release = releases[kind]
+  if (release.source !== 'release') throw new Error(kind + ' has no release to choose a build of')
+  const root = '"$NANOEVAL_AGENT_RT"/agents/' + kind
+  const libcs = release.binaries.map((binary) => binary.libc)
+  return [
+    'if [ -x ' + root + '/any/' + release.entry + ' ]; then cli=' + root + '/any/' + release.entry,
+    ...(libcs.includes('gnu')
+      ? [
+          'elif [ -e /lib64/ld-linux-x86-64.so.2 ] || [ -e /lib/ld-linux-aarch64.so.1 ]; then cli=' +
+            root +
+            '/gnu/' +
+            release.entry,
+        ]
+      : []),
+    ...(libcs.includes('musl')
+      ? ['elif [ -e "/lib/ld-musl-$(uname -m).so.1" ]; then cli=' + root + '/musl/' + release.entry]
+      : []),
+    'else',
+    "  echo 'nanoeval: this image has no loader that a build of " + name + " runs with' >&2",
+    '  exit 127',
+    'fi',
+  ]
+}
+
+const opencodeApis: Record<Api, { base: string; npm: string }> = {
+  chat: { base: '', npm: '@ai-sdk/openai-compatible' },
+  messages: { base: '/v1', npm: '@ai-sdk/anthropic' },
+  responses: { base: '', npm: '@ai-sdk/openai' },
+}
+
+function opencodeRun(agent: Agent, url: string): string {
+  if (!agent.api) throw new Error('opencode names no API for its model')
+  const api = opencodeApis[agent.api]
+  const config = {
+    autoupdate: false,
+    permission: 'allow',
+    provider: {
+      nanoeval: {
+        models: { [agent.model]: agent.thinking ? { reasoning: true } : {} },
+        npm: api.npm,
+        options: { apiKey: '{env:' + tokenVariable + '}', baseURL: url + api.base },
+      },
+    },
+    share: 'disabled',
+  }
+  return (
+    [
+      ...preamble,
+      ...build('opencode', 'opencode'),
+      'export XDG_CACHE_HOME="$NANOEVAL_AGENT_HOME/cache" XDG_CONFIG_HOME="$NANOEVAL_AGENT_HOME/config"',
+      'export XDG_DATA_HOME="$NANOEVAL_AGENT_HOME/data" XDG_STATE_HOME="$NANOEVAL_AGENT_HOME/state"',
+      'export OPENCODE_DISABLE_LSP_DOWNLOAD=true OPENCODE_DISABLE_MODELS_FETCH=true',
+      'export OPENCODE_CONFIG_CONTENT=' + quote(JSON.stringify(config)),
+      [
+        'exec "$cli" run',
+        '--format json',
+        '-m ' + quote('nanoeval/' + agent.model),
+        ...(agent.thinking ? ['--variant ' + quote(agent.thinking)] : []),
+      ].join(' '),
+    ].join('\n') + '\n'
+  )
+}
+
 function stockCodex(agent: Agent, url: string): string {
   const root = '"$NANOEVAL_AGENT_RT"/agents/stock-codex/any'
   const catalog = '/tmp/hlb-codex-model-catalog.json'
@@ -457,6 +557,7 @@ export function script(agent: Agent, options: { url: string }): string {
     )
   }
   if (agent.kind === 'fx') return fxAsk(agent, options.url)
+  if (agent.kind === 'opencode') return opencodeRun(agent, options.url)
   if (agent.kind === 'stock-codex') return stockCodex(agent, options.url)
   if (agent.kind === 'stock-claude') return stockClaude(agent, options.url)
   if (agent.kind === 'codex-cli') {
@@ -565,6 +666,13 @@ export function summarize(kind: Kind, stream: string): Summary {
       summary.error = line['error'] === undefined ? undefined : text(line['error'])
       continue
     }
+    if (kind === 'opencode') {
+      if (line['type'] === 'text') summary.message = text(line['part']?.text)
+      if (line['type'] === 'tool_use') summary.toolCalls++
+      if (line['type'] === 'error')
+        summary.error = text(line['error']?.data?.message ?? line['error']?.name)
+      continue
+    }
     if (codexEvents(kind)) {
       const item = line['item']
       if (line['type'] === 'item.completed' && item?.type === 'agent_message')
@@ -645,6 +753,41 @@ export function trajectory(
       if (target) target.model_name = model
       if (line['error'] !== undefined) step('system', 'error: ' + text(line['error']))
       else step('agent', text(line['final_output'] || line['output'])).model_name = model
+      continue
+    }
+    if (kind === 'opencode') {
+      const part = (line['part'] ?? {}) as Line
+      session = text(line['sessionID']) || session
+      if (line['type'] === 'text') step('agent', text(part['text'])).model_name = model
+      if (line['type'] === 'reasoning') {
+        const next = step('agent', '')
+        next.model_name = model
+        next.reasoning_content = text(part['text'])
+      }
+      if (line['type'] === 'tool_use') {
+        const state = (part['state'] ?? {}) as Line
+        const id = text(part['callID'])
+        const exit = state['metadata']?.exit
+        call(
+          step('agent', ''),
+          {
+            tool_call_id: id,
+            function_name: text(part['tool']),
+            arguments: (state['input'] ?? {}) as Record<string, unknown>,
+          },
+          {
+            source_call_id: id,
+            content: text(state['output'] ?? state['error'] ?? ''),
+            extra: {
+              duration_ns: null,
+              ...(typeof exit === 'number' ? { exit_code: exit } : {}),
+              status: text(state['status']),
+            },
+          },
+        )
+      }
+      if (line['type'] === 'error')
+        step('system', 'error: ' + text(line['error']?.data?.message ?? line['error']?.name))
       continue
     }
     if (codexEvents(kind)) {

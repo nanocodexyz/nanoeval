@@ -111,7 +111,7 @@ test('an agent names a session harness or an installed command', () => {
   )
   assert.throws(
     () => Config.parse({ ...config, agents: [{ id: 'x', model: 'm', provider: 'cursor' }] }),
-    /provider must be one of claude, codex, oracle, claude-code, codex-cli, fx, nanocode-claude, nanocode-codex/,
+    /provider must be one of claude, codex, oracle, claude-code, codex-cli, fx, nanocode-claude, nanocode-codex, opencode/,
   )
   assert.throws(
     () => Config.parse({ ...config, judge: { model: 'gpt-6.1-sol', provider: 'codex-cli' } }),
@@ -185,7 +185,7 @@ test('every pinned release names a checksum for each build it fetches', () => {
   }
 })
 
-function install(kind: 'claude-code' | 'codex-cli' | 'fx', libc: string): string {
+function install(kind: 'claude-code' | 'codex-cli' | 'fx' | 'opencode', libc: string): string {
   const rt = Path.join(root, 'rt-' + kind + '-' + libc)
   const release = Installed.releases[kind]
   assert.equal(release.source, 'release')
@@ -197,7 +197,7 @@ function install(kind: 'claude-code' | 'codex-cli' | 'fx', libc: string): string
       '#!/bin/sh',
       'printf "argument:%s\\n" "$@"',
       'printf "input:%s\\n" "$(cat)"',
-      'env | grep -E "^(ANTHROPIC|CLAUDE|CODEX|DISABLE|FX|IS_SANDBOX|NANOEVAL_AGENT)" | sort',
+      'env | grep -E "^(ANTHROPIC|CLAUDE|CODEX|DISABLE|FX|IS_SANDBOX|NANOEVAL_AGENT|OPENCODE|XDG)" | sort',
       '',
     ].join('\n'),
     { mode: 0o755 },
@@ -357,6 +357,128 @@ test('the command of fx names the endpoint of the attempt in its settings and no
     () => Installed.script({ kind: 'fx', model: 'm' }, { url }),
     /fx names no API for its model/,
   )
+})
+
+test('the command of opencode is the build of the image and names the endpoint in its configuration', () => {
+  const url = 'http://127.0.0.1:8787/v1/runs/r/model/a00001'
+  const expected: [Installed.Api, string, string][] = [
+    ['chat', url, '@ai-sdk/openai-compatible'],
+    ['responses', url, '@ai-sdk/openai'],
+    ['messages', url + '/v1', '@ai-sdk/anthropic'],
+  ]
+  for (const [api, base, npm] of expected) {
+    const out = run(
+      { api, kind: 'opencode', model: "open/model'x", thinking: 'high' },
+      install('opencode', 'any'),
+    )
+    assert.deepEqual(
+      out
+        .split('\n')
+        .filter((line) => line.startsWith('argument:'))
+        .map((line) => line.slice('argument:'.length)),
+      ['run', '--format', 'json', '-m', "nanoeval/open/model'x", '--variant', 'high'],
+    )
+    assert.match(out, /^input:Write it's done\.$/m)
+    for (const name of ['CACHE', 'CONFIG', 'DATA', 'STATE'])
+      assert.match(
+        out,
+        new RegExp('^XDG_' + name + '_HOME=.*home-opencode/' + name.toLowerCase() + '$', 'm'),
+      )
+    assert.match(out, /^OPENCODE_DISABLE_MODELS_FETCH=true$/m)
+    assert.deepEqual(JSON.parse(/^OPENCODE_CONFIG_CONTENT=(.*)$/m.exec(out)![1]!), {
+      autoupdate: false,
+      permission: 'allow',
+      provider: {
+        nanoeval: {
+          models: { "open/model'x": { reasoning: true } },
+          npm,
+          options: { apiKey: '{env:NANOEVAL_AGENT_TOKEN}', baseURL: base },
+        },
+      },
+      share: 'disabled',
+    })
+    assert.equal(
+      out.split(attemptToken).length,
+      2,
+      'the token reaches the command in one variable and in no argument',
+    )
+  }
+  const glibc =
+    Fs.existsSync('/lib64/ld-linux-x86-64.so.2') || Fs.existsSync('/lib/ld-linux-aarch64.so.1')
+  const plain = run(
+    { api: 'chat', kind: 'opencode', model: 'open-model' },
+    install('opencode', glibc ? 'gnu' : 'musl'),
+  )
+  assert.doesNotMatch(plain, /^argument:--variant$/m)
+  assert.deepEqual(
+    JSON.parse(/^OPENCODE_CONFIG_CONTENT=(.*)$/m.exec(plain)![1]!).provider.nanoeval.models,
+    { 'open-model': {} },
+  )
+  assert.throws(
+    () => Installed.script({ kind: 'opencode', model: 'm' }, { url }),
+    /opencode names no API for its model/,
+  )
+})
+
+const opencodeStream = [
+  '{"type":"step_start","sessionID":"session-oc","part":{"type":"step-start"}}',
+  '{"type":"reasoning","sessionID":"session-oc","part":{"type":"reasoning","text":"plan"}}',
+  '{"type":"tool_use","sessionID":"session-oc","part":{"type":"tool","tool":"bash","callID":"call_1","state":{"status":"completed","input":{"command":"echo hi > a.txt"},"output":"ok","metadata":{"exit":0}}}}',
+  '{"type":"step_finish","sessionID":"session-oc","part":{"type":"step-finish","reason":"tool-calls","tokens":{"input":200,"output":12},"cost":0}}',
+  '{"type":"tool_use","sessionID":"session-oc","part":{"type":"tool","tool":"read","callID":"call_2","state":{"status":"error","input":{"filePath":"/app/b.txt"},"error":"File not found"}}}',
+  '{"type":"text","sessionID":"session-oc","part":{"type":"text","text":"Done."}}',
+  '{"type":"step_finish","sessionID":"session-oc","part":{"type":"step-finish","reason":"stop","tokens":{"input":100,"output":8},"cost":0}}',
+  '',
+].join('\n')
+
+test('the event stream of opencode gives the final message, the tool calls and an ATIF trajectory', () => {
+  assert.deepEqual(Installed.summarize('opencode', opencodeStream), {
+    costUsd: undefined,
+    error: undefined,
+    message: 'Done.',
+    toolCalls: 2,
+  })
+  assert.deepEqual(
+    Installed.summarize(
+      'opencode',
+      '{"type":"error","sessionID":"session-oc","error":{"name":"APIError","data":{"message":"Cannot connect to API","isRetryable":true}}}\n',
+    ),
+    { costUsd: undefined, error: 'Cannot connect to API', message: '', toolCalls: 0 },
+  )
+  const trajectory = Installed.trajectory(
+    'opencode',
+    { instruction: 'Write the file.', stream: opencodeStream, usage },
+    { model: 'open-model', name: 'opencode', session: 'fallback', version: '1.19.5' },
+  )
+  assert.equal(trajectory.session_id, 'session-oc')
+  assert.deepEqual(
+    trajectory.steps.map((step) => [step.step_id, step.source, step.message]),
+    [
+      [1, 'user', 'Write the file.'],
+      [2, 'agent', ''],
+      [3, 'agent', ''],
+      [4, 'agent', ''],
+      [5, 'agent', 'Done.'],
+    ],
+  )
+  assert.equal(trajectory.steps[1]!.reasoning_content, 'plan')
+  assert.deepEqual(trajectory.steps[2]!.tool_calls, [
+    { tool_call_id: 'call_1', function_name: 'bash', arguments: { command: 'echo hi > a.txt' } },
+  ])
+  assert.deepEqual(trajectory.steps[2]!.observation, {
+    results: [
+      {
+        source_call_id: 'call_1',
+        content: 'ok',
+        extra: { duration_ns: null, exit_code: 0, status: 'completed' },
+      },
+    ],
+  })
+  assert.deepEqual(trajectory.steps[3]!.observation!.results[0], {
+    source_call_id: 'call_2',
+    content: 'File not found',
+    extra: { duration_ns: null, status: 'error' },
+  })
 })
 
 const fxOutput =

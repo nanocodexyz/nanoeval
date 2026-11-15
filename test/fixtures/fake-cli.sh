@@ -4,6 +4,7 @@ set -eu
 kind=claude-code
 if [ "${1:-}" = exec ]; then kind=codex-cli; fi
 if [ "${1:-}" = ask ]; then kind=fx; fi
+if [ "${1:-}" = run ]; then kind=opencode; fi
 model=
 provider=
 previous=
@@ -16,6 +17,7 @@ for argument in "$@"; do
   esac
   previous=$argument
 done
+model=${model#nanoeval/}
 instruction=$(cat)
 
 if [ "$kind" = codex-cli ]; then
@@ -33,6 +35,17 @@ elif [ "$kind" = fx ]; then
     anthropic-messages) url=$base/messages ;;
     openai-chat-completions) url=$base/chat/completions ;;
     openai-responses) url=$base/responses ;;
+    *) exit 64 ;;
+  esac
+elif [ "$kind" = opencode ]; then
+  [ -n "$XDG_DATA_HOME" ] || exit 64
+  base=$(printf '%s' "$OPENCODE_CONFIG_CONTENT" | sed 's/.*"baseURL":"\([^"]*\)".*/\1/')
+  variable=$(printf '%s' "$OPENCODE_CONFIG_CONTENT" | sed 's/.*"apiKey":"{env:\([^}]*\)}".*/\1/')
+  eval "token=\$$variable"
+  case $(printf '%s' "$OPENCODE_CONFIG_CONTENT" | sed 's/.*"npm":"\([^"]*\)".*/\1/') in
+    @ai-sdk/anthropic) url=$base/messages ;;
+    @ai-sdk/openai-compatible) url=$base/chat/completions ;;
+    @ai-sdk/openai) url=$base/responses ;;
     *) exit 64 ;;
   esac
 else
@@ -57,6 +70,13 @@ if [ "$kind" = codex-cli ]; then
   printf '{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"sh -c scripted","aggregated_output":"","exit_code":%s,"status":"completed"}}\n' "$code"
   printf '%s\n' '{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"The task is complete."}}'
   printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":7}}'
+elif [ "$kind" = opencode ]; then
+  status=completed
+  sh -c "$command" >/dev/null 2>&1 || status=error
+  printf '{"type":"step_start","sessionID":"fake-session","part":{"type":"step-start"}}\n'
+  printf '{"type":"tool_use","sessionID":"fake-session","part":{"type":"tool","tool":"bash","callID":"call_1","state":{"status":"%s","input":{"command":"scripted"},"output":""}}}\n' "$status"
+  printf '{"type":"text","sessionID":"fake-session","part":{"type":"text","text":"The task is complete."}}\n'
+  printf '{"type":"step_finish","sessionID":"fake-session","part":{"type":"step-finish","reason":"stop","tokens":{"input":60,"output":7},"cost":0}}\n'
 elif [ "$kind" = fx ]; then
   status=success
   sh -c "$command" >/dev/null 2>&1 || status=error

@@ -5783,3 +5783,25 @@ The pinned binary, fetched by the runner, in krun slots against a scripted endpo
 - A real model on any API (the entry that closes this series has the first rows), a ChatGPT plan, an OpenAI key, Cloudflare AI Gateway or another OpenAI-compatible provider.
 - A thinking level against a provider. The fields are what the three APIs document, and on Messages what opencode 1.19.5 sends for `claude-opus-5-5`.
 - linux/arm64: the archive is pinned by the digest its release lists and was not run.
+
+## 2026-11-15: opencode as an installed agent
+
+opencode 1.19.5 (`sst/opencode`, the release the project marks latest and its npm tag `latest`) is the second command line that names its API, after fx. Its GitHub release has a glibc and a musl build for x86_64 and aarch64, one binary each, pinned by SHA-256 and chosen by the loader of the image as Claude Code's are.
+
+### What was established
+
+- **One variable configures it.** `OPENCODE_CONFIG_CONTENT` takes the configuration as JSON: a provider with the AI SDK package that speaks the API, a `baseURL` and `apiKey: {env:NAME}`, which opencode reads from the environment when it starts. `@ai-sdk/openai-compatible` sent `POST <baseURL>/chat/completions`, `@ai-sdk/openai` `POST <baseURL>/responses`, both with a bearer token, and `@ai-sdk/anthropic` `POST <baseURL>/messages` with `x-api-key`, which the endpoint of a run reads as well. The three packages are in the binary: nothing was fetched with the model catalog and the language server downloads turned off.
+- **`opencode run` asks nothing.** With `permission: allow` in the configuration it ran its `bash` tool without a prompt, read the instruction from its input, and exited 1 with an `error` event when its endpoint did not answer for a minute.
+- **It asks for a title first.** Each run sends one request without tools before its first step, to the same model since the provider has one. It is a model call of the attempt: three requests where fx and pi send two.
+- **A thinking level needs the model marked.** `--variant high` changed nothing for a model the configuration only names. With `reasoning: true` it sent `reasoning_effort` (chat), `reasoning.effort` (Responses) and `thinking.type: adaptive` with `output_config.effort` (Messages, for a model named `claude-opus-5-5`). The command marks the model only when the agent has a level.
+- **It is the largest of the three.** One small exchange peaked at 544 MB of resident memory, where pi took 92 MB and fx 10 MB. In a Debian fixture of 256 MB the kernel killed it before its first request, three times of three, and the rows ended as `environment` errors that name the OOM kill. With 2 GB the same rows passed.
+- **Its musl build is not self-contained.** In plain Alpine it stopped at `_ZSt25__throw_bad_function_callv: symbol not found`: it links `libstdc++` and `libgcc`, which Claude Code's musl build does not. With the two packages in the image it ran. Nothing is installed into an image for it, so such a row is an `agent` error that says so.
+
+### What ran
+
+Before this commit, on its tree. Hosted Linux x86_64 without KVM: lint, both type checks, `node --test test/Installed.test.ts` (25 of 25). On a 48-thread Linux machine with KVM, four of its threads: the new lane on krun, directory and ns slots, 1 of 1 each. The pinned builds in krun slots against the scripted endpoint of the fx entry, three agents on two images of 2 GB (Debian 12, and Alpine 3.21 with `bash`, `libgcc` and `libstdc++`): 6 of 6 passed, three model requests a row, 3,600 input tokens (600 cached) and 102 output tokens a row as scripted.
+
+### Not verified
+
+- A real model (the closing entry has the first rows), a plan, an OpenAI-compatible provider, linux/arm64, and an x86_64 machine without AVX2, where the pinned builds are expected to stop: the release has baseline builds that are not pinned.
+- Its cost. opencode prints one for each step from the prices of its catalog, which has none for a model of a provider it was given, so the stream said 0 and it is not read.
