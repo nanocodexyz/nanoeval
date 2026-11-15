@@ -1,6 +1,7 @@
 import type * as Config from './Config.ts'
 
 export type Turn = {
+  cellYieldMs?: number
   deadline?: { atMs: number; limitMs: number }
   hand?: string
   model: string
@@ -26,6 +27,7 @@ export function sent(turn: Turn, input: { at: number; session: string }): string
   return (
     JSON.stringify({
       at_ms: input.at,
+      ...(turn.cellYieldMs === undefined ? {} : { cell_yield_ms: turn.cellYieldMs }),
       deadline: turn.deadline
         ? { at_ms: turn.deadline.atMs, limit_ms: turn.deadline.limitMs }
         : null,

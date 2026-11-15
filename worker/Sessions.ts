@@ -1,7 +1,9 @@
 import { env as bound } from 'cloudflare:workers'
+import type { Contracts } from 'nanocode-ts'
 import { App, Forward } from 'nanocode-ts/cloudflare'
 import manifest from '../package.json' with { type: 'json' }
 import type * as Atif from '../src/Atif.ts'
+import type * as Config from '../src/Config.ts'
 import * as Logins from '../src/Logins.ts'
 import * as Pins from '../src/Pins.ts'
 import * as Plans from '../src/Plans.ts'
@@ -34,12 +36,21 @@ function refuse(message: string): Response {
 
 const cellYieldMs = (bound as Env).CELL_YIELD_MS
 
+type Opened = App.create.Limits & Pick<Contracts.AgentConfiguration, 'cell_yield_ms'>
+
+async function agentOf(env: Env, session: Proxy.Session): Promise<Config.Agent> {
+  const answer = await env.RUNS.get(env.RUNS.idFromName(session.run)).fetch(
+    'https://run.internal/attempts/' + session.attempt + '/agent',
+  )
+  if (!answer.ok) throw new Error('the run answered ' + answer.status)
+  return answer.json<Config.Agent>()
+}
+
 export const revision =
   (bound as Env).NANOCODE_TS_REVISION || Pins.pinned(manifest.dependencies['nanocode-ts'])
 
 export const nanocode = App.create<Env>({
   authenticate: async (request, env) => ((await authorized(request, env)) ? account : null),
-  ...(cellYieldMs ? { cellYieldMs: Number(cellYieldMs) } : {}),
   egress: (env) =>
     Forward.create({
       fetch: async (request, dispatch) => {
@@ -168,6 +179,13 @@ export const nanocode = App.create<Env>({
   hands: 'always',
   headless: true,
   hedge: { cap_percent: 0 },
+  limits: async (opened, env): Promise<Opened> => {
+    const session = Proxy.session(opened.authority.session_name ?? '')
+    const named =
+      session && session.judge === undefined ? (await agentOf(env, session)).cellYieldMs : undefined
+    const ms = named ?? (cellYieldMs ? Number(cellYieldMs) : undefined)
+    return ms === undefined ? {} : { cell_yield_ms: ms }
+  },
   subscription: async (_account, env, provider) =>
     Logins.held(env, provider) ||
     (provider === 'claude' && (await Vault.unusable(env)) === undefined),

@@ -358,6 +358,7 @@ export class Run extends DurableObject<Env> {
             },
             404,
           )
+        if (parts[2] === 'agent') return json(this.agentOf(row))
         if (parts[2] === 'artifacts' && parts[3]) {
           const name = decodeURIComponent(parts[3])
           const body = this.artifact(row.id, name) ?? (await this.live(row, name))
@@ -3298,6 +3299,7 @@ export class Run extends DurableObject<Env> {
       now,
     })
     const turn: Turn.Turn = {
+      ...(agent.cellYieldMs === undefined ? {} : { cellYieldMs: agent.cellYieldMs }),
       ...(deadline ? { deadline } : {}),
       hand: Protocol.handName,
       model: agent.model,
