@@ -25,12 +25,34 @@ export type Options = {
   cache: string
   converter: Converter.Converter
   format: Format
+  freeDiskMb?(): Promise<number>
+  jobs?: number
   log?(line: string): void
   refused?(id: string, error: Error): void
   store: Store.Store
 }
 
 type Conversion = Extract<Eval.Environment, { kind: 'disk' }>
+
+type Flight = { ended: Promise<void>; storageMb: number }
+
+const flights = new Map<string, Flight>()
+
+async function freeDiskMb(directory: string): Promise<number> {
+  const stat = await Fs.statfs(directory)
+  return Math.floor((stat.bavail * stat.bsize) / (1024 * 1024))
+}
+
+async function room(flight: Flight, need: { free(): Promise<number>; storageMb: number }) {
+  for (;;) {
+    const free = await need.free()
+    const writing = [...flights.values()].filter((other) => other.storageMb)
+    const reservedMb = writing.reduce((sum, other) => sum + other.storageMb, 0)
+    if (!writing.length || free >= reservedMb + need.storageMb) break
+    await Promise.race(writing.map((other) => other.ended))
+  }
+  flight.storageMb = need.storageMb
+}
 
 function archive(item: Dataset.Case, directory: string, skip: readonly string[] = []): Uint8Array {
   return Tar.pack(
@@ -69,17 +91,25 @@ async function convert(
     )
     .digest('hex')
   const record = Path.join(options.cache, 'conversions', key + '.json')
-  const known = await Fs.readFile(record, 'utf8').then(
-    (text) => JSON.parse(text) as Conversion,
-    () => undefined,
-  )
-  if (known && (await options.store.has(known.disk.digest)))
-    return { convertMs: 0, environment: known, packMs: 0, reused: true, uploadMs: 0 }
-
+  for (let same = flights.get(record); same; same = flights.get(record)) await same.ended
+  let release = () => {}
+  const flight: Flight = { ended: new Promise((resolve) => (release = resolve)), storageMb: 0 }
+  flights.set(record, flight)
   const scratch = Path.join(options.cache, 'scratch', key + '-' + process.pid)
-  await Fs.rm(scratch, { force: true, recursive: true })
-  await Fs.mkdir(scratch, { recursive: true })
   try {
+    const known = await Fs.readFile(record, 'utf8').then(
+      (text) => JSON.parse(text) as Conversion,
+      () => undefined,
+    )
+    if (known && (await options.store.has(known.disk.digest)))
+      return { convertMs: 0, environment: known, packMs: 0, reused: true, uploadMs: 0 }
+
+    await Fs.rm(scratch, { force: true, recursive: true })
+    await Fs.mkdir(scratch, { recursive: true })
+    await room(flight, {
+      free: options.freeDiskMb ?? (() => freeDiskMb(scratch)),
+      storageMb: task.environment.storageMb,
+    })
     const started = Date.now()
     if (context) {
       for (const [path, data] of Object.entries(item.files)) {
@@ -120,6 +150,8 @@ async function convert(
     }
   } finally {
     await Fs.rm(scratch, { force: true, recursive: true })
+    flights.delete(record)
+    release()
   }
 }
 
@@ -219,42 +251,54 @@ export async function cases(
   source: AsyncIterable<Dataset.Case>,
   options: Options,
 ): Promise<{ tasks: Eval.Task[]; timings: Timing[] }> {
-  const tasks: Eval.Task[] = []
-  const timings: Timing[] = []
+  const found: { task: Eval.Task; timing: Timing }[] = []
+  const failures: Error[] = []
+  const running = new Set<Promise<void>>()
   const iterator = source[Symbol.asyncIterator]()
-  for (;;) {
-    const started = Date.now()
-    const next = await iterator.next()
-    if (next.done) break
-    const adapterMs = Date.now() - started
-    const normalized = await normalize(next.value, options).catch((error: Error) => {
-      error.message = next.value.id + ': ' + error.message
-      if (!options.refused) throw error
-      options.refused(next.value.id, error)
-      return undefined
-    })
-    if (!normalized) continue
-    const { task, timing } = normalized
-    tasks.push(task)
-    timings.push({ adapterMs, ...timing })
-    options.log?.(
-      task.id +
-        ': adapter ' +
-        adapterMs +
-        ' ms, convert ' +
-        timing.convertMs +
-        ' ms' +
-        (timing.reused ? ' (reused)' : '') +
-        ', pack ' +
-        timing.packMs +
-        ' ms, upload ' +
-        timing.uploadMs +
-        ' ms, environment ' +
-        timing.packedBytes +
-        ' bytes',
-    )
+  const read = async () => {
+    for (let index = 0; !failures.length; index++) {
+      const started = Date.now()
+      const next = await iterator.next()
+      if (next.done) return
+      const adapterMs = Date.now() - started
+      while (running.size >= (options.jobs ?? 1)) await Promise.race(running)
+      if (failures.length) return
+      const work = normalize(next.value, options)
+        .then(
+          ({ task, timing }) => {
+            found[index] = { task, timing: { adapterMs, ...timing } }
+            options.log?.(
+              task.id +
+                ': adapter ' +
+                adapterMs +
+                ' ms, convert ' +
+                timing.convertMs +
+                ' ms' +
+                (timing.reused ? ' (reused)' : '') +
+                ', pack ' +
+                timing.packMs +
+                ' ms, upload ' +
+                timing.uploadMs +
+                ' ms, environment ' +
+                timing.packedBytes +
+                ' bytes',
+            )
+          },
+          (error: Error) => {
+            error.message = next.value.id + ': ' + error.message
+            if (options.refused) options.refused(next.value.id, error)
+            else failures.push(error)
+          },
+        )
+        .finally(() => running.delete(work))
+      running.add(work)
+    }
   }
-  return { tasks, timings }
+  await read().catch((error: Error) => failures.push(error))
+  await Promise.all(running)
+  if (failures.length) throw failures[0]
+  const kept = found.flat()
+  return { tasks: kept.map((entry) => entry.task), timings: kept.map((entry) => entry.timing) }
 }
 
 async function walk(

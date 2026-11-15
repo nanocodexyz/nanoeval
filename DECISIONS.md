@@ -6197,3 +6197,52 @@ The unit tests are 4 of prices, with a rerun that keeps the prices of its run, a
 - A judge priced by list, a subagent on another model, and a response that has both a list price and a search at list price: read, in no lane.
 - An installed agent that reports a cost of its own on an endpoint that names none, with a price given: the price of the run stands, read in `metered`, in no lane.
 - The workflow on GitHub: Actions is disabled for the repository.
+
+## 2026-11-15: an import converts several tasks at once
+
+**What was slow.** A machine that lives for two hours spent ten minutes of them importing Terminal-Bench 2.1: 577 to 683 s for the 89 tasks on a 48-thread machine with KVM. The report of one such import, 576.6 s, gives the adapter 51.7 s, the conversions 434.0 s, the packing 64.4 s and the upload 14.0 s, each summed over the tasks. `Import.cases` took one task at a time: it read the task from the adapter, converted its image in a builder microVM, packed the disk and put it in the store, and only then read the next. Nothing under it needed that. The launcher keeps its scratch beside each disk it writes, and the layer cache has one lock and one download for each blob, so conversions side by side were safe and were never asked for.
+
+**What changed.**
+
+- `nanoeval import --jobs N` converts N tasks at once, and one without it, which is the import as it was. `Import.cases` starts up to `jobs` tasks and reads the next task from the adapter while they run. A row and its timing are kept at the place the adapter gave the task, so the rows of the version are in the adapter's order whatever ended first. The line of a task is written when it ends.
+- Two tasks with one source, the same image and size, that are in flight together convert it once: the second waits for the first and then finds its record, as it did when it came later. Without that the two would have shared one scratch directory.
+- A conversion starts only while the disk of the cache has room for its `storage_mb` beside the `storage_mb` of every disk that is being written, and asks again when one of them ends. A conversion with nothing beside it starts whatever the room, as before, so no import waits for ever and none is refused that ran before.
+- A task that fails ends the import as before, once the tasks beside it have ended: no other task is started, what the others converted stays recorded for the next import, and no scratch is left. With `--keep-going` it is named and left out, and the rest go on.
+- `Store.addBytes` writes each blob it puts from a scratch file of its own. Two tasks with the same bytes, an instruction or a test archive, used one file name, and the one that ended first removed it under the other.
+- The report of `--report` says how many tasks were converted at once, as `jobs`.
+
+**Why one is still the default.** How many builders a machine has room for can be read from it: each is a microVM of 2 threads and 2,048 MiB, the launcher's defaults. That default is written and not landed, because three things it would change for every import have not run on a machine with KVM, and the machine they were to run on did not come in time: conversions side by side with no layer on the machine, the tasks' own solutions on disks made side by side, and Dockerfile builds side by side, which is what every lane on krun and ns slots would then do with its fixtures. Until they have, the number is the operator's to give.
+
+**What stays the same, and what never was.** A version is the digest over its rows, and a row names its packed disk by SHA-256. Two conversions of one image never gave the same packed disk: a kernel in the builder writes the file system, with its clock in the inodes and its own choice of blocks, which the entry of 2026-11-11 on task images found, and which is why a row records the digest of the image beside the digest of the disk. So two imports of the same tasks never had the same version, one at a time or not. What an import decides is everything else in a row, and the order. That was compared, below. With a converter whose disks follow from its input, the unit test asks that six tasks converted three at a time give the rows and the version digest of the same six converted in turn.
+
+**Measured.** One machine, 48 hardware threads and 377 GB with KVM, on the code of this entry before its last rebase. Every import here was pinned to 6 of the threads, which other runs on the machine used as well: its load was 50 to 80 throughout. The layers were on the machine, a copy of the layer cache of the import above, and each import had a store, a cache and task sources of its own, so every task was read from the registry, converted, packed and stored.
+
+| Tasks | `--jobs` | Wall | Summed over the tasks |
+| --- | --- | --- | --- |
+| the first 12 | 1 | 106.3 s | |
+| the first 12 | 3 | 48.1 s | |
+| the first 12 | 6 | 34.4 s | |
+| the first 12 | 12 | 32.5 s | |
+| all 89 | 6 | 205.1 s | adapter 46.8 s, conversions 949.3 s, packing 188.7 s, upload 32.2 s: 5.9 tasks at once |
+
+All five ended with every task imported and none refused. These are not the conditions of the 576.6 s: that import had no layer on the machine, 28 threads to itself and a quiet machine, and the same first 12 tasks took it 64.3 s where they took 106.3 s here one at a time. So the table says what side by side gains on the same threads, 3.1 times at six for the 12 tasks, and that 89 tasks went through six at a time; it does not say how long a fresh machine takes. An import with the layers on the machine asked Docker Hub for no counted pull: the limit of the address read 100 of 100 before and after.
+
+The rows of the 89 were compared with the rows of the import made one at a time on that machine an hour and a half earlier, read from the two Workers: the same 89 ids in the same order, 89 of 89 rows equal with the packed disk left out, 89 of 89 with the same image digest, and no packed disk in common.
+
+**Where the rest goes.** Of the 576.6 s, conversion is 75 %, packing 11 %, the adapter 9 % and the upload 2 %. Conversion, packing and upload run side by side with this change. The adapter does not: it is one request for each task, in turn, and at six at once it was 46.8 s of requests that nothing waited for only because six conversions kept the threads busy meanwhile. It is the next entry. Layer downloads are inside the conversions and were not measured apart: the only import with no layer on the machine is the one above. Docker Hub counted 44 pulls for it, of the 100 an hour it gives an address without a login, so a machine can import the dataset twice in an hour from nothing and not three times, however many tasks convert at once.
+
+**Checked.**
+
+- `test/Import.test.ts`, with a converter that waits and counts: six tasks at three jobs convert three at once, a later task ends before an earlier one, and the rows, their order and the version digest are those of the six in turn, with nothing left in scratch and nothing converted when imported again; four tasks of two images at once convert each image once and three rows name one disk; a conversion that fails beside a slow one ends the import with its task named after the slow one ended, starts no third, leaves no scratch and keeps the slow one's record, and with a `refused` callback the other three become the rows in order; with room for two environments on the disk five tasks convert two at once, and with no room at all one at a time, all five.
+- `test/Store.test.ts`: the same bytes added twice at once, to a store whose first put is slow, are both kept and no scratch file is left.
+- Each of these fails on the code as it was changed by hand, one change a run: the scratch name without its random part, `jobs` ignored, rows kept in the order they ended, no wait for a conversion of the same source, no wait for room, the room asked without the conversion's own size, and an import that goes on starting tasks after a failure.
+- On a 5-core machine without KVM, from a fresh clone: `npm ci`, `npm run lint`, `npm run check:types`, `npm run dry-run`, `npm test` with no failure and the 5 tests that need KVM skipped, and the first directory lane and its oracle lane, which import one task at a time as every lane does.
+
+**Not verified.**
+
+- Conversions side by side with no layer on the machine: many downloads at once from a registry, and two conversions waiting for one layer. The layer cache is written for it and the lanes of a machine share it, and no import has done it.
+- The tasks' own solutions on disks that were converted side by side. The rows say the disks were made from the same images with the same configuration, and nothing booted them.
+- Dockerfile builds side by side: every measured conversion was of an image. No lane imports with `--jobs`.
+- More than six tasks at once on all 89, more than twelve on any, and a machine with threads to itself: what 24 at once take on 48 threads is not known, and the 120 s that were the aim of this change are not shown.
+- `--jobs` with `--store r2`: several multipart uploads through the Worker at once.
+- The wait for room on a disk that is in fact nearly full. The rule is unit tested with the free space given by the test.

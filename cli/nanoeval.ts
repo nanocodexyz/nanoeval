@@ -117,7 +117,7 @@ const usage = `nanoeval <command>
             was run end to end.
   import    --url URL --token T (DATASET | --task DIR...) [--eval NAME] [--only ID]... [--limit N]
             [--backend krun|ns|dir] [--store DIR|r2] [--cache DIR] [--layers DIR] [--sources DIR]
-            [--report FILE] [--keep-going] [--pull-wait SEC]
+            [--report FILE] [--keep-going] [--pull-wait SEC] [--jobs N]
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
             Import a dataset, or local task directories, as a version of a durable eval:
             the adapter writes each task, its instruction, tests and solution become blobs
@@ -135,7 +135,11 @@ const usage = `nanoeval <command>
             --slot-env and --slot-forward or from NANOEVAL_CA_BUNDLE, NANOEVAL_SLOT_ENV and
             NANOEVAL_SLOT_FORWARD, and the disk keeps none of it. A registry that limits
             pulls (429) fails the conversion with what it said. --pull-wait SEC, or
-            NANOEVAL_PULL_WAIT_SEC, waits that long for it first.
+            NANOEVAL_PULL_WAIT_SEC, waits that long for it first. --jobs N converts N tasks
+            at once, one without it: each conversion of an image runs a builder microVM of 2
+            threads and 2 GiB, and one waits while the disk of the cache has no room for its
+            environment beside the ones being written. The rows of the version are in the
+            order of the adapter whatever ends first.
   import    DATASET --out DIR [--only ID]... [--limit N] [--sources DIR]
             Write the dataset's tasks as Harbor task directories instead, with dataset.json.
   evals     --url URL --token T
@@ -1368,6 +1372,7 @@ export async function importEval(
     cache: string
     cases: AsyncIterable<Dataset.Case>
     dataset: string
+    jobs?: number
     layers: string
     log?(line: string): void
     name: string
@@ -1389,6 +1394,7 @@ export async function importEval(
         ...(input.policy ? { policy: input.policy } : {}),
       }),
       format: Config.kind(input.backend),
+      ...(input.jobs === undefined ? {} : { jobs: input.jobs }),
       ...(input.log ? { log: input.log } : {}),
       ...(input.refused ? { refused: input.refused } : {}),
       store: input.store,
@@ -1646,6 +1652,7 @@ async function main(
       'hand-profile': { default: 'release', type: 'string' },
       home: { type: 'string' },
       host: { default: '127.0.0.1', type: 'string' },
+      jobs: { type: 'string' },
       judge: { type: 'string' },
       'keep-going': { default: false, type: 'boolean' },
       'key-deposit': { type: 'string' },
@@ -2428,6 +2435,9 @@ async function main(
     ...hostPolicy,
     ...(values['pull-wait'] ? { NANOEVAL_PULL_WAIT_SEC: values['pull-wait'] } : {}),
   })
+  if (values.jobs !== undefined && !/^[1-9]\d*$/.test(values.jobs))
+    throw new Error('--jobs is how many tasks an import converts at once, not ' + values.jobs)
+  const jobs = Number(values.jobs ?? '1')
   const refusals: { error: string; id: string }[] = []
   const imported = async (
     source: AsyncIterable<Dataset.Case>,
@@ -2446,6 +2456,7 @@ async function main(
       cache,
       cases: source,
       dataset: target.dataset,
+      jobs,
       layers: Path.resolve(values.layers ?? Converter.defaultLayers(cache)),
       log: (line) => (lab ? lab.progress.line(line) : console.error(line)),
       name: target.name,
@@ -2458,6 +2469,7 @@ async function main(
         values.report,
         JSON.stringify(
           {
+            jobs,
             name: target.name,
             policy: {
               caBundle: policy.caBundle !== undefined,

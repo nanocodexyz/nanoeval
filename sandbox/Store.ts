@@ -277,7 +277,10 @@ export async function addBytes(
   const name = Crypto.createHash('sha256').update(input.bytes).digest('hex')
   if (!(await store.has(name))) {
     await FsPromises.mkdir(input.scratch, { recursive: true })
-    const file = Path.join(input.scratch, name + '.' + process.pid)
+    const file = Path.join(
+      input.scratch,
+      name + '.' + process.pid + '-' + Crypto.randomBytes(4).toString('hex'),
+    )
     await FsPromises.writeFile(file, input.bytes)
     try {
       await store.put(name, file)

@@ -103,6 +103,32 @@ test('a blob that does not match its digest is refused and not kept', async () =
   Fs.rmSync(root, { force: true, recursive: true })
 })
 
+test('the same bytes added twice at once are each put from a file of their own', async () => {
+  const root = temporary()
+  const kept = new Map<string, Buffer>()
+  let puts = 0
+  const store: Store.Store = {
+    fetch: async () => false,
+    has: async (digest) => kept.has(digest),
+    hold: async () => ({ release: async () => {} }),
+    name: 'slow',
+    async put(digest, file) {
+      if (!puts++) await pause()
+      kept.set(digest, Fs.readFileSync(file))
+    },
+  }
+  const bytes = Buffer.from('shared by two tasks')
+  const scratch = Path.join(root, 'scratch')
+  const blobs = await Promise.all([0, 1].map(() => Store.addBytes(store, { bytes, scratch })))
+  assert.deepEqual(blobs, [
+    { bytes: bytes.length, digest: sha256(bytes) },
+    { bytes: bytes.length, digest: sha256(bytes) },
+  ])
+  assert.deepEqual(kept.get(sha256(bytes)), bytes)
+  assert.deepEqual(Fs.readdirSync(scratch), [])
+  Fs.rmSync(root, { force: true, recursive: true })
+})
+
 test('the remote store uploads small blobs whole and large ones in parts', async () => {
   const root = temporary()
   const remote = bucket()
