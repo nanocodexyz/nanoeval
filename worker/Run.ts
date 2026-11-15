@@ -2131,8 +2131,9 @@ export class Run extends DurableObject<Env> {
       Config.rowSec(config.limits, this.task(task)),
     )) {
       if (found.size >= slots) break
-      const environment = this.task(row.task).environment
-      if (environment.kind === 'disk') found.set(environment.disk.digest, environment)
+      const task = this.task(row.task)
+      for (const environment of [task.environment, task.verifier.separate?.environment])
+        if (environment?.kind === 'disk') found.set(environment.disk.digest, environment)
     }
     return [...found.values()]
   }

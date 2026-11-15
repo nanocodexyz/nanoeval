@@ -1820,7 +1820,7 @@ async function main(): Promise<void> {
                     'slow-agent',
                     'unreported-tests',
                     ...(backend === 'dir'
-                      ? []
+                      ? ['separate-verifier']
                       : ['background-process', 'memory-limit', 'plain-user']),
                   ].map((name) => Path.join('test/fixtures', name)),
                   lost,
@@ -4428,7 +4428,25 @@ async function main(): Promise<void> {
       assert.equal(byTask['nanoeval/write-greeting'].outcome, 'errored')
       assert.equal(byTask['nanoeval/write-greeting'].failure.kind, 'environment')
       assert.match(byTask['nanoeval/write-greeting'].failure.message, /no store holds the blob/)
-      if (backend !== 'dir') {
+      if (backend === 'dir') {
+        const own = byTask['fixtures/separate-verifier']
+        assert.equal(own.outcome, 'passed', JSON.stringify(own.failure))
+        assert.deepEqual(
+          (await api.attempt(created.id, own.id))['artifacts'].filter((name: string) =>
+            name.startsWith('verifier/'),
+          ),
+          ['verifier/reward.txt', 'verifier/test-stdout.txt'],
+        )
+        assert.deepEqual(
+          Fs.readFileSync(
+            Path.join(out, 'harbor', 'separate-verifier__right__1', 'verifier', 'test-stdout.txt'),
+            'utf8',
+          )
+            .split('\n')
+            .filter((line) => line && !line.endsWith(':')),
+          ['greeting.txt', 'notes', 'copy.txt'],
+        )
+      } else {
         assert.equal(byTask['fixtures/background-process'].outcome, 'passed')
         assert.equal(byTask['fixtures/memory-limit'].outcome, 'failed')
         assert.ok(

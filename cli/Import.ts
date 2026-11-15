@@ -32,7 +32,9 @@ export type Options = {
   store: Store.Store
 }
 
-type Conversion = Extract<Eval.Environment, { kind: 'disk' }>
+type Conversion = Eval.Disk
+
+type Image = { directory: 'environment' | 'tests'; image?: string; storageMb: number }
 
 type Flight = { ended: Promise<void>; storageMb: number }
 
@@ -68,7 +70,7 @@ function archive(item: Dataset.Case, directory: string, skip: readonly string[] 
 
 async function convert(
   item: Dataset.Case,
-  task: Task.Task,
+  wanted: Image,
   options: Options,
 ): Promise<{
   convertMs: number
@@ -77,8 +79,8 @@ async function convert(
   reused: boolean
   uploadMs: number
 }> {
-  const image = task.environment.dockerImage
-  const context = image === undefined ? archive(item, 'environment') : undefined
+  const { directory, image, storageMb } = wanted
+  const context = image === undefined ? archive(item, directory) : undefined
   const source =
     image ?? 'dockerfile:' + Crypto.createHash('sha256').update(context!).digest('hex').slice(0, 24)
   const key = Crypto.createHash('sha256')
@@ -86,7 +88,7 @@ async function convert(
       JSON.stringify({
         converter: options.converter.name,
         source,
-        storageMb: task.environment.storageMb,
+        storageMb,
       }),
     )
     .digest('hex')
@@ -108,13 +110,13 @@ async function convert(
     await Fs.mkdir(scratch, { recursive: true })
     await room(flight, {
       free: options.freeDiskMb ?? (() => freeDiskMb(scratch)),
-      storageMb: task.environment.storageMb,
+      storageMb,
     })
     const started = Date.now()
     if (context) {
       for (const [path, data] of Object.entries(item.files)) {
-        if (!path.startsWith('environment/')) continue
-        const target = Path.join(scratch, 'context', path.slice('environment/'.length))
+        if (!path.startsWith(directory + '/')) continue
+        const target = Path.join(scratch, 'context', path.slice(directory.length + 1))
         await Fs.mkdir(Path.dirname(target), { recursive: true })
         await Fs.writeFile(target, data, { mode: item.executable?.includes(path) ? 0o755 : 0o644 })
       }
@@ -123,7 +125,7 @@ async function convert(
     const meta = await options.converter.convert(
       {
         ...(context ? { context: Path.join(scratch, 'context') } : { image: image! }),
-        storageMb: task.environment.storageMb,
+        storageMb,
       },
       disk,
     )
@@ -183,10 +185,38 @@ export async function normalize(
     uploadMs += Date.now() - started
     return blob
   }
+  const separate = task.verifier.separate
+  let own: Eval.Disk | undefined
   if (options.format === 'disk') {
-    const converted = await convert(item, task, options)
+    const converted = await convert(
+      item,
+      {
+        directory: 'environment',
+        ...(task.environment.dockerImage === undefined
+          ? {}
+          : { image: task.environment.dockerImage }),
+        storageMb: task.environment.storageMb,
+      },
+      options,
+    )
     ;({ convertMs, environment, packMs, reused } = converted)
     uploadMs += converted.uploadMs
+    if (separate) {
+      const verifier = await convert(
+        item,
+        {
+          directory: 'tests',
+          ...(separate.dockerImage === undefined ? {} : { image: separate.dockerImage }),
+          storageMb: separate.storageMb,
+        },
+        options,
+      )
+      own = verifier.environment
+      convertMs += verifier.convertMs
+      packMs += verifier.packMs
+      reused &&= verifier.reused
+      uploadMs += verifier.uploadMs
+    }
   } else {
     environment = {
       files: await upload(archive(item, 'environment', ['environment/Dockerfile'])),
@@ -233,6 +263,20 @@ export async function normalize(
         env: task.verifier.env,
         ...(task.verifier.finalMessage ? { finalMessage: true as const } : {}),
         ...(task.verifier.judge ? { judge: true as const } : {}),
+        ...(separate
+          ? {
+              separate: {
+                artifacts: separate.artifacts,
+                collect: separate.collect,
+                ...(own ? { environment: own } : {}),
+                resources: {
+                  cpus: separate.cpus,
+                  memoryMb: separate.memoryMb,
+                  storageMb: separate.storageMb,
+                },
+              },
+            }
+          : {}),
         timeoutSec: task.verifier.timeoutSec,
       },
     },
@@ -240,7 +284,9 @@ export async function normalize(
       convertMs,
       id: item.id,
       packMs,
-      packedBytes: environment.kind === 'disk' ? environment.disk.bytes : environment.files.bytes,
+      packedBytes:
+        (environment.kind === 'disk' ? environment.disk.bytes : environment.files.bytes) +
+        (own?.disk.bytes ?? 0),
       reused,
       uploadMs,
     },

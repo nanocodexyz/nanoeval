@@ -46,7 +46,7 @@ export type Claimed = {
   task: Eval.Task
 }
 
-export type Ahead = Extract<Eval.Environment, { kind: 'disk' }>
+export type Ahead = Eval.Disk
 
 export type ClaimResponse = {
   ahead?: Ahead[]

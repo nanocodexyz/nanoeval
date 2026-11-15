@@ -21,9 +21,18 @@ export type Meta = {
   workdir: string
 }
 
-export type Environment =
-  | { disk: Blob; format: string; kind: 'disk'; meta: Meta; source: string }
-  | { files: Blob; kind: 'dir' }
+export type Disk = { disk: Blob; format: string; kind: 'disk'; meta: Meta; source: string }
+
+export type Environment = Disk | { files: Blob; kind: 'dir' }
+
+export type Resources = { cpus: number; memoryMb: number; storageMb: number }
+
+export type Separate = {
+  artifacts: readonly { exclude: readonly string[]; source: string }[]
+  collect: readonly { command: string; timeoutSec: number }[]
+  environment?: Disk
+  resources: Resources
+}
 
 export type Task = {
   agent: { timeoutSec: number }
@@ -35,7 +44,7 @@ export type Task = {
   instruction: Blob
   name: string
   network: { allowInternet: boolean; verifierInternet?: boolean }
-  resources: { cpus: number; memoryMb: number; storageMb: number }
+  resources: Resources
   setupTimeoutSec?: number
   solution?: { archive: Blob; env: Record<string, string>; finalMessage?: true }
   tests: Blob
@@ -44,6 +53,7 @@ export type Task = {
     env: Record<string, string>
     finalMessage?: true
     judge?: true
+    separate?: Separate
     timeoutSec: number
   }
 }
@@ -179,6 +189,57 @@ function flag(value: unknown, name: string): true | undefined {
   return value
 }
 
+function resources(value: Partial<Resources>, name: string): Resources {
+  if (!Number.isSafeInteger(value.memoryMb) || !Number.isSafeInteger(value.storageMb))
+    throw new InvalidError(name + ' needs memory and storage in whole MB')
+  return {
+    cpus: positive(value.cpus, name + '.cpus'),
+    memoryMb: positive(value.memoryMb, name + '.memoryMb'),
+    storageMb: positive(value.storageMb, name + '.storageMb'),
+  }
+}
+
+function separate(task: Task): Separate {
+  const value = task.verifier.separate!
+  const own = value.environment === undefined ? undefined : environment(value.environment)
+  if (own?.kind !== (task.environment?.kind === 'disk' ? 'disk' : undefined))
+    throw new InvalidError(task.id + ' has a separate verifier whose environment is not its kind')
+  if (!Array.isArray(value.artifacts) || !Array.isArray(value.collect))
+    throw new InvalidError(task.id + ' has a separate verifier without artifacts and collect hooks')
+  const limits = resources(value.resources ?? {}, 'verifier.separate.resources')
+  if (limits.cpus > task.resources.cpus || limits.memoryMb > task.resources.memoryMb)
+    throw new InvalidError(
+      task.id + ' has a separate verifier with more cpus or memory than its task',
+    )
+  if (task.verifier.finalMessage || task.verifier.judge)
+    throw new InvalidError(task.id + ' has a separate verifier with a final message or a judge')
+  return {
+    artifacts: value.artifacts.map((artifact) => {
+      const exclude = strings(artifact?.exclude, 'verifier.separate.artifacts.exclude')
+      if (
+        typeof artifact.source !== 'string' ||
+        !artifact.source.startsWith('/') ||
+        artifact.source.split('/').includes('..') ||
+        [artifact.source, ...exclude].some((text) => text === '' || /[\t\r\n]/.test(text))
+      )
+        throw new InvalidError(
+          task.id + ' has an artifact that is not an absolute single-line path',
+        )
+      return { exclude, source: artifact.source }
+    }),
+    collect: value.collect.map((hook) => {
+      if (typeof hook?.command !== 'string')
+        throw new InvalidError(task.id + ' has a collect hook without a command')
+      return {
+        command: hook.command,
+        timeoutSec: positive(hook.timeoutSec, 'verifier.separate.collect.timeoutSec'),
+      }
+    }),
+    ...(own?.kind === 'disk' ? { environment: own } : {}),
+    resources: limits,
+  }
+}
+
 function environment(value: unknown): Environment {
   const candidate = value as Environment
   if (candidate?.kind === 'dir')
@@ -221,8 +282,8 @@ export function parse(value: unknown): Task {
   if (typeof task.name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(task.name))
     throw new InvalidError(task.id + ' names no task')
   if (typeof task.checksum !== 'string') throw new InvalidError(task.id + ' has no checksum')
-  const resources = task.resources ?? {}
-  if (!Number.isSafeInteger(resources.memoryMb) || !Number.isSafeInteger(resources.storageMb))
+  const limits = task.resources ?? {}
+  if (!Number.isSafeInteger(limits.memoryMb) || !Number.isSafeInteger(limits.storageMb))
     throw new InvalidError(task.id + ' needs memory and storage in whole MB')
   const finalMessage = flag(task.verifier?.finalMessage, 'verifier.finalMessage')
   const judge = flag(task.verifier?.judge, 'verifier.judge')
@@ -250,9 +311,9 @@ export function parse(value: unknown): Task {
         : { verifierInternet }),
     },
     resources: {
-      cpus: positive(resources.cpus, 'resources.cpus'),
-      memoryMb: positive(resources.memoryMb, 'resources.memoryMb'),
-      storageMb: positive(resources.storageMb, 'resources.storageMb'),
+      cpus: positive(limits.cpus, 'resources.cpus'),
+      memoryMb: positive(limits.memoryMb, 'resources.memoryMb'),
+      storageMb: positive(limits.storageMb, 'resources.storageMb'),
     },
     ...(task.setupTimeoutSec === undefined
       ? {}
@@ -272,6 +333,7 @@ export function parse(value: unknown): Task {
       env: variables(task.verifier?.env ?? {}, 'verifier.env'),
       ...(finalMessage ? { finalMessage } : {}),
       ...(judge ? { judge } : {}),
+      ...(task.verifier?.separate ? { separate: separate(task) } : {}),
       timeoutSec: positive(task.verifier?.timeoutSec, 'verifier.timeoutSec'),
     },
   }
@@ -307,6 +369,7 @@ export function blobs(task: Task, options: { solution: boolean }): Blob[] {
     task.instruction,
     task.tests,
     task.environment.kind === 'disk' ? task.environment.disk : task.environment.files,
+    ...(task.verifier.separate?.environment ? [task.verifier.separate.environment.disk] : []),
     ...(options.solution && task.solution ? [task.solution.archive] : []),
   ]
 }
