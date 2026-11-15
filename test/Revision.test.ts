@@ -137,6 +137,8 @@ test('a local Worker is handed the model variables of the environment and no oth
     'TEMPO_GATEWAY_URL',
     'TEMPO_KEY',
     'WORKERS_AI_ACCOUNT_ID',
+    'WORKERS_AI_GATEWAY_URL',
+    'WORKERS_AI_TOKEN',
   ]
   const set = (names: readonly string[]) => Object.fromEntries(names.map((name) => [name, name]))
   assert.deepEqual(workerVariables(set([...handed, 'HOME', 'TEMPO_PRIVATE_KEY'])), set(handed))

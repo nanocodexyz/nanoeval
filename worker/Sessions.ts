@@ -60,8 +60,13 @@ export const nanocode = App.create<Env>({
         const login = dispatch.subscription && dispatch.payer !== 'plan' && Logins.held(env, name)
         const signed = dispatch.subscription && !login
         let target = request.url
+        const workersAi = Proxy.workersAi(request.url, env.WORKERS_AI_GATEWAY_URL)
 
-        if (signed) {
+        if (workersAi) {
+          if (!env.WORKERS_AI_TOKEN) return refuse('no Workers AI credential is set')
+          Proxy.authorize(headers, { key: env.WORKERS_AI_TOKEN, kind: 'key', scheme: 'bearer' })
+          target = workersAi
+        } else if (signed) {
           if (name !== 'claude' || request.method !== 'POST')
             return refuse('no ' + name + ' plan login is set')
         } else if (login) {
@@ -151,6 +156,7 @@ export const nanocode = App.create<Env>({
         const relay = (to: { headers: Headers; url: string }) =>
           Meter.relay({
             body,
+            ...(workersAi ? { cost: false as const } : {}),
             headers: to.headers,
             hooks: signed || login ? Meter.rejecting(hooks) : hooks,
             method: request.method,

@@ -89,7 +89,11 @@ const usage = `nanoeval <command>
             TEMPO_GATEWAY_URL pays for the models of both providers and for the sandboxes of
             run --provider gateway where a provider has no key of its own.
             WORKERS_AI_ACCOUNT_ID names the Cloudflare account of a codex agent whose model
-            nanocode asks over chat completions on Workers AI (glm-5.3). A login
+            nanocode asks over chat completions on Workers AI (glm-5.3 or any @cf/ model),
+            WORKERS_AI_TOKEN the API token its requests carry, and WORKERS_AI_GATEWAY_URL an
+            AI Gateway base (https://gateway.ai.cloudflare.com/v1/ACCOUNT/GATEWAY/workers-ai)
+            that they go through instead; their reported cost is left out, so a run prices
+            them with --model-price. A login
             file (~/.claude/.credentials.json, ~/.codex/auth.json) makes that provider's
             agents run on the plan signed in there. The Worker asks this command for the
             token of each model request, and the command refreshes the login as its tool
@@ -1939,6 +1943,8 @@ export function workerVariables(
     'TEMPO_GATEWAY_URL',
     'TEMPO_KEY',
     'WORKERS_AI_ACCOUNT_ID',
+    'WORKERS_AI_GATEWAY_URL',
+    'WORKERS_AI_TOKEN',
   ])
     if (environment[name]) vars[name] = environment[name]
   return vars

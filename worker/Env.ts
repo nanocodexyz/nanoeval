@@ -37,6 +37,8 @@ export type Env = App.Env & {
   TEMPO_KEY?: string
   TEMPO_PRIVATE_KEY?: string
   TICK_MS: string
+  WORKERS_AI_GATEWAY_URL?: string
+  WORKERS_AI_TOKEN?: string
 }
 
 export const account = 'nanoeval'
