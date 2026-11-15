@@ -369,7 +369,7 @@ An ns slot is the same environment disk without a microVM, for a machine that ha
 | Format the slot's upper disk at the task's `storage_mb` | `mke2fs`, as for a krun slot |
 | Make the slot's cgroup and write the task's memory and CPUs | cgroup v2, when the machine has the memory controller |
 | Start a shell in new namespaces, inside that cgroup | `unshare --mount --pid --ipc --uts --cgroup [--net] --fork --kill-child` |
-| Mount the upper disk, the overlay, `/proc`, a read-only `/sys`, a `/dev` of six devices with its own `devpts` and `shm`, the runtime and the control directory | `mount`, in the slot's mount namespace, so everything goes when the slot does |
+| Mount the upper disk, `nobarrier` since it is deleted with its slot, the overlay, `/proc`, a read-only `/sys`, a `/dev` of six devices with its own `devpts` and `shm`, the runtime and the control directory | `mount`, in the slot's mount namespace, so everything goes when the slot does |
 | Link the slot to the machine and give it its address and route | `ip`, when the network is private |
 | Move the root over `/`, reset every signal to its default, bound the capabilities, change root, start the agent | `mount --move`, `env --default-signal`, `setpriv --bounding-set`, `chroot` |
 

@@ -691,7 +691,7 @@ cmd__ns() {
   root=$dir/root
   mount --make-rprivate /
   mkdir -p "$dir/upper" "$root"
-  mount -o loop "$dir/upper.ext4" "$dir/upper"
+  mount -o loop,nobarrier "$dir/upper.ext4" "$dir/upper"
   mkdir -p "$dir/upper/upper" "$dir/upper/work"
   mount -t overlay overlay -o "lowerdir=$lower,upperdir=$dir/upper/upper,workdir=$dir/upper/work" "$root"
   mkdir -p "$root/.nanoeval" "$root/dev" "$root/opt/nanoeval" "$root/proc" "$root/sys"

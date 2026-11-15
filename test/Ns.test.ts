@@ -135,6 +135,17 @@ test(
         await Sandbox.run(sandbox, slots.log('ns', 'up', 4096)),
       )
 
+      assert.match(
+        await Sandbox.run(
+          sandbox,
+          'for d in /sys/block/loop*; do if [ "$(cat $d/loop/backing_file 2>/dev/null)" = ' +
+            Sandbox.quote(home + '/slots/ns/upper.ext4') +
+            ' ]; then cat /proc/fs/ext4/${d##*/}/options; fi; done',
+        ),
+        /^nobarrier$/m,
+        'the disk a slot writes to sends no cache flush to the machine',
+      )
+
       assert.deepEqual(await inside('ls; ls -d /tests /solution; echo warn >&2; exit 7'), {
         exitCode: 7,
         stderr:
