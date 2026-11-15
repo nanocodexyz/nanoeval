@@ -1,11 +1,6 @@
-import * as Dns from 'node:dns/promises'
 import * as Fs from 'node:fs/promises'
 import * as Http from 'node:http'
 import type * as Net from 'node:net'
-
-export class RefusedError extends Error {
-  override name = 'Archive.RefusedError'
-}
 
 export const port = 80
 
@@ -20,14 +15,27 @@ export type Origin = (name: string) => { host: string; port: number }
 
 export type Open = { address: string; close(): void }
 
-function ask(origin: Origin, name: string, request: Http.IncomingMessage) {
+type Asked = { name: string; path: string; request: Http.IncomingMessage }
+
+function ask(origin: Origin, asked: Asked) {
   return new Promise<Http.IncomingMessage>((resolve, reject) => {
-    const headers = { ...request.headers, host: name }
+    const headers = { ...asked.request.headers, host: asked.name }
     delete headers.connection
-    Http.request({ ...origin(name), headers, method: request.method, path: request.url }, resolve)
+    Http.request(
+      { ...origin(asked.name), headers, method: asked.request.method, path: asked.path },
+      resolve,
+    )
       .on('error', reject)
       .end()
   })
+}
+
+function target(request: Http.IncomingMessage): URL | undefined {
+  try {
+    return new URL(request.url ?? '', 'http://' + (request.headers.host ?? ''))
+  } catch {
+    return undefined
+  }
 }
 
 async function answer(
@@ -36,9 +44,10 @@ async function answer(
   response: Http.ServerResponse,
 ): Promise<void> {
   const origin = options.origin ?? ((host) => ({ host, port }))
-  const name = (request.headers.host ?? '').replace(/:[0-9]+$/, '').toLowerCase()
+  const asked = target(request)
+  const name = asked?.hostname ?? ''
   const archive = (options.archives ?? archives)[name]
-  if (archive === undefined) {
+  if (asked?.protocol !== 'http:' || archive === undefined) {
     response.writeHead(421).end()
     return
   }
@@ -46,13 +55,14 @@ async function answer(
     response.writeHead(405).end()
     return
   }
-  let reply = await ask(origin, name, request)
-  if (reply.statusCode === 404 && request.url?.includes('/pool/')) {
-    const archived = await ask(origin, archive, request)
+  const path = asked.pathname + asked.search
+  let reply = await ask(origin, { name, path, request })
+  if (reply.statusCode === 404 && path.includes('/pool/')) {
+    const archived = await ask(origin, { name: archive, path, request })
     if (archived.statusCode === 200 || archived.statusCode === 206) {
       reply.resume()
       reply = archived
-      if (request.method === 'GET') await Fs.appendFile(options.log, name + request.url + '\n')
+      if (request.method === 'GET') await Fs.appendFile(options.log, name + path + '\n')
     } else archived.resume()
   }
   const headers = { ...reply.headers }
@@ -79,7 +89,7 @@ export async function open(options: open.Options): Promise<Open> {
     })
     const failed = await new Promise<NodeJS.ErrnoException | undefined>((resolve) => {
       server.once('error', resolve)
-      server.listen(options.port ?? port, address, () => resolve(undefined))
+      server.listen(options.port ?? 0, address, () => resolve(undefined))
     })
     if (!failed)
       return {
@@ -90,12 +100,6 @@ export async function open(options: open.Options): Promise<Open> {
         },
       }
     if (failed.code === 'EADDRINUSE' && options.address === undefined) continue
-    if (failed.code === 'EACCES')
-      throw new RefusedError(
-        'the package archive of a verifier listens on port ' +
-          (options.port ?? port) +
-          ' of a loopback address, which this user may not: run the runner as root or lower net.ipv4.ip_unprivileged_port_start to it',
-      )
     throw failed
   }
 }
@@ -108,20 +112,6 @@ export declare namespace open {
     origin?: Origin
     port?: number
   }
-}
-
-export async function names(
-  services: (name: string) => Promise<{ name: string }[]> = Dns.resolveSrv,
-): Promise<string[]> {
-  const found = await Promise.all(
-    Object.keys(archives).map(async (name) => [
-      name,
-      ...(await services('_http._tcp.' + name).catch(() => [])).map((service) =>
-        service.name.replace(/\.$/, '').toLowerCase(),
-      ),
-    ]),
-  )
-  return [...new Set(found.flat())]
 }
 
 export async function served(log: string): Promise<string[]> {

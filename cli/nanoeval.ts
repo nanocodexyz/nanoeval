@@ -361,9 +361,9 @@ const usage = `nanoeval <command>
             to the mirror it names, and a file under pool/ that the mirror answers 404 for
             is served from the same path of archive.debian.org. The task, its image and its
             tests are what was imported, and the row keeps the files that came from the
-            archive as verifier-archive.txt. The runner listens on port 80 of a loopback
-            address for each verifier, so it runs as root or with
-            net.ipv4.ip_unprivileged_port_start at 80 or lower.
+            archive as verifier-archive.txt. The runner listens for each row on a loopback
+            address and a port that the kernel chose, and apt in the slot uses it as the
+            proxy of those two names, so a task that listens on port 80 keeps it.
             With --ends-in-sec, the machine is one that ends then: the runner takes a row
             only while the setup, agent and verifier timeouts of the row end before that, and
             leaves once no row that is left does.

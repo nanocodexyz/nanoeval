@@ -688,7 +688,7 @@ async function attend(
     })
     archives.set(item.row.id, opened)
     if (!address)
-      await Fs.writeFile(file, [opened.address, ...(await Archive.names())].join(' ') + '\n')
+      await Fs.writeFile(file, [opened.address, ...Object.keys(Archive.archives)].join(' ') + '\n')
   }
   const save = async (item: Work) => {
     const saved: Saved = {
@@ -965,6 +965,7 @@ async function attend(
       capacityMb: capacity.memoryMb,
       requestedMb: task.resources.memoryMb,
     })
+    await packages(item)
     const up = await output(
       slots.up(item.row.slot, {
         backend,

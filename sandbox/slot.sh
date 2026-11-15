@@ -631,6 +631,10 @@ cmd__up() {
         cat "$dir/vm.log" >&2
         exit 1
       fi
+      if [ -f "$dir/archive" ] && [ "$network" = private ] && ! grep -qx verifier "$dir/offline" 2>/dev/null; then
+        read -r forward _ <"$dir/archive"
+        vm "$dir" exec --socket vm.sock --forward "$forward" -- sh -c : || die "the slot cannot listen for the package archive of its verifier on $forward"
+      fi
       ;;
     *) die "unsupported backend: $backend" ;;
   esac
@@ -956,7 +960,7 @@ cmd__verify() {
         [[ $archive =~ ^127(\.[0-9]{1,3}){3}:[0-9]{1,5}$ ]] || die "the package archive of a verifier is a loopback ADDRESS:PORT: $archive"
         [[ $names =~ $named ]] || die "the package archive of a verifier answers for host names: $names"
         if [ ! -f "$dir/archive.named" ]; then
-          vm "$dir" exec "${options[@]}" --user 0 -- sh -c 'printf "\n%s\t%s\n" "$1" "$2" >>/etc/hosts' sh "${archive%:*}" "$names"
+          vm "$dir" exec "${options[@]}" --user 0 -- sh -c 'if [ -d /etc/apt/apt.conf.d ]; then for name in $2; do printf "Acquire::http::Proxy::%s \"http://%s\";\n" "$name" "$1"; done >/etc/apt/apt.conf.d/nanoeval-package-archive; fi' sh "$archive" "$names"
           : >"$dir/archive.named"
         fi
         if [ "$(cat "$dir/network")" = private ]; then
