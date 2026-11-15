@@ -69,7 +69,9 @@ test('a watcher killed alone lets its run end, waits for it, and takes its job w
   const w = world()
   w.watch('--once')
   const n1 = w.commit('nanocode', 'feat: one')
-  w.play({ hold: { [n1]: 2500 } })
+  const held = Path.join(w.lab, 'held')
+  Fs.writeFileSync(held, '')
+  w.play({ held: n1 })
   const child = w.start('--once')
   const done = ended(child)
   const pending = await until(() => {
@@ -95,6 +97,7 @@ test('a watcher killed alone lets its run end, waits for it, and takes its job w
     ),
   )
   assert.equal(w.lines().length, 1)
+  Fs.rmSync(held)
   await until(() => !alive(pending.pid!), 'the run to end')
   const said = w.watch('--once').stdout
   assert.match(said, new RegExp('^nanocode ' + short(n1) + ' nanocode-ts \\w{12}: ok; '))

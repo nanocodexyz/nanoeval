@@ -12,6 +12,7 @@ export type Scenario = {
   builds?: Record<string, 'fail'>
   credential?: 'expired' | 'missing'
   hold?: Record<string, number>
+  held?: string
   ignoreOut?: boolean
   outcomes?: Record<string, Record<string, string>>
   tasks?: string[]
@@ -115,6 +116,7 @@ async function main(): Promise<void> {
     'run ' + run + ': ' + tasks.length * agents.length * attempts + ' attempts of ' + values.eval,
   )
   await sleep(scenario.hold?.[nanocode] ?? scenario.hold?.[nanocodeTs] ?? 0)
+  while (scenario.held === nanocode && Fs.existsSync(Path.join(lab, 'held'))) await sleep(25)
 
   const countersFile = Path.join(lab, 'stub-counters.json')
   const counters = Fs.existsSync(countersFile)

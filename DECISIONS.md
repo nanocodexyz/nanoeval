@@ -5993,3 +5993,11 @@ From fresh clones of this change, before this entry had its counts, which are th
 - A machine whose Worker takes more than about 30 s to answer. The lease is then 100 s or more, the first sandbox of the lane of a sandbox ended sooner lives longer than the 600 s a runner has to start, and the lane of a capped provider takes longer than the 600 s it asks for. The Worker is given 60 s to answer.
 - krun and ns slots: the three lanes are steps of the directory job only.
 - The workflow on GitHub: Actions is disabled for the repository.
+
+## 2026-11-14: the test of a watcher killed alone holds its run until it has read the watcher that waits
+
+**What was wrong.** `test/WatchRecovery.test.ts`, "a watcher killed alone lets its run end, waits for it, and takes its job without running again", had its stub run hold for 2,500 ms. In that time the test kills the watcher, waits for its exit and starts a second `nanoeval watch --once`, a whole Node process, which must still find the run alive. On a machine with 5 cores, beside two lanes and a build, it failed in 1 of 6 runs of `npm test`: the second watcher printed the finished evaluation where the test asks `still runs as process N`. It is the flat time of the entries above in a unit test.
+
+**What changed.** The stub holds a run while a file `held` of its lab exists, when its scenario names the revision under `held`. The test writes the file before it starts the watcher and removes it once it has read that the second watcher waits and that no line was recorded. The run then ends by itself, as before.
+
+**Checked.** On that machine, by a user who is not root. The five tests of the file pass before and after, in 47 s each time. With the second watcher started 3 s late by hand, the test as it was failed 2 of 2 with the output above, and as it is passes 2 of 2. With a watcher that takes the job of a run that still runs, by hand, the test as it is fails 1 of 1 at `still runs as process N`.
