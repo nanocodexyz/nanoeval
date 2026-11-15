@@ -21,6 +21,7 @@ const unreachable: readonly RegExp[] = [
   /\bConnection timed out\b/,
   /\bConnection reset by peer\b/,
   /\bRead timed out\b/,
+  /\bFailed to fetch: `[^`]+`\n(\s+Caused by: .*\n)*\s+Caused by: operation timed out\b/,
 ]
 
 export type Verifier = {

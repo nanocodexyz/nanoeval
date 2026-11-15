@@ -23,6 +23,14 @@ const installer = [
   '/tests/test.sh: line 19: uvx: command not found',
 ].join('\n')
 
+const fetched = [
+  'error: Failed to fetch: `https://pypi.org/simple/anyio/`',
+  '  Caused by: Request failed after 3 retries',
+  '  Caused by: error sending request for url (https://pypi.org/simple/anyio/)',
+  '  Caused by: operation timed out',
+  '',
+].join('\n')
+
 const withdrawn = [
   'Err:5 http://deb.debian.org/debian-security bullseye-security/main amd64 libcurl4 amd64 7.74.0-1.3+deb11u16',
   '  404  Not Found [IP: 146.75.118.132 80]',
@@ -56,7 +64,7 @@ function retried(failure: { kind: string; message: string } | undefined) {
 }
 
 test('a verifier that could not download what its test.sh installs is an error of the slot and is retried', () => {
-  for (const log of [torch, installer]) {
+  for (const log of [torch, installer, fetched]) {
     const verdict = Verdict.verifier({ ...base, facts: unreported, log })
     assert.equal(verdict.reward, null)
     assert.equal(verdict.failure!.kind, 'environment')
@@ -70,6 +78,13 @@ test('a verifier that could not download what its test.sh installs is an error o
     log: installer,
   })
   assert.equal(silent.failure!.kind, 'environment')
+})
+
+test('a fetch that uv gave up for another reason than time is not named a download failure', () => {
+  const log = fetched.replace('operation timed out', 'HTTP status client error (404 Not Found)')
+  const verdict = Verdict.verifier({ ...base, facts: unreported, log })
+  assert.equal(verdict.failure!.kind, 'verifier')
+  assert.equal(retried(verdict.failure), undefined)
 })
 
 test('a package that its archive no longer serves is an error of the task and is not retried', () => {
