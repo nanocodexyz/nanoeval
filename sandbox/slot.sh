@@ -947,6 +947,20 @@ cmd__verify() {
         options+=(--env "UV_CACHE_DIR=$tools/uv" --env "UV_PYTHON_CACHE_DIR=$tools/python")
       fi
       if [ -f "$dir/verifier.env" ]; then options+=(--env-file "$dir/verifier.env"); fi
+      if [ -f "$dir/archive" ] && ! grep -qx verifier "$dir/offline" 2>/dev/null; then
+        local archive names named='^[a-z0-9.-]+( [a-z0-9.-]+)*$'
+        read -r archive names <"$dir/archive"
+        [[ $archive =~ ^127(\.[0-9]{1,3}){3}:[0-9]{1,5}$ ]] || die "the package archive of a verifier is a loopback ADDRESS:PORT: $archive"
+        [[ $names =~ $named ]] || die "the package archive of a verifier answers for host names: $names"
+        if [ ! -f "$dir/archive.named" ]; then
+          vm "$dir" exec "${options[@]}" --user 0 -- sh -c 'printf "\n%s\t%s\n" "$1" "$2" >>/etc/hosts' sh "${archive%:*}" "$names"
+          : >"$dir/archive.named"
+        fi
+        if [ "$(cat "$dir/network")" = private ]; then
+          printf '%s\n' "$archive" >>"$dir/allow"
+          options+=(--forward "$archive")
+        fi
+      fi
       (cd "$dir" && timeout -k 10 "$seconds" "$krun/nanoeval-krun" exec "${options[@]}" -- sh -c "$run" sh /tests/test.sh) || code=$?
       if [ -n "$fill" ] && [ "$code" = 0 ]; then
         rm -rf "$dir/io/cache"

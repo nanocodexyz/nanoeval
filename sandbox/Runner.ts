@@ -19,6 +19,7 @@ import * as Slot from '../src/Slot.ts'
 import * as Task from '../src/Task.ts'
 import type * as Timeline from '../src/Timeline.ts'
 import * as Verdict from '../src/Verdict.ts'
+import * as Archive from './Archive.ts'
 import * as Converter from './Converter.ts'
 import * as Cpus from './Cpus.ts'
 import * as Disks from './Disks.ts'
@@ -577,6 +578,8 @@ async function attend(
     ...(options.store ? [Store.directory(options.store)] : []),
     Store.remote({ base: base + '/blobs', token: options.config.token }),
   ]
+  const archived = process.env['NANOEVAL_PACKAGE_ARCHIVE'] !== undefined
+  const archives = new Map<string, Archive.Open>()
   const work = new Map<string, Work>()
   const up = new Set<Work>()
   const unpacking = shared.unpacking
@@ -675,6 +678,18 @@ async function attend(
   }
 
   const directory = (item: Work) => Path.join(home, 'slots', item.row.slot)
+  const packages = async (item: Work) => {
+    if (!archived || shared.ready?.backend === 'dir' || archives.has(item.row.id)) return
+    const file = slots.archiveFile(item.row.slot)
+    const [address, port] = (await text(file))?.split(' ')[0]?.split(':') ?? []
+    const opened = await Archive.open({
+      ...(address && port ? { address, port: Number(port) } : {}),
+      log: file + '.log',
+    })
+    archives.set(item.row.id, opened)
+    if (!address)
+      await Fs.writeFile(file, [opened.address, ...(await Archive.names())].join(' ') + '\n')
+  }
   const save = async (item: Work) => {
     const saved: Saved = {
       at: item.at,
@@ -728,6 +743,8 @@ async function attend(
   const down = (item: Work, evict: boolean) => (item.down ??= takeDown(item, evict))
 
   const takeDown = async (item: Work, evict: boolean) => {
+    archives.get(item.row.id)?.close()
+    archives.delete(item.row.id)
     const disk = await text(Path.join(directory(item), 'disk'))
     const marked =
       evict &&
@@ -1074,6 +1091,7 @@ async function attend(
     const task = item.row.task
     await rowCall(item, 'verify', solve ? { solve } : {})
     if (task.verifier.finalMessage) await verifierInput(item, 'final_message.txt', item.message)
+    await packages(item)
     await shell(slots.verify(item.row.slot, task.verifier.timeoutSec))
     item.round = 1
     delete item.diskMb
@@ -1103,6 +1121,12 @@ async function attend(
       'verifier/test-stdout.txt',
       await slotLog(item, 'verify', Protocol.artifactBytes),
     )
+    const packaged = await Archive.served(slots.archiveFile(item.row.slot) + '.log')
+    if (packaged.length) {
+      const line = Archive.line + packaged.length + ' files'
+      await upload(item, 'verifier-archive.txt', line + '\n' + packaged.join('\n') + '\n')
+      log(item.row.id + ': ' + line)
+    }
 
     const rewardText = (await text(Path.join(target, 'verifier', 'reward.txt')))?.replace(
       /[ \n\r]/g,
@@ -1328,6 +1352,7 @@ async function attend(
         return startVerifier(item, { code })
       }
       case 'verify': {
+        await packages(item)
         const code = Slot.exit(await phase(Path.join(target, 'verify.status')))
         item.diskMb = Math.min(item.diskMb ?? Infinity, await freeDiskMb([home, cache]))
         if (code === undefined) {
@@ -1350,6 +1375,7 @@ async function attend(
           )
         if (judged.state !== 'answered') return fail(item, 'verifier', judged.error)
         await verifierInput(item, Judge.responseFile, judged.response)
+        await packages(item)
         await shell(slots.reverify(item.row.slot, task.verifier.timeoutSec))
         item.round = 2
         return move(item, 'verify')
@@ -1411,6 +1437,8 @@ async function attend(
       throw error
     }
   const { backend, capabilities } = shared.ready
+  if (archived && backend !== 'dir')
+    (await Archive.open({ log: Path.join(home, 'archive.log') })).close()
   prefetch(config.ahead)
   const others = new Set(everything().flatMap((item) => branchSlots(item)))
   serving.rows = () => [...work.values()]
@@ -1488,6 +1516,7 @@ async function attend(
       ' on the ' +
       config.network +
       ' network' +
+      (archived && backend !== 'dir' ? ', verifiers reach the package archive' : '') +
       (config.endsAt === undefined
         ? ''
         : ', its sandbox ends at ' + new Date(config.endsAt).toISOString()),
