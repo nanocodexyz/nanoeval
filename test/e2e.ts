@@ -4752,7 +4752,7 @@ async function main(): Promise<void> {
       } else
         assert.deepEqual(
           [trajectory, child].map((part) => part.steps.map((step) => step.source).join(' ')),
-          ['user agent agent agent agent agent', 'user agent agent agent'],
+          ['user agent agent agent agent user agent', 'user agent agent agent'],
         )
       await pass()
       return
@@ -5073,8 +5073,13 @@ async function main(): Promise<void> {
         JSON.parse(await read('agent/trajectory.json')).steps.map(
           (step: { source: string }) => step.source,
         ),
-        ['user', ...asked.slice(killAt === 'model' ? 1 : 0).map(() => 'agent')],
-        'the trajectory has the instruction once and a step for each response',
+        [
+          'user',
+          ...asked.slice(killAt === 'model' ? 2 : 1).map(() => 'agent'),
+          ...(midturnPair ? [] : ['user']),
+          'agent',
+        ],
+        'the trajectory has the instruction once, a step for each response and, in a claude session, the finish check before the last one',
       )
       const events = await read('agent/events.jsonl')
       assert.ok(
