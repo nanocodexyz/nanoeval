@@ -1,9 +1,12 @@
 import type * as Config from './Config.ts'
 
 export type Turn = {
+  briefFinish?: true
   cellYieldMs?: number
   deadline?: { atMs: number; limitMs: number }
+  foldFinish?: true
   hand?: string
+  lowEffortRounds?: true
   model: string
   orchestration?: 'direct' | 'jobs'
   payer?: Config.Payer
@@ -16,6 +19,14 @@ export type Turn = {
 
 export const record = 'agent/turns.jsonl'
 
+function levers(turn: Turn): Record<string, true> {
+  return {
+    ...(turn.briefFinish ? { brief_finish: true as const } : {}),
+    ...(turn.foldFinish ? { fold_finish: true as const } : {}),
+    ...(turn.lowEffortRounds ? { low_effort_rounds: true as const } : {}),
+  }
+}
+
 export function deadline(
   limits: Pick<Config.Config['limits'], 'noDeadline'>,
   input: { limitMs: number; now: number },
@@ -27,6 +38,7 @@ export function sent(turn: Turn, input: { at: number; session: string }): string
   return (
     JSON.stringify({
       at_ms: input.at,
+      ...levers(turn),
       ...(turn.cellYieldMs === undefined ? {} : { cell_yield_ms: turn.cellYieldMs }),
       deadline: turn.deadline
         ? { at_ms: turn.deadline.atMs, limit_ms: turn.deadline.limitMs }
@@ -40,6 +52,7 @@ export function sent(turn: Turn, input: { at: number; session: string }): string
 
 export function body(turn: Turn): Record<string, unknown> {
   return {
+    ...levers(turn),
     ...(turn.hand ? { hand: turn.hand } : {}),
     ...(turn.orchestration && turn.provider === 'claude'
       ? { claude_orchestration: turn.orchestration }

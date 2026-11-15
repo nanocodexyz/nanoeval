@@ -292,7 +292,14 @@ const usage = `nanoeval <command>
             (nano-y120=claude:claude-opus-5-5:high:cell_yield_ms=120000) has sessions whose
             Code Mode cells go back to the model as running after N milliseconds, where an
             agent without it has the CELL_YIELD_MS of the Worker, or the 10 s of the protocol
-            where the Worker sets none. The options come in this order where several are named.
+            where the Worker sets none. A claude or claude-direct agent that ends in
+            :brief_finish=on, :fold_finish=on or :low_effort_rounds=on has every turn of its
+            sessions ask nanocode for that way of spending less on the end of a turn and on
+            the rounds that wait for a cell (nano-cost=claude:claude-opus-5-5:high:
+            cell_yield_ms=120000:brief_finish=on:fold_finish=on:low_effort_rounds=on), where
+            an agent without them sends nothing. The options come in this order where several
+            are named: branches, refusal_fallback, cell_yield_ms, brief_finish, fold_finish,
+            low_effort_rounds.
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
@@ -679,6 +686,8 @@ type AgentOption = {
 
 const count = { pattern: '[0-9]+', value: 'N' }
 
+const on = { pattern: 'on', value: 'on' }
+
 const scopes = { pattern: 'return_once|session', value: 'return_once|session' }
 
 const agentOptions: readonly AgentOption[] = [
@@ -704,6 +713,24 @@ const agentOptions: readonly AgentOption[] = [
     name: 'cell_yield_ms',
     read: (text) => ({ cellYieldMs: Number(text) }),
     write: (agent) => agent.cellYieldMs,
+  },
+  {
+    ...on,
+    name: 'brief_finish',
+    read: () => ({ briefFinish: true }),
+    write: (agent) => (agent.briefFinish ? on.value : undefined),
+  },
+  {
+    ...on,
+    name: 'fold_finish',
+    read: () => ({ foldFinish: true }),
+    write: (agent) => (agent.foldFinish ? on.value : undefined),
+  },
+  {
+    ...on,
+    name: 'low_effort_rounds',
+    read: () => ({ lowEffortRounds: true }),
+    write: (agent) => (agent.lowEffortRounds ? on.value : undefined),
   },
 ]
 

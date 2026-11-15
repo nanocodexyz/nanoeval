@@ -3324,9 +3324,12 @@ export class Run extends DurableObject<Env> {
       now,
     })
     const turn: Turn.Turn = {
+      ...(agent.briefFinish ? { briefFinish: true } : {}),
       ...(agent.cellYieldMs === undefined ? {} : { cellYieldMs: agent.cellYieldMs }),
       ...(deadline ? { deadline } : {}),
+      ...(agent.foldFinish ? { foldFinish: true } : {}),
       hand: Protocol.handName,
+      ...(agent.lowEffortRounds ? { lowEffortRounds: true } : {}),
       model: agent.model,
       ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
       payer: this.payer(agent.provider),

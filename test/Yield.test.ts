@@ -62,7 +62,7 @@ test('an agent names the yield time of the cells of its sessions', () => {
   ])
     assert.throws(
       () => parseAgent(text),
-      /an agent is ID=HARNESS:MODEL\[:THINKING\]\[:branches=N\]\[:refusal_fallback=return_once\|session\]\[:cell_yield_ms=N\], not x=/,
+      /an agent is ID=HARNESS:MODEL\[:THINKING\]\[:branches=N\]\[:refusal_fallback=return_once\|session\]\[:cell_yield_ms=N\]\[:brief_finish=on\]\[:fold_finish=on\]\[:low_effort_rounds=on\], not x=/,
     )
   assert.deepEqual(
     Config.parse({
