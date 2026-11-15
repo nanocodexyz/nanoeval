@@ -2924,8 +2924,8 @@ async function main(): Promise<void> {
       )
     assert.deepEqual(
       jobMentions,
-      direct ? ['codex', 'codex'] : [],
-      'the job tools reach the model only in the two requests of the codex-jobs session, never a codex or claude one',
+      direct ? ['codex', 'codex', 'codex'] : [],
+      'the job tools reach the model only in the three requests of the codex-jobs session, never a codex or claude one',
     )
     if (codexExecs.length > 0) {
       const claudeTools = ['Bash', 'Edit', 'Read', 'TaskOutput', 'TaskStop', 'Write']
@@ -4626,14 +4626,14 @@ async function main(): Promise<void> {
         assert.equal(branchSessions.size, 3, 'each branch asks its model in its own session')
       assert.equal(
         branchRequests.length,
-        12,
-        'each of 3 branches asks twice to work and twice to check',
+        18,
+        'each of 3 branches asks three times to work and three times to check: for a call, for its answer and, at the finish check of the turn, for its answer again',
       )
-      assert.equal(branchRequests.filter((request) => request.check).length, 6)
+      assert.equal(branchRequests.filter((request) => request.check).length, 9)
       const usage = detail['result'].usage as Atif.Usage
-      assert.equal(usage.modelCalls, 12, 'the usage of the attempt counts every branch')
-      assert.equal(usage.inputTokens, 12 * 100)
-      assert.equal(usage.outputTokens, 12 * 7)
+      assert.equal(usage.modelCalls, 18, 'the usage of the attempt counts every branch')
+      assert.equal(usage.inputTokens, 18 * 100)
+      assert.equal(usage.outputTokens, 18 * 7)
       for (const index of [0, 1, 2].filter((index) => index !== record.chosen)) {
         assert.match(await read('agent/branch-' + index + '/trajectory.json'), /SELF-CHECK: FAIL/)
       }
@@ -4718,11 +4718,15 @@ async function main(): Promise<void> {
           agent === 'direct' ? ['exec_command'] : ['exec', 'exec_command'],
           'the model of the ' + agent + ' agent called ' + called.join(', '),
         )
-        assert.equal(detail['result'].usage.modelCalls, 2)
+        assert.equal(
+          detail['result'].usage.modelCalls,
+          3,
+          'a codex session asks its model for a call, for its answer and, at the finish check of its turn, for its answer again',
+        )
       }
       assert.deepEqual(
         [names('exec').length, names('wait').length, names('exec_command').length],
-        [4, 4, 2],
+        [6, 6, 3],
         'a session with direct tools is given exec_command and neither exec nor wait, and the two Code Mode sessions beside it exec and wait',
       )
       assert.ok(
@@ -4737,12 +4741,12 @@ async function main(): Promise<void> {
       assert.equal(
         names('exec').filter((request) => jobs.every((name) => request.cells.includes(name)))
           .length,
-        2,
+        3,
         'the exec tool of the codex-jobs session declares job_start, job_wait and job_kill, and that of the codex session none',
       )
       assert.deepEqual(
         codexCells.map((cell) => jobs.filter((name) => cell?.includes(name)).length).sort(),
-        [0, 3],
+        [0, 0, 3, 3],
         'ALL_TOOLS of a codex-jobs cell holds the job tools and that of a codex cell none: ' +
           JSON.stringify(codexCells),
       )
@@ -4757,7 +4761,7 @@ async function main(): Promise<void> {
         directRequests.flatMap((request) =>
           request.tools.includes('exec_command') && request.output ? [request.output] : [],
         ).length,
-        1,
+        2,
       )
       assert.match(
         directRequests.find((r) => r.tools.includes('exec_command') && r.output)!.output,
@@ -5207,7 +5211,7 @@ async function main(): Promise<void> {
       assert.deepEqual(
         asked,
         midturnPair
-          ? ['exec 1', 'exec 2a+exec 2b', 'wait', 'exec 3', 'final']
+          ? ['exec 1', 'exec 2a+exec 2b', 'wait', 'exec 3', 'final', 'final']
           : [
               'exec 1',
               'exec 2',
@@ -5225,7 +5229,7 @@ async function main(): Promise<void> {
       const digests = midturnRequests.map((request) => request.digest)
       assert.equal(
         new Set(digests).size,
-        midturnPair ? 5 : 9,
+        midturnPair ? 6 : 9,
         'no request that was answered is sent again',
       )
       if (killAt === 'model')
