@@ -1,3 +1,4 @@
+import * as Fallback from './Fallback.ts'
 import type * as Proxy from './Proxy.ts'
 import type * as Result from './Result.ts'
 import * as Verdict from './Verdict.ts'
@@ -19,6 +20,8 @@ export const stalledPrefix = 'the agent never reached its model'
 export const unansweredPrefix = 'the model endpoint never answered the agent'
 
 export const unreached: readonly number[] = [502, 530]
+
+export const unservedPrefix = 'the run refused a model that the agent asked for'
 
 export function after(header: string | null, now: number): number | undefined {
   if (header === null || header.trim() === '') return undefined
@@ -121,6 +124,21 @@ export function rejected(input: {
   const { failure } = input
   if (failure.kind !== 'agent' || input.requests.at(-1)?.refusal !== 'login') return undefined
   return { at: failure.at, kind: 'environment', message: rejectedPrefix + ': ' + failure.message }
+}
+
+export function unserved(input: {
+  failure: Result.Failure
+  requests: readonly { refusal?: Proxy.Refusal }[]
+}): Result.Failure | undefined {
+  const { failure } = input
+  if (failure.kind !== 'agent' || input.requests.at(-1)?.refusal !== 'model') return undefined
+  return { at: failure.at, kind: 'environment', message: unservedPrefix + ': ' + failure.message }
+}
+
+export function modelRefused(failure: Pick<Result.Failure, 'kind' | 'message'>): boolean {
+  return failure.kind === 'environment'
+    ? failure.message.startsWith(unservedPrefix)
+    : failure.kind === 'agent' && Fallback.refused(failure.message)
 }
 
 export function stalled(input: {

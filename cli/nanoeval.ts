@@ -31,6 +31,7 @@ import * as Pins from '../src/Pins.ts'
 import * as Price from '../src/Price.ts'
 import * as Protocol from '../src/Protocol.ts'
 import * as Result from '../src/Result.ts'
+import * as Retry from '../src/Retry.ts'
 import * as Route from '../src/Route.ts'
 import type * as Runs from '../src/Runs.ts'
 import * as Sandbox from '../src/Sandbox.ts'
@@ -390,7 +391,8 @@ const usage = `nanoeval <command>
             has a second line with its counts and pass@k over the sound tasks alone, and
             one line names the tasks set apart. run --wait and compare print the same.
             status and run --wait add one line for the attempts that errored because the
-            dependency of their task is gone (see arms).
+            dependency of their task is gone (see arms), and one for those that errored
+            because the run refused a model their agent asked for.
   timeline  --url URL --token T RUN
             Print where the time of a run went: every mark the run and its runners recorded,
             by its offset from the creation of the run, with the span it measured.
@@ -457,7 +459,10 @@ const usage = `nanoeval <command>
             task, when both hold: its verifier could not install from its package archive,
             which answered 404 Not Found, and the list of unsound tasks (see oracle) names
             that version of the task, whose own solution loses the same way on any machine.
-            A 404 on a task the list does not name stays an infrastructure error. Several
+            A 404 on a task the list does not name stays an infrastructure error. An error
+            of an installed agent that ended on a model the run refused, any model but its
+            own and those a nanocode session falls back to from it, is an infrastructure
+            error named model not served. Several
             runs print one table, a row an arm, and --json prints the arms as JSON instead.
             --results reads a run from a file that holds what the Worker answers for
             /v1/runs/RUN/results, and needs no Worker. An attempt whose usage names no cost
@@ -1341,6 +1346,21 @@ export function summary(
           .join(''),
     )
   lines.push(...(options.unsound ?? []))
+  const unserved = ((status['attempts'] ?? []) as Record<string, any>[]).filter(
+    (attempt) =>
+      attempt['outcome'] === 'errored' &&
+      attempt['failure'] &&
+      Retry.modelRefused(attempt['failure']),
+  )
+  if (unserved.length)
+    lines.push(
+      Arms.unserved +
+        ': ' +
+        unserved.length +
+        (unserved.length === 1 ? ' attempt of ' : ' attempts of ') +
+        [...new Set(unserved.map((attempt) => String(attempt['agent'])))].sort().join(' and ') +
+        ' errored because the run refused a model that the agent asked for, an infrastructure error and no failure of the agent',
+    )
   const judges = Object.values(status['agents'] as Record<string, any>).flatMap((row) =>
     row.judge?.attempts ? [row.judge] : [],
   )

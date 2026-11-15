@@ -1,6 +1,7 @@
 import * as Compare from './Compare.ts'
 import * as Price from './Price.ts'
 import * as Result from './Result.ts'
+import * as Retry from './Retry.ts'
 import * as Unsound from './Unsound.ts'
 
 export type Class = 'agent' | 'cancelled' | 'infrastructure' | 'limit' | 'task'
@@ -18,6 +19,8 @@ export const classes: Record<Result.FailureKind, Class> = {
 }
 
 export const unrecorded = 'unrecorded'
+
+export const unserved = 'model not served'
 
 export type Arm = {
   agent: string
@@ -113,8 +116,14 @@ export function arms(
         if (attempt.outcome === 'errored') {
           const kind = attempt.failure?.kind
           const gone = Unsound.gone(attempt, unsound)
-          const kinds = arm.errors[gone ? 'task' : kind ? classes[kind] : 'infrastructure']
-          const key = gone ? Unsound.short(attempt.task.name) : (kind ?? unrecorded)
+          const refused = attempt.failure !== undefined && Retry.modelRefused(attempt.failure)
+          const kinds =
+            arm.errors[gone ? 'task' : kind && !refused ? classes[kind] : 'infrastructure']
+          const key = gone
+            ? Unsound.short(attempt.task.name)
+            : refused
+              ? unserved
+              : (kind ?? unrecorded)
           kinds[key] = (kinds[key] ?? 0) + 1
         } else {
           const task = tasks.get(attempt.task.name) ?? { passed: 0, scored: 0 }

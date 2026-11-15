@@ -14,7 +14,7 @@ export type Outcome = {
 export type Limited = { retryAfterMs?: number; status: number; tries: number }
 
 export type Refused = {
-  kind: Exclude<Proxy.Refusal, 'budget' | 'login'>
+  kind: Exclude<Proxy.Refusal, 'budget' | 'login' | 'model'>
   text: string
   tries: number
 }
