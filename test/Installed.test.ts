@@ -552,6 +552,8 @@ test('the token of an attempt is read from either header an agent sends it in', 
 test('the model endpoint forwards only the generation routes of its provider', () => {
   assert.equal(Proxy.route('codex', 'responses'), 'responses')
   assert.equal(Proxy.route('codex', '/responses/compact/'), 'responses/compact')
+  assert.equal(Proxy.route('codex', 'chat/completions'), 'chat/completions')
+  assert.equal(Proxy.route('codex', 'completions'), undefined)
   assert.equal(Proxy.route('codex', 'models'), undefined)
   assert.equal(Proxy.route('codex', 'v1/messages'), undefined)
   assert.equal(Proxy.route('claude', 'v1/messages'), 'v1/messages')
@@ -560,6 +562,8 @@ test('the model endpoint forwards only the generation routes of its provider', (
   assert.equal(Proxy.route('claude', 'responses'), undefined)
   assert.equal(Proxy.generates('claude', 'v1/messages/count_tokens'), false)
   assert.equal(Proxy.generates('claude', 'v1/messages'), true)
+  assert.equal(Proxy.generates('codex', 'chat/completions'), true)
+  assert.equal(Proxy.route('claude', 'chat/completions'), undefined)
 })
 
 test('forwarding swaps the token of the attempt for the credential of the deployment', () => {
@@ -947,6 +951,35 @@ test('the meter reads the usage of a response from its events, however they are 
     inputTokens: 3,
     model: 'claude-haiku-4-5',
     outputTokens: 2,
+  })
+
+  const chat = Proxy.meter('codex')
+  chat.push(
+    'data: {"object":"chat.completion.chunk","model":"open-model","choices":[{"index":0,"delta":{"content":"Done."},"finish_reason":null}],"usage":null}\n\n',
+  )
+  chat.push(
+    'data: {"object":"chat.completion.chunk","model":"open-model","choices":[],"usage":{"prompt_tokens":300,"completion_tokens":20,"total_tokens":320,"prompt_tokens_details":{"cached_tokens":100},"completion_tokens_details":{"reasoning_tokens":5}}}\n\n',
+  )
+  chat.push('data: [DONE]\n\n')
+  assert.deepEqual(chat.usage(), {
+    cacheWriteTokens: 0,
+    cachedTokens: 100,
+    inputTokens: 300,
+    model: 'open-model',
+    outputTokens: 20,
+    reasoningTokens: 5,
+  })
+  const completion = Proxy.meter('codex')
+  completion.push(
+    '{"object":"chat.completion","model":"open-model","usage":{"prompt_tokens":12,"completion_tokens":3,"cost":0.0004}}',
+  )
+  assert.deepEqual(completion.usage(), {
+    cacheWriteTokens: 0,
+    cachedTokens: 0,
+    costUsd: 0.0004,
+    inputTokens: 12,
+    model: 'open-model',
+    outputTokens: 3,
   })
 
   const refused = Proxy.meter('codex')

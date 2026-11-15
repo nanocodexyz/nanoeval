@@ -56,11 +56,11 @@ const origins = { claude: 'https://api.anthropic.com', codex: 'https://api.opena
 const chatgpt = 'https://chatgpt.com'
 const routes: Record<Provider, readonly string[]> = {
   claude: ['v1/messages', 'v1/messages/count_tokens'],
-  codex: ['responses', 'responses/compact'],
+  codex: ['chat/completions', 'responses', 'responses/compact'],
 }
 const generations: Record<Provider, readonly string[]> = {
   claude: ['v1/messages'],
-  codex: ['responses', 'responses/compact'],
+  codex: ['chat/completions', 'responses', 'responses/compact'],
 }
 const dropped = [
   'accept-encoding',
@@ -267,16 +267,18 @@ export function meter(provider: Provider): {
           others[name] = (others[name] ?? 0) + 1
         }
       const webUsd = paid(used)
+      const input = used['input_tokens_details'] ?? used['prompt_tokens_details']
+      const output = used['output_tokens_details'] ?? used['completion_tokens_details']
       found = {
-        cacheWriteTokens: count(used['input_tokens_details']?.['cache_write_tokens']),
-        cachedTokens: count(used['input_tokens_details']?.['cached_tokens']),
+        cacheWriteTokens: count(input?.['cache_write_tokens']),
+        cachedTokens: count(input?.['cached_tokens']),
         ...(typeof used['cost'] === 'number' ? { costUsd: count(used['cost']) } : {}),
-        inputTokens: count(used['input_tokens']),
+        inputTokens: count(used['input_tokens'] ?? used['prompt_tokens']),
         ...(typeof response['model'] === 'string' ? { model: response['model'] } : {}),
         ...(Object.keys(others).length ? { otherTools: others } : {}),
-        outputTokens: count(used['output_tokens']),
-        ...(typeof used['output_tokens_details']?.['reasoning_tokens'] === 'number'
-          ? { reasoningTokens: count(used['output_tokens_details']['reasoning_tokens']) }
+        outputTokens: count(used['output_tokens'] ?? used['completion_tokens']),
+        ...(typeof output?.['reasoning_tokens'] === 'number'
+          ? { reasoningTokens: count(output['reasoning_tokens']) }
           : {}),
         ...(searches ? { webSearches: searches } : {}),
         ...(webUsd === undefined ? {} : { webUsd }),
