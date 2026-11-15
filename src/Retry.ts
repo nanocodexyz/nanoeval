@@ -29,7 +29,7 @@ export function after(header: string | null, now: number): number | undefined {
 
 export function pause(input: pause.Input): number | undefined {
   const ms = Math.max(
-    input.pollMs * 2 ** Math.min(input.tries, input.stepRetries),
+    input.paceMs ?? input.pollMs * 2 ** Math.min(input.tries, input.stepRetries),
     input.retryAfterMs ?? 0,
   )
   return input.now + ms < input.deadlineAt ? ms : undefined
@@ -39,6 +39,7 @@ export declare namespace pause {
   type Input = {
     deadlineAt: number
     now: number
+    paceMs?: number
     pollMs: number
     retryAfterMs?: number
     stepRetries: number

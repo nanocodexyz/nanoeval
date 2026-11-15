@@ -6446,3 +6446,44 @@ A session or an installed agent paid by a plan login (`CLAUDE_LOGIN_URL`, `CHATG
 
 **Not verified.** A real provider's `401` after a refresh. A Codex session over a WebSocket upgrade through the relay of nanocode-egress: the upgrade is not metered, and a rejected upgrade is answered `502` by the relay, so it is not marked.
 
+## 2026-11-15: a run sends the requests for a model at the pace its endpoint answers
+
+**What was wrong.** The route of the entries above answers 20 requests of a model in any 60 s, for all callers together, and `429` for the rest. The run waits a refusal out for an installed agent, so an arm is refused more often than it is answered: the arm without a pace below was answered 166 times and refused 228 times. The entry on the pause left "a limit of the run on its own requests a minute" as a change of its own. This is that change.
+
+**What changed.** `run --model-requests-per-min [MODEL=]REQUESTS` gives the run the requests a minute the endpoint answers for a model: `paces` in the config of the run, no default, a number alone for each model of the agents of the run, a model of no agent and no judge refused, and a rerun keeps the paces of its run unless it names its own.
+
+- `src/Pace.ts`. `reserve` hands out send times one interval apart, 60 s over the pace, in the order requests come, and never a time before now, so a pace that sat idle sends no burst. `demand` is the requests a minute of the rows of a model over the time of their agent execution in which they were not held, and `room` the rows a pace still feeds: the pace over that demand, rounded up, less the rows asking, and one row while no row has asked.
+- `worker/Meter.ts` asks a hook `pace` before every request it sends upstream, the first ask and each ask again, and holds the request for what the hook returns. The hold is the `wait` of that request in `agent/model-requests.jsonl` and counts in `modelWaits` of the row, as a wait after a refusal does.
+- `worker/Run.ts` keeps the next free time of each model in a table, `model_pace`, so the requests of installed agents, of sessions and of the judge, the last two through `/metered` of `worker/Sessions.ts`, take their turn in one queue. A `429` without `Retry-After` on a paced model is asked again after one interval instead of the doubled pause. A second table, `model_paced`, counts the requests and the held time of each claim.
+- Claims. `grant` gives a runner a row on a paced model only while a request that came now would be held at most two intervals and `room` is above zero. A claim it declines for the pace does not count the runner as one that fits no row.
+- `nanoeval arms` prints `model waits N (S s)` for an arm and has a column for it.
+
+**Checked**, on a machine with 5 cores and no KVM, by a user who is not root. Unit tests of the send times, of the room, of the option and of a rerun, and a simulation of 4, 8 and 16 rows that ask every 5 s for an hour against a provider that counts a sliding minute of 20: with the pace no request is refused and at least 1,195 are answered, without it more are refused than answered. An end-to-end scenario, `pace`, on directory slots: two models at 20 a minute each, a scripted provider that answers one request of a model in 2 s and refuses the rest. With sessions the provider answered 6 and 6 and refused none, and the run held 6 requests for 17.0 s. With installed agents it answered 3 and 3 and refused none, and no request was held: each row of that lane asks once. The lane of sessions was then run on three changed copies, and failed on each as it should: without `paces` in the config the provider refused 25, with the rule for claims off two rows of one model ran at once, and with the hook returning no hold the provider refused 12. Before this commit was pushed, `npm run lint`, `npm run check:types`, `npm run dry-run`, `npm test` and the lanes `pace` for sessions and for installed agents, `limited`, `priced` and `budget` on 2 slots passed on it from a fresh clone.
+
+**What ran on a real route.** Two arms on the same machine, one after the other, each one run: `fx-chat` 0.0.17 on `@cf/zai-org/glm-5.3-flash` through a forwarder that adds the credential of the endpoint and keeps a ledger, the 12 tasks of `ten-minute`, 1 attempt, 4 ns slots, `--model-price '@cf/zai-org/glm-5.3-flash=0.15,0.15,0.50'` and `--model-budget-usd 1`. The first on main at `fa3176f`, the second on this change over that commit with `--model-requests-per-min 20`. Both ended on the budget, which one task, `gcode-to-text`, spends most of.
+
+| | No pace | 20 a minute |
+| --- | ---: | ---: |
+| Requests answered | 166 | 207 |
+| Requests refused with `429` | 228 | 25 |
+| Refused for each answered | 1.37 | 0.12 |
+| Answered a minute, first answer to last | 10.2 | 13.9 |
+| Rows passed, of 12 | 7 | 8 |
+| Rows ended by the budget | 5 | 4 |
+| Rows ended by the route | 0 | 0 |
+| `model waits` of the arm | 228 (228 s) | 200 (972 s) |
+| Wall time | 16 min 23 s | 15 min 33 s |
+| Agent time of the 7 rows that passed in both | 670 s | 765 s |
+
+Waits of each row, without and with the pace: `configure-git-webserver` 11 (7 s) and 9 (30 s), `fix-code-vulnerability` 0 and 13 (77 s), `fix-git` 6 (8 s) and 9 (56 s), `gcode-to-text` 67 (58 s) and 49 (234 s), `git-leak-recovery` 51 (68 s) and 8 (18 s), `kv-store-grpc` 28 (34 s) and 8 (17 s), `largest-eigenval` 36 (29 s) and 48 (228 s), `multi-source-data-merger` 11 (6 s) and 7 (26 s), `pypi-server` 13 (17 s) and 8 (32 s), `pytorch-model-recovery` 5 (2 s) and 20 (120 s), `raman-fitting` none, the budget was spent before it started, and 21 (134 s). `overfull-hbox` started in neither.
+
+The ledger of the forwarder counts every caller of the machine. In the minutes of the arm without a pace it has 206 answered and 263 refused requests of the model, so other runs of the machine were answered 40 times and refused 35 times beside it. In the minutes of the arm with the pace it has the arm's requests and no other. Its send times are at least 2.9 s apart.
+
+**Where the pace did not help, and what it costs.**
+
+- The arm with the pace was refused nothing for its first 173 answers, 12 minutes, and then 25 times in the 3 minutes after. Before each of those refusals the ledger has 6 to 17 answered requests of the model in the 60 s before, not 20: a caller that is not in this ledger was on the same account, as the entry on the route found before. A pace keeps a run under the number it is told and knows nothing of other callers. The same was there beside the arm without a pace: 81 of the 263 refusals of its minutes came with fewer than 15 answered in the 60 s before. So 0.12 is what this arm measured, above the 0.1 that was the aim, and the figure of an arm that has the model alone was not measured.
+- Rows wait longer in all, 972 s against 228 s: a wait is 4.9 s on average where a pause after a refusal was 1.0 s, and a hold counts in the agent time of the row, as the pause does. The 7 rows that passed in both arms took 765 s of agent time against 670 s. One of them, `configure-git-webserver`, lost 32 s to a first request the forwarder answered `502`.
+- That first request also made the first row look slow, 1 request in 32 s, so the run claimed 3 more rows within 35 s where the rule means the first row to run alone until it has asked and been answered. Their requests were then held about 6 s each.
+- The demand of a row is the mean over every row of the model so far. From minute 9 to minute 12 three rows that wrote long answers were answered 5 times a minute together in two of those minutes, the mean stood at about 8 requests a minute for a row, so 3 rows were taken to feed the pace, and two rows stayed unclaimed beside a free slot for 3 min 25 s. The arm still was answered more often a minute than the one without a pace. A rule that claims one more row when the pace has held no request for a minute is the next step and is not in this change.
+
+**Not verified.** krun slots and a deployed Worker. Sessions and a judge on a real route: their hold is tested in the lane only. Two paced models at once on a real route. A run of a provider whose idle sandboxes close while the pace holds its rows. An arm larger than 12 rows, and a pace above what the endpoint answers. What the provider charged.

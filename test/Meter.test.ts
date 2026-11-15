@@ -123,3 +123,44 @@ test('a limited answer reaches the agent as the provider sent it when the attemp
     server.close()
   }
 })
+
+test('a pace holds a request before it is sent and before it is asked again, and the hold is settled with the answer', async () => {
+  const server = await upstream([
+    { body: limit, status: 429 },
+    { body: reply, headers: { 'content-type': 'text/event-stream' }, status: 200 },
+    { body: reply, headers: { 'content-type': 'text/event-stream' }, status: 200 },
+  ])
+  const settled: Meter.Outcome[] = []
+  const holds = [60, 40, undefined]
+  const sent: number[] = []
+  let paced = 0
+  const hooks: Meter.Hooks = {
+    limited: () => 30,
+    pace: () => holds[paced++],
+    settle: (outcome) => {
+      sent.push(outcome.at)
+      settled.push(outcome)
+    },
+  }
+  const started = Date.now()
+  try {
+    const held = await relay(server.url, hooks)
+    assert.equal(await held.text(), reply)
+    const free = await relay(server.url, hooks)
+    assert.equal(await free.text(), reply)
+    assert.equal(paced, 3, 'the pace was asked before each of the three requests the provider got')
+    assert.equal(server.asked(), 3)
+    assert.deepEqual(
+      settled.map((outcome) => [outcome.status, outcome.waitMs]),
+      [
+        [429, 60 + 30],
+        [200, 40],
+        [200, undefined],
+      ],
+    )
+    assert.ok(sent[0]! - started >= 60 - 1, 'the first request was sent after its hold')
+    assert.ok(sent[1]! - sent[0]! >= 30 + 40 - 1, 'the second after the pause and its hold')
+  } finally {
+    server.close()
+  }
+})

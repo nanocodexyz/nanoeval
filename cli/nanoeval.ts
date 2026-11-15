@@ -24,6 +24,7 @@ import * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
 import * as Logins from '../src/Logins.ts'
 import type * as Ledger from '../src/Ledger.ts'
+import * as Pace from '../src/Pace.ts'
 import * as Pins from '../src/Pins.ts'
 import * as Price from '../src/Price.ts'
 import * as Protocol from '../src/Protocol.ts'
@@ -160,6 +161,7 @@ const usage = `nanoeval <command>
             [--sandbox-timeout-sec N] [--sandbox-lease-sec 300] [--runtime | --runtime-blob SHA256]
             [--sandbox-budget-usd 0] [--model-budget-usd N] [--setup-sec 600] [--attach-sec 60]
             [--model-price MODEL=INPUT,CACHED,OUTPUT]...
+            [--model-requests-per-min [MODEL=]REQUESTS]...
             [--lease-sec 60] [--claims 3] [--step-retries 3] [--poll-ms 250]
             [--disks keep|remove] [--free-disk-mb N] [--verifier-cache] [--name NAME] [--wait]
             [--key-deposit N] [--key-top-up N]
@@ -218,6 +220,16 @@ const usage = `nanoeval <command>
             response of an agent or a judge on that model that carries no cost is priced
             from its tokens when it ends: the price counts in the spend and against the
             budget as a reported cost does, and the attempt says its cost is by list.
+            --model-requests-per-min gives the requests a minute the endpoint answers for a
+            model, or for each model of the run where none is named: the run then sends
+            the requests for that model, of every agent and the judge on it, one such
+            interval apart in the order they came, asks again after one interval where the
+            provider still limits one, and starts no row on the model while a request that
+            came now would be held longer than two intervals or while the rows asking it,
+            at the requests a minute its rows have made so far, leave no room under the
+            pace. The first row of a model runs alone until it has asked. A row's
+            model_waits counts the requests the run held or asked again and the seconds
+            they waited.
             With --disks remove, the default for --provider e2b and gateway, a runner removes
             each environment disk it unpacked once no row of the run needs it. With --free-disk-mb, a runner claims only while its
             machine has that much free disk, and prepares one environment at a time.
@@ -1476,6 +1488,7 @@ export function rerunConfig(
   const { named, parent } = input
   const from = <T>(flag: string, mine: T, theirs: T): T => (named.has(flag) ? mine : theirs)
   const modelUsd = from('model-budget-usd', own.budget.modelUsd, parent.budget.modelUsd)
+  const paces = from('model-requests-per-min', own.paces, parent.paces)
   const prices = from('model-price', own.prices, parent.prices)
   const freeDiskMb = from('free-disk-mb', own.sandbox.freeDiskMb, parent.sandbox.freeDiskMb)
   const leaseSec = from('sandbox-lease-sec', own.sandbox.leaseSec, parent.sandbox.leaseSec)
@@ -1495,6 +1508,7 @@ export function rerunConfig(
       setupSec: from('setup-sec', own.limits.setupSec, parent.limits.setupSec),
       stepRetries: from('step-retries', own.limits.stepRetries, parent.limits.stepRetries),
     },
+    ...(paces === undefined ? {} : { paces }),
     ...(prices === undefined ? {} : { prices }),
     sandbox: {
       backend: from('backend', own.sandbox.backend, parent.sandbox.backend),
@@ -1687,6 +1701,7 @@ async function main(
       'memory-mb': { type: 'string' },
       'model-budget-usd': { type: 'string' },
       'model-price': { multiple: true, type: 'string' },
+      'model-requests-per-min': { multiple: true, type: 'string' },
       name: { type: 'string' },
       nanocode: { type: 'string' },
       'nanocode-repository': { default: Revision.repositories.nanocode, type: 'string' },
@@ -2805,15 +2820,16 @@ async function main(
         : undefined
     if (runtime) console.error('runner runtime ' + runtime.digest + ', ' + runtime.bytes + ' bytes')
     const select = values.rerun ? rerunSelection(values) : 'unpassed'
+    const agents = parent
+      ? Config.rerunAgents(
+          parent.agents,
+          (values.agent ?? []).map((text) => text.split('=')[0]!),
+        )
+      : values.oracle
+        ? [oracle]
+        : (values.agent ?? []).map(parseAgent)
     const own: Config.Config = {
-      agents: parent
-        ? Config.rerunAgents(
-            parent.agents,
-            (values.agent ?? []).map((text) => text.split('=')[0]!),
-          )
-        : values.oracle
-          ? [oracle]
-          : (values.agent ?? []).map(parseAgent),
+      agents,
       attempts: parent ? parent.attempts : Number(values.attempts ?? '1'),
       budget: {
         ...(values['model-budget-usd'] ? { modelUsd: Number(values['model-budget-usd']) } : {}),
@@ -2845,6 +2861,14 @@ async function main(
       name:
         values.name ?? 'nanoeval-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-'),
       ...(only?.length ? { only } : {}),
+      ...(values['model-requests-per-min']?.length
+        ? {
+            paces: Pace.list(
+              values['model-requests-per-min'],
+              agents.map((agent) => agent.model),
+            ),
+          }
+        : {}),
       ...((values.payer ?? parent?.payer)
         ? { payer: (values.payer ?? parent?.payer) as Config.Payer }
         : {}),

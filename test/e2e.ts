@@ -112,6 +112,11 @@ const unreachedSeen = new Set<string>()
 const rateLimited = scenario === 'limited'
 const limitedAsked = new Map<string, number>()
 const limitMessage = 'inference request per min rate reached'
+const pacing = scenario === 'pace'
+const pacePerMin = 20
+const paceWindowMs = 2000
+const paceAnswered = new Map<string, number[]>()
+let paceRefused = 0
 const fleet = scenario === 'fleet'
 const turnLost = scenario === 'forgotten'
 const lapse = scenario === 'lapse'
@@ -1227,6 +1232,18 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
             return
           }
         }
+        if (pacing) {
+          const now = Date.now()
+          const answers = paceAnswered.get(body.model) ?? []
+          if (answers.some((at) => now - at < paceWindowMs)) {
+            paceRefused++
+            response
+              .writeHead(429, { 'content-type': 'application/json' })
+              .end(JSON.stringify({ error: { message: limitMessage, type: 'rate_limit_error' } }))
+            return
+          }
+          paceAnswered.set(body.model, [...answers, now])
+        }
         if (rateLimited && body.fake_cli) {
           const row = body.model + body.prompt_base64
           const asked = (limitedAsked.get(row) ?? 0) + 1
@@ -1708,6 +1725,7 @@ async function main(): Promise<void> {
           'limited',
           'login',
           'lost',
+          'pace',
           'refused',
           'resume',
           'runners',
@@ -2037,6 +2055,9 @@ async function main(): Promise<void> {
           ? { prices: { 'gpt-right': listPrice } }
           : {}),
       ...(judged ? { judge: { model: 'claude-haiku-4-5', provider: 'claude' as const } } : {}),
+      ...(pacing
+        ? { paces: Object.fromEntries(agents.map((agent) => [agent.model, pacePerMin])) }
+        : {}),
       ...(planned ? { payer: 'plan' as const } : {}),
       ...(funded ? { key: { topUp: 5 } } : {}),
       limits: {
@@ -3699,6 +3720,64 @@ async function main(): Promise<void> {
         )
       }
       assert.match(summary(status), / model_waits=2 \(\d+ s\)/)
+      await pass()
+      return
+    }
+
+    if (pacing) {
+      const rows = status['attempts'] as Record<string, any>[]
+      const spans = details.map((detail) => ({
+        ...(detail['result'].timing.agentExecution as { finishedAt: number; startedAt: number }),
+        agent: rows.find((row) => row['id'] === detail['attempt'].id)!['agent'] as string,
+      }))
+      console.log(
+        'pace: the provider answered ' +
+          [...paceAnswered].map(([name, answers]) => answers.length + ' of ' + name).join(', ') +
+          ' and refused ' +
+          paceRefused +
+          '; the run held ' +
+          rows.reduce((all, row) => all + (row['modelWaits']?.count ?? 0), 0) +
+          ' requests for ' +
+          rows.reduce((all, row) => all + (row['modelWaits']?.sec ?? 0), 0).toFixed(1) +
+          ' s',
+      )
+      assert.equal(
+        paceRefused,
+        0,
+        'a provider that answers one request of a model in a window refused none of the run',
+      )
+      assert.equal(status['counts'].errored, 0)
+      assert.equal(status['lostClaims'], 0)
+      for (const agent of agents) {
+        const own = rows.filter((row) => row['agent'] === agent.id)
+        const answers = paceAnswered.get(agent.model) ?? []
+        assert.ok(answers.length >= own.length, 'every row of ' + agent.id + ' asked its model')
+        if (model !== 'scripted') continue
+        for (const row of own)
+          assert.ok(row['modelWaits']?.count > 0, 'a row that asks faster than its pace was held')
+        const ran = spans
+          .filter((span) => span.agent === agent.id)
+          .sort((left, right) => left.startedAt - right.startedAt)
+        for (const [index, span] of ran.entries())
+          assert.ok(
+            index === 0 || span.startedAt >= ran[index - 1]!.finishedAt,
+            'no row of ' + agent.id + ' started while a row that takes the whole pace asked',
+          )
+      }
+      if (model === 'scripted') {
+        assert.ok(
+          spans.some((span) =>
+            spans.some(
+              (other) =>
+                other.agent !== span.agent &&
+                other.startedAt < span.finishedAt &&
+                span.startedAt < other.finishedAt,
+            ),
+          ),
+          'rows of two models, each on its own pace, ran side by side',
+        )
+        assert.match(summary(status), / model_waits=\d+ \(\d+ s\)/)
+      }
       await pass()
       return
     }

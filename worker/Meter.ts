@@ -24,6 +24,7 @@ export type Admission = { flight?: number; pauseMs?: number; refused?: string }
 export type Hooks = {
   admit?(waitedMs: number): Promise<Admission>
   limited?(limited: Limited): number | undefined | Promise<number | undefined>
+  pace?(): number | undefined | Promise<number | undefined>
   refused?(refusal: Refused): Promise<number | undefined>
   release?(flight: number): void | Promise<void>
   settle(outcome: Outcome): void | Promise<void>
@@ -91,6 +92,9 @@ async function forwarded(
 ): Promise<Response> {
   const { hooks } = input
   for (let tries = 0; ; tries++) {
+    const heldMs = (await hooks.pace?.()) ?? 0
+    if (heldMs) await new Promise((resolve) => setTimeout(resolve, heldMs))
+    const waited = heldMs ? { waitMs: heldMs } : {}
     const at = Date.now()
     const upstream = await fetch(input.url, {
       ...(input.body === undefined ? {} : { body: input.body }),
@@ -107,6 +111,7 @@ async function forwarded(
         ms: Date.now() - at,
         ...(kind ? { refusal: kind } : {}),
         status: upstream.status,
+        ...waited,
       })
       const pauseMs = kind && hooks.refused ? await hooks.refused({ kind, text, tries }) : undefined
       if (pauseMs === undefined) {
@@ -125,7 +130,12 @@ async function forwarded(
       })
       if (pauseMs !== undefined) {
         await upstream.body?.cancel()
-        await hooks.settle({ at, ms: Date.now() - at, status: upstream.status, waitMs: pauseMs })
+        await hooks.settle({
+          at,
+          ms: Date.now() - at,
+          status: upstream.status,
+          waitMs: heldMs + pauseMs,
+        })
         await new Promise((resolve) => setTimeout(resolve, pauseMs))
         continue
       }
@@ -136,6 +146,7 @@ async function forwarded(
         ...(held.flight === undefined ? {} : { flight: held.flight }),
         ms: Date.now() - at,
         status: upstream.status,
+        ...waited,
       })
       return new Response(null, { headers, status: upstream.status })
     }
@@ -152,6 +163,7 @@ async function forwarded(
         ms: Date.now() - at,
         status: upstream.status,
         ...(usage ? { usage } : {}),
+        ...waited,
       })
     }
     const transformer: Transformer<Uint8Array, Uint8Array> & { cancel(): Promise<void> } = {

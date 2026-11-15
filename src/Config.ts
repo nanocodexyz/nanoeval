@@ -2,6 +2,7 @@ import * as Branch from './Branch.ts'
 import * as Eval from './Eval.ts'
 import * as Installed from './Installed.ts'
 import type * as Ledger from './Ledger.ts'
+import * as Pace from './Pace.ts'
 import * as Price from './Price.ts'
 import type * as Protocol from './Protocol.ts'
 import type * as Sandbox from './Sandbox.ts'
@@ -61,6 +62,7 @@ export type Config = {
   }
   name: string
   only?: readonly string[]
+  paces?: Pace.List
   payer?: Payer
   prices?: Price.List
   rerun?: { run: string; select: Ledger.Selection }
@@ -331,6 +333,24 @@ export function parse(value: unknown): Config {
     },
     name: config.name,
     ...(config.only?.length ? { only: [...config.only] } : {}),
+    ...(config.paces === undefined
+      ? {}
+      : {
+          paces: Object.fromEntries(
+            Object.entries(
+              typeof config.paces === 'object' && config.paces !== null
+                ? config.paces
+                : fail('paces holds the requests a minute of each model it names'),
+            ).map(([model, perMin]) => [
+              agents.some((agent) => agent.model === model) || judge?.model === model
+                ? model
+                : fail('paces names ' + model + ', the model of no agent and no judge of the run'),
+              Pace.valid(perMin)
+                ? perMin
+                : fail('paces.' + model + ' is the requests a minute of the model, above zero'),
+            ]),
+          ),
+        }),
     ...(payer === 'plan' ? { payer } : {}),
     ...(config.prices === undefined
       ? {}

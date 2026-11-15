@@ -104,6 +104,8 @@ test('an arm is its passes, its two pass rates, its cost, its tokens, its time a
     scored: 6,
     tasks: 3,
     usdPerPass: arm!.costUsd! / 4,
+    waitSec: 0,
+    waits: 0,
     wallSec: 125,
   })
   assert.ok(Math.abs(arm!.costUsd! - 8 * listUsd) < 1e-12, 'eight attempts with tokens, at list')
@@ -183,15 +185,15 @@ test('one run prints a line an arm, several runs a table, and both are JSON on r
   )
   const table = armsText([open, two], { json: false, prices: [glm + '=0.15,0.05,0.50'] })
   assert.deepEqual(table.split('\n'), [
-    '| Run | Arm | Harness | Model | Passed | Pass micro | Pass macro | USD a pass | Cost | Input tokens (cached) | Output tokens | Wall time | Infrastructure errors | Agent or model errors | Cancelled |',
-    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    '| Run | Arm | Harness | Model | Passed | Pass micro | Pass macro | USD a pass | Cost | Input tokens (cached) | Output tokens | Wall time | Model waits | Infrastructure errors | Agent or model errors | Cancelled |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
     '| run-one | fx | fx-chat 0.0.17 | ' +
       glm +
-      ' | 4/12 | 66.7% of 6 | 50.0% over 3 | $0.3800 | $1.5200 at list prices | 8,000,000 (4,800,000) | 1,600,000 | 2 min 5 s | 3 or 25.0% of its rows (unrecorded 1, verifier 1, verifier_timeout 1) | 2 (agent 1, budget 1) | 1 |',
+      ' | 4/12 | 66.7% of 6 | 50.0% over 3 | $0.3800 | $1.5200 at list prices | 8,000,000 (4,800,000) | 1,600,000 | 2 min 5 s | 0 | 3 or 25.0% of its rows (unrecorded 1, verifier 1, verifier_timeout 1) | 2 (agent 1, budget 1) | 1 |',
     '| run-two | fx | fx-chat 0.0.17 | ' +
       glm +
-      ' | 1/1 | 100.0% of 1 | 100.0% over 1 | $0.2500 | $0.2500 | 1,000,000 (600,000) | 200,000 | 1 s | 0 | 0 | 0 |',
-    '| run-two | sonnet | nanocode | claude-sonnet-5 | 0/1 | 0.0% of 1 | 0.0% over 1 | no pass | $1.0000 | 1,000,000 (600,000) | 200,000 | 1 s | 0 | 0 | 0 |',
+      ' | 1/1 | 100.0% of 1 | 100.0% over 1 | $0.2500 | $0.2500 | 1,000,000 (600,000) | 200,000 | 1 s | 0 | 0 | 0 | 0 |',
+    '| run-two | sonnet | nanocode | claude-sonnet-5 | 0/1 | 0.0% of 1 | 0.0% over 1 | no pass | $1.0000 | 1,000,000 (600,000) | 200,000 | 1 s | 0 | 0 | 0 | 0 |',
     '',
   ])
   assert.deepEqual(
@@ -222,4 +224,17 @@ test('an attempt that a rerun of the table retried counts once, as its retry', (
     Arms.arms([first]).map((arm) => [arm.run, arm.passed, arm.rows, arm.errored]),
     [['one', 1, 2, 1]],
   )
+})
+
+test('an arm sums the model requests its run held or asked again, and the seconds they waited', () => {
+  const held = run('held', [
+    { ...row('a', 1, { outcome: 'passed' }), modelWaits: { count: 3, sec: 7.4 } },
+    { ...row('b', 1, { outcome: 'failed' }), modelWaits: { count: 2, sec: 3.2 } },
+    row('c', 1, { outcome: 'passed' }),
+  ])
+  const [arm] = Arms.arms([held])
+  assert.deepEqual([arm!.waits, arm!.waitSec], [5, 7.4 + 3.2])
+  assert.match(Arms.line(arm!), /, wall time 1 s, model waits 5 \(11 s\), errors: /)
+  assert.match(Arms.table([arm!]), / \| 1 s \| 5 \(11 s\) \| 0 \| /)
+  assert.doesNotMatch(Arms.line(Arms.arms([open])[0]!), /model waits/)
 })

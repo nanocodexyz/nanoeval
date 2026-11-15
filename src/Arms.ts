@@ -40,6 +40,8 @@ export type Arm = {
   scored: number
   tasks: number
   usdPerPass: number | null
+  waitSec: number
+  waits: number
   wallSec: number
 }
 
@@ -88,6 +90,8 @@ export function arms(given: readonly Compare.Run[], prices: Price.List = {}): Ar
         scored: 0,
         tasks: 0,
         usdPerPass: null,
+        waitSec: 0,
+        waits: 0,
         wallSec:
           (Math.max(...attempts.map((attempt) => attempt.finishedAt)) -
             Math.min(...attempts.map((attempt) => attempt.startedAt))) /
@@ -105,6 +109,10 @@ export function arms(given: readonly Compare.Run[], prices: Price.List = {}): Ar
           tasks.set(attempt.task.name, task)
           task.scored++
           if (attempt.outcome === 'passed') task.passed++
+        }
+        if (attempt.modelWaits) {
+          arm.waits += attempt.modelWaits.count
+          arm.waitSec += attempt.modelWaits.sec
         }
         if (attempt.usage) {
           arm.metered++
@@ -187,6 +195,10 @@ export function perPass(arm: Arm): string {
   return arm.usdPerPass === null ? 'no pass' : usd(arm.usdPerPass)
 }
 
+function waited(arm: Arm): string {
+  return arm.waits + ' (' + Math.round(arm.waitSec) + ' s)'
+}
+
 export function line(arm: Arm): string {
   const cancelled = count(arm.errors.cancelled)
   return (
@@ -228,6 +240,7 @@ export function line(arm: Arm): string {
       : '') +
     ', wall time ' +
     Compare.duration(arm.wallSec) +
+    (arm.waits ? ', model waits ' + waited(arm) : '') +
     ', errors: infrastructure ' +
     infrastructure(arm) +
     ', agent or model ' +
@@ -253,6 +266,7 @@ export function table(found: readonly Arm[]): string {
         'Input tokens (cached)',
         'Output tokens',
         'Wall time',
+        'Model waits',
         'Infrastructure errors',
         'Agent or model errors',
         'Cancelled',
@@ -272,6 +286,7 @@ export function table(found: readonly Arm[]): string {
           : 'not recorded',
         arm.metered ? number(arm.outputTokens) : 'not recorded',
         Compare.duration(arm.wallSec),
+        arm.waits ? waited(arm) : '0',
         infrastructure(arm),
         count(arm.errors.agent) + kinds(arm.errors.agent),
         String(count(arm.errors.cancelled)),

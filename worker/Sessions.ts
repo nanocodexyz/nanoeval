@@ -83,6 +83,11 @@ export const nanocode = App.create<Env>({
           ...(session
             ? {
                 admit: (waitedMs: number) => tell({ admit: { waitedMs } }).catch(() => ({})),
+                pace: () =>
+                  tell({ pace: true, path }).then(
+                    (answer) => answer.pauseMs,
+                    () => undefined,
+                  ),
                 refused: (refused: Meter.Refused) =>
                   tell({ refused }).then(
                     (answer) => answer.pauseMs,

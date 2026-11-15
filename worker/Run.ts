@@ -18,6 +18,7 @@ import * as Bytes from '../src/internal/Bytes.ts'
 import * as Local from '../src/Local.ts'
 import * as Logins from '../src/Logins.ts'
 import * as Opening from '../src/Opening.ts'
+import * as Pace from '../src/Pace.ts'
 import * as Payment from '../src/Payment.ts'
 import * as Pins from '../src/Pins.ts'
 import * as Members from '../src/Pool.ts'
@@ -109,6 +110,7 @@ const agentTrajectory = 'agent/trajectory.json'
 const judgeRequest = 'verifier/' + Judge.requestFile
 const judgeResponse = 'verifier/' + Judge.responseFile
 const judgePath = 'judge/'
+const asking: readonly Ledger.Phase[] = ['attach', 'claimed', 'run']
 const judgeRequestId = 'judge'
 const modelRequests = 'agent/model-requests.jsonl'
 const partCharacters = 524_288
@@ -181,6 +183,8 @@ const tables = [
     at INTEGER NOT NULL,
     instance TEXT NOT NULL
   )`,
+  'CREATE TABLE IF NOT EXISTS model_pace (model TEXT PRIMARY KEY, next_at REAL NOT NULL)',
+  'CREATE TABLE IF NOT EXISTS model_paced (attempt TEXT NOT NULL, claim INTEGER NOT NULL, requests INTEGER NOT NULL, held REAL NOT NULL, PRIMARY KEY (attempt, claim))',
   ...Ledger.tables,
   ...Payment.tables,
   ...Timeline.tables,
@@ -192,6 +196,7 @@ const message = Storage.message
 type Settled = Proxy.Session & {
   admit?: { waitedMs: number }
   outcome?: Meter.Outcome
+  pace?: true
   path?: string
   provider?: Proxy.Provider
   refused?: Meter.Refused
@@ -898,13 +903,95 @@ export class Run extends DurableObject<Env> {
     }
   }
 
-  private price(input: { attempt: string; path: string }): Price.Price | undefined {
-    const config = this.config()
+  private served(input: { attempt: string; path: string }): string | undefined {
     const row = Ledger.get(this.sql, input.attempt)
-    const model = input.path.startsWith(judgePath)
-      ? config.judge?.model
+    return input.path.startsWith(judgePath)
+      ? this.config().judge?.model
       : row && this.agentOf(row).model
-    return model === undefined ? undefined : config.prices?.[model]
+  }
+
+  private price(input: { attempt: string; path: string }): Price.Price | undefined {
+    const model = this.served(input)
+    return model === undefined ? undefined : this.config().prices?.[model]
+  }
+
+  private nextAt(model: string): number | undefined {
+    return this.sql.all('SELECT next_at FROM model_pace WHERE model = ?', model)[0]?.['next_at'] as
+      | number
+      | undefined
+  }
+
+  private pace(input: { attempt: string; claim: number; path: string }): number | undefined {
+    const model = this.served(input)
+    const perMin = model === undefined ? undefined : this.config().paces?.[model]
+    if (model === undefined || perMin === undefined) return undefined
+    const reserved = Pace.reserve({ nextAt: this.nextAt(model), now: Date.now(), perMin })
+    this.sql.run(
+      'INSERT OR REPLACE INTO model_pace (model, next_at) VALUES (?, ?)',
+      model,
+      reserved.nextAt,
+    )
+    if (!input.path.startsWith(judgePath))
+      this.paced({ attempt: input.attempt, claim: input.claim, held: reserved.waitMs, requests: 1 })
+    return reserved.waitMs > 0 ? reserved.waitMs : undefined
+  }
+
+  private paced(input: { attempt: string; claim: number; held: number; requests: number }): void {
+    this.sql.run(
+      'INSERT INTO model_paced (attempt, claim, requests, held) VALUES (?, ?, ?, ?) ON CONFLICT (attempt, claim) DO UPDATE SET requests = requests + excluded.requests, held = held + excluded.held',
+      input.attempt,
+      input.claim,
+      input.requests,
+      input.held,
+    )
+  }
+
+  private room(input: { model: string; now: number; perMin: number }): number {
+    const { model, now, perMin } = input
+    if (Pace.waiting({ nextAt: this.nextAt(model), now, perMin })) return 0
+    const asked = new Map(
+      this.sql
+        .all('SELECT attempt, claim, requests, held FROM model_paced')
+        .map((paced) => [paced['attempt'] + ' ' + paced['claim'], paced]),
+    )
+    const rows = this.rows().filter((row) => this.agentOf(row).model === model)
+    return Pace.room({
+      demand: Pace.demand(
+        rows.flatMap((row) => {
+          const span = (JSON.parse(row.timing) as Result.Attempt['timing']).agentExecution
+          const seen = asked.get(row.id + ' ' + row.claims)
+          const until = row.phase === 'run' ? now : span?.finishedAt
+          return span && seen && until !== undefined && until > span.startedAt
+            ? [
+                {
+                  busyMs: until - span.startedAt - (seen['held'] as number),
+                  requests: seen['requests'] as number,
+                },
+              ]
+            : []
+        }),
+      ),
+      perMin,
+      rows: rows.filter((row) => asking.includes(row.phase)).length,
+    })
+  }
+
+  private feeding(now: number): { declined(): boolean; feeds(row: Ledger.Attempt): boolean } {
+    const paces = this.config().paces ?? {}
+    const left = new Map<string, number>()
+    let declined = false
+    return {
+      declined: () => declined,
+      feeds: (row) => {
+        const model = this.agentOf(row).model
+        const perMin = paces[model]
+        if (perMin === undefined) return true
+        const room = left.get(model) ?? this.room({ model, now, perMin })
+        left.set(model, room - 1)
+        if (room <= 0) declined = true
+        return room > 0
+      },
+    }
   }
 
   private refuse(refused: Meter.Refused): number | undefined {
@@ -945,14 +1032,19 @@ export class Run extends DurableObject<Env> {
     if (!row || row.claims !== input.claim || row.phase !== 'run') return undefined
     const config = this.config()
     const { retryAfterMs, tries } = input.limited
-    return Retry.pause({
+    const perMin = config.paces?.[this.agentOf(row).model]
+    const pauseMs = Retry.pause({
       deadlineAt: row.deadline_at ?? 0,
       now: Date.now(),
+      ...(perMin === undefined ? {} : { paceMs: Pace.interval(perMin) }),
       pollMs: config.sandbox.pollMs,
       ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
       stepRetries: config.limits.stepRetries,
       tries,
     })
+    if (perMin !== undefined && pauseMs !== undefined)
+      this.paced({ attempt: row.id, claim: row.claims, held: pauseMs, requests: 0 })
+    return pauseMs
   }
 
   private refusedOut(row: Ledger.Attempt, now: number): Result.Failure | undefined {
@@ -1010,6 +1102,14 @@ export class Run extends DurableObject<Env> {
         claim: Number(body.claim),
         waitedMs: Number(body.admit.waitedMs),
       })
+    if (body.pace && typeof body.path === 'string') {
+      const pauseMs = this.pace({
+        attempt: body.attempt,
+        claim: Number(body.claim),
+        path: body.path,
+      })
+      return pauseMs === undefined ? {} : { pauseMs }
+    }
     if (body.released !== undefined)
       this.sql.run('DELETE FROM model_flights WHERE id = ?', Number(body.released))
     if (body.outcome && typeof body.path === 'string')
@@ -1686,6 +1786,7 @@ export class Run extends DurableObject<Env> {
       hooks: {
         admit: async (waitedMs) => this.admit({ attempt: row.id, claim: row.claims, waitedMs }),
         limited: (limited) => this.limited({ attempt: row.id, claim: row.claims, limited }),
+        pace: () => this.pace({ attempt: row.id, claim: row.claims, path }),
         refused: async (refused) => this.refuse(refused),
         release: (flight) => void this.sql.run('DELETE FROM model_flights WHERE id = ?', flight),
         settle: (outcome) =>
@@ -2832,8 +2933,9 @@ export class Run extends DurableObject<Env> {
     const drained = record.drained ?? this.drain(record, now)
     if (drained) return { ...idle(false), drained }
     const fits = this.fitting(record, now)
+    const pace = this.feeding(now)
     const claimed = Ledger.claim(this.sql, {
-      accepts: (row) => fits(row.task),
+      accepts: (row) => fits(row.task) && pace.feeds(row),
       leaseMs: config.limits.leaseSec * 1000,
       memoryOf: (task) => this.task(task).resources.memoryMb,
       now,
@@ -2848,7 +2950,7 @@ export class Run extends DurableObject<Env> {
       Timeline.add(this.sql, { at: now, attempt: row.id, name: 'attempt.claimed', runner })
     const waiting = this.rows().some((row) => row.phase === 'unclaimed')
     const response = idle(
-      !claimed.length && body.offer.slots > 0 && waiting,
+      !claimed.length && body.offer.slots > 0 && waiting && !pace.declined(),
       claimed.reduce((sum, row) => sum + this.task(row.task).resources.memoryMb, 0),
       claimed.length,
     )
