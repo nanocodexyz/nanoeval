@@ -160,7 +160,11 @@ export function queue(sql: Sql.Sql, secOf?: (task: string) => number): Attempt[]
 export function claim(sql: Sql.Sql, input: claim.Input): Attempt[] {
   const candidates = queue(sql, input.secOf).filter((row) => input.accepts?.(row) ?? true)
   const chosen = Admission.fill(
-    candidates.map((row) => ({ item: row, memoryMb: input.memoryOf(row.task) })),
+    candidates.map((row) => ({
+      cpus: input.cpusOf(row.task),
+      item: row,
+      memoryMb: input.memoryOf(row.task),
+    })),
     { ...input.offer, ...(input.wholeLast ? { wholeLast: true } : {}) },
   )
   return sql.transaction(() =>
@@ -199,6 +203,7 @@ export function claim(sql: Sql.Sql, input: claim.Input): Attempt[] {
 export declare namespace claim {
   type Input = {
     accepts?(row: Attempt): boolean
+    cpusOf(task: string): number
     leaseMs: number
     memoryOf(task: string): number
     now: number

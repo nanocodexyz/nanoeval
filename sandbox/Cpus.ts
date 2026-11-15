@@ -41,6 +41,8 @@ export declare namespace limit {
   type Options = Memory.limit.Options & { status: string }
 }
 
+export const cpusPerThread = 1
+
 export const slotsPerThread = 2
 
 export function crowded(slots: number, threads: number): boolean {
@@ -63,6 +65,28 @@ export declare namespace crowding {
   type Input = { peers: number; slots: number; threads: number }
 }
 
+export function overcommitting(input: overcommitting.Input): string | undefined {
+  if (input.vcpus === undefined)
+    return (
+      'the declared vCPUs of rows are not counted on ' +
+      input.threads +
+      ' threads: wall-clock limits will be hit sooner'
+    )
+  if (input.vcpus + input.peers <= input.threads * cpusPerThread) return undefined
+  return (
+    input.vcpus +
+    ' declared vCPUs' +
+    (input.peers > 0 ? ' and ' + Math.round(input.peers) + ' of other runners' : '') +
+    ' on ' +
+    input.threads +
+    ' threads: above one a thread; wall-clock limits will be hit sooner'
+  )
+}
+
+export declare namespace overcommitting {
+  type Input = { peers: number; threads: number; vcpus: number | undefined }
+}
+
 export function slots(threads: number, held: number): number {
   return Math.max(1, Math.floor(threads * slotsPerThread - held))
 }
@@ -72,3 +96,11 @@ export function threads(online: number, limited: number | undefined): number {
 }
 
 export const host: limit.Options = { ...Memory.host, status: '/proc/self/status' }
+
+export function vcpus(threads: number, options: vcpus.Options): number {
+  return Math.max(1, Math.floor(threads * options.perThread - options.held))
+}
+
+export declare namespace vcpus {
+  type Options = { held: number; perThread: number }
+}

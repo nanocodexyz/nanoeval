@@ -75,6 +75,7 @@ export type Config = {
   sandbox: {
     backend: Backend
     disks: 'keep' | 'remove'
+    cpusPerThread?: number | null
     freeDiskMb?: number
     leaseSec?: number
     max: number
@@ -94,6 +95,7 @@ export type Config = {
 export type Runner = {
   ahead?: Protocol.Ahead[]
   backend: Backend
+  cpusPerThread?: number | null
   disks: 'keep' | 'remove'
   endsAt?: number
   freeDiskMb?: number
@@ -433,6 +435,17 @@ export function parse(value: unknown): Config {
         }),
     sandbox: {
       backend,
+      ...(sandbox.cpusPerThread === undefined
+        ? {}
+        : {
+            cpusPerThread:
+              sandbox.cpusPerThread === null ||
+              (typeof sandbox.cpusPerThread === 'number' && sandbox.cpusPerThread > 0)
+                ? sandbox.cpusPerThread
+                : fail(
+                    'sandbox.cpusPerThread is a number above 0, or null to count no vCPUs of rows',
+                  ),
+          }),
       disks: choice(sandbox.disks ?? 'keep', 'sandbox.disks', ['keep', 'remove']),
       ...(sandbox.freeDiskMb === undefined
         ? {}

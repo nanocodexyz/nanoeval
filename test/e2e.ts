@@ -1955,13 +1955,13 @@ async function main(): Promise<void> {
     }
     const pinned = (Cpus.allowed(Fs.readFileSync(Cpus.host.status, 'utf8')) ?? []).slice(
       0,
-      Math.floor((directories.length - 1) / Cpus.slotsPerThread),
+      directories.length - 1,
     )
     if (derived)
       assert.equal(
         spawnSync('taskset', ['-pc', pinned.join(','), String(process.pid)]).status,
         0,
-        'the lane pins itself, and so the runner it starts, to threads whose slots are fewer than its rows',
+        'the lane pins itself, and so the runner it starts, to one hardware thread fewer than it has rows',
       )
     const importStarted = Date.now()
     const imported = await Import.cases(cases(), options)
@@ -2158,7 +2158,7 @@ async function main(): Promise<void> {
               }),
             }
           : {}),
-        ...(derived ? {} : { slots }),
+        ...(derived ? {} : { cpusPerThread: null, slots }),
         timeoutSec: 3600,
         ...(cached ? { verifierCache: true as const } : {}),
         ...(warm ? { warm: { idleSec: 2 * noticeSec + 2, usd: 1 } } : {}),
@@ -4784,7 +4784,11 @@ async function main(): Promise<void> {
       )
       const threads = Cpus.threads(pinned.length, await Cpus.limit(Cpus.host))
       const slots = Cpus.slots(threads, 0)
-      assert.ok(slots < total, 'the lane has more rows than its runner has slots')
+      const vcpus = Cpus.vcpus(threads, { held: 0, perThread: Cpus.cpusPerThread })
+      assert.ok(
+        vcpus < total && total <= slots,
+        'the vCPUs of the runner bound the rows, not its slots',
+      )
       assert.equal(
         status['sandboxes'][0].capabilities.cpus,
         threads,
@@ -4795,13 +4799,20 @@ async function main(): Promise<void> {
         slots,
         'a runner reports its slots beside its threads',
       )
-      assert.equal(peak, slots, 'a runner that is given no slot count fills two slots a thread')
+      assert.equal(
+        status['sandboxes'][0].capabilities.vcpus,
+        vcpus,
+        'and the vCPUs its rows may declare at once',
+      )
+      assert.equal(peak, vcpus, 'rows of one vCPU run one a thread, whatever slots are free')
       console.log(
         'threads: a runner that was given no slot count and may use ' +
           threads +
           ' hardware threads had ' +
           slots +
-          ' slots and ran at most ' +
+          ' slots, admitted ' +
+          vcpus +
+          ' declared vCPUs and ran at most ' +
           peak +
           ' of ' +
           total +

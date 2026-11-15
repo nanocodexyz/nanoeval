@@ -55,6 +55,19 @@ test('the funding of the key is a deposit above zero, a top-up of at least zero,
     () => Config.parse({ ...derived, sandbox: { ...derived.sandbox, slots: 0 } }),
     /sandbox.slots/,
   )
+  const bound = (cpusPerThread: unknown) =>
+    Config.parse({ ...derived, sandbox: { ...derived.sandbox, cpusPerThread } }).sandbox
+      .cpusPerThread
+  assert.equal(
+    bound(undefined),
+    undefined,
+    'a run names no bound: a runner takes one vCPU a thread',
+  )
+  assert.equal(bound(2), 2)
+  assert.equal(bound(1.5), 1.5)
+  assert.equal(bound(null), null, 'null counts no vCPUs: rows by slots and memory alone')
+  for (const refused of [0, -1, '2', true])
+    assert.throws(() => bound(refused), /sandbox.cpusPerThread/)
   assert.deepEqual(Config.parse(config({ deposit: 5, topUp: 0 })).key, { deposit: 5, topUp: 0 })
   assert.deepEqual(Config.parse(config({ topUp: 2 })).key, { topUp: 2 })
   for (const key of [{}, { deposit: 0 }, { topUp: -1 }, { deposit: '5' }, null])

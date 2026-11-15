@@ -1,7 +1,9 @@
 import * as Fs from 'node:fs/promises'
 import * as Path from 'node:path'
 
-export type Peer = { slots: number; threads?: readonly number[] }
+export type Held = { cpus: number; slots: number }
+
+export type Peer = { cpus?: number; slots: number; threads?: readonly number[] }
 
 export function alive(pid: number): boolean {
   try {
@@ -24,12 +26,20 @@ export declare namespace file {
   type Options = { cache: string; pid: number; run: string }
 }
 
-export function held(own: readonly number[] | undefined, peers: readonly Peer[]): number {
-  return peers.reduce((total, peer) => {
-    if (!own || !peer.threads?.length) return total + peer.slots
-    const shared = peer.threads.filter((thread) => own.includes(thread)).length
-    return total + (peer.slots * shared) / peer.threads.length
-  }, 0)
+export function held(own: readonly number[] | undefined, peers: readonly Peer[]): Held {
+  return peers.reduce(
+    (total: Held, peer) => {
+      const part =
+        own && peer.threads?.length
+          ? peer.threads.filter((thread) => own.includes(thread)).length / peer.threads.length
+          : 1
+      return {
+        cpus: total.cpus + (peer.cpus ?? peer.slots) * part,
+        slots: total.slots + peer.slots * part,
+      }
+    },
+    { cpus: 0, slots: 0 },
+  )
 }
 
 export async function others(options: others.Options): Promise<Peer[]> {
@@ -51,9 +61,14 @@ export declare namespace others {
 
 export function parse(text: string): Peer | undefined {
   try {
-    const { slots, threads } = JSON.parse(text) as { slots?: unknown; threads?: unknown }
+    const { cpus, slots, threads } = JSON.parse(text) as {
+      cpus?: unknown
+      slots?: unknown
+      threads?: unknown
+    }
     if (!Number.isInteger(slots) || (slots as number) < 1) return undefined
     return {
+      ...(Number.isInteger(cpus) && (cpus as number) > 0 ? { cpus: cpus as number } : {}),
       slots: slots as number,
       ...(Array.isArray(threads) && threads.every((thread) => Number.isInteger(thread))
         ? { threads: threads as number[] }

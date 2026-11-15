@@ -22,6 +22,7 @@ const claim = (
   input: { now?: number; offer?: Partial<Admission.Offer>; runner?: number } = {},
 ) =>
   Ledger.claim(sql, {
+    cpusOf: () => 1,
     leaseMs: 1000,
     memoryOf: (task) => memory[task]!,
     now: input.now ?? 0,
@@ -297,7 +298,7 @@ test('a runner that overcommits counts what its machine uses and what its starti
   )
   assert.deepEqual(
     Admission.fill(
-      [{ item: 'whole', memoryMb: 16000 }],
+      [{ cpus: 1, item: 'whole', memoryMb: 16000 }],
       Admission.offer({ memoryMb: Admission.held([], machine(2000)), running: 0 }, capacity),
     ),
     ['whole'],
@@ -332,16 +333,16 @@ test('a runner offers what its machine has free, and nothing while its disk is s
   assert.deepEqual(
     Admission.fill(
       [
-        { item: 'a', memoryMb: 512 },
-        { item: 'b', memoryMb: 512 },
-        { item: 'c', memoryMb: 256 },
+        { cpus: 1, item: 'a', memoryMb: 512 },
+        { cpus: 1, item: 'b', memoryMb: 512 },
+        { cpus: 1, item: 'c', memoryMb: 256 },
       ],
       { capacityMb: 768, memoryMb: 768, slots: 4 },
     ),
     ['a', 'c'],
   )
   assert.deepEqual(
-    Admission.fill([{ item: 'huge', memoryMb: 4096 }], {
+    Admission.fill([{ cpus: 1, item: 'huge', memoryMb: 4096 }], {
       capacityMb: 768,
       memoryMb: 768,
       slots: 4,
@@ -349,9 +350,9 @@ test('a runner offers what its machine has free, and nothing while its disk is s
     ['huge'],
   )
   const mixed = [
-    { item: 'small', memoryMb: 256 },
-    { item: 'whole', memoryMb: 768 },
-    { item: 'huge', memoryMb: 4096 },
+    { cpus: 1, item: 'small', memoryMb: 256 },
+    { cpus: 1, item: 'whole', memoryMb: 768 },
+    { cpus: 1, item: 'huge', memoryMb: 4096 },
   ]
   assert.deepEqual(
     Admission.fill(mixed, { capacityMb: 768, memoryMb: 768, slots: 4 }),
@@ -465,9 +466,9 @@ test('as many runners begin with a row that needs a whole machine as the share o
     'every runner once only such rows are left',
   )
   const mixed = [
-    { item: 'whole', memoryMb: 768 },
-    { item: 'small', memoryMb: 256 },
-    { item: 'huge', memoryMb: 4096 },
+    { cpus: 1, item: 'whole', memoryMb: 768 },
+    { cpus: 1, item: 'small', memoryMb: 256 },
+    { cpus: 1, item: 'huge', memoryMb: 4096 },
   ]
   const empty = { capacityMb: 768, memoryMb: 768, slots: 4 }
   assert.deepEqual(Admission.fill(mixed, empty), ['whole'])
@@ -501,6 +502,7 @@ test('rows are claimed longest timeouts first, every attempt of a longer task be
   )
   const claimed = Ledger.claim(sql, {
     accepts: (row) => row.task !== 'large',
+    cpusOf: () => 1,
     leaseMs: 1000,
     memoryOf: (task) => memory[task]!,
     now: 0,
@@ -584,4 +586,112 @@ test('an attempt is retried within the claims of its row, so a run of one claim 
     3,
     'no row is claimed more often than the run allows',
   )
+})
+
+test('a runner admits rows against the vCPUs their tasks declare, and a row wider than its bound runs alone', () => {
+  const capacity = { cpus: 8, memoryMb: 4096, slots: 16 }
+  assert.deepEqual(Admission.offer({ cpus: 5, memoryMb: 1024, running: 2 }, capacity), {
+    capacityMb: 4096,
+    cpus: { capacity: 8, free: 3 },
+    memoryMb: 3072,
+    slots: 3,
+  })
+  assert.equal(
+    Admission.offer({ cpus: 8, memoryMb: 1024, running: 3 }, capacity).slots,
+    0,
+    'a runner whose vCPUs are all declared offers no slot',
+  )
+  assert.equal(
+    Admission.offer({ cpus: 11, memoryMb: 1024, running: 8 }, capacity).slots,
+    0,
+    'nor does one that a Worker before this bound took over it',
+  )
+  assert.equal(
+    Admission.offer({ cpus: 2, memoryMb: 0, running: 2 }, { ...capacity, slots: 4 }).slots,
+    2,
+    'the slot count stays the most rows at once',
+  )
+  assert.equal(
+    Admission.offer({ cpus: 0, memoryMb: 0, running: 0 }, { ...capacity, cpus: 1 }).slots,
+    1,
+    'a runner with nothing in flight offers a slot whatever its bound',
+  )
+  assert.equal(
+    Admission.offer({ memoryMb: 0, running: 0 }, { memoryMb: 4096, slots: 8 }).cpus,
+    undefined,
+    'a runner that counts no vCPUs offers a plain count',
+  )
+  const rows = [
+    { cpus: 4, item: 'four', memoryMb: 256 },
+    { cpus: 2, item: 'two', memoryMb: 256 },
+    { cpus: 1, item: 'one', memoryMb: 256 },
+    { cpus: 1, item: 'other', memoryMb: 256 },
+    { cpus: 1, item: 'last', memoryMb: 256 },
+  ]
+  const offer = { capacityMb: 4096, memoryMb: 4096, slots: 8 }
+  assert.deepEqual(
+    Admission.fill(rows, { ...offer, cpus: { capacity: 8, free: 8 } }),
+    ['four', 'two', 'one', 'other'],
+    'a row of four vCPUs takes four of the eight, and the fifth row waits for one',
+  )
+  assert.deepEqual(
+    Admission.fill(rows, { ...offer, cpus: { capacity: 8, free: 3 } }),
+    ['two', 'one'],
+    'a row that waits for vCPUs is passed over for the rows behind it that fit, as one that waits for memory is',
+  )
+  assert.deepEqual(
+    Admission.fill(rows, { ...offer, cpus: { capacity: 2, free: 2 } }),
+    ['four'],
+    'a row that declares more vCPUs than the bound is admitted when nothing else is in flight, and takes all of it',
+  )
+  assert.deepEqual(
+    Admission.fill(rows.slice(0, 1), { ...offer, cpus: { capacity: 1, free: 1 } }),
+    ['four'],
+    'so on a bound of one it still runs',
+  )
+  assert.deepEqual(
+    Admission.fill(rows, { ...offer, cpus: { capacity: 2, free: 1 } }),
+    ['one'],
+    'and it waits until the whole bound is free',
+  )
+  assert.deepEqual(
+    Admission.fill(rows, { ...offer, cpus: { capacity: 8, free: 0 } }),
+    [],
+    'nothing is admitted while no vCPU is free',
+  )
+  assert.deepEqual(
+    Admission.fill(rows, { ...offer, slots: 3 }),
+    ['four', 'two', 'one'],
+    'an offer without vCPUs is a plain count of rows',
+  )
+  assert.deepEqual(
+    Admission.fill(rows, { ...offer, cpus: { capacity: 48, free: 48 }, slots: 2 }),
+    ['four', 'two'],
+    'the slots of an offer bound the rows whatever vCPUs are free',
+  )
+})
+
+test('rows are claimed by the vCPUs of their tasks when the offer of the runner counts them', () => {
+  const wide: Record<string, number> = { big: 4, large: 2, small: 1 }
+  const claimWide = (free: number) => {
+    const sql = open([
+      { agent: 'a', n: 1, task: 'big' },
+      { agent: 'a', n: 1, task: 'large' },
+      { agent: 'a', n: 1, task: 'small' },
+    ])
+    return Ledger.claim(sql, {
+      cpusOf: (task) => wide[task]!,
+      leaseMs: 1000,
+      memoryOf: () => 1,
+      now: 0,
+      offer: { capacityMb: 768, cpus: { capacity: 4, free }, memoryMb: 768, slots: 4 },
+      run: '0123456789abcdef',
+      runner: 1,
+      token: () => 'token-' + ++tokens,
+    }).map((row) => row.task)
+  }
+  assert.deepEqual(claimWide(4), ['big'])
+  assert.deepEqual(claimWide(3), ['large', 'small'])
+  assert.deepEqual(claimWide(1), ['small'])
+  assert.deepEqual(claimWide(0), [])
 })

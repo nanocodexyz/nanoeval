@@ -162,7 +162,8 @@ const usage = `nanoeval <command>
             [--fail-on regression|lost|any-failure]...
             (--agent ID=HARNESS:MODEL[:THINKING]... | --oracle) [--judge PROVIDER:MODEL[:THINKING]]
             [--attempts 1] [--provider local|e2b|gateway] [--backend auto|krun|ns|dir] [--slots N]
-            [--sandboxes 1] [--memory-mb N] [--network private|host] [--template NAME]
+            [--sandboxes 1] [--memory-mb N] [--cpus-per-thread N] [--slots-only]
+            [--network private|host] [--template NAME]
             [--sandbox-timeout-sec N] [--sandbox-lease-sec 300] [--runtime | --runtime-blob SHA256]
             [--sandbox-budget-usd 0] [--model-budget-usd N] [--setup-sec 600] [--attach-sec 60]
             [--model-price MODEL=INPUT,CACHED,OUTPUT]...
@@ -343,6 +344,7 @@ const usage = `nanoeval <command>
   runner    --url URL --token T (--run RUN | --standing --backend krun|ns|dir [--location HINT])
             [--home DIR] [--ends-in-sec N]
             [--backend krun|ns] [--slots N] [--memory-mb N] [--memory-overcommit]
+            [--cpus-per-thread N] [--slots-only]
             [--free-disk-mb N] [--poll-ms N] [--store DIR] [--cache DIR]
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
             [--package-archive]
@@ -352,6 +354,14 @@ const usage = `nanoeval <command>
             cache; a count above two a thread is taken and said in its log), fetches
             their blobs by digest, boots each environment disk under a copy-on-write disk
             of its own, and reports to the run until the run is finished.
+            It admits rows by the vCPUs their tasks declare: those of its rows in flight
+            are at most one for each hardware thread it may use, a row that declares more
+            than that runs alone, and --slots stays the most rows at once. Agent and
+            verifier limits are wall-clock times, and a machine whose threads are shared
+            reaches them sooner. --cpus-per-thread N names another bound, and --slots-only
+            counts no vCPUs, as before: rows by --slots and memory alone. Above one a
+            thread the runner says so in one line of its log. Without either, it takes
+            what nanoeval run named for the run with the same two options.
             With --memory-overcommit it counts the memory its machine uses instead of the
             memory its running rows declare: a row starts while the machine has free what
             the row declares beside what the runner leaves unused (the machine's memory
@@ -1635,6 +1645,10 @@ export function rerunConfig(
     parent.limits.verifierMaxSec,
   )
   const prices = from('model-price', own.prices, parent.prices)
+  const cpusPerThread =
+    named.has('cpus-per-thread') || named.has('slots-only')
+      ? own.sandbox.cpusPerThread
+      : parent.sandbox.cpusPerThread
   const freeDiskMb = from('free-disk-mb', own.sandbox.freeDiskMb, parent.sandbox.freeDiskMb)
   const leaseSec = from('sandbox-lease-sec', own.sandbox.leaseSec, parent.sandbox.leaseSec)
   const memoryMb = from('memory-mb', own.sandbox.memoryMb, parent.sandbox.memoryMb)
@@ -1661,6 +1675,7 @@ export function rerunConfig(
     ...(prices === undefined ? {} : { prices }),
     sandbox: {
       backend: from('backend', own.sandbox.backend, parent.sandbox.backend),
+      ...(cpusPerThread === undefined ? {} : { cpusPerThread }),
       disks: from('disks', own.sandbox.disks, parent.sandbox.disks),
       ...(freeDiskMb === undefined ? {} : { freeDiskMb }),
       ...(leaseSec === undefined ? {} : { leaseSec }),
@@ -1825,6 +1840,7 @@ async function main(
       code: { type: 'string' },
       'codex-login': { type: 'string' },
       config: { type: 'string' },
+      'cpus-per-thread': { type: 'string' },
       days: { type: 'string' },
       detach: { default: false, type: 'boolean' },
       disks: { type: 'string' },
@@ -1905,6 +1921,7 @@ async function main(
       standing: { default: false, type: 'boolean' },
       'slot-forward': { multiple: true, type: 'string' },
       slots: { type: 'string' },
+      'slots-only': { default: false, type: 'boolean' },
       sources: { type: 'string' },
       state: { type: 'string' },
       'step-retries': { default: '3', type: 'string' },
@@ -2807,6 +2824,17 @@ async function main(
     return
   }
 
+  if (values['cpus-per-thread'] && values['slots-only'])
+    throw new Error('--slots-only counts no vCPUs and --cpus-per-thread bounds them: name one')
+  if (values['cpus-per-thread'] && !(Number(values['cpus-per-thread']) > 0))
+    throw new Error(
+      '--cpus-per-thread is a number above 0, the vCPUs that rows in flight may declare for each hardware thread of the runner',
+    )
+  const admission = {
+    ...(values['cpus-per-thread'] ? { cpusPerThread: Number(values['cpus-per-thread']) } : {}),
+    ...(values['slots-only'] ? { cpusPerThread: null } : {}),
+  }
+
   if (command === 'runner' && values.standing) {
     if (backend === 'auto') throw new Error('a standing runner names its --backend')
     const home = Path.resolve(values.home ?? Path.join('output', 'runners', 'standing'))
@@ -2828,6 +2856,7 @@ async function main(
       override: {
         ...(values['free-disk-mb'] ? { freeDiskMb: Number(values['free-disk-mb']) } : {}),
         ...(values['memory-mb'] ? { memoryMb: Number(values['memory-mb']) } : {}),
+        ...admission,
         ...(values['memory-overcommit'] ? { memoryOvercommit: true as const } : {}),
         ...(values['poll-ms'] ? { pollMs: Number(values['poll-ms']) } : {}),
         ...(values.slots ? { slots: Number(values.slots) } : {}),
@@ -2873,6 +2902,7 @@ async function main(
         ...(values.backend ? { backend } : {}),
         ...(values['free-disk-mb'] ? { freeDiskMb: Number(values['free-disk-mb']) } : {}),
         ...(values['memory-mb'] ? { memoryMb: Number(values['memory-mb']) } : {}),
+        ...admission,
         ...(values['memory-overcommit'] ? { memoryOvercommit: true as const } : {}),
         ...(values['poll-ms'] ? { pollMs: Number(values['poll-ms']) } : {}),
         ...(values.slots ? { slots: Number(values.slots) } : {}),
@@ -3063,6 +3093,7 @@ async function main(
       ...(rerun ? { rerun: { run: rerun, select } } : {}),
       sandbox: {
         backend,
+        ...admission,
         disks: (values.disks ?? Config.disks(provider)) as 'keep' | 'remove',
         ...(values['free-disk-mb'] ? { freeDiskMb: Number(values['free-disk-mb']) } : {}),
         ...(values['sandbox-lease-sec'] ? { leaseSec: Number(values['sandbox-lease-sec']) } : {}),

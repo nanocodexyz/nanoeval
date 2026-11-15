@@ -1529,12 +1529,17 @@ async function attend(
     threads,
     await Peers.others({ alive: Peers.alive, cache, pid: process.pid }),
   )
+  const perThread = config.cpusPerThread === undefined ? Cpus.cpusPerThread : config.cpusPerThread
+  const vcpus =
+    perThread === null ? undefined : Cpus.vcpus(capabilities.cpus, { held: peers.cpus, perThread })
   const capacity: Admission.Capacity = {
+    ...(vcpus === undefined ? {} : { cpus: vcpus }),
     ...(config.freeDiskMb === undefined ? {} : { freeDiskMb: config.freeDiskMb }),
     memoryMb: config.memoryMb ?? Math.floor(capabilities.memory_mb * hostUtilization),
-    slots: config.slots ?? Cpus.slots(capabilities.cpus, peers),
+    slots: config.slots ?? Cpus.slots(capabilities.cpus, peers.slots),
   }
   await Peers.write(Peers.file({ cache, pid: process.pid, run: config.run }), {
+    ...(vcpus === undefined ? {} : { cpus: vcpus }),
     slots: capacity.slots,
     ...(threads ? { threads } : {}),
   })
@@ -1542,7 +1547,11 @@ async function attend(
     const helloAt = Date.now()
     try {
       await call<Config.Runner>('/hello', {
-        capabilities: { ...capabilities, slots: capacity.slots },
+        capabilities: {
+          ...capabilities,
+          slots: capacity.slots,
+          ...(vcpus === undefined ? {} : { vcpus }),
+        },
         held: [...work.values()].map((item) => ({ claim: item.row.claim, id: item.row.id })),
         runner: config.runner,
         ...(reported.length ? { timeline: { marks: reported.splice(0), sentAt: Date.now() } } : {}),
@@ -1566,9 +1575,9 @@ async function attend(
       ' slots' +
       (config.slots === undefined
         ? ', ' +
-          (peers > 0
+          (peers.slots > 0
             ? 'what the ' +
-              Math.round(peers) +
+              Math.round(peers.slots) +
               ' slots of other runners on this machine leave of two'
             : 'two') +
           ' for each of the ' +
@@ -1583,6 +1592,18 @@ async function attend(
         : '') +
       (config.memoryOvercommit ? ' counted as the machine uses it, not as rows declare it' : '') +
       ', ' +
+      (vcpus === undefined
+        ? 'the vCPUs rows declare not counted'
+        : vcpus +
+          ' declared vCPUs in flight' +
+          (config.cpusPerThread === undefined
+            ? peers.cpus > 0
+              ? ', what the ' +
+                Math.round(peers.cpus) +
+                ' of other runners on this machine leave of one a thread'
+              : ', one a thread'
+            : '')) +
+      ', ' +
       backend +
       ' on the ' +
       config.network +
@@ -1592,13 +1613,34 @@ async function attend(
         ? ''
         : ', its sandbox ends at ' + new Date(config.endsAt).toISOString()),
   )
-  const crowding = Cpus.crowding({ peers, slots: capacity.slots, threads: capabilities.cpus })
+  const crowding = Cpus.crowding({
+    peers: peers.slots,
+    slots: capacity.slots,
+    threads: capabilities.cpus,
+  })
   if (crowding) log(crowding)
+  const overcommitting = Cpus.overcommitting({
+    peers: peers.cpus,
+    threads: capabilities.cpus,
+    vcpus,
+  })
+  if (overcommitting) log(overcommitting)
 
   const load = async (): Promise<Admission.Load> => {
     const rows = everything()
     const availableNow = config.memoryOvercommit && rows.length ? await availableMb() : undefined
     return {
+      ...(vcpus === undefined
+        ? {}
+        : {
+            cpus: rows.reduce(
+              (total, item) =>
+                total +
+                Math.min(Math.ceil(item.row.task.resources.cpus), vcpus) *
+                  (item.row.agent.branches ?? 1),
+              0,
+            ),
+          }),
       ...(capacity.freeDiskMb === undefined ? {} : { freeDiskMb: await freeDiskMb([home, cache]) }),
       memoryMb: Admission.held(
         rows.map((item) => ({

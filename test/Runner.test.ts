@@ -74,6 +74,7 @@ test('a runner whose slot frees while the run holds its claim ends that claim an
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const config: Config.Runner = {
     backend: 'dir',
+    cpusPerThread: null,
     disks: 'keep',
     leaseSec: 60,
     limits: { attachSec: 60, setupSec: 60, stepRetries: 0 },

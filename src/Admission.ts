@@ -1,10 +1,12 @@
 export type Capacity = {
+  cpus?: number
   freeDiskMb?: number
   memoryMb: number
   slots: number
 }
 
 export type Load = {
+  cpus?: number
   freeDiskMb?: number
   memoryMb: number
   running: number
@@ -13,6 +15,7 @@ export type Load = {
 
 export type Offer = {
   capacityMb: number
+  cpus?: { capacity: number; free: number }
   memoryMb: number
   slots: number
 }
@@ -83,9 +86,17 @@ export function offer(load: Load, capacity: Capacity): Offer {
   const blocked =
     capacity.freeDiskMb !== undefined &&
     (Boolean(load.starting) || (load.freeDiskMb ?? 0) < capacity.freeDiskMb)
-  const free = Math.max(0, capacity.slots - load.running)
+  const cpus =
+    capacity.cpus === undefined
+      ? undefined
+      : { capacity: capacity.cpus, free: Math.max(0, capacity.cpus - (load.cpus ?? 0)) }
+  const free = Math.min(
+    Math.max(0, capacity.slots - load.running),
+    cpus ? Math.ceil(cpus.free) : Infinity,
+  )
   return {
     capacityMb: capacity.memoryMb,
+    ...(cpus ? { cpus } : {}),
     memoryMb: Math.max(0, capacity.memoryMb - load.memoryMb),
     slots: blocked ? 0 : capacity.freeDiskMb === undefined ? free : Math.min(free, 1),
   }
@@ -116,10 +127,11 @@ export function wholeFirst(share: Share): boolean {
 }
 
 export function fill<T>(
-  candidates: readonly { item: T; memoryMb: number }[],
+  candidates: readonly { cpus: number; item: T; memoryMb: number }[],
   offered: Offer & { wholeLast?: boolean },
 ): T[] {
   const chosen: T[] = []
+  let cpus = offered.cpus?.free ?? 0
   let memoryMb = offered.memoryMb
   const whole = (candidate: { memoryMb: number }) => candidate.memoryMb >= offered.capacityMb
   const rest = candidates.filter((candidate) => !whole(candidate))
@@ -133,6 +145,9 @@ export function fill<T>(
     if (chosen.length >= offered.slots) break
     const needed = Math.min(candidate.memoryMb, offered.capacityMb)
     if (needed > memoryMb) continue
+    const threads = offered.cpus ? Math.min(candidate.cpus, offered.cpus.capacity) : 0
+    if (threads > cpus) continue
+    cpus -= threads
     memoryMb -= needed
     chosen.push(candidate.item)
   }

@@ -118,3 +118,30 @@ test('a runner says in one line that its slots are above two a thread, and nothi
     '48 slots and 72 of other runners on 48 threads: above two a thread; wall-clock limits will be hit sooner',
   )
 })
+
+test('the vCPUs rows may declare at once are one for each thread, or the bound that is named, less those of other runners, and never none', () => {
+  assert.equal(Cpus.cpusPerThread, 1)
+  assert.equal(Cpus.vcpus(48, { held: 0, perThread: Cpus.cpusPerThread }), 48)
+  assert.equal(Cpus.vcpus(36, { held: 0, perThread: 1 }), 36)
+  assert.equal(Cpus.vcpus(48, { held: 0, perThread: 2 }), 96)
+  assert.equal(Cpus.vcpus(5, { held: 0, perThread: 1.5 }), 7)
+  assert.equal(Cpus.vcpus(48, { held: 36, perThread: 1 }), 12, 'what a runner of 36 left')
+  assert.equal(Cpus.vcpus(48, { held: 48, perThread: 1 }), 1, 'one row at a time when none is left')
+})
+
+test('a runner says in one line that its vCPUs are above one a thread or are not counted', () => {
+  assert.equal(Cpus.overcommitting({ peers: 0, threads: 48, vcpus: 48 }), undefined)
+  assert.equal(Cpus.overcommitting({ peers: 12, threads: 48, vcpus: 36 }), undefined)
+  assert.equal(
+    Cpus.overcommitting({ peers: 0, threads: 48, vcpus: 96 }),
+    '96 declared vCPUs on 48 threads: above one a thread; wall-clock limits will be hit sooner',
+  )
+  assert.equal(
+    Cpus.overcommitting({ peers: 48, threads: 48, vcpus: 1 }),
+    '1 declared vCPUs and 48 of other runners on 48 threads: above one a thread; wall-clock limits will be hit sooner',
+  )
+  assert.equal(
+    Cpus.overcommitting({ peers: 0, threads: 48, vcpus: undefined }),
+    'the declared vCPUs of rows are not counted on 48 threads: wall-clock limits will be hit sooner',
+  )
+})

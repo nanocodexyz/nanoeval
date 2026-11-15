@@ -2145,6 +2145,9 @@ export class Run extends DurableObject<Env> {
       disks: config.sandbox.disks,
       ...(life ? { endsAt: life.endsAt } : {}),
       ...(config.sandbox.freeDiskMb === undefined ? {} : { freeDiskMb: config.sandbox.freeDiskMb }),
+      ...(config.sandbox.cpusPerThread === undefined
+        ? {}
+        : { cpusPerThread: config.sandbox.cpusPerThread }),
       leaseSec: config.limits.leaseSec,
       limits: {
         attachSec: config.limits.attachSec,
@@ -2938,11 +2941,33 @@ export class Run extends DurableObject<Env> {
     const meta = this.meta()!
     const config = this.config()
     const now = Date.now()
-    const idle = (unfit: boolean, takenMb = 0, taken = 0): Protocol.ClaimResponse => {
+    const idle = (
+      unfit: boolean,
+      taken: readonly Ledger.Attempt[] = [],
+    ): Protocol.ClaimResponse => {
+      const resources = taken.map((row) => this.task(row.task).resources)
+      const { cpus } = body.offer
       const offer = {
         ...body.offer,
-        memoryMb: Math.max(0, body.offer.memoryMb - takenMb),
-        slots: Math.max(0, body.offer.slots - taken),
+        ...(cpus
+          ? {
+              cpus: {
+                ...cpus,
+                free: Math.max(
+                  0,
+                  resources.reduce(
+                    (free, task) => free - Math.min(Math.ceil(task.cpus), cpus.capacity),
+                    cpus.free,
+                  ),
+                ),
+              },
+            }
+          : {}),
+        memoryMb: Math.max(
+          0,
+          resources.reduce((free, task) => free - task.memoryMb, body.offer.memoryMb),
+        ),
+        slots: Math.max(0, body.offer.slots - taken.length),
       }
       this.update('runners', runner, {
         report: JSON.stringify({ ...body.report, offer, unfit }),
@@ -2960,6 +2985,7 @@ export class Run extends DurableObject<Env> {
     const pace = this.feeding(now)
     const claimed = Ledger.claim(this.sql, {
       accepts: (row) => fits(row.task) && pace.feeds(row),
+      cpusOf: (task) => Math.ceil(this.task(task).resources.cpus),
       leaseMs: config.limits.leaseSec * 1000,
       memoryOf: (task) => this.task(task).resources.memoryMb,
       now,
@@ -2975,8 +3001,7 @@ export class Run extends DurableObject<Env> {
     const waiting = this.rows().some((row) => row.phase === 'unclaimed')
     const response = idle(
       !claimed.length && body.offer.slots > 0 && waiting && !pace.declined(),
-      claimed.reduce((sum, row) => sum + this.task(row.task).resources.memoryMb, 0),
-      claimed.length,
+      claimed,
     )
     const ahead = waiting ? this.ahead(runner) : []
     return {

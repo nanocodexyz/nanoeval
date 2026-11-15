@@ -19,6 +19,7 @@ export type Capabilities = {
   slot_forward: boolean
   slots?: number
   userns: boolean
+  vcpus?: number
 }
 
 export type Output = {
