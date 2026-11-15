@@ -49,12 +49,22 @@ test('a session gets the solution of its task, or nothing where the plan says f'
   assert.equal(outcome(upper!), 'p4 ' + upper!.solution)
   assert.equal(outcome(greeting!), 'f2 true')
   assert.equal(outcome(greeting!), 'p3 ' + greeting!.solution)
-  assert.deepEqual(
+  const after = (...results: string[]) =>
     model.answer({
-      messages: [...asks(todos!).messages, { content: [{ type: 'tool_result' }], role: 'user' }],
-    }),
-    { kind: 'done' },
-  )
+      messages: [
+        ...asks(todos!).messages,
+        ...results.flatMap((text) => [
+          { content: [{ name: 'exec', type: 'tool_use' }], role: 'assistant' },
+          { content: [{ content: [{ text, type: 'text' }], type: 'tool_result' }], role: 'user' },
+        ]),
+      ],
+    })
+  const yielded = 'Script running with cell ID 7\nWall time 120.0 seconds\nOutput:\n'
+  const completed = 'Script completed\nWall time 0.1 seconds\nOutput:\ndone'
+  assert.deepEqual(after(completed), { kind: 'done' })
+  assert.deepEqual(after(yielded), { cell: '7', kind: 'wait' })
+  assert.deepEqual(after(yielded, yielded), { cell: '7', kind: 'wait' })
+  assert.deepEqual(after(yielded, completed), { kind: 'done' })
   assert.throws(
     () => model.answer({ messages: [{ content: 'Do something else.', role: 'user' }] }),
     new Scripted.UnknownError(
@@ -80,7 +90,36 @@ test('a plan that names no task, or letters other than p and f, is refused', asy
   )
 })
 
-test('the endpoint answers a Messages request with a tool call, then ends the turn', async () => {
+test('the cell of a solution polls its process until it has exited', async () => {
+  const calls: unknown[] = []
+  const tools = {
+    exec_command: async (input: unknown) => {
+      calls.push(input)
+      return { output: '', session_id: 3, wall_time_seconds: 10 }
+    },
+    write_stdin: async (input: unknown) => {
+      calls.push(input)
+      return calls.length < 3
+        ? { output: '', session_id: 3, wall_time_seconds: 5 }
+        : { exit_code: 0, output: '', wall_time_seconds: 1 }
+    },
+  }
+  const said: string[] = []
+  const AsyncFunction = (async () => {}).constructor as new (
+    ...parameters: string[]
+  ) => (tools: unknown, text: (value: string) => void) => Promise<void>
+  await new AsyncFunction('tools', 'text', Scripted.code('make all'))(tools, (value) => {
+    said.push(value)
+  })
+  assert.deepEqual(calls, [
+    { cmd: 'make all' },
+    { chars: '', session_id: 3 },
+    { chars: '', session_id: 3 },
+  ])
+  assert.deepEqual(said, ['done'])
+})
+
+test('the endpoint answers a Messages request with a tool call, waits on it, then ends the turn', async () => {
   const all = await samples()
   const said: string[] = []
   const served = await Scripted.serve({
@@ -106,14 +145,26 @@ test('the endpoint answers a Messages request with a tool call, then ends the tu
     assert.equal(call[0]!['message'].model, 'scripted')
     assert.equal(call[1]!['content_block'].name, 'exec')
     assert.deepEqual(JSON.parse(call[2]!['delta'].partial_json), {
-      code:
-        'await tools.exec_command({ cmd: ' + JSON.stringify(all[0]!.solution) + ' }); text("done")',
+      code: Scripted.code(all[0]!.solution),
     })
     assert.equal(call[4]!['delta'].stop_reason, 'tool_use')
     const failed = await post('/v1/messages', asks(all[2]!))
     assert.deepEqual(JSON.parse(events(failed.text)[2]!['delta'].partial_json), {
-      code: 'await tools.exec_command({ cmd: "true" }); text("done")',
+      code: Scripted.code('true'),
     })
+    const yielded = await post('/v1/messages', {
+      messages: [
+        ...asks(all[0]!).messages,
+        {
+          content: [{ content: 'Script running with cell ID 12\nOutput:\n', type: 'tool_result' }],
+          role: 'user',
+        },
+      ],
+    })
+    const wait = events(yielded.text)
+    assert.equal(wait[1]!['content_block'].name, 'wait')
+    assert.deepEqual(JSON.parse(wait[2]!['delta'].partial_json), { cell_id: '12' })
+    assert.equal(wait[4]!['delta'].stop_reason, 'tool_use')
     const last = await post('/v1/messages', {
       messages: [...asks(all[0]!).messages, { content: [{ type: 'tool_result' }], role: 'user' }],
     })

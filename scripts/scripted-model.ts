@@ -10,6 +10,7 @@ export type Plan = Record<string, string>
 
 export type Answer =
   | { command: string; kind: 'call'; planned: 'f' | 'p'; session: number; task: string }
+  | { cell: string; kind: 'wait' }
   | { kind: 'done' }
 
 export class UnknownError extends Error {
@@ -20,7 +21,8 @@ export const usage = `scripted-model --task DIR... [--plan TASK=LETTERS]... [--p
 
 Serve a model that needs no credential, to try nanoeval or a change to it: an Anthropic
 Messages endpoint that answers the instruction of each task directory with one tool call
-that runs the task's own solution, and ends the turn after it. --plan names what the
+that runs the task's own solution until its process has exited, waits on that call while
+it runs, and ends the turn after it. --plan names what the
 sessions of a task get, in the order they arrive: p for the solution and f for a command
 that does nothing, so extract-todos=pfp fails the second attempt. Sessions past the plan
 get the solution. Point a Worker at it with ANTHROPIC_API_KEY=scripted and
@@ -63,12 +65,27 @@ export function plan(given: readonly string[], tasks: readonly Task[]): Plan {
   return plans
 }
 
+const running = /Script running with cell ID (\d+)/
+
+export function code(command: string): string {
+  return (
+    'let result = await tools.exec_command({ cmd: ' +
+    JSON.stringify(command) +
+    ' }); while (result.session_id !== undefined) result = await tools.write_stdin({ session_id: result.session_id, chars: "" }); text("done")'
+  )
+}
+
 export function create(options: { plan?: Plan; tasks: readonly Task[] }) {
   const sessions = new Map<string, number>()
   return {
     answer(body: { messages?: unknown }): Answer {
       const text = JSON.stringify(body.messages ?? [])
-      if (text.includes('"tool_result"')) return { kind: 'done' }
+      if (text.includes('"tool_result"')) {
+        const cell = running.exec(
+          JSON.stringify(Array.isArray(body.messages) ? body.messages.at(-1) : undefined),
+        )?.[1]
+        return cell === undefined ? { kind: 'done' } : { cell, kind: 'wait' }
+      }
       const task = options.tasks.find((candidate) =>
         text.includes(JSON.stringify(candidate.instruction).slice(1, -1)),
       )
@@ -103,19 +120,19 @@ export function stream(answer: Answer, input: { id: number; model: string | unde
       ? [
           { id: 'toolu_' + input.id, input: {}, name: 'exec', type: 'tool_use' },
           {
-            partial_json: JSON.stringify({
-              code:
-                'await tools.exec_command({ cmd: ' +
-                JSON.stringify(answer.command) +
-                ' }); text("done")',
-            }),
+            partial_json: JSON.stringify({ code: code(answer.command) }),
             type: 'input_json_delta',
           },
         ]
-      : [
-          { text: '', type: 'text' },
-          { text: 'The task is complete.', type: 'text_delta' },
-        ]
+      : answer.kind === 'wait'
+        ? [
+            { id: 'toolu_' + input.id, input: {}, name: 'wait', type: 'tool_use' },
+            { partial_json: JSON.stringify({ cell_id: answer.cell }), type: 'input_json_delta' },
+          ]
+        : [
+            { text: '', type: 'text' },
+            { text: 'The task is complete.', type: 'text_delta' },
+          ]
   return sse([
     [
       'message_start',
@@ -140,7 +157,7 @@ export function stream(answer: Answer, input: { id: number; model: string | unde
       'message_delta',
       {
         delta: {
-          stop_reason: answer.kind === 'call' ? 'tool_use' : 'end_turn',
+          stop_reason: answer.kind === 'done' ? 'end_turn' : 'tool_use',
           stop_sequence: null,
         },
         type: 'message_delta',

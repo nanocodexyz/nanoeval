@@ -6106,3 +6106,25 @@ One attempt for each row. The memory is the high-water mark at the first tool ca
 **Checked.** `npm test`, `npm run lint`, `npm run check:types` and `npm run dry-run` on the thread's hosted Hand (Node 24, 5 cores). New cases: `nanox=codex:gpt-6-luna:high` parses to orchestration `direct`, `nanoxc=codex-code-mode:gpt-6-luna:high` to none, `codex-direct` reads back as `codex`, `codex-code-mode` and `codex-code-mode+preflight` read back unchanged, and a configuration agent `{ "provider": "codex" }` keeps no orchestration.
 
 **Not verified.** A run of the new default with a model: the confirmation arm (Terminal-Bench 2.1, 89 tasks, one attempt, nanox beside codex-cli) is to be started on dev-georgios once this lands.
+
+## 2026-11-15: the scripted model waits until its solution has exited
+
+**What was wrong.** `scripts/scripted-model.ts` answered a task with one cell, `await tools.exec_command({ cmd })`, and ended the turn at the first tool result. `exec_command` returns after 10 s with the process still running ("Process running with session ID 1"), so a solution that takes longer was verified while it still ran. It showed on the first arms of the scripted model over tasks of Terminal-Bench 2.1, on krun slots of a machine with 48 hardware threads, at `ac039b7`, 68 tasks whose solutions are short, where the oracle passes 203 of the same 204 rows at 28 slots:
+
+| Run | Rows | Passed | Failed | Errored | Rows whose turn ended at the 10 s yield |
+| --- | --- | --- | --- | --- | --- |
+| one agent, 3 attempts, 28 slots | 204 | 153 | 39 | 12 | 43: 32 failed, 11 errored |
+| one agent, 3 attempts, 56 slots | 204 | 151 | 38 | 15 | 44: 32 failed, 12 errored |
+| four agents, 1 attempt, 56 slots | 272 | 192 | 53 | 27 | 66: 41 failed, 25 errored |
+
+The errored rows are verifiers that found the package lock held by the `apt-get` of the solution, `E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 771 (apt-get)`, and wrote reward 0 without their report. The other errored rows, 1, 3 and 2, were cancelled by hand. So an arm of the scripted model counted 5% to 9% of its rows as errors that no slot, runner or Worker had made, and it could not stand in for an arm of a model.
+
+**What changed.** The cell keeps the result of `exec_command` and, while that result names a session, asks `write_stdin` for it with no characters, which waits for the process for the time the hand gives a poll. The cell ends when the process has exited. A cell that runs longer than the Worker lets one run (`CELL_YIELD_MS`) comes back as "Script running with cell ID N": the model answers that with `wait` on the cell, as often as it comes back, and ends the turn after "Script completed". The script names no time.
+
+**Checked.** At `ace6b12` and with this change on it, on a machine with 5 cores that other work shared, by a user who is not root, on directory slots, `nanoeval revision --task ... --agent scripted=claude:claude-haiku-4-5 --attempts 2 --backend dir` against the script on a port of its own:
+
+- A task whose solution writes its file after 14 s, beside `tasks/write-greeting`: before, 2 of 4 rows passed and both rows of the slow task failed, verified 10 s into their solution. After, 4 of 4.
+- A task whose solution takes 135 s, past the 120 s of a cell: after, 2 of 2 passed, each session in 3 model calls: the cell, one `wait`, the end.
+- The five tests of `test/Scripted.test.ts` pass, among them the cell run against a process that exits at its third poll, and the endpoint answering a cell that still runs with `wait`. Against the script as it was, three of the five fail.
+
+**What did not run.** An arm of the scripted model on krun slots with this change. Two more limits of the script show in the same arms and stay: a solution longer than one argument of a process is refused by the hand, `Argument list too long (os error 7)` (`make-doom-for-mips`), and a solution that reads other files of its `solution/` directory does not find them, since the script sends `solve.sh` alone (`headless-terminal`). Those are 6, 6 and 8 of the rows above. One row of the first run and three of the third failed the timing test of `tune-mjcf`, which the oracle also fails once in three attempts at 28 and at 56 slots, and one row of `make-mips-interpreter` in the third failed its tests after its solution had exited.
