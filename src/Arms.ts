@@ -156,7 +156,8 @@ export function arms(
         arm.passMacro =
           [...tasks.values()].reduce((sum, task) => sum + task.passed / task.scored, 0) / tasks.size
       }
-      if (arm.costUsd !== null && arm.passed) arm.usdPerPass = arm.costUsd / arm.passed
+      if (arm.costUsd !== null && arm.passed && arm.priced === arm.metered)
+        arm.usdPerPass = arm.costUsd / arm.passed
       found.push(arm)
     }
   }
@@ -230,7 +231,8 @@ export function total(arm: Arm): string {
 
 export function perPass(arm: Arm): string {
   if (arm.costUsd === null) return arm.metered ? 'not known' : 'no model usage'
-  return arm.usdPerPass === null ? 'no pass' : usd(arm.usdPerPass)
+  if (arm.usdPerPass !== null) return usd(arm.usdPerPass)
+  return arm.passed ? 'not known' : 'no pass'
 }
 
 export function limited(arm: Arm): string {
@@ -285,7 +287,11 @@ export function line(arm: Arm): string {
       ? arm.metered
         ? 'cost not known'
         : 'no model usage'
-      : (arm.usdPerPass === null ? 'no pass' : usd(arm.usdPerPass) + ' a pass') +
+      : (arm.usdPerPass !== null
+          ? usd(arm.usdPerPass) + ' a pass'
+          : arm.passed
+            ? 'USD a pass not known'
+            : 'no pass') +
         ' (' +
         total(arm) +
         ')') +

@@ -418,6 +418,20 @@ export function parse(value: unknown): Config {
                 cachedUsd: amount(price?.cachedUsd, 'prices.' + model + '.cachedUsd'),
                 inputUsd: amount(price?.inputUsd, 'prices.' + model + '.inputUsd'),
                 outputUsd: amount(price?.outputUsd, 'prices.' + model + '.outputUsd'),
+                ...(price?.writeUsd === undefined
+                  ? {}
+                  : {
+                      writeUsd: {
+                        fiveMinutes: amount(
+                          price.writeUsd?.fiveMinutes,
+                          'prices.' + model + '.writeUsd.fiveMinutes',
+                        ),
+                        oneHour: amount(
+                          price.writeUsd?.oneHour,
+                          'prices.' + model + '.writeUsd.oneHour',
+                        ),
+                      },
+                    }),
               },
             ]),
           ),

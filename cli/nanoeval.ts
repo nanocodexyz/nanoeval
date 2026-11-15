@@ -166,7 +166,7 @@ const usage = `nanoeval <command>
             [--network private|host] [--template NAME]
             [--sandbox-timeout-sec N] [--sandbox-lease-sec 300] [--runtime | --runtime-blob SHA256]
             [--sandbox-budget-usd 0] [--model-budget-usd N] [--setup-sec 600] [--attach-sec 60]
-            [--model-price MODEL=INPUT,CACHED,OUTPUT]...
+            [--model-price MODEL=INPUT,CACHED,OUTPUT[,WRITE,WRITE_1H]]...
             [--model-requests-per-min [MODEL=]REQUESTS]... [--agent-max-sec N]
             [--verifier-max-sec N] [--no-deadline]
             [--lease-sec 60] [--claims 3] [--step-retries 3] [--poll-ms 250]
@@ -230,7 +230,9 @@ const usage = `nanoeval <command>
             key of a provider, the spend is what sessions estimate when their attempts end,
             and only the provider's web searches, at list price, count request by request.
             --model-price gives the list price of a model whose endpoint names no cost, in
-            USD for a million input tokens, cached input tokens and output tokens. A
+            USD for a million input tokens, cached input tokens and output tokens, and, with
+            two more amounts, for a million input tokens written to a cache for 5 minutes and
+            for 1 hour (Claude's cache writes; without them a written token is input). A
             response of an agent or a judge on that model that carries no cost is priced
             from its tokens when it ends: the price counts in the spend and against the
             budget as a reported cost does, and the attempt says its cost is by list.
@@ -485,7 +487,7 @@ const usage = `nanoeval <command>
             the unsound ones with their outcome, reason and report, and exits 4 when the
             solution of a sound task failed or errored, and 0 otherwise.
   arms      [--url URL --token T RUN...] [--results FILE]... [--with-reruns]
-            [--model-price MODEL=INPUT,CACHED,OUTPUT]... [--unsound FILE] [--json]
+            [--model-price MODEL=INPUT,CACHED,OUTPUT[,WRITE,WRITE_1H]]... [--unsound FILE] [--json]
             Print one line for each arm of a run, an agent of it: the rows that passed of
             the rows that ended, the pass rate of its scored attempts (micro) and the mean
             over its tasks of each task's pass rate (macro), an attempt that errored being
@@ -507,7 +509,8 @@ const usage = `nanoeval <command>
             --results reads a run from a file that holds what the Worker answers for
             /v1/runs/RUN/results, and needs no Worker. An attempt whose usage names no cost
             is priced from its tokens with --model-price, as run --model-price does when
-            the run is made, and the line says which costs are at list prices. An arm of a
+            the run is made, and the line says which costs are at list prices. While an
+            attempt that used a model has no cost, the arm's USD a pass is not known. An arm of a
             run made with --agent-max-sec says its agent time limit, and one made with
             --verifier-max-sec its verifier time limit and the rows whose verifier that
             limit ended, which are in neither class of errors.
@@ -563,7 +566,7 @@ const usage = `nanoeval <command>
             else from one of its own on the pinned package, and holds no evaluation up.
   loop      (--agent ID=HARNESS:MODEL[:THINKING]... | --oracle) [--subset NAME]... [--only TASK]...
             [--attempts 3] [--baseline RUN|NAME|previous|latest]... [--name NAME] [--slots N]
-            [--backend krun|ns|dir] [--model-price MODEL=INPUT,CACHED,OUTPUT]... [--lab DIR]
+            [--backend krun|ns|dir] [--model-price MODEL=INPUT,CACHED,OUTPUT[,WRITE,WRITE_1H]]... [--lab DIR]
             and the other options of revision
             Set several arms against each other and against a baseline in one command: one
             run of the lab holds every --agent on the same tasks and attempts, so the arms

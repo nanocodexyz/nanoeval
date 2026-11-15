@@ -1707,6 +1707,8 @@ export class Run extends DurableObject<Env> {
       if (!request['usage']) continue
       const usage = JSON.parse(request['usage'] as string) as Proxy.Usage
       if (!Proxy.generates(provider, request['path'] as string)) continue
+      if (usage.cacheWriteHourTokens)
+        total.cacheWriteHourTokens = (total.cacheWriteHourTokens ?? 0) + usage.cacheWriteHourTokens
       total.cacheWriteTokens += usage.cacheWriteTokens
       total.cachedTokens += usage.cachedTokens
       total.inputTokens += usage.inputTokens
