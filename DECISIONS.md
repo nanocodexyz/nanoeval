@@ -6294,3 +6294,50 @@ The rows of the 89 were compared with the rows of the import made one at a time 
 
 - A real route: the table is a simulation, and its other callers do not back off, which is what was seen of two installed agents on that route and not of every caller.
 - A provider that counts refused requests against its limit. For such a one a pause of 2 s is too eager, and a `Retry-After` is what tells the run.
+
+## 2026-11-15: two task lists for loops that compare arms, chosen from recorded attempts
+
+A full arm of Terminal-Bench 2.1 cannot end sooner than its longest row, 26 to 37 minutes, and six arms of 89 tasks at three attempts are 1,602 rows. A loop that compares several harnesses every hour needs fewer tasks, and which ones was so far a choice by hand: `smoke` and `quick` hold a few cheap tasks that the recorded arms pass almost always. `subsets.json` now also holds `hourly`, 30 tasks, and `ten-minute`, 12 of those 30, chosen by a rule from the attempts recorded so far. No code changed.
+
+**The records.** 914 scored attempts of the 89 tasks: 538 of nanocode sessions on claude-haiku-5-5 (a full arm with second and third attempts of the tasks that had not passed, two more full arms of one attempt, and smaller runs), 256 of nanocode sessions on gpt-6-luna (two full arms of one attempt on two builds, with retries), 88 of Claude Code on claude-haiku-5-5 (one arm and four rows), and 32 of fx, opencode and pi on four tasks with three models. An attempt that ended on its agent timeout or the output limit counts as failed; 87 that ended as errors of the environment, the verifier, a budget or a refused payment are left out. And 2,618 oracle attempts of 72 runs, 1,512 of them on one 48-thread Linux machine with KVM in one night, where two oracle arms of 89 tasks at three attempts ran on 28 slots.
+
+**The rule.**
+
+1. Leave out a task whose verdict is not the agent's: the 7 of `unsound.json`; 3 whose oracle failed on that machine while it was loaded (`tune-mjcf` 3 of 20 attempts, `portfolio-optimization` and `caffe-cifar-10` 1 of 6 each); and 7 whose solution or verifier fetches from a model hub, which answered the machine's address 429 after an hour of arms (`count-dataset-tokens`, `hf-model-inference`, `mteb-leaderboard`, `mteb-retrieve`, `reshard-c4-data`, `sam-cell-seg`, `torch-pipeline-parallelism`). 72 tasks are left.
+2. Bound a row. 540 rows in an hour on 36 slots are 15 rows a slot, a mean of 240 s. A task is taken only if its agent timeout is 1,800 s or less (12 of the 72 allow more) and no recorded attempt of a model took more than 900 s from claim to verdict (8 more did). 52 tasks are left. For `ten-minute` the bounds are 900 s and 300 s, among the tasks of `hourly`.
+3. Rate each task. Its difficulty is the mean of the two models' pass rates over every recorded attempt, each as (passes + 0.5) / (attempts + 1). Its information is p(1 - p) averaged over arms whose odds of passing are e^-2, e^-1, 1, e and e^2 times the recorded ones, so that a task the recorded models always pass still counts for a weaker arm. Its discrimination is the distance between the two models' rates, and its cost is the mean recorded row in minutes. Its value is information x (1 + discrimination) / cost.
+4. Keep the shape of the benchmark. Each of its 16 categories gets a share of the list in proportion to its tasks among the 89, by largest remainder, as far as it has tasks left; each of three bands of difficulty (below 0.25, 0.25 to 0.75, above 0.75) gets a share in proportion to the 72. The bands are filled in the order of their shares, the smallest first, each with its tasks of highest value while the category has room; what is left is filled by value within the categories.
+
+**The lists.** `hourly`: 9 tasks of software-engineering, 3 each of system-administration, scientific-computing and security, 2 each of debugging, file-operations, data-processing, mathematics and model-training, 1 each of machine-learning and personal-assistant; 9 easy, 16 middle, 5 hard, where the 72 have 19, 42 and 11. 29 of the 30 ask for one CPU and 27 for 2 GB; none asks for more than 2 CPUs and 8 GB. `ten-minute`: 3 easy, 7 middle, 2 hard.
+
+**What the records say on them.** First scored attempt of each task, pass rate in percent:
+
+| Arm | 89 tasks | 72 left by step 1 | `hourly` | `ten-minute` |
+| --- | --- | --- | --- | --- |
+| nanocode, claude-haiku-5-5, the arm with retries | 71.3 | 70.8 | 76.7 | 75.0 |
+| nanocode, gpt-6-luna, the later build | 39.8 | 38.6 | 43.3 | 50.0 |
+| nanocode, claude-haiku-5-5, an earlier arm | 71.8 | 73.2 | 83.3 | 75.0 |
+| Claude Code, claude-haiku-5-5, the same night | 76.2 | 76.8 | 83.3 | 91.7 |
+| nanocode, gpt-6-luna, the earlier build | 59.8 | 58.2 | 56.7 | 50.0 |
+| two models, one harness: row 1 minus row 2 | +31.5 | +32.3 | +33.3 | +25.0 |
+| two harnesses, one model: row 4 minus row 3 | +4.4 | +3.6 | 0.0 | +16.7 |
+| two builds of one harness: row 5 minus row 2 | +20.0 | +19.6 | +13.3 | 0.0 |
+
+The rank correlation of the two models' pass rates over tasks is 0.50 on the 87 tasks both have attempts of, 0.48 on the 72, 0.47 on `hourly` and 0.53 on `ten-minute`.
+
+**The error of a difference.** Two arms with no true difference, three attempts a task, the tasks held fixed, 4,000 draws: on `hourly` the standard error of the difference of their pass rates is 3.1 to 4.9 points for arms like the haiku one and 4.2 to 5.9 for arms like the luna one. The lower figure draws each attempt from the recorded attempts of the task, which have no spread where there is one attempt; the higher draws from the smoothed rate. On the 72 tasks it is 2.5 to 3.8, on `ten-minute` 6.1 to 9.6. So at three attempts `hourly` shows a difference of 6 to 12 points and nothing smaller. A difference of 10 points is seen at twice the standard error with 2 to 4 attempts a task, and four times in five with 3 to 9; a difference of 5 points needs 5 to 16 and 9 to 33. On `ten-minute` 10 points need 5 to 11 attempts and 9 to 22, and 5 points 18 to 43 and 36 to 87. If the tasks are drawn again as well, the error of the difference of the two models is 8 points on 30 tasks and 5 on 72.
+
+**The time.** By a slot model with no contention and the queue of the run, 6 arms x 3 attempts of `hourly`, 540 rows, on 36 slots: 26.9 minutes if every row takes the mean recorded row of its task, 58.1 if every row takes the longest recorded one, 40.1 and 85.3 on 24 slots. The longest recorded row is 693 s. If every agent runs out its timeout it is 267 minutes: no choice of tasks bounds that. `ten-minute`, 216 rows: 9.6 and 15.8 minutes on 36 slots, 7.5 and 12.5 on 48. The six arms make about 4,100 model requests at the median recorded count of a row, 1,800 for `ten-minute`.
+
+**The oracle.** In the two oracle arms of that night the 30 tasks passed 90 of 90 attempts each time, in 2,427 and 2,622 slot-seconds with a longest row of 131 and 148 s, which the slot model packs into 2.7 minutes on 36 slots; the 12 passed 36 of 36 twice. Of 604 oracle attempts of the 30 on that machine 603 passed: one of `pytorch-model-recovery` ran out of disk in a run with `--verifier-cache`. Over every recorded oracle attempt of the 30, 971 of 973 passed; the other is an attempt of `custom-memory-heap-crash` on an earlier commit.
+
+**Limits.**
+
+- The rule was fitted to the arms it is then read on. Chosen from one half of the records and read on the other, the difference of the two models came out as +23.3 points where all 89 tasks say +31.5, and as +23.3 where they say +15.0: the lists keep the sign and the rough size of a difference of that size, not its value. The two lists so chosen share 22 and 21 of their 30 tasks with `hourly`.
+- A pass rate on `hourly` is not a pass rate on the benchmark. The tasks that take long are the ones left out, so a strong arm stands 5 to 12 points higher on the list, and an arm that already passes 83 % of it has little room above.
+- The two lists did not tell the two harnesses on one model apart, and neither did the 89 tasks at one attempt: 4.4 points is under the error above.
+- Most tasks have one to four recorded attempts of an arm, by two models and, but for four tasks, two harnesses. No arm of an open model is in the records, and those arms take about twice the requests of a row.
+- `data-science`, 8 of the 89 tasks, is in neither list: 5 of its tasks fetch from a model hub, 1 is in `unsound.json` and the other 2 take 16 to 22 minutes a row. `largest-eigenval`, in both lists, has a verifier that measures time; its oracle passed 18 of 18 attempts on the loaded machine.
+- The bounds of step 2, the five arms of step 3 and the three bands of step 4 are choices. Three earlier forms of the rule are kept with their figures outside the repository: without the bound on recorded rows two tasks took 47 % of the slot-seconds, and with a fixed count for each band instead of a share the difference of the two models came out as +16.7.
+
+**Not verified.** No run was made through `--subset hourly` or `--subset ten-minute`: the names were resolved with `src/Subset.ts` against the 89 task names of an import, and every figure above is computed from recorded rows, none from a run of the lists. The oracle arm of `hourly` by itself was not run. The times are a model, not a measurement, and leave out the rate at which a model route answers.
