@@ -149,6 +149,7 @@ The table says what was run. "The first version" is the flow before the eval tab
 | `nanoeval compare RUN...`: the agents of one or more runs in one table | Implemented, tested. A row that a rerun in the table retried counts once, as its retry, and a run named twice counts once: unit tested, and read on a run of 24 rows with its two reruns on directory slots, see [DECISIONS.md](DECISIONS.md#2026-11-14-compare-counts-a-row-once-when-a-rerun-retried-it). Two runs that hold the same rows of one agent are two rows of the table: unit tested |
 | `nanoeval compare --baseline RUN... RUN...`: a run set against a baseline: the pass counts of every task that moved, pass@k over the tasks both sides rate, and a verdict that allows for noise | Implemented, unit tested against figures worked by hand, and read on directory slots with the scripted model: runs of 8 tasks and 3 attempts whose answers were planned, one against the other alone and with its two reruns, and two runs of one attempt. **Not run** with a real model, see [DECISIONS.md](DECISIONS.md#2026-11-14-a-comparison-says-what-the-numbers-support) |
 | `nanoeval scorecard --run RUN... --ref ARM --out DIR`: a matched comparison of the arms of one or more runs with intervals, as `scorecard.json` and one page `scorecard.html` | Implemented, tested: unit tests of the matched set, of cancelled rows, rows that no runner took (`unscheduled`, counted apart) and rows without a result left out, of the excluded tasks, of arms of several runs, of the same numbers from the same seed and of intervals worked by hand. Run once against a deployed Worker on a finished run of 5 arms, 30 tasks and 3 attempts: 450 rows, a matched set of 86 task#attempts of 29 tasks, and the same counts an arm as a count of the same rows by hand. No lane runs the command against a Worker |
+| `nanoeval scorecard --manifest FILE --site DIR`: a static site of several scorecards from one manifest, with the sha256 of every input, the commit and the command, and a cost basis for every arm: recorded by the run, list price from recorded tokens, or not recorded | Implemented, tested: unit tests on fixture result files of the manifest and what it refuses, of the four cost bases of a row, of the site written twice with the same bytes, of a table with a priced arm and an arm whose cost is not recorded, of a run read by its id through a stub, and of arms and files a section names that are not there. Run once on copies of the results of 7 runs of one eval, 8 sections: every figure of every arm equal to the scorecards made one at a time. No lane runs it, and it was not run against a Worker |
 | `--fail-on regression\|lost\|any-failure` on `run --wait`, `revision` and `compare`: an exit status that gates a script | Implemented, tested: a unit test of every status and its order, and each status read from a shell on directory slots with the scripted model, see [DECISIONS.md](DECISIONS.md#2026-11-14-an-exit-status-that-gates-a-script) |
 | Tasks chosen by name, by pattern, from a file and as a named subset (`--only`, `--only-file`, `--subset` with `subsets.json`) | Implemented, tested: unit tests, and each form run on directory slots with the scripted model, with every refusal read from a shell. The `smoke` subset of `terminal-bench-2.1` names four tasks of that eval and was **not run** through `--subset`, see [DECISIONS.md](DECISIONS.md#2026-11-14-tasks-are-chosen-by-name-by-pattern-and-by-subset) |
 | A baseline by rule (`--baseline latest`) and with its reruns (`--with-reruns`) | Implemented, tested: unit tests of what fits and of the search, and on directory slots with the scripted model the rule took the one run that fit among 16, with and without its two reruns, and refused where no run had the agent. **Not run** against a deployed Worker or in a lab, see [DECISIONS.md](DECISIONS.md#2026-11-14-a-baseline-is-found-by-rule) |
@@ -334,6 +335,54 @@ USD is the cost the Worker recorded for the row. A row without a model call cost
 Pass rate, difference, USD a pass and ratio carry a 95 % percentile interval from a task-clustered bootstrap. A draw resamples the tasks with replacement, the same tasks for every arm, then resamples the attempts of each drawn task within each arm. `--draws` is the number of draws, 2000 unless named, and `--seed` seeds the generator, 1 unless named. The same rows, seed and draws write the same two files, and the page ends with the command line, without the token, and the commit of nanoeval. A draw without a pass has no finite USD a pass: it sorts above every other draw, and a bound that falls on one reads `no bound`.
 
 `--exclude-tasks FILE` names a file with one task name a line, with or without the dataset before the slash. The rows of those tasks are in no count, and the page lists the names with the rows each left out and the SHA-256 of the file. `--run` may be repeated: arms of several runs are compared when the runs share one eval digest, and an arm id that several of them hold is named `ID@RUN`. A run of another eval digest, an empty matched set, an arm that `--ref` does not name and two rows of one arm for one task#attempt are errors.
+
+**A site of scorecards.** `--manifest FILE --site DIR` writes several scorecards as one static site, from files and without a Worker when every section names result files:
+
+```sh
+node cli/nanoeval.ts scorecard --manifest manifest.json --site DIR
+```
+
+```json
+{
+  "title": "A scorecard",
+  "prices": ["some-model=2,0.5,10"],
+  "seed": 1,
+  "draws": 2000,
+  "sections": [
+    {
+      "id": "sound",
+      "title": "Two arms, sound tasks",
+      "results": ["run-one.json", { "file": "run-two.json", "arms": ["late"] }],
+      "reference": "ref",
+      "labels": { "ref": "the reference" },
+      "exclude": { "file": "unsound.txt", "reason": "the solution of the task fails" }
+    }
+  ]
+}
+```
+
+| Key | What it holds |
+| --- | --- |
+| `title`, `date`, `note` | The heading of the site and two optional lines under it. The site holds no time of its own |
+| `seed`, `draws` | For every section that names none: 1 and 2000 unless given |
+| `prices` | List prices in the form of `--model-price`, in USD a million input, cached input and output tokens |
+| `sections[].id`, `title`, `note` | The name of the section's pages (`a` to `z`, `0` to `9` and `-`), its heading and an optional line |
+| `sections[].results` | Files that hold what the Worker answers for `/v1/runs/RUN/results`, relative to the manifest. `{"file": FILE, "arms": [ARM...]}` takes some arms of a file |
+| `sections[].runs` | Runs to read from the Worker of `--url` and `--token`, by id or name. `DIR/runs/ID.json` keeps what was read. `{"run": RUN, "arms": [ARM...]}` takes some arms |
+| `sections[].reference`, `labels` | The arm the others are set against, and a label to show beside an arm id |
+| `sections[].exclude` | `reason`, and either `tasks`, a list of task names, or `file`, one task name a line. The reason is required |
+| `sections[].seed`, `draws` | The seed and the draws of the section |
+
+`DIR` then holds `index.html` with one table a section, `ID.html` and `ID.json` for each section as the command without a manifest writes them, `manifest.json` as given, and `inputs.sha256` with the SHA-256 of the manifest and of every file read, in the form `sha256sum` prints. The pages name no outside asset. A row of the table holds the matched rows and tasks, passed, failed and errored, the pass rate, USD an attempt, USD a pass, the difference to the reference and the ratio of USD a pass, each with its interval, and the cost basis of the arm. `index.html` ends with the commit of nanoeval and the command line. The same files and commit write the same bytes.
+
+| Cost basis of a row | When |
+| --- | --- |
+| Recorded by the run | The usage of the row carries a cost |
+| List price from recorded tokens | The usage carries tokens and no cost, and `prices` names the model of the arm |
+| USD 0 | The row made no model call: its agent did not start, or it is the task solution |
+| Not recorded | Model calls without a cost and no list price, or an agent that ran and left no usage |
+
+An arm with one matched row of the last kind shows `not recorded` for USD an attempt, USD a pass and the ratio. With a manifest the options `--run`, `--ref`, `--exclude-tasks`, `--seed`, `--draws` and `--out` are refused: the manifest holds them.
 
 **Exit status.** `run --wait` exits 0 when no attempt errored and 1 when one did, or was cancelled. Attempts that failed do not change it: a failed attempt is a score. Without `--wait` the command exits 0 once the run is created. `status`, `compare` and `export` exit 0 whatever the run holds. A command that is refused prints one line and exits 1. An unknown command is named in one line with the commands that exist and exits 2, `nanoeval help COMMAND` or `COMMAND --help` prints the usage of one command, and `nanoeval` alone of all of them.
 

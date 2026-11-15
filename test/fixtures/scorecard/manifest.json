@@ -1,0 +1,37 @@
+{
+  "title": "toy scorecard",
+  "date": "2026-01-01",
+  "note": "Two toy runs of one eval.",
+  "prices": ["model-b=2,0.5,10"],
+  "seed": 7,
+  "draws": 200,
+  "sections": [
+    {
+      "id": "all",
+      "title": "All arms of one run",
+      "results": ["run-one.json"],
+      "reference": "ref",
+      "labels": {
+        "ref": "the <reference>"
+      }
+    },
+    {
+      "id": "sound",
+      "title": "Sound tasks, arms of two runs",
+      "note": "The arm late comes from the second run.",
+      "results": [
+        "run-one.json",
+        {
+          "file": "run-two.json",
+          "arms": ["late"]
+        }
+      ],
+      "reference": "ref",
+      "exclude": {
+        "file": "unsound.txt",
+        "reason": "the solution of the task fails"
+      },
+      "draws": 100
+    }
+  ]
+}

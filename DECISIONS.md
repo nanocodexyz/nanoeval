@@ -7680,3 +7680,24 @@ The four levers give at most $0.1191 a pass, 53 % of the fall, and leave nanocod
 **What it means for a run.** An agent that names `:persist_finish=on` is now heard. An agent that does not name it sends no field, and the option is off in nanocode unless a session asks for it.
 
 **Not verified.** When this was written: the jobs of `ci.yml` on this pin. A deployed Worker and a model. What else nanocode 92a50d3ff holds beyond 6fb4539ea: its commits were not read here, so that an arm without the option reads the prompts it read on `build-6de51c5` is not shown. The hand of nanocode 1a946f3ef under the brain of 92a50d3ff beyond what the lanes on directory slots run.
+
+## 2026-11-15: `nanoeval scorecard --manifest FILE --site DIR` writes a site of scorecards, and a cost that is not recorded is never 0
+
+**The problem.** `nanoeval scorecard` wrote one page for one matched comparison. A report of several comparisons was put together by a script outside the repository, from copies of results and from blocks written by hand, so that nobody else could make the page again. Two costs were also wrong at the edge. A row whose agent ran and left no usage, as an installed agent may, counted as USD 0. A row with tokens and no cost took the cost of its whole arm away, though the run of `--model-price` would have priced it.
+
+**What changed.** `src/Site.ts` reads a manifest and renders the index, on web types only. `cli/Scorecard.ts` gains `site`, which reads the files, hashes them and writes the site, and `cli/nanoeval.ts` routes `scorecard --manifest FILE --site DIR` to it before it asks for a Worker.
+
+- A manifest has `title`, optional `date`, `note`, `seed`, `draws` and `prices`, and `sections`. A section has `id`, `title`, `reference`, and `results` (files) or `runs` (runs of a Worker), with optional `labels`, `note`, `seed`, `draws` and `exclude`. An unknown key is refused by name, so a misspelt option is not silently dropped.
+- `exclude` needs a `reason`, and names its tasks in a list or in a file, one of the two. A list of tasks left out without a stated reason is how a result is bent, so the reason stands on the page beside the digest of the list.
+- An entry of `results` or `runs` may take some arms of a run. An arm the run does not hold is refused, and so is a label for an arm the section does not have.
+- A run read from a Worker is written to `DIR/runs/ID.json` and hashed there, so the site holds what its numbers came from.
+- The site is `index.html`, `ID.html` and `ID.json` a section (what `--out` writes for one card), `manifest.json` as given and `inputs.sha256`. It holds no clock time: a `date` is shown only when the manifest gives one. `index.html` ends with the commit and the command line.
+- `Scorecard.cost` now answers one of four bases for a row. Recorded: the usage carries a cost. List: the usage carries tokens and no cost, and the options name a price of the model, worked by `Price.usd` as a run does. None, USD 0: no model call, an agent that never started, or the task solution. Not recorded: model calls without a cost and no price, or an agent phase in the timing of the row with no usage. Before, the last case counted as USD 0.
+- An arm counts its matched rows by basis (`recorded`, `listed`, `uncosted`), the card holds the prices it was given, and a cost basis line stands under the table of arms on the page of a card and under every table of the index. The text that read `no cost` now reads `not recorded`.
+- `scorecard --run` takes no price: only a manifest gives one. One way in is enough until someone needs the other.
+
+**Why the rule for a row without usage.** The outcome of a row says nothing about its cost. The timing does: a row with an agent phase ran an agent, and an agent that is not the task solution calls a model. Counting it as 0 made an arm of an installed agent look free. A row that ended before its agent started keeps USD 0, which is true.
+
+**Checked.** `node --test test/Site.test.ts test/Scorecard.test.ts`: 20 of 20, 7 of them new, on fixture result files of two toy runs, 18 and 12 rows, under `test/fixtures/scorecard`. The site is written twice and every file compared. Run once by hand on copies of the results of 7 runs of one eval digest, 8 sections, 2 s: 663 fields of the 19 arms (counts, rates, costs and every interval) equal to the cards the command made one at a time at an earlier commit with the same seed and draws. No field differs but the counts of an arm that the earlier cards do not hold.
+
+**Not verified.** When this was written: the jobs of `ci.yml`. A manifest that names `runs` against a deployed Worker: only a stub answered. A list price on real results: the 7 runs record a cost on every matched row, so only the fixtures have a priced arm. No lane runs the command.
