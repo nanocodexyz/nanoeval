@@ -68,10 +68,53 @@ test('a runner may use the fewest of its affinity and the quotas of the control 
   )
 })
 
-test('a runner has one slot for each whole thread it may use, of those that are online, and never none', () => {
+test('a runner counts each whole thread it may use, of those that are online, and never none', () => {
   assert.equal(Cpus.threads(48, 28), 28)
   assert.equal(Cpus.threads(48, undefined), 48)
   assert.equal(Cpus.threads(4, 64), 4, 'an affinity list may name threads that are not online')
   assert.equal(Cpus.threads(48, 2.5), 2)
   assert.equal(Cpus.threads(48, 0.5), 1)
+})
+
+test('the threads a runner is pinned to are read from its status', async () => {
+  const pinned = { self: '0::/\n', status: status('12-14,40') }
+  assert.deepEqual(await Cpus.pinned(tree({}, pinned)), [12, 13, 14, 40])
+  assert.equal(await Cpus.pinned(tree({}, { self: '0::/\n', status: 'Name:\tnode\n' })), undefined)
+})
+
+test('a runner that is given no slot count has two slots for each thread it may use, less what other runners hold there, and never none', () => {
+  assert.equal(Cpus.slotsPerThread, 2)
+  assert.equal(Cpus.slots(36, 0), 72)
+  assert.equal(Cpus.slots(48, 0), 96)
+  assert.equal(Cpus.slots(48, 72), 24, 'a second runner has what the first left')
+  assert.equal(Cpus.slots(5, 2.5), 7, 'a part of a slot that another runner holds is not offered')
+  assert.equal(Cpus.slots(48, 96), 1)
+  assert.equal(Cpus.slots(48, 144), 1)
+})
+
+test('slots crowd their threads above two a thread', () => {
+  assert.equal(Cpus.crowded(96, 48), false)
+  assert.equal(Cpus.crowded(97, 48), true)
+  assert.equal(Cpus.crowded(143, 48), true)
+  assert.equal(Cpus.crowded(72, 36), false)
+  assert.equal(Cpus.crowded(1 + 96, 48), true, 'the one slot of a runner that found none left')
+})
+
+test('a runner says in one line that its slots are above two a thread, and nothing at or under that', () => {
+  assert.equal(
+    Cpus.crowding({ peers: 0, slots: 144, threads: 48 }),
+    '144 slots on 48 threads: above two a thread; wall-clock limits will be hit sooner',
+  )
+  assert.equal(Cpus.crowding({ peers: 0, slots: 96, threads: 48 }), undefined)
+  assert.equal(Cpus.crowding({ peers: 0, slots: 72, threads: 36 }), undefined)
+  assert.equal(Cpus.crowding({ peers: 24, slots: 72, threads: 48 }), undefined)
+  assert.equal(
+    Cpus.crowding({ peers: 96, slots: 1, threads: 48 }),
+    '1 slots and 96 of other runners on 48 threads: above two a thread; wall-clock limits will be hit sooner',
+    'the one slot of a runner whose default found none left',
+  )
+  assert.equal(
+    Cpus.crowding({ peers: 71.5, slots: 48, threads: 48 }),
+    '48 slots and 72 of other runners on 48 threads: above two a thread; wall-clock limits will be hit sooner',
+  )
 })

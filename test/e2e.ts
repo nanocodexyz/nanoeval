@@ -1955,13 +1955,13 @@ async function main(): Promise<void> {
     }
     const pinned = (Cpus.allowed(Fs.readFileSync(Cpus.host.status, 'utf8')) ?? []).slice(
       0,
-      directories.length - 1,
+      Math.floor((directories.length - 1) / Cpus.slotsPerThread),
     )
     if (derived)
       assert.equal(
         spawnSync('taskset', ['-pc', pinned.join(','), String(process.pid)]).status,
         0,
-        'the lane pins itself, and so the runner it starts, to one hardware thread fewer than it has rows',
+        'the lane pins itself, and so the runner it starts, to threads whose slots are fewer than its rows',
       )
     const importStarted = Date.now()
     const imported = await Import.cases(cases(), options)
@@ -4783,17 +4783,25 @@ async function main(): Promise<void> {
         directories.map(() => 'passed'),
       )
       const threads = Cpus.threads(pinned.length, await Cpus.limit(Cpus.host))
-      assert.ok(threads < total, 'the lane has more rows than its runner has threads')
+      const slots = Cpus.slots(threads, 0)
+      assert.ok(slots < total, 'the lane has more rows than its runner has slots')
       assert.equal(
         status['sandboxes'][0].capabilities.cpus,
         threads,
         'a runner reports the hardware threads it may use, by its affinity and the quota of its control groups',
       )
-      assert.equal(peak, threads, 'a runner that is given no slot count fills one slot a thread')
+      assert.equal(
+        status['sandboxes'][0].capabilities.slots,
+        slots,
+        'a runner reports its slots beside its threads',
+      )
+      assert.equal(peak, slots, 'a runner that is given no slot count fills two slots a thread')
       console.log(
         'threads: a runner that was given no slot count and may use ' +
           threads +
-          ' hardware threads ran at most ' +
+          ' hardware threads had ' +
+          slots +
+          ' slots and ran at most ' +
           peak +
           ' of ' +
           total +

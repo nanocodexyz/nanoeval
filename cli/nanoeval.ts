@@ -184,9 +184,10 @@ const usage = `nanoeval <command>
             Task runners claim the rows: the run starts one in each sandbox it opens
             (--sandboxes, with --slots attempts at once each), and nanoeval runner attaches
             more from any machine. --sandboxes 0 waits for attached runners only. Without
-            --slots, a runner of the local provider has one slot for each hardware thread
-            it may use, by its CPU affinity and the CPU quota of its control groups, and a
-            run on e2b or gateway takes 4. With
+            --slots, a runner of the local provider has two slots for each hardware thread
+            it may use, by its CPU affinity and the CPU quota of its control groups, less
+            the slots of other runners on its machine, and a run on e2b or gateway takes 4.
+            With
             --backend auto, the default, each runner boots environment disks in microVMs
             (krun) where its machine has KVM and in namespaces (ns) where it has root. A task
             that closes the network of its agent or verifier needs --backend krun. --task
@@ -346,10 +347,11 @@ const usage = `nanoeval <command>
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
             [--package-archive]
             Attach a task runner on this machine to a run: it claims rows up to its own
-            capacity (--slots, else the slot count of the run, else one slot for each
-            hardware thread it may use), fetches their blobs by digest, boots each
-            environment disk under a copy-on-write disk of its own, and reports to the run
-            until the run is finished.
+            capacity (--slots, else the slot count of the run, else two slots for each
+            hardware thread it may use, less those of the other runners that share its
+            cache; a count above two a thread is taken and said in its log), fetches
+            their blobs by digest, boots each environment disk under a copy-on-write disk
+            of its own, and reports to the run until the run is finished.
             With --memory-overcommit it counts the memory its machine uses instead of the
             memory its running rows declare: a row starts while the machine has free what
             the row declares beside what the runner leaves unused (the machine's memory

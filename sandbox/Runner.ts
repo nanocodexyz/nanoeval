@@ -25,6 +25,7 @@ import * as Cpus from './Cpus.ts'
 import * as Disks from './Disks.ts'
 import * as Host from './Host.ts'
 import * as Memory from './Memory.ts'
+import * as Peers from './Peers.ts'
 import * as Store from './Store.ts'
 
 export class GoneError extends Error {
@@ -60,7 +61,11 @@ export type Standing = {
   url: string
 }
 
-type Ready = { backend: Slot.Backend; capabilities: Sandbox.Capabilities }
+type Ready = {
+  backend: Slot.Backend
+  capabilities: Sandbox.Capabilities
+  threads: number[] | undefined
+}
 
 type Serving = { ahead(): string[]; rows(): Work[]; wake(): void; yield(): void }
 
@@ -281,6 +286,7 @@ async function setup(input: {
       hand: await placed,
       memory_mb: Math.min(probed.memory_mb, limited?.limitMb ?? probed.memory_mb),
     },
+    threads: await Cpus.pinned(Cpus.host),
   }
 }
 
@@ -548,6 +554,9 @@ async function serve(options: Options & { config: Config.Runner }, shared: Share
   try {
     await attend(options, { serving, shared })
   } finally {
+    await Fs.rm(Peers.file({ cache: options.cache, pid: process.pid, run: options.config.run }), {
+      force: true,
+    })
     shared.serving.delete(serving)
     exit(shared, serving)
     for (const other of shared.serving) other.wake()
@@ -1475,7 +1484,7 @@ async function attend(
         await call('/hello', { error: error.message, runner: config.runner }).catch(() => {})
       throw error
     }
-  const { backend, capabilities } = shared.ready
+  const { backend, capabilities, threads } = shared.ready
   if (archived && backend !== 'dir')
     (await Archive.open({ log: Path.join(home, 'archive.log') })).close()
   prefetch(config.ahead)
@@ -1516,11 +1525,24 @@ async function attend(
       { at: startedAt, name: 'runner.start' },
       { at: startedAt, ms: Date.now() - startedAt, name: 'runner.setup' },
     )
+  const peers = Peers.held(
+    threads,
+    await Peers.others({ alive: Peers.alive, cache, pid: process.pid }),
+  )
+  const capacity: Admission.Capacity = {
+    ...(config.freeDiskMb === undefined ? {} : { freeDiskMb: config.freeDiskMb }),
+    memoryMb: config.memoryMb ?? Math.floor(capabilities.memory_mb * hostUtilization),
+    slots: config.slots ?? Cpus.slots(capabilities.cpus, peers),
+  }
+  await Peers.write(Peers.file({ cache, pid: process.pid, run: config.run }), {
+    slots: capacity.slots,
+    ...(threads ? { threads } : {}),
+  })
   if (!config.ready) {
     const helloAt = Date.now()
     try {
       await call<Config.Runner>('/hello', {
-        capabilities,
+        capabilities: { ...capabilities, slots: capacity.slots },
         held: [...work.values()].map((item) => ({ claim: item.row.claim, id: item.row.id })),
         runner: config.runner,
         ...(reported.length ? { timeline: { marks: reported.splice(0), sentAt: Date.now() } } : {}),
@@ -1529,11 +1551,6 @@ async function attend(
       throw new RefusedError(error instanceof Error ? error.message : String(error))
     }
     reported.push({ at: helloAt, ms: Date.now() - helloAt, name: 'runner.hello.call' })
-  }
-  const capacity: Admission.Capacity = {
-    ...(config.freeDiskMb === undefined ? {} : { freeDiskMb: config.freeDiskMb }),
-    memoryMb: config.memoryMb ?? Math.floor(capabilities.memory_mb * hostUtilization),
-    slots: config.slots ?? capabilities.cpus,
   }
   if (config.memoryOvercommit && (await availableMb()) === undefined)
     throw new MachineError(
@@ -1547,7 +1564,17 @@ async function attend(
       ': ' +
       capacity.slots +
       ' slots' +
-      (config.slots === undefined ? ', one for each hardware thread this runner may use' : '') +
+      (config.slots === undefined
+        ? ', ' +
+          (peers > 0
+            ? 'what the ' +
+              Math.round(peers) +
+              ' slots of other runners on this machine leave of two'
+            : 'two') +
+          ' for each of the ' +
+          capabilities.cpus +
+          ' hardware threads this runner may use'
+        : '') +
       ', ' +
       capacity.memoryMb +
       ' MB' +
@@ -1565,6 +1592,8 @@ async function attend(
         ? ''
         : ', its sandbox ends at ' + new Date(config.endsAt).toISOString()),
   )
+  const crowding = Cpus.crowding({ peers, slots: capacity.slots, threads: capabilities.cpus })
+  if (crowding) log(crowding)
 
   const load = async (): Promise<Admission.Load> => {
     const rows = everything()

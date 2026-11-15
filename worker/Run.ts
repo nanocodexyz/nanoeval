@@ -2120,9 +2120,10 @@ export class Run extends DurableObject<Env> {
     const found = new Map<string, Protocol.Ahead>()
     const config = this.config()
     const capabilities = this.known(runner).capabilities
-    const slots =
-      config.sandbox.slots ??
-      (capabilities ? (JSON.parse(capabilities) as Sandbox.Capabilities).cpus : 0)
+    const reported: Pick<Sandbox.Capabilities, 'cpus' | 'slots'> = capabilities
+      ? (JSON.parse(capabilities) as Sandbox.Capabilities)
+      : { cpus: 0 }
+    const slots = config.sandbox.slots ?? reported.slots ?? reported.cpus
     for (const row of Ledger.queue(this.sql, (task) =>
       Config.rowSec(config.limits, this.task(task)),
     )) {

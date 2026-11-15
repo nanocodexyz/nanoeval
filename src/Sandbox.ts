@@ -17,6 +17,7 @@ export type Capabilities = {
   ns: boolean
   slot_env: boolean
   slot_forward: boolean
+  slots?: number
   userns: boolean
 }
 

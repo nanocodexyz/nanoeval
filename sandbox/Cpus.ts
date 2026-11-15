@@ -17,6 +17,10 @@ export function allowed(status: string): number[] | undefined {
   })
 }
 
+export async function pinned(options: limit.Options): Promise<number[] | undefined> {
+  return allowed((await read(options.status)) ?? '')
+}
+
 export function quota(max: string): number | undefined {
   const found = /^([0-9]+) ([0-9]+)$/.exec(max.trim())
   return found ? Number(found[1]) / Number(found[2]) : undefined
@@ -35,6 +39,32 @@ export async function limit(options: limit.Options): Promise<number | undefined>
 
 export declare namespace limit {
   type Options = Memory.limit.Options & { status: string }
+}
+
+export const slotsPerThread = 2
+
+export function crowded(slots: number, threads: number): boolean {
+  return slots > threads * slotsPerThread
+}
+
+export function crowding(input: crowding.Input): string | undefined {
+  if (!crowded(input.slots + input.peers, input.threads)) return undefined
+  return (
+    input.slots +
+    ' slots' +
+    (input.peers > 0 ? ' and ' + Math.round(input.peers) + ' of other runners' : '') +
+    ' on ' +
+    input.threads +
+    ' threads: above two a thread; wall-clock limits will be hit sooner'
+  )
+}
+
+export declare namespace crowding {
+  type Input = { peers: number; slots: number; threads: number }
+}
+
+export function slots(threads: number, held: number): number {
+  return Math.max(1, Math.floor(threads * slotsPerThread - held))
 }
 
 export function threads(online: number, limited: number | undefined): number {
