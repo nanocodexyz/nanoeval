@@ -534,6 +534,7 @@ cmd__fork() {
   for name in env offline solution.env verifier.cache verifier.env; do
     if [ -f "$dir/$name" ]; then cp "$dir/$name" "$to/$name"; fi
   done
+  if [ -d "$dir/separate" ]; then cp -R "$dir/separate" "$to/separate"; fi
   case $(cat "$dir/backend") in
     krun | ns)
       mapfile -t options < <(guest_options "$dir")
@@ -561,6 +562,65 @@ cmd__fork() {
 cmd_tools() {
   mkdir -p "$rt"
   if [ -c /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then setup_krun; else launcher_files; fi
+}
+
+boot() {
+  local dir=$1 slot=$2 backend=$3 cpus=$4 memory=$5 network=$6 storage=$7 base=$8
+  local options=() forward
+  [ -n "$base" ] || die "a $backend slot boots an environment disk and was given none"
+  side=machine
+  [ -x "$krun/nanoeval-krun" ] || die "the sandbox was not set up for the $backend backend"
+  if [ -n "${NANOEVAL_SLOT_ENV:-}" ] && [ ! -f "$NANOEVAL_SLOT_ENV" ]; then die "NANOEVAL_SLOT_ENV is not a file: $NANOEVAL_SLOT_ENV"; fi
+  exec 8>"$base.use"
+  flock -s 8
+  side=task
+  [ -f "$base.ext4" ] || die "the environment disk $base.ext4 is not in the cache"
+  local vcpus workdir
+  vcpus=$(awk -v cpus="$cpus" 'BEGIN { whole = int(cpus); print (whole < cpus ? whole + 1 : whole) }')
+  printf 'OMP_THREAD_LIMIT=%s\n' "$vcpus" >"$dir/cpus.env"
+  cat "$base.env" >"$dir/image.env"
+  cat "$base.user" >"$dir/user"
+  workdir=$(cat "$base.workdir")
+  printf '%s\n' "${workdir:-/}" >"$dir/workdir"
+  : >"$dir/vm.log"
+  if [ ! -f "$dir/forked" ]; then format "$dir/upper.ext4" "$storage"; fi
+  side=machine
+  if [ "$backend" = ns ]; then
+    mkdir -p "$dir/ctl/io"
+    chmod 700 "$dir/ctl"
+    ln -sfn ctl "$dir/net"
+    ln -sfn ctl/io "$dir/io"
+    ln -sfn ctl/vm.sock "$dir/vm.sock"
+    if [ "$network" = private ] && [ ! -f "$dir/relay.pid" ]; then relay "$dir" 8>&-; fi
+    namespace "$dir" "$slot" "$base" "$network" "$vcpus" "$memory" 8>&-
+  else
+    mkdir -p "$dir/io"
+    if [ "$network" = private ]; then
+      if [ ! -f "$dir/relay.pid" ]; then relay "$dir" 8>&-; fi
+      options+=(--passt "$(command -v passt)" --relay net/relay.sock)
+      if [ -s "$dir/offline" ]; then options+=(--gate net/open); fi
+      while IFS= read -r forward; do options+=(--forward "$forward"); done <"$dir/forwards"
+    fi
+    local scope=()
+    if [ -s "$home/scope" ]; then scope=(systemd-run --user --scope --quiet --collect --unit "nanoeval-slot-$(key "$dir")" -p "MemoryMax=$((memory + vmm_mib))M" -p MemorySwapMax=0 --); fi
+    (cd "$dir" && printf '1000\n' >/proc/self/oom_score_adj && exec "${scope[@]}" "$krun/nanoeval-krun" vm --boot "$krun/boot" --rt "$rt" --io io --socket vm.sock --cpus "$vcpus" --memory-mib "$memory" --lower "$base.ext4" --upper upper.ext4 "${options[@]}") >"$dir/vm.log" 2>&1 </dev/null 8>&- &
+    printf '%s\n' "$!" >"$dir/vm.pid"
+  fi
+  (cd "$dir" && exec tail --pid="$(cat "$dir/vm.pid")" -f /dev/null -s 0.01) >/dev/null 2>&1 </dev/null &
+  printf '%s\n' "$!" >"$dir/use.pid"
+  side=task
+  if ! vm "$dir" ready --log vm.log --pid "$(cat "$dir/vm.pid")" --socket vm.sock; then
+    cat "$dir/vm.log" >&2
+    exit 1
+  fi
+}
+
+halt() {
+  local dir=$1
+  stop_process "$dir" vm.pid
+  stop_process "$dir" use.pid
+  if [ -s "$dir/cgroup" ]; then empty "$(cat "$dir/cgroup")"; fi
+  rm -f "$dir/address" "$dir/cgroup" "$dir/ctl/vm.sock" "$dir/use.pid" "$dir/vm.pid" "$dir/vm.sock"
 }
 
 cmd__up() {
@@ -595,54 +655,9 @@ cmd__up() {
       printf '%s\n' "$dir/work" >"$dir/workdir"
       ;;
     krun | ns)
-      [ -n "$base" ] || die "a $backend slot boots an environment disk and was given none"
-      side=machine
-      [ -x "$krun/nanoeval-krun" ] || die "the sandbox was not set up for the $backend backend"
-      if [ -n "${NANOEVAL_SLOT_ENV:-}" ] && [ ! -f "$NANOEVAL_SLOT_ENV" ]; then die "NANOEVAL_SLOT_ENV is not a file: $NANOEVAL_SLOT_ENV"; fi
-      exec 8>"$base.use"
-      flock -s 8
-      side=task
-      [ -f "$base.ext4" ] || die "the environment disk $base.ext4 is not in the cache"
-      local vcpus workdir
-      vcpus=$(awk -v cpus="$cpus" 'BEGIN { whole = int(cpus); print (whole < cpus ? whole + 1 : whole) }')
       printf '%s\n' "$base" >"$dir/disk"
-      printf 'OMP_THREAD_LIMIT=%s\n' "$vcpus" >"$dir/cpus.env"
-      cat "$base.env" >"$dir/image.env"
-      cat "$base.user" >"$dir/user"
-      workdir=$(cat "$base.workdir")
-      printf '%s\n' "${workdir:-/}" >"$dir/workdir"
-      local options=() forward
-      : >"$dir/vm.log"
-      if [ ! -f "$dir/forked" ]; then format "$dir/upper.ext4" "$storage"; fi
-      side=machine
-      if [ "$backend" = ns ]; then
-        mkdir -p "$dir/ctl/io"
-        chmod 700 "$dir/ctl"
-        ln -sfn ctl "$dir/net"
-        ln -sfn ctl/io "$dir/io"
-        ln -sfn ctl/vm.sock "$dir/vm.sock"
-        if [ "$network" = private ]; then relay "$dir" 8>&-; fi
-        namespace "$dir" "$slot" "$base" "$network" "$vcpus" "$memory" 8>&-
-      else
-        mkdir -p "$dir/io"
-        if [ "$network" = private ]; then
-          relay "$dir" 8>&-
-          options+=(--passt "$(command -v passt)" --relay net/relay.sock)
-          if [ -s "$dir/offline" ]; then options+=(--gate net/open); fi
-          while IFS= read -r forward; do options+=(--forward "$forward"); done <"$dir/forwards"
-        fi
-        local scope=()
-        if [ -s "$home/scope" ]; then scope=(systemd-run --user --scope --quiet --collect --unit "nanoeval-slot-$(key "$dir")" -p "MemoryMax=$((memory + vmm_mib))M" -p MemorySwapMax=0 --); fi
-        (cd "$dir" && printf '1000\n' >/proc/self/oom_score_adj && exec "${scope[@]}" "$krun/nanoeval-krun" vm --boot "$krun/boot" --rt "$rt" --io io --socket vm.sock --cpus "$vcpus" --memory-mib "$memory" --lower "$base.ext4" --upper upper.ext4 "${options[@]}") >"$dir/vm.log" 2>&1 </dev/null 8>&- &
-        printf '%s\n' "$!" >"$dir/vm.pid"
-      fi
-      (cd "$dir" && exec tail --pid="$(cat "$dir/vm.pid")" -f /dev/null -s 0.01) >/dev/null 2>&1 </dev/null &
-      printf '%s\n' "$!" >"$dir/use.pid"
-      side=task
-      if ! vm "$dir" ready --log vm.log --pid "$(cat "$dir/vm.pid")" --socket vm.sock; then
-        cat "$dir/vm.log" >&2
-        exit 1
-      fi
+      boot "$dir" "$slot" "$backend" "$cpus" "$memory" "$network" "$storage" "$base"
+      local forward
       if [ -f "$dir/archive" ] && [ "$network" = private ] && ! grep -qx verifier "$dir/offline" 2>/dev/null; then
         read -r forward _ <"$dir/archive"
         vm "$dir" exec --socket vm.sock --forward "$forward" -- sh -c : || die "the slot cannot listen for the package archive of its verifier on $forward"
@@ -907,6 +922,84 @@ cmd__solve() {
   esac
 }
 
+carry() {
+  local from=$1 to=$2 exclude options=()
+  shift 2
+  for exclude; do options+=("--exclude=$exclude"); done
+  if [ -d "$from" ]; then
+    mkdir -p "$to"
+    tar -C "$from" "${options[@]}" -cf - . | tar -C "$to" -xf -
+  elif [ -e "$from" ]; then
+    mkdir -p "$(dirname "$to")"
+    cp "$from" "$to"
+  fi
+}
+
+separate() {
+  local slot=$1 seconds=$2
+  local dir=$home/slots/$slot code=0 each fields hook index=0 line options=() root source workdir
+  workdir=$(cat "$dir/workdir")
+  case $(cat "$dir/backend") in
+    dir)
+      root=$dir/separate.root
+      rm -rf "$root"
+      mkdir -p "$root"
+      while read -r -u 7 each hook; do
+        (cd "$workdir" && timeout -k 10 "$each" bash -c "$(cat "$dir/separate/$hook")") || true
+      done 7<"$dir/separate/hooks"
+      while IFS=$'\t' read -r -u 7 -a fields; do
+        carry "$workdir${fields[0]}" "$root${fields[0]}" "${fields[@]:1}"
+      done 7<"$dir/separate/artifacts"
+      chmod +x "$dir/task/tests/test.sh"
+      if [ -f "$dir/verifier.env" ]; then
+        while IFS= read -r line; do options+=("$line"); done <"$dir/verifier.env"
+      fi
+      (cd "$root" && env "${options[@]}" NANOEVAL_VERIFIER_LOGS="$dir/verifier" timeout -k 10 "$seconds" "$dir/task/tests/test.sh") || code=$?
+      ;;
+    krun | ns)
+      local args=() base cpus memory storage
+      mapfile -t args <"$dir/up.args"
+      read -r cpus memory storage base <"$dir/separate/up"
+      mapfile -t options < <(guest_options "$dir")
+      while read -r -u 7 each hook; do
+        (cd "$dir" && timeout -k 10 "$each" "$krun/nanoeval-krun" exec "${options[@]}" -- bash -c "$(cat "$dir/separate/$hook")") || true
+      done 7<"$dir/separate/hooks"
+      while IFS=$'\t' read -r -u 7 -a fields; do
+        index=$((index + 1))
+        rm -rf "$dir/io/artifact" "$dir/io/artifact.$index"
+        if vm "$dir" copy-out --socket vm.sock "${fields[0]}" artifact; then carry "$dir/io/artifact" "$dir/io/artifact.$index" "${fields[@]:1}"; fi
+        rm -rf "$dir/io/artifact"
+      done 7<"$dir/separate/artifacts"
+      halt "$dir"
+      rm -f "$dir/env" "$dir/forked" "$dir/upper.ext4"
+      boot "$dir" "$slot" "${args[1]}" "$cpus" "$memory" "${args[4]}" "$storage" "$base"
+      mapfile -t options < <(guest_options "$dir")
+      vm "$dir" exec "${options[@]}" --user 0 -- sh -c 'rm -rf /logs/verifier && mkdir -p /logs/verifier && chmod 777 /logs/verifier'
+      index=0
+      while IFS=$'\t' read -r -u 7 -a fields; do
+        index=$((index + 1))
+        source=${fields[0]}
+        if [ -d "$dir/io/artifact.$index" ]; then
+          vm "$dir" exec "${options[@]}" --user 0 -- sh -c 'rm -rf "$1" && mkdir -p "$1"' sh "$source"
+          vm "$dir" copy-in --socket vm.sock "artifact.$index" "$source"
+          vm "$dir" exec "${options[@]}" --user 0 -- chmod 777 "$source"
+        elif [ -e "$dir/io/artifact.$index" ]; then
+          vm "$dir" exec "${options[@]}" --user 0 -- sh -c 'mkdir -p "$1" && chmod 777 "$1"' sh "$(dirname "$source")"
+          vm "$dir" copy-in --socket vm.sock "artifact.$index" "$source"
+        fi
+        rm -rf "$dir/io/artifact.$index"
+      done 7<"$dir/separate/artifacts"
+      vm "$dir" exec "${options[@]}" --user 0 -- chmod +x /tests/test.sh
+      if [ -f "$dir/verifier.env" ]; then options+=(--env-file "$dir/verifier.env"); fi
+      (cd "$dir" && timeout -k 10 "$seconds" "$krun/nanoeval-krun" exec "${options[@]}" -- /tests/test.sh) || code=$?
+      rm -rf "$dir/io/verifier"
+      if vm "$dir" copy-out --socket vm.sock /logs/verifier verifier; then cp -R "$dir/io/verifier/." "$dir/verifier/"; fi
+      count_oom "$dir" "${options[@]}"
+      ;;
+  esac
+  return "$code"
+}
+
 cmd_verify() {
   local slot=$1 round=${3:-1}
   valid "$slot"
@@ -932,6 +1025,10 @@ cmd__verify() {
   local options=()
   rm -rf "$dir/verifier"
   mkdir -p "$dir/verifier"
+  if [ -d "$dir/separate" ]; then
+    separate "$slot" "$seconds" || code=$?
+    return "$code"
+  fi
   case $(cat "$dir/backend") in
     dir)
       if [ -f "$dir/verifier.env" ]; then

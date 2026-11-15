@@ -102,6 +102,7 @@ export function create(options: create.Options) {
     probe: () => call('probe'),
     reverify: (slot: string, timeoutSec: number) =>
       call('verify', slot, String(Math.ceil(timeoutSec)), '2'),
+    separateFile: (slot: string, name: string) => home + '/slots/' + slot + '/separate/' + name,
     setup: (input: { backend: Backend; network: Network; runtime: Runtime }) =>
       call('setup', input.runtime.release, input.runtime.sha256, input.backend, input.network),
     solve: (slot: string, timeoutSec: number) => call('solve', slot, String(Math.ceil(timeoutSec))),

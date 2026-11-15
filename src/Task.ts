@@ -33,8 +33,18 @@ export type Task = {
     env: Record<string, string>
     finalMessage?: true
     judge?: true
+    separate?: Separate
     timeoutSec: number
   }
+}
+
+export type Separate = {
+  artifacts: readonly { exclude: readonly string[]; source: string }[]
+  collect: readonly { command: string; timeoutSec: number }[]
+  cpus: number
+  dockerImage?: string
+  memoryMb: number
+  storageMb: number
 }
 
 export type Source = {
@@ -43,8 +53,9 @@ export type Source = {
 }
 
 export const report = 'ctrf.json'
-export const schemaVersion = '1.1'
-export const earlierVersion = '1.0'
+export const schemaVersions = ['1', '1.0', '1.1', '1.2', '1.3', '1.4', '2.0']
+export const artifactsPath = '/logs/artifacts'
+export const collectTimeoutSec = 60
 export const finalMessagePath = 'solution/final_message.txt'
 export const verifierInputs = 'tests/.nanoeval'
 
@@ -66,10 +77,13 @@ export async function load(source: Source, options: load.Options = {}): Promise<
   } catch (error) {
     throw new InvalidError('task.toml is not valid TOML: ' + (error as Error).message)
   }
-  const earlier = raw['schema_version'] === undefined && raw['version'] === earlierVersion
-  if (raw['schema_version'] !== schemaVersion && !earlier)
+  const version = raw['schema_version'] ?? raw['version']
+  if (version !== undefined && !schemaVersions.includes(version as string))
     throw new UnsupportedError(
-      'task schema_version must be ' + schemaVersion + ', not ' + String(raw['schema_version']),
+      'task schema_version must be one of ' +
+        schemaVersions.join(', ') +
+        ', not ' +
+        String(version),
     )
 
   const task = table(raw, 'task')
@@ -84,14 +98,21 @@ export async function load(source: Source, options: load.Options = {}): Promise<
   if (compose.some((path) => path in source.files))
     throw new UnsupportedError('tasks with a Compose file are not supported')
   if (number(environment, 'gpus', 0) > 0) throw new UnsupportedError('GPU tasks are not supported')
-  if (
-    !['same', 'shared'].includes((verifier['environment_mode'] ?? 'shared') as string) ||
-    verifier['environment'] !== undefined
-  )
-    throw new UnsupportedError('a verifier in an environment of its own is not supported')
+  const own = verifier['environment'] === undefined ? undefined : table(verifier, 'environment')
+  const mode = verifier['environment_mode'] ?? (own ? 'separate' : 'shared')
+  if (!['same', 'separate', 'shared'].includes(mode as string))
+    throw new InvalidError('verifier.environment_mode must be shared or separate')
+  if (mode !== 'separate' && own)
+    throw new InvalidError('a shared verifier has no [verifier.environment]')
+  const separate =
+    mode === 'separate'
+      ? separateVerifier(source, { environment, finalMessage, judge, own: own ?? environment, raw })
+      : undefined
   const baseline = internet(environment, 'environment') ?? environment['allow_internet'] !== false
   const agentInternet = internet(agent, 'agent') ?? baseline
-  const verifierInternet = internet(verifier, 'verifier') ?? baseline
+  const verifierInternet =
+    internet(verifier, 'verifier') ??
+    (own ? (internet(own, 'verifier.environment') ?? own['allow_internet'] !== false) : baseline)
   const servers = environment['mcp_servers']
   if (servers !== undefined && !(Array.isArray(servers) && servers.length === 0))
     throw new UnsupportedError('tasks with mcp_servers are not supported')
@@ -141,9 +162,10 @@ export async function load(source: Source, options: load.Options = {}): Promise<
     verifier: {
       ...(verifierInternet === agentInternet ? {} : { allowInternet: verifierInternet }),
       ...(Bytes.toText(source.files['tests/test.sh']).includes(report) ? { ctrf: true } : {}),
-      env: strings(verifier, 'env'),
+      env: { ...(own ? strings(own, 'env') : {}), ...strings(verifier, 'env') },
       ...(finalMessage ? { finalMessage } : {}),
       ...(judge ? { judge } : {}),
+      ...(separate ? { separate } : {}),
       timeoutSec: positive(verifier, 'timeout_sec'),
     },
   }
@@ -206,6 +228,104 @@ export async function checksum(files: Record<string, Uint8Array>): Promise<strin
   const lines: string[] = []
   for (const path of packaged) lines.push(path + '\0' + (await Bytes.sha256(files[path]!)) + '\n')
   return Bytes.sha256(Bytes.fromText(lines.join('')))
+}
+
+function separateVerifier(
+  source: Source,
+  options: {
+    environment: Record<string, unknown>
+    finalMessage: true | undefined
+    judge: true | undefined
+    own: Record<string, unknown>
+    raw: Record<string, unknown>
+  },
+): Separate {
+  const { environment, own, raw } = options
+  const verifier = raw['verifier'] as Record<string, unknown>
+  if (options.finalMessage || options.judge)
+    throw new UnsupportedError(
+      'a verifier in an environment of its own takes no final message and no judge',
+    )
+  if (verifier['user'] !== undefined) throw new UnsupportedError('verifier.user is not supported')
+  if (compose.some((path) => path.replace('environment/', 'tests/') in source.files))
+    throw new UnsupportedError('tasks with a Compose file are not supported')
+  if (number(own, 'gpus', 0) > 0) throw new UnsupportedError('GPU tasks are not supported')
+  const image = own['docker_image']
+  if (image !== undefined && (typeof image !== 'string' || !image))
+    throw new InvalidError('verifier.environment.docker_image must be a nonempty string')
+  if (!source.files['tests/Dockerfile'])
+    throw new (image === undefined ? InvalidError : UnsupportedError)(
+      image === undefined
+        ? 'the verifier has neither an image nor tests/Dockerfile'
+        : 'a verifier image without tests/Dockerfile is not supported',
+    )
+  const resource = (key: string) => positive(own[key] === undefined ? environment : own, key)
+  const cpus = resource('cpus')
+  const memoryMb = resource('memory_mb')
+  if (cpus > positive(environment, 'cpus') || memoryMb > positive(environment, 'memory_mb'))
+    throw new UnsupportedError(
+      'a verifier with more cpus or memory than the environment of its task is not supported',
+    )
+  const artifacts = [{ exclude: [] as string[], source: artifactsPath }]
+  for (const entry of list(raw['artifacts'], 'artifacts')) {
+    const artifact = typeof entry === 'string' ? { source: entry } : (entry as Artifact)
+    if (typeof artifact !== 'object' || artifact === null || typeof artifact.source !== 'string')
+      throw new InvalidError('an artifact is a path or a table with a source')
+    const exclude = list(artifact.exclude, 'artifacts.exclude')
+    if (![artifact.source, ...exclude].every((text) => typeof text === 'string' && plain(text)))
+      throw new InvalidError('an artifact source and its excludes are single-line strings')
+    if (artifact.source.split('/').includes('..'))
+      throw new InvalidError('an artifact source has no .. segment')
+    if (!['main', undefined].includes(artifact.service))
+      throw new UnsupportedError(
+        'an artifact of the service ' +
+          String(artifact.service) +
+          ' needs Compose, which is not supported',
+      )
+    if (!artifact.source.startsWith('/'))
+      throw new UnsupportedError('an artifact source that is not an absolute path is not supported')
+    const path = artifact.source.replace(/\/+$/, '') || '/'
+    if (path === artifactsPath) continue
+    artifacts.push({ exclude: exclude as string[], source: path })
+  }
+  const collect = list(verifier['collect'], 'verifier.collect').map((entry) => {
+    const hook = entry as Record<string, unknown>
+    if (typeof hook !== 'object' || hook === null || typeof hook['command'] !== 'string')
+      throw new InvalidError('a verifier.collect hook has a command')
+    if (!['main', undefined].includes(hook['service'] as string))
+      throw new UnsupportedError(
+        'a collect hook of the service ' +
+          String(hook['service']) +
+          ' needs Compose, which is not supported',
+      )
+    if (hook['user'] !== undefined)
+      throw new UnsupportedError('a collect hook with a user is not supported')
+    return {
+      command: hook['command'],
+      timeoutSec:
+        hook['timeout_sec'] === undefined ? collectTimeoutSec : positive(hook, 'timeout_sec'),
+    }
+  })
+  return {
+    artifacts,
+    collect,
+    cpus,
+    ...(image === undefined ? {} : { dockerImage: image }),
+    memoryMb,
+    storageMb: resource('storage_mb'),
+  }
+}
+
+type Artifact = { exclude?: unknown; service?: string; source: string }
+
+function plain(text: string): boolean {
+  return text !== '' && !/[\t\r\n]/.test(text)
+}
+
+function list(value: unknown, key: string): unknown[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) throw new InvalidError(key + ' must be a list')
+  return value
 }
 
 function flag(table: Record<string, unknown>, key: string): true | undefined {

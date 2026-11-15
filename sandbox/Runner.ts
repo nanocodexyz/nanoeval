@@ -968,7 +968,25 @@ async function attend(
     for (const [name, values] of variables)
       if (Object.keys(values).length)
         await Fs.writeFile(slots.envFile(item.row.slot, name), Slot.envFile(values))
-    if (config.verifierCache && task.environment.kind === 'disk')
+    const separate = task.verifier.separate
+    if (separate) {
+      await Fs.mkdir(slots.separateFile(item.row.slot, ''), { recursive: true })
+      await Fs.writeFile(
+        slots.separateFile(item.row.slot, 'artifacts'),
+        separate.artifacts
+          .map((artifact) => [artifact.source, ...artifact.exclude].join('\t') + '\n')
+          .join(''),
+      )
+      await Fs.writeFile(
+        slots.separateFile(item.row.slot, 'hooks'),
+        separate.collect
+          .map((hook, index) => Math.ceil(hook.timeoutSec) + ' hook.' + index + '\n')
+          .join(''),
+      )
+      for (const [index, hook] of separate.collect.entries())
+        await Fs.writeFile(slots.separateFile(item.row.slot, 'hook.' + index), hook.command)
+    }
+    if (config.verifierCache && task.environment.kind === 'disk' && !separate)
       await Fs.writeFile(
         slots.verifierCacheFile(item.row.slot),
         (await Eval.verifierCache(task, await hostPolicy)) +
@@ -1150,6 +1168,17 @@ async function attend(
 
   const startVerifier = async (item: Work, solve?: { code: number }) => {
     const task = item.row.task
+    const separate = task.verifier.separate
+    if (separate?.environment)
+      await Fs.writeFile(
+        slots.separateFile(item.row.slot, 'up'),
+        [
+          separate.resources.cpus,
+          Math.min(separate.resources.memoryMb, item.memoryMb ?? separate.resources.memoryMb),
+          separate.resources.storageMb,
+          await timed(item, 'attempt.disk', () => ensureDisk(separate.environment!, item.marks)),
+        ].join(' ') + '\n',
+      )
     await rowCall(item, 'verify', solve ? { solve } : {})
     if (task.verifier.finalMessage) await verifierInput(item, 'final_message.txt', item.message)
     await packages(item)

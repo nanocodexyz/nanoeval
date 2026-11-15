@@ -1,0 +1,31 @@
+schema_version = "2.0"
+
+artifacts = ["/greeting.txt", { source = "/notes", exclude = ["*.tmp"] }]
+
+[task]
+name = "fixtures/separate-verifier"
+description = "A fixture whose verifier runs in an environment of its own."
+
+[agent]
+timeout_sec = 60.0
+
+[verifier]
+timeout_sec = 30.0
+
+[verifier.env]
+EXPECTED = "hello from nanoeval"
+
+[verifier.environment]
+cpus = 1
+memory_mb = 256
+storage_mb = 128
+
+[[verifier.collect]]
+command = "mkdir -p notes && cp greeting.txt notes/copy.txt && touch notes/skip.tmp"
+
+[environment]
+cpus = 1
+memory_mb = 256
+storage_mb = 128
+gpus = 0
+allow_internet = true

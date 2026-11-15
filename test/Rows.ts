@@ -61,6 +61,38 @@ export function row(task: Task.Task, kind: 'dir' | 'disk' = 'disk'): Eval.Task {
       env: task.verifier.env,
       ...(task.verifier.finalMessage ? { finalMessage: true as const } : {}),
       ...(task.verifier.judge ? { judge: true as const } : {}),
+      ...(task.verifier.separate
+        ? {
+            separate: {
+              artifacts: task.verifier.separate.artifacts,
+              collect: task.verifier.separate.collect,
+              ...(kind === 'dir'
+                ? {}
+                : {
+                    environment: {
+                      disk: blob('f'),
+                      format: 'nkrdisk1',
+                      kind: 'disk' as const,
+                      meta: {
+                        architecture: 'amd64',
+                        cmd: [],
+                        digest: 'sha256:' + blob('b').digest,
+                        entrypoint: [],
+                        env: ['PATH=/usr/bin:/bin'],
+                        user: '',
+                        workdir: '/tests',
+                      },
+                      source: task.verifier.separate.dockerImage ?? 'dockerfile:fixture',
+                    },
+                  }),
+              resources: {
+                cpus: task.verifier.separate.cpus,
+                memoryMb: task.verifier.separate.memoryMb,
+                storageMb: task.verifier.separate.storageMb,
+              },
+            },
+          }
+        : {}),
       timeoutSec: task.verifier.timeoutSec,
     },
   }

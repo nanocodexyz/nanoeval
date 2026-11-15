@@ -7729,3 +7729,29 @@ Each was run once. The verifier of both `relayed` lanes printed `ok` for `intern
 On the same machine, one run against a deployed Worker at an `https://` address, with no proxy: 21 tasks that close the network of their agent and their verifier, each with its solution, one attempt, a runner of this tree with `--backend krun --slots 4`. 21 of 21 passed, 0 errors, 13 s from the first claim to the last verdict with disks that an earlier run had cached.
 
 **Not verified.** The two steps added to the `e2e-krun` job of `ci.yml` on a hosted runner. A session over `wss://` through the relay for the length of an attempt with a model: the sessions of the run above lasted seconds. An installed agent against a deployed Worker, whose model requests go through the relay over `https://`. A Worker behind a proxy that needs HTTP/2. ns slots, where a closed agent is refused.
+
+## 2026-11-15: a verifier in an environment of its own
+
+**Problem.** Every task of Terminal-Bench 4.1.0 declares `[verifier.environment]` and a task schema version above 1.1, and `Task.load` refused both. Harbor 0.23.1 runs such a verifier in a second container, built from `tests/Dockerfile`, after the container of the agent stopped. The two share no file system. Only the artifacts of the task move from one to the other.
+
+**Behavior.** `Task.load` reads schema versions `1`, `1.0`, `1.1`, `1.2`, `1.3`, `1.4` and `2.0`, and a manifest without one. A verifier is separate when `environment_mode = "separate"` or when `[verifier.environment]` is present. A shared verifier with that table is `Task.InvalidError`. The row holds `verifier.separate`: the artifacts, the collect hooks, the resources and, in the disk format, the converted disk of the verifier image. `Eval.blobs` names that disk, so a store, the Worker and a runner hold and check it as they do the disk of the task. A run sends it ahead to a runner with the disk of the task.
+
+**What an import converts.** The disk format converts a second image for each such task: the context is `tests/` and the Dockerfile is `tests/Dockerfile`. When `[verifier.environment]` names `docker_image`, that image is converted, and `tests/Dockerfile` must still be present, because Harbor copies the tests into an image only when no Dockerfile does. The cache key is the one of an environment, so two tasks with one verifier image convert it once. The resources of the verifier come from `[verifier.environment]`, and a field it does not name comes from `[environment]`. Its network is `verifier.network_mode`, then that of `[verifier.environment]`, then its `allow_internet`. Its variables are those of `[verifier.environment.env]` under those of `[verifier.env]`.
+
+**What a slot does.** `slot.sh verify` of a slot with a `separate` directory has these steps, in the order of Harbor:
+
+1. It runs each `[[verifier.collect]]` command in the environment of the agent, with `bash -c`, in the working directory, under its own time limit. A failed or late hook stops nothing.
+2. It copies each artifact out of the environment of the agent. `/logs/artifacts` is always the first. An artifact that is absent is skipped. The `exclude` patterns of a directory are those of `tar --exclude`.
+3. It stops the guest of the agent and boots the disk of the verifier with the resources of the verifier. The network relay of the slot stays.
+4. It empties `/logs/verifier`, then writes each artifact at the path it had. A directory replaces what the image held at that path.
+5. It runs `/tests/test.sh` of the image in the working directory of the image, as the user of the image. The tests of the row are not copied in. The reward is read as before.
+
+A directory slot has no image. Its verifier root is an empty directory, an artifact path is read under the working directory of the agent, and the tests run from the tests of the row. The lane on directory slots therefore proves the order, the artifacts, the excludes, the hooks and that a file outside the artifacts does not reach the verifier. It does not prove the boot of a second disk.
+
+**Refused at import, by name.** `Task.UnsupportedError`: a Compose file under `environment/` or `tests/`, a GPU in either environment, an artifact or a collect hook of a service other than `main` (it needs Compose), an artifact source that is not absolute, `verifier.user`, a hook with a user, a final message or a judge beside a separate verifier, a verifier image without `tests/Dockerfile`, and a verifier with more CPUs or memory than its task: a slot is admitted for the resources of the task. The verifier cache is not used for such a task.
+
+**Not carried.** The `destination` of an artifact names a place in the trial directory of Harbor and is not read. `reward.json` is still not read: every task of Terminal-Bench 4.1.0 that was read writes `reward.txt`.
+
+**Checked.** On a machine with 5 cores and no KVM, in the tree of this commit before it was made: `npm run lint`, `npm run check:types`, `npm test` (547 tests, 542 passed, 5 skipped, none failed), `NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=failures npm run e2e` and `npm run dry-run`. In that lane the row of `fixtures/separate-verifier`, a task of schema 2.0 with a collect hook, two artifacts and an exclude, passed: its verifier saw the artifacts, did not see the excluded file and did not see a file of the agent outside the artifacts.
+
+**Not verified.** When this was written: a slot on krun or ns, so the stop of the guest of the agent, the boot of the verifier disk and the copy of artifacts between two guests ran nowhere. A conversion of a real `tests/Dockerfile`, and an import of Terminal-Bench 4.1.0. A closed verifier network with a separate verifier. The plain end-to-end lane and the other scenarios on this tree, and the jobs of `ci.yml`.

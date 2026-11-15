@@ -139,3 +139,34 @@ test('an eval reference is a name with an optional digest', () => {
   assert.throws(() => Eval.reference('local@0123'), Eval.InvalidError)
   assert.equal(Eval.canonical({ b: 1, a: [2, { d: 3, c: undefined }] }), '{"a":[2,{"d":3}],"b":1}')
 })
+
+test('a task with a verifier in an environment of its own keeps the disk of that environment among its blobs', async () => {
+  const loaded = await Task.load({
+    files: {
+      ...source('own', '[verifier.environment]\ncpus = 1\n').files,
+      'tests/Dockerfile': Bytes.fromText('FROM alpine:3.21\nCOPY . /tests/\n'),
+    },
+  })
+  const row = Rows.row(loaded)
+  const separate = row.verifier.separate!
+  assert.deepEqual(Eval.parse(structuredClone(row)), row)
+  assert.ok(Eval.blobs(row, { solution: true }).includes(separate.environment!.disk))
+  assert.notEqual(await Eval.taskDigest(row), await Eval.taskDigest(Rows.row(loaded, 'dir')))
+  assert.deepEqual(Eval.parse(Rows.row(loaded, 'dir')).verifier.separate, {
+    artifacts: [{ exclude: [], source: Task.artifactsPath }],
+    collect: [],
+    resources: row.resources,
+  })
+
+  const refused: Eval.Separate[] = [
+    { ...separate, environment: undefined as never },
+    { ...separate, resources: { ...separate.resources, memoryMb: row.resources.memoryMb + 1 } },
+    { ...separate, artifacts: [{ exclude: [], source: 'relative' }] },
+    { ...separate, collect: [{ command: 'true', timeoutSec: 0 }] },
+  ]
+  for (const changed of refused)
+    assert.throws(
+      () => Eval.parse({ ...row, verifier: { ...row.verifier, separate: changed } }),
+      Eval.InvalidError,
+    )
+})
