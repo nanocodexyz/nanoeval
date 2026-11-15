@@ -176,7 +176,8 @@ const tables = [
     tools_usd REAL,
     unpriced INTEGER,
     wait INTEGER,
-    listed INTEGER
+    listed INTEGER,
+    again INTEGER
   )`,
   `CREATE TABLE IF NOT EXISTS model_flights (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -265,6 +266,7 @@ export class Run extends DurableObject<Env> {
       this.sql.run('ALTER TABLE sandboxes ADD COLUMN member INTEGER')
     const added: [table: string, column: string, type: string][] = [
       ['claims', 'error', 'TEXT'],
+      ['model_requests', 'again', 'INTEGER'],
       ['model_requests', 'cost', 'REAL'],
       ['model_requests', 'listed', 'INTEGER'],
       ['model_requests', 'refusal', 'TEXT'],
@@ -886,7 +888,7 @@ export class Run extends DurableObject<Env> {
     if (outcome.flight !== undefined)
       this.sql.run('DELETE FROM model_flights WHERE id = ?', outcome.flight)
     this.sql.run(
-      'INSERT INTO model_requests (attempt, claim, at, path, ms, status, usage, cost, refusal, searches, tools_usd, unpriced, wait, listed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO model_requests (attempt, claim, at, path, ms, status, usage, cost, refusal, searches, tools_usd, unpriced, wait, listed, again) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       input.attempt,
       input.claim,
       outcome.at,
@@ -901,6 +903,7 @@ export class Run extends DurableObject<Env> {
       tools ? tools.unpriced : null,
       outcome.waitMs ?? null,
       price ? 1 : null,
+      outcome.again ? 1 : null,
     )
     const { refused, ...rest } = this.meta()!
     if (refused && outcome.status < 400) {
@@ -1305,15 +1308,16 @@ export class Run extends DurableObject<Env> {
 
   private requestLog(attempt: string): string | undefined {
     const requests = this.sql.all(
-      'SELECT claim, at, path, ms, status, usage, refusal, wait FROM model_requests WHERE attempt = ? ORDER BY id',
+      'SELECT again, claim, at, path, ms, status, usage, refusal, wait FROM model_requests WHERE attempt = ? ORDER BY id',
       attempt,
     )
     return requests.length
       ? requests
           .map(
-            ({ refusal, wait, ...request }) =>
+            ({ again, refusal, wait, ...request }) =>
               JSON.stringify({
                 ...request,
+                ...(again === null ? {} : { again: true }),
                 ...(refusal === null ? {} : { refusal }),
                 ...(wait === null ? {} : { wait }),
                 usage: request['usage'] ? JSON.parse(request['usage'] as string) : null,
@@ -3639,11 +3643,12 @@ export class Run extends DurableObject<Env> {
             failure: end.failure,
             requests: this.sql
               .all(
-                "SELECT status, wait FROM model_requests WHERE attempt = ? AND claim = ? AND status IS NOT NULL AND path NOT LIKE 'judge/%' ORDER BY id",
+                "SELECT again, status, wait FROM model_requests WHERE attempt = ? AND claim = ? AND status IS NOT NULL AND path NOT LIKE 'judge/%' ORDER BY id",
                 row.id,
                 row.claims,
               )
               .map((request) => ({
+                ...(request['again'] === null ? {} : { again: true }),
                 status: request['status'] as number,
                 ...(request['wait'] === null ? {} : { waitMs: request['wait'] as number }),
               })),

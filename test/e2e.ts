@@ -121,6 +121,7 @@ const unreachedSeen = new Set<string>()
 const rateLimited = scenario === 'limited'
 const limitedAsked = new Map<string, number>()
 const limitMessage = 'inference request per min rate reached'
+const outlasted = scenario === 'outlasted'
 const pacing = scenario === 'pace'
 const pacePerMin = 20
 const paceWindowMs = 2000
@@ -1267,6 +1268,20 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
             return
           }
         }
+        if (outlasted && body.fake_cli) {
+          const row = body.model + body.prompt_base64
+          const asked = (limitedAsked.get(row) ?? 0) + 1
+          limitedAsked.set(row, asked)
+          if (asked === 1) {
+            response
+              .writeHead(429, { 'content-type': 'application/json' })
+              .end(JSON.stringify({ error: { message: limitMessage, type: 'rate_limit_error' } }))
+            return
+          }
+          await Promise.race([new Promise((resolve) => response.once('close', resolve)), released])
+          response.destroy()
+          return
+        }
         if (unreached && body.fake_cli && !unreachedSeen.has(body.model + body.prompt_base64)) {
           unreachedSeen.add(body.model + body.prompt_base64)
           response.writeHead(530, { 'content-type': 'text/plain' }).end('error code: 530')
@@ -1734,6 +1749,7 @@ async function main(): Promise<void> {
           'limited',
           'login',
           'lost',
+          'outlasted',
           'pace',
           'refused',
           'resume',
@@ -2104,7 +2120,7 @@ async function main(): Promise<void> {
       ...(planned ? { payer: 'plan' as const } : {}),
       ...(funded ? { key: { topUp: 5 } } : {}),
       limits: {
-        ...(bounded ? { agentMaxSec: boundSec } : {}),
+        ...(bounded || outlasted ? { agentMaxSec: boundSec } : {}),
         attachSec: 60,
         claims: 3,
         leaseSec: noticeSec,
@@ -3819,6 +3835,44 @@ async function main(): Promise<void> {
       return
     }
 
+    if (outlasted) {
+      const rows = status['attempts'] as Record<string, any>[]
+      assert.equal(
+        status['counts'].errored,
+        0,
+        'a row whose agent time ends while the run asks its provider again is not an error of the provider',
+      )
+      assert.equal(status['lostClaims'], 0)
+      assert.equal(limitedAsked.size, rows.length)
+      for (const asked of limitedAsked.values())
+        assert.equal(asked, 2, 'the provider was asked again once for the one request of a row')
+      for (const row of rows) assert.equal(row['claims'], 1, 'no row was claimed again')
+      for (const detail of details) {
+        assert.deepEqual(
+          [
+            detail['result'].outcome,
+            detail['result'].reward,
+            detail['result'].failure.kind,
+            detail['result'].failure.message,
+          ],
+          ['failed', 0, 'agent_timeout', 'the agent did not finish within ' + boundSec + ' s'],
+          'the row is verified and scored as any row that its time limit ended',
+        )
+        assert.deepEqual(detail['result'].modelWaits, { count: 1, sec: pollMs / 1000 })
+        assert.deepEqual(
+          (await api.artifact(created.id, detail['attempt'].id, 'agent/model-requests.jsonl'))
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line) as { again?: true; status: number; wait?: number })
+            .map((request) => [request.status, request.again, request.wait]),
+          [[429, true, pollMs]],
+          'the one answer of the provider is the limit that the run asked again after',
+        )
+      }
+      await pass()
+      return
+    }
+
     if (pacing) {
       const rows = status['attempts'] as Record<string, any>[]
       const spans = details.map((detail) => ({
@@ -3989,7 +4043,7 @@ async function main(): Promise<void> {
         )
         assert.equal(status['spend'].unpricedResponses, 0)
         assert.equal(status['spend'].uncostedAttempts, 0)
-        assert.equal(passed.length, Math.floor(budgetUsd / ((budgetSteps + 1) * largest)))
+        assert.equal(passed.length, Math.floor(budgetUsd / ((budgetSteps + 2) * largest)))
         assert.equal(
           answered.length,
           passed.length + 1,
@@ -4009,7 +4063,7 @@ async function main(): Promise<void> {
           .trim()
           .split('\n')
           .map((line) => JSON.parse(line))
-        assert.equal(requests.length, budgetSteps + 1)
+        assert.equal(requests.length, budgetSteps + 2)
         for (const request of requests)
           assert.deepEqual(
             [request.usage.costBy, request.usage.costUsd],
@@ -4664,7 +4718,7 @@ async function main(): Promise<void> {
       assert.deepEqual(
         [asked(false), asked(true)],
         [
-          ['spawn_agent', 'wait_agent', 'exec_command', 'final'],
+          ['spawn_agent', 'wait_agent', 'exec_command', 'final', 'final'],
           ['exec_command', 'submit_result', 'final'],
         ],
         'the model of the session and the model of its subagent are asked each request once',
@@ -4677,8 +4731,8 @@ async function main(): Promise<void> {
           usage.outputTokens,
           usage.toolCalls,
         ],
-        [4 + 3, 4 * 8 + 3 * 42, 3 * 12, 4 * 4 + 3 * 6, 6 + 4],
-        'the usage of the session is its four model calls and the three of its subagent',
+        [5 + 3, 5 * 8 + 3 * 42, 3 * 12, 5 * 4 + 3 * 6, 6 + 4],
+        'the usage of the session is its five model calls and the three of its subagent',
       )
       assert.deepEqual(
         [trajectory, child].map((part) => [
@@ -4687,7 +4741,7 @@ async function main(): Promise<void> {
           part.final_metrics.extra.tool_calls,
         ]),
         [
-          [4, 7, 10],
+          [5, 8, 10],
           [3, 3, 4],
         ],
         'the steps of the subagent are under its own trajectory, and the totals of the session count them',
@@ -4698,7 +4752,7 @@ async function main(): Promise<void> {
       } else
         assert.deepEqual(
           [trajectory, child].map((part) => part.steps.map((step) => step.source).join(' ')),
-          ['user agent agent agent agent', 'user agent agent agent'],
+          ['user agent agent agent agent agent', 'user agent agent agent'],
         )
       await pass()
       return
@@ -4983,13 +5037,14 @@ async function main(): Promise<void> {
               'exec 5',
               'exec 6',
               'final',
+              'final',
             ],
         'a turn whose Worker was killed goes on where it was, and asks again only the request that was not answered',
       )
       const digests = midturnRequests.map((request) => request.digest)
       assert.equal(
         new Set(digests).size,
-        midturnPair ? 5 : 8,
+        midturnPair ? 5 : 9,
         'no request that was answered is sent again',
       )
       if (killAt === 'model')
@@ -5234,14 +5289,15 @@ async function main(): Promise<void> {
           [1, 200, cost],
           [2, 200, cost],
           [2, 200, cost],
+          [2, 200, cost],
         ],
         'the response that the lost session was answered stays in the requests of its row',
       )
       assert.ok(
-        Math.abs(row['result'].usage.costUsd - 2 * cost) < 1e-9,
+        Math.abs(row['result'].usage.costUsd - 3 * cost) < 1e-9,
         'the attempt has the cost of the session that finished it',
       )
-      assert.equal(answered, 2 * total + 1)
+      assert.equal(answered, 3 * total + 1)
       assert.ok(
         Math.abs(status['spend'].modelUsd - answered * cost) < 1e-9,
         'the model spend of the run keeps the response of the session that lost its turn',

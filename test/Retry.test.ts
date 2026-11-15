@@ -313,8 +313,8 @@ test('an attempt that ends on limited answers is an error of the model provider 
   const gaveUp = { at: 5, kind: 'agent' as const, message: 'pi exited with 0: 429 rate reached' }
   const requests = [
     { status: 200 },
-    { status: 429, waitMs: 1000 },
-    { status: 503, waitMs: 500 },
+    { again: true, status: 429, waitMs: 1000 },
+    { again: true, status: 503, waitMs: 500 },
     { status: 429 },
   ]
   const limited = Retry.throttled({ failure: gaveUp, requests })
@@ -336,6 +336,13 @@ test('an attempt that ends on limited answers is an error of the model provider 
     Retry.throttled({ failure: gaveUp, requests: [...requests, { status: 200 }] }),
     undefined,
   )
+  const askedAgain = requests.slice(0, 3)
+  assert.equal(
+    Retry.throttled({ failure: { ...gaveUp, kind: 'agent_timeout' }, requests: askedAgain }),
+    undefined,
+    'an agent whose time ended while the run asked its provider again was not told of a limit',
+  )
+  assert.equal(Retry.throttled({ failure: gaveUp, requests: askedAgain })?.kind, 'environment')
   assert.equal(Retry.throttled({ failure: gaveUp, requests: [{ status: 500 }] }), undefined)
   assert.equal(Retry.throttled({ failure: gaveUp, requests: [] }), undefined)
   assert.equal(Retry.throttled({ requests }), undefined)

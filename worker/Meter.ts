@@ -2,6 +2,7 @@ import * as Proxy from '../src/Proxy.ts'
 import * as Retry from '../src/Retry.ts'
 
 export type Outcome = {
+  again?: true
   at: number
   flight?: number
   ms: number
@@ -131,6 +132,7 @@ async function forwarded(
       if (pauseMs !== undefined) {
         await upstream.body?.cancel()
         await hooks.settle({
+          again: true,
           at,
           ms: Date.now() - at,
           status: upstream.status,

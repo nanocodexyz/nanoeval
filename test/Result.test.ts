@@ -129,6 +129,97 @@ test('session events project to an ATIF-v1.7 trajectory', () => {
   })
 })
 
+test('a note nanocode adds to the conversation is a step of its role, after the step of the model call it follows', () => {
+  const call = (seq: number, index: number, status: string) =>
+    agentEvent(seq, 'model.call.completed', {
+      call_index: index,
+      status,
+      usage: { input_tokens: 10, output_tokens: 1 },
+    })
+  const notice = (seq: number, payload: Record<string, unknown>) =>
+    agentEvent(seq, 'context.notice', { ...payload, turn_id: 'attempt' })
+  const reminder =
+    "Time limit: 7 min 30 s of this task's 15 min remain. When the time is up the task stops, and only what is on disk then counts. Keep working until then."
+  const check =
+    '<system-reminder>\nThis session is non-interactive and nobody will reply. Before you finish, check the work.\n</system-reminder>'
+  const plain = [
+    agentEvent(1, 'input.accepted', { input: 'Build it.', session_id: 'session-1' }),
+    agentEvent(2, 'run.started', { model: 'claude-haiku-4-5' }),
+    call(3, 1, 'tool_use'),
+    agentEvent(4, 'tool.call', {
+      arguments: { command: 'make' },
+      call_id: 'toolu_1',
+      tool: 'Bash',
+    }),
+    agentEvent(5, 'tool.result', { call_id: 'toolu_1', result: 'ok', status: 'completed' }),
+    call(7, 2, 'end_turn'),
+    agentEvent(8, 'assistant.message', { model_call_index: 2, text: 'Done.' }),
+    call(10, 3, 'end_turn'),
+    agentEvent(11, 'assistant.message', { model_call_index: 3, text: 'Checked.' }),
+    agentEvent(12, 'run.completed', { cost_usd: 0.01, status: 'completed' }),
+  ]
+  const noted = [
+    ...plain,
+    notice(6, { after_model_call_index: 1, role: 'system', text: reminder }),
+    notice(9, { after_model_call_index: 2, role: 'user', text: check }),
+  ].sort((one, other) => one.seq - other.seq)
+  const options = { model: 'claude-haiku-4-5', name: 'nanocode', session: 's', version: '1' }
+  const trajectory = Atif.fromEvents(noted, options)
+  assert.deepEqual(
+    trajectory.steps.map((step) => [step.step_id, step.source, step.message]),
+    [
+      [1, 'user', 'Build it.'],
+      [2, 'agent', ''],
+      [3, 'system', reminder],
+      [4, 'agent', 'Done.'],
+      [5, 'user', check],
+      [6, 'agent', 'Checked.'],
+    ],
+  )
+  assert.equal(trajectory.steps[2]!.timestamp, new Date(noted[5]!.created_at).toISOString())
+  assert.equal(trajectory.steps[1]!.observation!.results[0]!.content, 'ok')
+  assert.equal(trajectory.final_metrics.total_steps, 6)
+  assert.equal(trajectory.final_metrics.extra.model_calls, 3)
+  assert.deepEqual(Atif.usage(noted), Atif.usage(plain), 'a note is no model call and has no cost')
+
+  const late = Atif.fromEvents(
+    [
+      ...noted,
+      notice(13, { after_model_call_index: 1, role: 'system', text: 'late' }),
+      notice(14, { after_model_call_index: 9, role: 'system', text: 'of no step' }),
+    ],
+    options,
+  )
+  assert.deepEqual(
+    late.steps.map((step) => [step.step_id, step.source, step.message]),
+    [
+      [1, 'user', 'Build it.'],
+      [2, 'agent', ''],
+      [3, 'system', reminder],
+      [4, 'system', 'late'],
+      [5, 'agent', 'Done.'],
+      [6, 'user', check],
+      [7, 'agent', 'Checked.'],
+      [8, 'system', 'of no step'],
+    ],
+    'a note that comes late is still after the step of its model call, and one of no step is last',
+  )
+
+  assert.deepEqual(
+    Atif.fromEvents(
+      [
+        ...noted,
+        notice(13, { after_model_call_index: 1, role: 'assistant', text: 'not a note' }),
+        notice(14, { after_model_call_index: 1, role: 'system' }),
+        agentEvent(15, 'context.compaction.started', { after_model_call_index: 3 }),
+      ],
+      options,
+    ),
+    trajectory,
+    'a note of another role or with no text, and an event of a kind the projection does not know, add nothing',
+  )
+})
+
 test('a tool call whose input is plain text is an object in the trajectory, as Harbor wants', () => {
   const trajectory = Atif.fromEvents(
     [

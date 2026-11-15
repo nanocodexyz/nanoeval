@@ -352,6 +352,26 @@ function apply(thread: Thread, entry: { at: number; event: AgentEvent }): void {
       if (spawned !== undefined) thread.spawned.set(spawned, result)
       break
     }
+    case 'context.notice': {
+      const role = payload['role']
+      if ((role !== 'system' && role !== 'user') || typeof payload['text'] !== 'string') break
+      const called = thread.steps.findLastIndex(
+        (step) => step.metrics?.extra['call_index'] === payload['after_model_call_index'],
+      )
+      const next =
+        called < 0
+          ? -1
+          : thread.steps.findIndex((step, index) => index > called && step.source === 'agent')
+      const position = next < 0 ? thread.steps.length : next
+      for (const later of thread.steps.slice(position)) later.step_id++
+      thread.steps.splice(position, 0, {
+        step_id: position + 1,
+        timestamp: iso(at),
+        source: role,
+        message: payload['text'],
+      })
+      break
+    }
     case 'run.completed':
     case 'run.failed':
       flush(thread, at)

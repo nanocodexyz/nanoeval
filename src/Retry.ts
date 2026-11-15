@@ -52,7 +52,7 @@ export declare namespace pause {
 
 export function throttled(input: {
   failure?: Result.Failure
-  requests: readonly { status: number; waitMs?: number }[]
+  requests: readonly { again?: boolean; status: number; waitMs?: number }[]
 }): Result.Failure | undefined {
   const { failure, requests } = input
   if (failure?.kind !== 'agent' && failure?.kind !== 'agent_timeout') return undefined
@@ -60,6 +60,7 @@ export function throttled(input: {
     requests.findLastIndex((request) => !limited.includes(request.status)) + 1,
   )
   if (!tail.length) return undefined
+  if (failure.kind === 'agent_timeout' && tail.every((request) => request.again)) return undefined
   return {
     at: failure.at,
     kind: 'environment',
