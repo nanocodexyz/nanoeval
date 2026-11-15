@@ -21,8 +21,11 @@ export type Backend = Slot.Backend | 'auto'
 export type Agent = {
   api?: Installed.Api
   branches?: number
+  briefFinish?: true
   cellYieldMs?: number
+  foldFinish?: true
   id: string
+  lowEffortRounds?: true
   model: string
   orchestration?: Orchestration
   preflight?: true
@@ -46,6 +49,8 @@ export type Payer = 'deployment' | 'plan'
 export const payers: readonly Payer[] = ['deployment', 'plan']
 
 export type RefusalFallback = 'return_once' | 'session'
+
+export const finishLevers = ['briefFinish', 'foldFinish', 'lowEffortRounds'] as const
 
 export const planSignIn = 'nanoeval plans sign-in claude'
 
@@ -268,6 +273,12 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude' && provider !== 'codex')
         fail(agent.id + ' has a cellYieldMs, which only claude and codex sessions take')
     }
+    for (const lever of finishLevers) {
+      if (agent[lever] === undefined) continue
+      if (agent[lever] !== true) fail(agent.id + ' has a ' + lever + ' that is not true')
+      if (provider !== 'claude')
+        fail(agent.id + ' has a ' + lever + ', which only a claude session takes')
+    }
     const named = Installed.is(provider) && Installed.releases[provider].provider === 'api'
     if (agent.api !== undefined || named) {
       if (!named) fail(agent.id + ' has an api, which ' + provider + ' does not take')
@@ -276,8 +287,11 @@ export function parse(value: unknown): Config {
     return {
       ...(agent.api ? { api: agent.api } : {}),
       ...(agent.branches === undefined ? {} : { branches: agent.branches }),
+      ...(agent.briefFinish ? { briefFinish: true as const } : {}),
       ...(agent.cellYieldMs === undefined ? {} : { cellYieldMs: agent.cellYieldMs }),
+      ...(agent.foldFinish ? { foldFinish: true as const } : {}),
       id: agent.id,
+      ...(agent.lowEffortRounds ? { lowEffortRounds: true as const } : {}),
       model: agent.model,
       ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
       ...(agent.preflight ? { preflight: true as const } : {}),
