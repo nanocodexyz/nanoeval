@@ -233,6 +233,11 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: dir
           NANOEVAL_E2E_SCENARIO: threads
+      - name: End to end, directory slots, a row that declares more vCPUs than its runner has hardware threads
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: wide
       - name: End to end, directory slots, a runner that admits rows by the memory its machine uses
         run: npm run e2e
         env:
@@ -609,6 +614,14 @@ jobs:
         run: npm run e2e
         env:
           NANOEVAL_E2E_SCENARIO: packing
+      - name: End to end, krun slots, a runner that is given no slot count and is pinned to two hardware threads, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: threads
+      - name: End to end, krun slots, a row that declares more vCPUs than its runner has hardware threads, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: wide
       - name: End to end, krun slots, two attached runners, skipped where krun cannot run
         run: npm run e2e
         env:

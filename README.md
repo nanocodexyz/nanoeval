@@ -1156,6 +1156,7 @@ NANOEVAL_E2E_SCENARIO=closed npm run e2e   # tasks that close the network of the
 NANOEVAL_E2E_SCENARIO=cache npm run e2e    # a verifier that finds what an oracle run kept for it
 NANOEVAL_E2E_SCENARIO=disks npm run e2e    # cached disks removed when no row needs them; also disk, packing
 NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=threads npm run e2e  # no slot count: two slots and one declared vCPU for each hardware thread of the runner
+NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=wide npm run e2e  # a row that declares more vCPUs than its runner has hardware threads runs alone
 NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=overcommit npm run e2e  # runner --memory-overcommit: rows that declare more than it admits run at once
 NANOEVAL_E2E_BACKEND=ns npm run e2e        # ns slots: as root on this machine, or inside a microVM guest without KVM
 NANOEVAL_E2E_BACKEND=ns NANOEVAL_E2E_SCENARIO=network npm run e2e         # what a private ns slot reaches

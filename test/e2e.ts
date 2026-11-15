@@ -1784,7 +1784,8 @@ async function main(): Promise<void> {
     }
     const packing = scenario === 'packing'
     const overcommitted = scenario === 'overcommit'
-    const derived = scenario === 'threads'
+    const wide = scenario === 'wide'
+    const derived = scenario === 'threads' || wide
     const bounded = scenario === 'bounded'
     const boundSec = 10
     const lost = 'tasks/write-greeting'
@@ -1967,6 +1968,7 @@ async function main(): Promise<void> {
     const imported = await Import.cases(cases(), options)
     const importMs = Date.now() - importStarted
     if (packing) for (const task of imported.tasks.slice(0, 2)) task.resources.memoryMb = 512
+    if (wide) imported.tasks[0]!.resources.cpus = pinned.length + 1
     const meminfo = overcommitted ? Fs.readFileSync('/proc/meminfo', 'utf8') : ''
     const kb = (name: string) =>
       Number(new RegExp('^' + name + ':\\s+(\\d+) kB$', 'm').exec(meminfo)?.[1])
@@ -4805,6 +4807,56 @@ async function main(): Promise<void> {
         'and the vCPUs its rows may declare at once',
       )
       assert.equal(peak, vcpus, 'rows of one vCPU run one a thread, whatever slots are free')
+      if (wide) {
+        const declared = (detail: Record<string, any>) =>
+          Math.ceil(
+            imported.tasks.find((task) => task.name === detail['attempt'].task)!.resources.cpus,
+          )
+        const widest = details.find((detail) => declared(detail) > vcpus)!
+        assert.ok(
+          details.every(
+            (detail) =>
+              detail === widest ||
+              detail['result'].finishedAt <= widest['result'].startedAt ||
+              widest['result'].finishedAt <= detail['result'].startedAt,
+          ),
+          'a row that declares more vCPUs than its runner admits runs while no other row does',
+        )
+        const changes = details
+          .flatMap((detail) => {
+            const taken = Math.min(declared(detail), vcpus)
+            return [
+              [detail['result'].startedAt as number, taken],
+              [detail['result'].finishedAt as number, -taken],
+            ]
+          })
+          .sort((left, right) => left[0]! - right[0]! || left[1]! - right[1]!)
+        let flight = 0
+        for (let index = 0, held = 0; index < changes.length; index++) {
+          held += changes[index]![1]!
+          flight = Math.max(flight, held)
+        }
+        assert.equal(
+          flight,
+          vcpus,
+          'the declared vCPUs in flight reach one a thread and no more, a wider row taken at that bound',
+        )
+        console.log(
+          'wide: a runner that may use ' +
+            threads +
+            ' hardware threads admitted ' +
+            vcpus +
+            ' declared vCPUs, had at most ' +
+            flight +
+            ' in flight over ' +
+            total +
+            ' rows, and ran the row that declares ' +
+            declared(widest) +
+            ' alone',
+        )
+        await pass()
+        return
+      }
       console.log(
         'threads: a runner that was given no slot count and may use ' +
           threads +
