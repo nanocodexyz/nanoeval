@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { agentText, parseAgent } from '../cli/nanoeval.ts'
+import type * as Atif from '../src/Atif.ts'
 import * as Branch from '../src/Branch.ts'
 import * as Config from '../src/Config.ts'
 import * as Proxy from '../src/Proxy.ts'
@@ -106,5 +107,237 @@ test('an agent spec branches its session with :branches=N, and the run checks th
         agents: [{ branches: 3, id: 'cli', model: 'gpt-6-luna', provider: 'codex-cli' }],
       }),
     /only a claude or codex session can/,
+  )
+})
+
+const event = (
+  requestId: string,
+  type: 'tool.call' | 'tool.result',
+  payload: { [key: string]: unknown },
+): Atif.SessionEvent => ({
+  created_at: 0,
+  event: { event: { payload, type }, source: 'agent' },
+  request_id: requestId,
+  seq: 0,
+})
+
+const shell = (
+  id: string,
+  input: {
+    code: number | null
+    command: string
+    output?: string
+    requestId?: string
+    tool?: string
+  },
+): Atif.SessionEvent[] => {
+  const requestId = input.requestId ?? Branch.checkRequestId
+  const tool = input.tool ?? 'exec_command'
+  return [
+    event(requestId, 'tool.call', {
+      arguments: tool === 'Bash' ? { command: input.command } : { cmd: input.command },
+      call_id: id,
+      tool,
+    }),
+    event(requestId, 'tool.result', {
+      call_id: id,
+      status: 'completed',
+      structured_result:
+        tool === 'Bash'
+          ? { exit_code: input.code, stderr: '', stdout: input.output ?? '' }
+          : { exit_code: input.code, output: input.output ?? '' },
+      tool,
+    }),
+  ]
+}
+
+const evidenceOf = (events: readonly Atif.SessionEvent[]) =>
+  Branch.evidence(events, { requestId: Branch.checkRequestId })
+
+test('a test command is a test runner or test script at the end of the command line, its status unmasked', () => {
+  for (const command of [
+    'pytest -q',
+    'cd /app && python3 -m pytest tests/test_outputs.py -q',
+    'bash tests/test.sh',
+    'python /app/test_solution.py',
+    'cargo test --release',
+    'npm test',
+    'npm run test',
+    'go test ./...',
+    'make check',
+    'set -o pipefail; pytest -q 2>&1 | tail -5',
+    'cd /app && pytest -q && echo ok',
+    'timeout 600 pytest -q',
+    'PYTHONPATH=. pytest tests',
+    './run_tests.sh',
+  ])
+    assert.ok(Branch.testCommand(command), command)
+  for (const command of [
+    'pytest -q || true',
+    'pytest -q 2>&1 | tail -5',
+    'pytest -q; echo done',
+    'pytest --version',
+    'pytest --collect-only',
+    'python solve.py',
+    'cat tests/test.sh | head',
+    'ls',
+    'echo ok > test_a.py',
+    "printf '%s\n' 'exit 0' > greeting_test.sh",
+  ])
+    assert.ok(!Branch.testCommand(command), command)
+})
+
+test('a self-check is verified by its last test command after the last file write, which exited 0 with no failure in its output', () => {
+  assert.deepEqual(evidenceOf(shell('c1', { code: 0, command: 'pytest -q', output: '3 passed' })), {
+    command: 'pytest -q',
+    exitCode: 0,
+  })
+  assert.deepEqual(
+    evidenceOf(shell('c1', { code: 0, command: 'bash tests/run.sh', tool: 'Bash' })),
+    { command: 'bash tests/run.sh', exitCode: 0 },
+  )
+  assert.equal(evidenceOf(shell('c1', { code: 1, command: 'pytest -q' })), undefined)
+  assert.equal(evidenceOf(shell('c1', { code: 0, command: 'pytest -q || true' })), undefined)
+  assert.equal(evidenceOf(shell('c1', { code: 0, command: 'pytest -q | tail -3' })), undefined)
+  assert.equal(
+    evidenceOf(shell('c1', { code: 0, command: 'pytest -q', output: '2 failed, 1 passed' })),
+    undefined,
+  )
+  assert.equal(evidenceOf(shell('c1', { code: 0, command: 'python solve.py' })), undefined)
+  assert.equal(
+    evidenceOf(shell('c1', { code: 0, command: 'pytest -q', requestId: 'attempt' })),
+    undefined,
+    'a test of the turn that worked is no evidence for the self-check',
+  )
+  assert.equal(
+    evidenceOf([
+      ...shell('c1', { code: 0, command: 'pytest -q' }),
+      event(Branch.checkRequestId, 'tool.call', {
+        arguments: {},
+        call_id: 'c2',
+        tool: 'apply_patch',
+      }),
+    ]),
+    undefined,
+    'a file write after the test leaves the self-check unverified',
+  )
+  assert.deepEqual(
+    evidenceOf([
+      ...shell('c1', { code: 0, command: 'pytest -q' }),
+      ...shell('c2', { code: 0, command: 'ls' }),
+    ]),
+    { command: 'pytest -q', exitCode: 0 },
+  )
+  assert.equal(
+    evidenceOf([
+      ...shell('c1', { code: 0, command: 'pytest -q' }),
+      ...shell('c2', { code: 2, command: 'pytest -q tests/test_more.py' }),
+    ]),
+    undefined,
+    'the last test command decides',
+  )
+  assert.deepEqual(
+    evidenceOf([
+      event(Branch.checkRequestId, 'tool.call', {
+        arguments: { cmd: 'pytest -q' },
+        call_id: 'c1',
+        tool: 'exec_command',
+      }),
+      event(Branch.checkRequestId, 'tool.result', {
+        call_id: 'c1',
+        status: 'completed',
+        structured_result: { output: '', session_id: 7 },
+        tool: 'exec_command',
+      }),
+      event(Branch.checkRequestId, 'tool.call', {
+        arguments: { chars: '', session_id: 7 },
+        call_id: 'c2',
+        tool: 'write_stdin',
+      }),
+      event(Branch.checkRequestId, 'tool.result', {
+        call_id: 'c2',
+        status: 'completed',
+        structured_result: { exit_code: 0, output: '5 passed' },
+        tool: 'write_stdin',
+      }),
+    ]),
+    { command: 'pytest -q', exitCode: 0 },
+    'a command that outlived its first call ends in write_stdin',
+  )
+})
+
+test('a verified pass is a PASS verdict with evidence, and the lazy choice keeps the first, else the trunk', () => {
+  const pass = {
+    evidence: { command: 'pytest', exitCode: 0 as const },
+    message: '',
+    state: 'completed' as const,
+    verdict: 'pass' as const,
+  }
+  const claimed = { message: '', state: 'completed' as const, verdict: 'pass' as const }
+  const failed = { message: '', state: 'completed' as const, verdict: 'fail' as const }
+  assert.ok(Branch.verified(pass))
+  assert.ok(!Branch.verified(claimed))
+  assert.ok(!Branch.verified({ ...pass, verdict: 'fail' }))
+  assert.equal(Branch.settle([pass, undefined]), 0)
+  assert.equal(Branch.settle([failed, claimed, pass]), 2)
+  assert.equal(Branch.settle([failed, undefined, pass]), undefined)
+  assert.equal(Branch.settle([failed, claimed, failed]), 0)
+  assert.equal(Branch.settle([{ state: 'timeout' }, claimed]), 1)
+})
+
+test('a lazy trunk forks when its self-check is not verified, or at 60% of its time while it runs', () => {
+  const options = { deadlineAt: 1000, now: 100, startedAt: 0 }
+  const pass = {
+    evidence: { command: 'pytest', exitCode: 0 as const },
+    message: '',
+    state: 'completed' as const,
+    verdict: 'pass' as const,
+  }
+  assert.equal(Branch.forkReason(pass, options), undefined)
+  assert.equal(Branch.forkReason({ ...pass, evidence: undefined }, options), 'unverified')
+  assert.equal(Branch.forkReason({ error: 'x', state: 'failed' }, options), 'unverified')
+  assert.equal(Branch.forkReason(undefined, options), undefined)
+  assert.equal(Branch.forkReason(undefined, { ...options, now: 599 }), undefined)
+  assert.equal(Branch.forkReason(undefined, { ...options, now: 600 }), 'time')
+  assert.equal(Branch.forkReason({ state: 'timeout' }, { ...options, now: 1000 }), undefined)
+  assert.equal(Branch.forkAt({ deadlineAt: 1000, startedAt: 0 }), 600)
+})
+
+test('an agent spec branches lazily with :branches=lazyN, and only an agent that branches is lazy', () => {
+  const agent = parseAgent('nanolazy=claude:claude-opus-5-5:high:branches=lazy3')
+  assert.deepEqual(agent, {
+    branches: 3,
+    id: 'nanolazy',
+    lazy: true,
+    model: 'claude-opus-5-5',
+    provider: 'claude',
+    thinking: 'high',
+  })
+  assert.equal(agentText(agent), 'nanolazy=claude:claude-opus-5-5:high:branches=lazy3')
+  const config = {
+    agents: [agent],
+    attempts: 1,
+    budget: { sandboxUsd: 0 },
+    eval: { name: 'example' },
+    limits: { attachSec: 60, claims: 3, leaseSec: 60, setupSec: 600, stepRetries: 3 },
+    name: 'lazy',
+    sandbox: {
+      backend: 'krun',
+      max: 1,
+      network: 'private',
+      pollMs: 250,
+      provider: 'local',
+      slots: 2,
+      timeoutSec: 3600,
+    },
+  }
+  assert.equal(Config.parse(config).agents[0]!.lazy, true)
+  assert.throws(
+    () =>
+      Config.parse({
+        ...config,
+        agents: [{ id: 'x', lazy: true, model: 'm', provider: 'claude' }],
+      }),
+    /only an agent that branches can be/,
   )
 })

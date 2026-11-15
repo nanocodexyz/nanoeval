@@ -38,7 +38,14 @@ export type ClaimRequest = {
 }
 
 export type Claimed = {
-  agent: { branches?: number; cli?: Installed.Agent; id: string; oracle: boolean; preflight?: true }
+  agent: {
+    branches?: number
+    cli?: Installed.Agent
+    id: string
+    lazy?: true
+    oracle: boolean
+    preflight?: true
+  }
   claim: string
   id: string
   leaseUntil: number
@@ -92,6 +99,7 @@ export type Agent =
   | { state: 'attached'; timeoutSec: number }
   | { branch?: number; message: string; state: 'completed' }
   | { error: string; state: 'failed' }
+  | { state: 'fork' }
   | { detached: boolean; state: 'running' }
   | { branch?: number; state: 'timeout' }
   | { state: 'waiting' }

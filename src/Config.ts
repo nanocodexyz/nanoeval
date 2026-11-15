@@ -29,6 +29,7 @@ export type Agent = {
   escalateToolErrors?: number
   foldFinish?: true
   id: string
+  lazy?: true
   leanCells?: true
   lowEffortRounds?: true
   model: string
@@ -275,6 +276,11 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude' && provider !== 'codex')
         fail(agent.id + ' branches, and only a claude or codex session can')
     }
+    if (agent.lazy !== undefined) {
+      if (agent.lazy !== true) fail(agent.id + ' has a lazy that is not true')
+      if (agent.branches === undefined)
+        fail(agent.id + ' is lazy, and only an agent that branches can be')
+    }
     if (agent.refusalFallback !== undefined) {
       choice(agent.refusalFallback, 'refusalFallback', ['return_once', 'session'])
       if (provider !== 'claude')
@@ -335,6 +341,7 @@ export function parse(value: unknown): Config {
         : { escalateToolErrors: agent.escalateToolErrors }),
       ...(agent.foldFinish ? { foldFinish: true as const } : {}),
       id: agent.id,
+      ...(agent.lazy ? { lazy: true as const } : {}),
       ...(agent.leanCells ? { leanCells: true as const } : {}),
       ...(agent.lowEffortRounds ? { lowEffortRounds: true as const } : {}),
       model: agent.model,

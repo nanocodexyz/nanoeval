@@ -1247,9 +1247,14 @@ async function attend(
         }
         item.marks.push({ at: item.at, ms: now - item.at, name: 'attempt.up' })
         if (item.row.agent.cli) return startCli(item, item.row.agent.cli)
-        if (item.row.agent.branches) {
+        if (item.row.agent.branches && !item.row.agent.lazy) {
           for (const index of Branch.indexes(item.row.agent.branches).slice(1))
-            await shell(slots.fork(item.row.slot, Branch.slot(item.row.slot, index)))
+            await shell(
+              slots.fork(item.row.slot, {
+                branch: Branch.slot(item.row.slot, index),
+                when: 'start',
+              }),
+            )
           return move(item, 'fork')
         }
         item.session ??= await rowCall<Protocol.Session>(item, 'session')
@@ -1289,7 +1294,9 @@ async function attend(
           return pending(item)
         }
         item.marks.push({ at: item.at, ms: now - item.at, name: 'attempt.fork' })
-        for (const index of Branch.indexes(item.row.agent.branches!)) {
+        for (const index of Branch.indexes(item.row.agent.branches!).slice(
+          item.row.agent.lazy ? 1 : 0,
+        )) {
           const session = await rowCall<Protocol.Session>(item, 'session', {
             branch: index,
           } satisfies Protocol.Hand)
@@ -1350,6 +1357,17 @@ async function attend(
         })
         if ((await Promise.race([asked, stirred])) === undefined && (await ended())) return
         const state = await asked
+        if (state.state === 'fork') {
+          for (const index of Branch.indexes(item.row.agent.branches!).slice(1))
+            await shell(
+              slots.fork(item.row.slot, {
+                branch: Branch.slot(item.row.slot, index),
+                when: 'live',
+              }),
+            )
+          log('forked ' + item.row.id + ' from its trunk while its hand runs')
+          return move(item, 'fork')
+        }
         if (state.state === 'completed' || state.state === 'timeout') {
           item.message = state.state === 'completed' ? state.message : ''
           await keep(item, state.branch)

@@ -247,6 +247,7 @@ export class Run extends DurableObject<Env> {
   private attended = false
   private readonly creating = new Set<number>()
   private readonly cursors = new Map<string, number>()
+  private readonly evidenced = new Map<string, Branch.Evidence | null>()
   private readonly holds = Hold.create()
   private readonly instance = secret()
   private readonly specs = new Map<string, Eval.Task>()
@@ -2819,6 +2820,10 @@ export class Run extends DurableObject<Env> {
       refuse('the sandbox cannot start libkrun microVMs for the krun backend')
     if (config.agents.some((agent) => agent.branches) && !capabilities.fork)
       refuse('the run branches its agents, and the slots of this runner cannot fork')
+    if (config.agents.some((agent) => agent.lazy) && !capabilities.fork_live)
+      refuse(
+        'the run branches its agents lazily, and the slots of this runner cannot fork after the hand starts',
+      )
     if (Config.kind(config.sandbox.backend) !== Config.kind(capabilities.backend))
       refuse(
         'the runner was set up for the ' +
@@ -3071,6 +3076,7 @@ export class Run extends DurableObject<Env> {
         : {}),
       ...(agent.branches ? { branches: agent.branches } : {}),
       id: agent.id,
+      ...(agent.lazy ? { lazy: true as const } : {}),
       oracle: agent.provider === 'oracle',
       ...(agent.preflight ? { preflight: true as const } : {}),
     }
@@ -3111,9 +3117,25 @@ export class Run extends DurableObject<Env> {
   }
 
   private branchSessions(row: Ledger.Attempt): string[] {
-    return row.session
-      ? Branch.indexes(this.branches(row)).map((index) => Branch.session(row.session!, index))
-      : []
+    if (!row.session) return []
+    const count = this.agentOf(row).lazy && !this.forkRecord(row) ? 1 : this.branches(row)
+    return Branch.indexes(count).map((index) => Branch.session(row.session!, index))
+  }
+
+  private forkRecord(row: Ledger.Attempt): Branch.Fork | undefined {
+    const recorded = this.textArtifact(row.id, Branch.forkRecord)
+    return recorded === undefined ? undefined : (JSON.parse(recorded) as Branch.Fork)
+  }
+
+  private async evidenceOf(name: string): Promise<Branch.Evidence | undefined> {
+    if (!this.evidenced.has(name))
+      this.evidenced.set(
+        name,
+        Branch.evidence(await Harness.events(this.env, name, Branch.checkRequestId), {
+          requestId: Branch.checkRequestId,
+        }) ?? null,
+      )
+    return this.evidenced.get(name) ?? undefined
   }
 
   private branchRecord(row: Ledger.Attempt): Branch.Record | undefined {
@@ -3215,7 +3237,7 @@ export class Run extends DurableObject<Env> {
     if (row.phase !== 'run' && row.phase !== 'verify')
       throw new Refusal(409, 'the attempt is in the ' + row.phase + ' phase')
     if (harness !== 'session') return { state: 'attached', timeoutSec: task.agent.timeoutSec }
-    if (this.branches(row) > 1) return this.branched(row, waitMs)
+    if (this.branches(row) > 1) return this.branched(row, { body, waitMs })
 
     const read = async (): Promise<Protocol.Agent> => {
       const current = Ledger.held(this.sql, { claim: row.claim!, id: row.id })
@@ -3288,14 +3310,17 @@ export class Run extends DurableObject<Env> {
 
   private async ask(
     row: Ledger.Attempt,
-    input: { prompt: string; requestId: string; session: string },
+    input: { deadlineAt?: number; prompt: string; requestId: string; session: string },
   ): Promise<Harness.Report> {
     const agent = this.agentOf(row)
     if (agent.provider !== 'claude' && agent.provider !== 'codex')
       throw new Refusal(409, 'the agent of the attempt is not a session')
     const now = Date.now()
     const deadline = Turn.deadline(this.config().limits, {
-      limitMs: this.task(row.task).agent.timeoutSec * 1000,
+      limitMs:
+        input.deadlineAt === undefined
+          ? this.task(row.task).agent.timeoutSec * 1000
+          : input.deadlineAt - now,
       now,
     })
     const turn: Turn.Turn = {
@@ -3338,8 +3363,14 @@ export class Run extends DurableObject<Env> {
     }
   }
 
-  private async branched(row: Ledger.Attempt, waitMs: number): Promise<Protocol.Agent> {
+  private async branched(
+    row: Ledger.Attempt,
+    input: { body: Protocol.Ask; waitMs: number },
+  ): Promise<Protocol.Agent> {
     const task = this.task(row.task)
+    const agent = this.agentOf(row)
+    const lazy = agent.lazy === true
+    const waitMs = input.waitMs
     const decided = (record: Branch.Record): Protocol.Agent => {
       const outcome = record.branches[record.chosen]!
       if (outcome.state === 'completed')
@@ -3347,8 +3378,12 @@ export class Run extends DurableObject<Env> {
       if (outcome.state === 'failed') return { error: outcome.error, state: 'failed' }
       return { branch: record.chosen, state: 'timeout' }
     }
-    type Read = { agent: Protocol.Agent; waiting?: { requestId: string; session: string } }
-    const read = async (): Promise<Read> => {
+    type Read = {
+      agent: Protocol.Agent
+      waiting?: { requestId: string; session: string }
+      wakeAt?: number
+    }
+    const read = async (body: Protocol.Ask): Promise<Read> => {
       const current = Ledger.held(this.sql, { claim: row.claim!, id: row.id })
       if (!current) throw new Refusal(410, 'the attempt is not claimed by this runner any more')
       const recorded = this.branchRecord(current)
@@ -3360,11 +3395,52 @@ export class Run extends DurableObject<Env> {
         return { agent: { error: earlier.message, state: 'failed' } }
       const now = Date.now()
       const late = now > current.deadline_at!
+      const startedAt = current.deadline_at! - task.agent.timeoutSec * 1000
+      const fork = lazy ? this.forkRecord(current) : undefined
+      const deadlineAt = lazy ? current.deadline_at! : undefined
+      const unasked = new Set<string>()
+      if (fork) {
+        for (const name of this.branchSessions(current).slice(1)) {
+          try {
+            await Harness.turn(this.env, name, requestId)
+          } catch (error) {
+            if (!(error instanceof Harness.LostError)) throw error
+            unasked.add(name)
+          }
+        }
+        if (unasked.size && !late) {
+          if (typeof body.instruction !== 'string') return { agent: { state: 'fork' } }
+          if ((await Bytes.sha256(Bytes.fromText(body.instruction))) !== task.instruction.digest)
+            throw new Refusal(400, 'the instruction does not match the digest of the task')
+          if (agent.preflight && typeof body.facts !== 'string')
+            throw new Refusal(
+              400,
+              'the agent takes a preflight, and the runner sent no facts from its probe',
+            )
+          for (const name of unasked)
+            if (!(await this.listed(current, { session: name, waitMs })))
+              return { agent: { state: 'waiting' } }
+          for (const name of unasked)
+            await this.ask(current, {
+              deadlineAt: current.deadline_at!,
+              prompt: agent.preflight
+                ? Preflight.prompt({ facts: body.facts!, instruction: body.instruction })
+                : body.instruction,
+              requestId,
+              session: name,
+            })
+          unasked.clear()
+        }
+      }
       const outcomes: (Branch.Outcome | undefined)[] = []
       let detached = false
       let queued = 0
       let waiting: Read['waiting']
       for (const name of this.branchSessions(current)) {
+        if (unasked.has(name)) {
+          outcomes.push({ state: 'cancelled' })
+          continue
+        }
         const report = await this.kept(current, Harness.turn(this.env, name, requestId))
         if (report.status === 'failed' || report.status === 'cancelled') {
           outcomes.push({
@@ -3394,12 +3470,15 @@ export class Run extends DurableObject<Env> {
         }
         if (!check && !late)
           check = await this.ask(current, {
+            ...(deadlineAt === undefined ? {} : { deadlineAt }),
             prompt: Branch.prompt,
             requestId: Branch.checkRequestId,
             session: name,
           })
         if (check?.status === 'completed') {
+          const evidence = lazy ? await this.evidenceOf(name) : undefined
           outcomes.push({
+            ...(evidence ? { evidence } : {}),
             message,
             state: 'completed',
             verdict: Branch.verdict(check.ok?.message ?? ''),
@@ -3416,7 +3495,30 @@ export class Run extends DurableObject<Env> {
         if (open) await Harness.cancel(this.env, name, Branch.checkRequestId)
         outcomes.push({ message, state: 'completed', verdict: 'unknown' })
       }
-      if (outcomes.includes(undefined)) {
+      let chosen: number | undefined
+      if (lazy) {
+        if (!fork) {
+          const reason = Branch.forkReason(outcomes[0], {
+            deadlineAt: current.deadline_at!,
+            now,
+            startedAt,
+          })
+          if (reason) {
+            const record: Branch.Fork = { at: now, reason }
+            this.putArtifact(row.id, Branch.forkRecord, JSON.stringify(record, null, 2) + '\n')
+            return { agent: { state: 'fork' } }
+          }
+          if (outcomes[0] !== undefined) chosen = 0
+        } else chosen = Branch.settle(outcomes)
+        if (chosen !== undefined)
+          for (const [index, name] of this.branchSessions(current).entries())
+            if (outcomes[index] === undefined) {
+              await Harness.cancel(this.env, name, requestId)
+              await Harness.cancel(this.env, name, Branch.checkRequestId)
+              outcomes[index] = { state: 'cancelled' }
+            }
+      }
+      if (chosen === undefined && outcomes.includes(undefined)) {
         const refused = this.refusedOut(current, now)
         if (refused) {
           Ledger.update(this.sql, row.id, { failure: JSON.stringify(refused) })
@@ -3427,10 +3529,16 @@ export class Run extends DurableObject<Env> {
           }
           return { agent: { error: refused.message, state: 'failed' } }
         }
-        return { agent: { detached, state: 'running' }, ...(waiting ? { waiting } : {}) }
+        return {
+          agent: { detached, state: 'running' },
+          ...(waiting ? { waiting } : {}),
+          ...(lazy && !fork
+            ? { wakeAt: Branch.forkAt({ deadlineAt: current.deadline_at!, startedAt }) }
+            : {}),
+        }
       }
       const branches = outcomes as Branch.Outcome[]
-      const chosen = Branch.choose(branches)
+      chosen ??= Branch.choose(branches)
       if (branches[chosen]!.state === 'timeout')
         Ledger.update(this.sql, row.id, {
           failure: JSON.stringify(
@@ -3451,11 +3559,11 @@ export class Run extends DurableObject<Env> {
                 }) satisfies Result.Failure,
           ),
         })
-      const record: Branch.Record = { branches, chosen }
+      const record: Branch.Record = { branches, chosen, ...(fork ? { fork } : {}) }
       this.putArtifact(row.id, Branch.record, JSON.stringify(record, null, 2) + '\n')
       return { agent: decided(record) }
     }
-    const first = await read()
+    const first = await read(input.body)
     if (first.agent.state !== 'running' || first.agent.detached || !waitMs || !first.waiting)
       return first.agent
     const key = 'row:' + row.id + ':agent'
@@ -3467,7 +3575,14 @@ export class Run extends DurableObject<Env> {
         released,
         requestId: first.waiting.requestId,
         types: ['result'],
-        waitMs: Math.max(1, Math.min(waitMs, row.deadline_at! - Date.now() + 1)),
+        waitMs: Math.max(
+          1,
+          Math.min(
+            waitMs,
+            row.deadline_at! - Date.now() + 1,
+            (first.wakeAt ?? Number.POSITIVE_INFINITY) - Date.now() + 1,
+          ),
+        ),
       })
       this.cursors.set(session, seen.cursor)
     } catch (error) {
@@ -3476,7 +3591,7 @@ export class Run extends DurableObject<Env> {
     } finally {
       this.holds.release((held) => held === key)
     }
-    return (await read()).agent
+    return (await read({})).agent
   }
 
   private verify(row: Ledger.Attempt, body: { solve?: { code: number } }): { ok: true } {
