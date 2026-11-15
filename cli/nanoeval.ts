@@ -674,11 +674,11 @@ export function parseAgent(text: string): Config.Agent {
         'codex',
         ...Installed.harnesses,
       ].join('|') +
-      ')(\\+preflight)?:([^:]+)(?::([a-z]+))?(?::branches=([0-9]+))?(?::refusal_fallback=(return_once))?$',
+      ')(\\+preflight)?:([^:]+)(?::([a-z]+))?(?::branches=(lazy)?([0-9]+))?(?::refusal_fallback=(return_once))?$',
   ).exec(text)
   if (!match)
     throw new Error(
-      'an agent is ID=HARNESS:MODEL[:THINKING][:branches=N][:refusal_fallback=return_once], not ' +
+      'an agent is ID=HARNESS:MODEL[:THINKING][:branches=[lazy]N][:refusal_fallback=return_once], not ' +
         text,
     )
   const codex = Object.hasOwn(orchestrations, match[2]!)
@@ -687,8 +687,9 @@ export function parseAgent(text: string): Config.Agent {
   const installed = Installed.harness(match[2]!)
   return {
     ...(installed?.api ? { api: installed.api } : {}),
-    ...(match[6] ? { branches: Number(match[6]) } : {}),
+    ...(match[7] ? { branches: Number(match[7]) } : {}),
     id: match[1]!,
+    ...(match[6] ? { lazy: true as const } : {}),
     model: match[4]!,
     ...(orchestration ? { orchestration } : {}),
     ...(match[3] ? { preflight: true as const } : {}),
@@ -697,7 +698,7 @@ export function parseAgent(text: string): Config.Agent {
       : claudeDirect
         ? 'claude'
         : (installed?.kind ?? (match[2] as 'claude')),
-    ...(match[7] ? { refusalFallback: match[7] as Config.RefusalFallback } : {}),
+    ...(match[8] ? { refusalFallback: match[8] as Config.RefusalFallback } : {}),
     ...(match[5] ? { thinking: match[5] } : {}),
   }
 }
@@ -915,7 +916,7 @@ export function agentText(agent: Config.Agent): string {
     ':' +
     agent.model +
     (agent.thinking ? ':' + agent.thinking : '') +
-    (agent.branches ? ':branches=' + agent.branches : '') +
+    (agent.branches ? ':branches=' + (agent.lazy ? 'lazy' : '') + agent.branches : '') +
     (agent.refusalFallback ? ':refusal_fallback=' + agent.refusalFallback : '')
   )
 }

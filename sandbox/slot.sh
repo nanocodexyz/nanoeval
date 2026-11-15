@@ -202,7 +202,7 @@ cmd_probe() {
   if [ -f "$rt/trust" ]; then ca_bundle=true; fi
   if [ -n "${NANOEVAL_SLOT_ENV:-}" ]; then slot_env=true; fi
   if [ -n "${NANOEVAL_SLOT_FORWARD:-}" ]; then slot_forward=true; fi
-  printf '{"arch":"%s","backend":"%s","bwrap":%s,"ca_bundle":%s,"cgroup":%s,"cpus":%s,"fork":true,"kernel":"%s","krun":%s,"kvm":%s,"memory_mb":%s,"network":"%s","ns":%s,"slot_env":%s,"slot_forward":%s,"userns":%s}\n' \
+  printf '{"arch":"%s","backend":"%s","bwrap":%s,"ca_bundle":%s,"cgroup":%s,"cpus":%s,"fork":true,"fork_live":true,"kernel":"%s","krun":%s,"kvm":%s,"memory_mb":%s,"network":"%s","ns":%s,"slot_env":%s,"slot_forward":%s,"userns":%s}\n' \
     "$(uname -m)" "$(cat "$home/backend" 2>/dev/null || printf none)" "$bwrap" "$ca_bundle" "$cgroup" "$cpus" "$(uname -r)" "$microvm" "$kvm" "$memory" "$(cat "$home/network" 2>/dev/null || printf none)" "$ns" "$slot_env" "$slot_forward" "$userns"
 }
 
@@ -502,23 +502,27 @@ cmd_drop() {
 }
 
 cmd_fork() {
-  local slot=$1 branch=$2
+  local slot=$1 branch=$2 when=${3:-start}
   valid "$slot"
   valid "$branch"
   local dir=$home/slots/$slot to=$home/slots/$branch
   [ "$(state "$dir/up.status")" = exit:0 ] || die "slot $slot is not up"
-  [ "$(state "$dir/hand.status")" = none ] || die "slot $slot forks before its hand starts"
+  case $when in
+    start) [ "$(state "$dir/hand.status")" = none ] || die "slot $slot forks before its hand starts" ;;
+    live) [ "$(state "$dir/hand.status")" = running ] || die "slot $slot forks live only while its hand runs" ;;
+    *) die "a fork is at start or live, not $when" ;;
+  esac
   case $(state "$to/up.status") in
     running | exit:0) return 0 ;;
   esac
   side=machine
   trap fault EXIT
   mkdir -p "$to"
-  spawn "$to/up.status" "$to/up.log" bash "$self" _fork "$slot" "$branch"
+  spawn "$to/up.status" "$to/up.log" bash "$self" _fork "$slot" "$branch" "$when"
 }
 
 cmd__fork() {
-  local slot=$1 branch=$2
+  local slot=$1 branch=$2 when=$3
   local dir=$home/slots/$slot to=$home/slots/$branch archive name args=()
   side=machine
   trap fault EXIT
@@ -539,10 +543,18 @@ cmd__fork() {
       ;;
   esac
   cmd__up "$branch" "${args[@]:1}"
-  if [ "$(cat "$dir/backend")" = dir ]; then
-    rm -rf "$to/work"
-    cp -a --reflink=auto "$dir/work" "$to/work"
-  fi
+  case $(cat "$dir/backend") in
+    dir)
+      rm -rf "$to/work"
+      cp -a --reflink=auto "$dir/work" "$to/work"
+      ;;
+    krun | ns)
+      if [ "$when" = live ]; then
+        mapfile -t options < <(guest_options "$to")
+        vm "$to" exec "${options[@]}" --user 0 -- rm -rf /tmp/.nanoeval-hand
+      fi
+      ;;
+  esac
   printf '%s\n' "$slot" >"$to/fork"
 }
 

@@ -37,7 +37,7 @@ test('the command prints a refusal as one line and exits 1', () => {
   const agent = run('run', ...there, '--eval', 'samples', '--agent', 'bad')
   assert.equal(
     agent.stderr,
-    'nanoeval: an agent is ID=HARNESS:MODEL[:THINKING][:branches=N][:refusal_fallback=return_once], not bad\n',
+    'nanoeval: an agent is ID=HARNESS:MODEL[:THINKING][:branches=[lazy]N][:refusal_fallback=return_once], not bad\n',
   )
   assert.equal(agent.status, 1)
   const option = run('run', '--tag', 'x')

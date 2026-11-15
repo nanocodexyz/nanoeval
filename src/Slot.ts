@@ -85,7 +85,8 @@ export function create(options: create.Options) {
       home + '/slots/' + slot + '/' + name,
     file: (slot: string, path: string) => call('file', slot, path),
     files: (slot: string) => call('files', slot),
-    fork: (slot: string, branch: string) => call('fork', slot, branch),
+    fork: (slot: string, input: { branch: string; when: 'live' | 'start' }) =>
+      call('fork', slot, input.branch, input.when),
     gone: (slot: string) => call('gone', slot),
     hand: (slot: string, input: { name: string; url: string }) =>
       call('hand', slot, input.url, input.name),
