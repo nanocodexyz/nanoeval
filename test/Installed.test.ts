@@ -1469,6 +1469,22 @@ test('the meter reads the usage of a response from its events, however they are 
     outputTokens: 42,
   })
 
+  const hour = Proxy.meter('claude')
+  hour.push(
+    'event: message_start\ndata: {"type":"message_start","message":{"model":"claude-opus-5-5","usage":{"input_tokens":2,"cache_read_input_tokens":50,"cache_creation_input_tokens":8,"cache_creation":{"ephemeral_5m_input_tokens":3,"ephemeral_1h_input_tokens":5},"output_tokens":1}}}\n\n',
+  )
+  hour.push(
+    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}\n\n',
+  )
+  assert.deepEqual(hour.usage(), {
+    cacheWriteHourTokens: 5,
+    cacheWriteTokens: 8,
+    cachedTokens: 50,
+    inputTokens: 60,
+    model: 'claude-opus-5-5',
+    outputTokens: 9,
+  })
+
   const whole = Proxy.meter('claude')
   whole.push('{"type":"message","model":"claude-haiku-4-5","usage":{"input_tok')
   whole.push('ens":3,"output_tokens":2}}')

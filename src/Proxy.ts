@@ -19,6 +19,7 @@ export type Variables = {
 }
 
 export type Usage = {
+  cacheWriteHourTokens?: number
   cacheWriteTokens: number
   cachedTokens: number
   costBy?: 'list'
@@ -293,6 +294,11 @@ export function meter(provider: Provider): {
       'cache_creation_input_tokens' in used
         ? count(used['cache_creation_input_tokens'])
         : (found?.cacheWriteTokens ?? 0)
+    const created = used['cache_creation']
+    const hour =
+      typeof created === 'object' && created !== null
+        ? count(created['ephemeral_1h_input_tokens'])
+        : found?.cacheWriteHourTokens
     const cached =
       'cache_read_input_tokens' in used
         ? count(used['cache_read_input_tokens'])
@@ -317,6 +323,7 @@ export function meter(provider: Provider): {
       : (found?.otherTools ?? {})
     const webUsd = paid(used) ?? found?.webUsd
     found = {
+      ...(hour ? { cacheWriteHourTokens: hour } : {}),
       cacheWriteTokens: write,
       cachedTokens: cached,
       ...(cost === undefined ? {} : { costUsd: cost }),

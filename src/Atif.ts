@@ -74,6 +74,7 @@ export type Observation = {
 }
 
 export type Usage = {
+  cacheWriteHourTokens?: number
   cacheWriteTokens: number
   cachedTokens: number
   costBy?: 'list'
@@ -131,6 +132,8 @@ export declare namespace fromEvents {
 export function sum(usages: readonly Usage[]): Usage {
   const total = none()
   for (const usage of usages) {
+    if (usage.cacheWriteHourTokens)
+      total.cacheWriteHourTokens = (total.cacheWriteHourTokens ?? 0) + usage.cacheWriteHourTokens
     total.cacheWriteTokens += usage.cacheWriteTokens
     total.cachedTokens += usage.cachedTokens
     if (usage.costBy) total.costBy = usage.costBy

@@ -139,12 +139,13 @@ test('a cost that was reported stands, and an attempt without one is said', () =
   const [bare] = Arms.arms([reported])
   assert.deepEqual(
     [bare!.costUsd, bare!.priced, bare!.listed, bare!.metered, bare!.usdPerPass],
-    [0.75, 2, 1, 3, 0.375],
+    [0.75, 2, 1, 3, null],
   )
   assert.match(
     Arms.line(bare!),
-    /, \$0\.3750 a pass \(\$0\.7500, 1 of 2 attempts at list prices, without 1 attempt that has no cost\), input/,
+    /, USD a pass not known \(\$0\.7500, 1 of 2 attempts at list prices, without 1 attempt that has no cost\), input/,
   )
+  assert.equal(Arms.perPass(bare!), 'not known')
   const [priced] = Arms.arms([reported], { prices })
   assert.ok(Math.abs(priced!.costUsd! - 0.75 - listUsd) < 1e-12, 'a price is no second cost')
   assert.deepEqual([priced!.priced, priced!.listed], [3, 2])
