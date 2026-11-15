@@ -4,7 +4,6 @@ import type { AddressInfo } from 'node:net'
 import { test } from 'node:test'
 import { summary } from '../cli/nanoeval.ts'
 import * as Arms from '../src/Arms.ts'
-import * as Installed from '../src/Installed.ts'
 import * as Price from '../src/Price.ts'
 import * as Proxy from '../src/Proxy.ts'
 import * as Result from '../src/Result.ts'
@@ -131,7 +130,7 @@ function priced(usage: Proxy.Usage, prices?: Price.List): Proxy.Usage {
   return price ? { ...usage, costBy: 'list', costUsd: Price.usd(price, usage) } : usage
 }
 
-const answered = (path: string, usage: Proxy.Usage | undefined): Installed.Relayed => ({
+const answered = (path: string, usage: Proxy.Usage | undefined): Proxy.Relayed => ({
   path,
   status: 200,
   usage,
@@ -212,7 +211,7 @@ test('the requests of a row are priced at the list price of its model, which a p
   const tokens = { cached: 4992, input: 25568, output: 2006, reasoning: 524 }
   const listUsd =
     ((tokens.input - tokens.cached) * 0.1 + tokens.cached * 0.01 + tokens.output * 0.5) / 1e6
-  const row = Installed.metered(
+  const row = Proxy.metered(
     'codex',
     recorded.map((usage) => answered('responses', priced(usage))),
   )
@@ -233,7 +232,7 @@ test('the requests of a row are priced at the list price of its model, which a p
   assert.ok(Math.abs(row.costUsd! - listUsd) < 1e-12)
 
   const own = { 'gpt-6-luna': { cachedUsd: 1, inputUsd: 2, outputUsd: 3 } }
-  const replaced = Installed.metered(
+  const replaced = Proxy.metered(
     'codex',
     recorded.map((usage) => answered('responses', priced(usage, own))),
   )
@@ -245,12 +244,12 @@ test('the requests of a row are priced at the list price of its model, which a p
   )
   assert.equal(Price.of('a-model-without-a-price', own), undefined)
 
-  const reported = Installed.metered('codex', [
+  const reported = Proxy.metered('codex', [
     answered('responses', priced({ ...recorded[0]!, costUsd: 0.25 })),
   ])
   assert.deepEqual([reported.costBy, reported.costUsd], [undefined, 0.25])
 
-  const unpriced = Installed.metered('codex', [
+  const unpriced = Proxy.metered('codex', [
     answered('chat/completions', priced({ ...recorded[0]!, model: 'a-model-without-a-price' })),
     answered('chat/completions', priced(recorded[1]!)),
   ])
@@ -258,7 +257,7 @@ test('the requests of a row are priced at the list price of its model, which a p
 })
 
 test('an answer whose usage was not read is counted, and the cost of its row is not known', () => {
-  const row = Installed.metered('codex', [
+  const row = Proxy.metered('codex', [
     answered('chat/completions', priced(recorded[0]!)),
     answered('chat/completions', metered('codex', chatStream(false))),
     { again: true, path: 'chat/completions', status: 429, usage: undefined },
@@ -269,7 +268,7 @@ test('an answer whose usage was not read is counted, and the cost of its row is 
     [row.modelCalls, row.unmeteredRequests, row.costUsd, row.inputTokens],
     [1, 1, undefined, 3948],
   )
-  const counted = Installed.metered('claude', [
+  const counted = Proxy.metered('claude', [
     answered('v1/messages/count_tokens', undefined),
     answered('v1/messages', priced({ ...metered('claude', messagesStream)!, costUsd: 0.5 })),
   ])

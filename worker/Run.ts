@@ -1694,7 +1694,7 @@ export class Run extends DurableObject<Env> {
   }
 
   private metered(row: Ledger.Attempt): Atif.Usage {
-    return Installed.metered(
+    return Proxy.metered(
       Installed.provider(this.installed(row)!, this.agentOf(row).api),
       this.sql
         .all(
