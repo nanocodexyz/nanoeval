@@ -15,7 +15,12 @@ export type Turn = {
 export function body(turn: Turn): Record<string, unknown> {
   return {
     ...(turn.hand ? { hand: turn.hand } : {}),
-    ...(turn.orchestration ? { codex_orchestration: turn.orchestration } : {}),
+    ...(turn.orchestration && turn.provider === 'claude'
+      ? { claude_orchestration: turn.orchestration }
+      : {}),
+    ...(turn.orchestration && turn.provider === 'codex'
+      ? { codex_orchestration: turn.orchestration }
+      : {}),
     ...(turn.deadline
       ? { deadline: { at_ms: turn.deadline.atMs, limit_ms: turn.deadline.limitMs } }
       : {}),
