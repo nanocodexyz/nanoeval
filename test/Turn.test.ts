@@ -90,11 +90,16 @@ test('a session sends the refusal fallback scope of its agent, and nothing witho
     Turn.body({ ...claude, refusalFallback: 'return_once' })['refusal_fallback'],
     'return_once',
   )
+  assert.equal(Turn.body({ ...claude, refusalFallback: 'session' })['refusal_fallback'], 'session')
   const input = { at: 1_800_000_000_000, session: 'run-a00001' }
   assert.equal('refusal_fallback' in JSON.parse(Turn.sent(claude, input)), false)
   assert.equal(
     JSON.parse(Turn.sent({ ...claude, refusalFallback: 'return_once' }, input)).refusal_fallback,
     'return_once',
+  )
+  assert.equal(
+    JSON.parse(Turn.sent({ ...claude, refusalFallback: 'session' }, input)).refusal_fallback,
+    'session',
   )
 })
 
