@@ -152,7 +152,7 @@ async function forwarded(
       })
       return new Response(null, { headers, status: upstream.status })
     }
-    const meter = Proxy.meter(input.provider)
+    const meter = Proxy.meter(input.provider, input.cost === false ? { cost: false } : {})
     const decoder = new TextDecoder()
     let settled = false
     const settle = async () => {
@@ -186,6 +186,7 @@ async function forwarded(
 export declare namespace relay {
   type Input = {
     body?: ArrayBuffer
+    cost?: false
     headers: Headers
     hooks: Hooks
     method: string

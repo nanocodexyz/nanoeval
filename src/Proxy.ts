@@ -143,6 +143,16 @@ export function session(name: string): Session | undefined {
   }
 }
 
+const workersAiPath = /^\/client\/v4\/accounts\/[^/]+\/ai\/v1\/(.+)$/
+
+export function workersAi(url: string, gateway?: string): string | undefined {
+  const parsed = new URL(url)
+  const match =
+    parsed.hostname === 'api.cloudflare.com' ? workersAiPath.exec(parsed.pathname) : null
+  if (!match) return undefined
+  return gateway ? gateway.replace(/\/+$/, '') + '/v1/' + match[1] + parsed.search : url
+}
+
 export function route(provider: Provider, path: string): string | undefined {
   const clean = path.replace(/^\/+|\/+$/g, '')
   return routes[provider].includes(clean) ? clean : undefined
@@ -245,10 +255,14 @@ function paid(used: Record<string, any>): number | undefined {
     : undefined
 }
 
-export function meter(provider: Provider): {
+export function meter(
+  provider: Provider,
+  options: { cost?: false } = {},
+): {
   push(chunk: string): void
   usage(): Usage | undefined
 } {
+  const costed = options.cost !== false
   let pending = ''
   let whole = ''
   let stream = false
@@ -274,7 +288,7 @@ export function meter(provider: Provider): {
       found = {
         cacheWriteTokens: count(input?.['cache_write_tokens']),
         cachedTokens: count(input?.['cached_tokens']),
-        ...(typeof used['cost'] === 'number' ? { costUsd: count(used['cost']) } : {}),
+        ...(costed && typeof used['cost'] === 'number' ? { costUsd: count(used['cost']) } : {}),
         inputTokens: count(used['input_tokens'] ?? used['prompt_tokens']),
         ...(typeof response['model'] === 'string' ? { model: response['model'] } : {}),
         ...(Object.keys(others).length ? { otherTools: others } : {}),
