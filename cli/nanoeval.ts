@@ -69,13 +69,15 @@ const usage = `nanoeval <command>
   sandboxd  --token T [--host 127.0.0.1] [--port 8788] [--root output/sandboxes]
             [--exec-timeout-ms 600000]
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
-            [--store DIR] [--cache DIR]
+            [--package-archive] [--store DIR] [--cache DIR]
             Serve this machine as a local sandbox provider: a run starts one task runner in
             each sandbox it opens here. With --ca-bundle, slots trust that certificate bundle,
             for a machine whose network re-signs TLS. With --slot-env, they start with the
             variables of that file. With --slot-forward, a slot on a private network reaches
             that listener on this machine's loopback at the same address, and the names that
-            this machine's /etc/hosts gives the address are in the slot's. --store names the
+            this machine's /etc/hosts gives the address are in the slot's. With
+            --package-archive, its runners serve verifiers as runner --package-archive
+            does. --store names the
             directory blob store its runners read, and --cache where they keep verified blobs
             and unpacked environment disks.
   worker    --token T [--host 127.0.0.1] [--port 8787] [--state output/worker] [--tick-ms 500]
@@ -312,11 +314,20 @@ const usage = `nanoeval <command>
             [--backend krun|ns] [--slots N] [--memory-mb N]
             [--free-disk-mb N] [--poll-ms N] [--store DIR] [--cache DIR]
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
+            [--package-archive]
             Attach a task runner on this machine to a run: it claims rows up to its own
             capacity (--slots, else the slot count of the run, else one slot for each
             hardware thread it may use), fetches their blobs by digest, boots each
             environment disk under a copy-on-write disk of its own, and reports to the run
             until the run is finished.
+            With --package-archive, the verifier of a krun or ns slot reaches
+            deb.debian.org and security.debian.org through this runner: each request goes
+            to the mirror it names, and a file under pool/ that the mirror answers 404 for
+            is served from the same path of archive.debian.org. The task, its image and its
+            tests are what was imported, and the row keeps the files that came from the
+            archive as verifier-archive.txt. The runner listens on port 80 of a loopback
+            address for each verifier, so it runs as root or with
+            net.ipv4.ip_unprivileged_port_start at 80 or lower.
             With --ends-in-sec, the machine is one that ends then: the runner takes a row
             only while the setup, agent and verifier timeouts of the row end before that, and
             leaves once no row that is left does.
@@ -1773,6 +1784,7 @@ async function main(
       'opened-at': { type: 'string' },
       oracle: { default: false, type: 'boolean' },
       out: { type: 'string' },
+      'package-archive': { default: false, type: 'boolean' },
       payer: { type: 'string' },
       'poll-ms': { type: 'string' },
       port: { type: 'string' },
@@ -1868,6 +1880,7 @@ async function main(
   const hostPolicy = {
     ...(values['ca-bundle'] ? { NANOEVAL_CA_BUNDLE: Path.resolve(values['ca-bundle']) } : {}),
     ...(values.cache ? { NANOEVAL_CACHE: Path.resolve(values.cache) } : {}),
+    ...(values['package-archive'] ? { NANOEVAL_PACKAGE_ARCHIVE: '1' } : {}),
     ...(values['slot-env'] ? { NANOEVAL_SLOT_ENV: Path.resolve(values['slot-env']) } : {}),
     ...(values['slot-forward'] ? { NANOEVAL_SLOT_FORWARD: values['slot-forward'].join(' ') } : {}),
     ...(values.store ? { NANOEVAL_STORE: Path.resolve(values.store) } : {}),

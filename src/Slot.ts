@@ -58,6 +58,7 @@ export function create(options: create.Options) {
     script,
     agent: (slot: string, input: { timeoutSec: number; url: string }) =>
       call('agent', slot, String(Math.ceil(input.timeoutSec)), input.url),
+    archiveFile: (slot: string) => home + '/slots/' + slot + '/archive',
     agentFile: (slot: string, name: 'instruction.md' | 'run.sh' | 'token') =>
       home + '/slots/' + slot + '/agent/' + name,
     agentOutput: (slot: string) => home + '/slots/' + slot + '/agent.out',
