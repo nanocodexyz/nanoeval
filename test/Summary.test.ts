@@ -450,3 +450,29 @@ test('a run that lost claims says how many, and why the last one ended', () => {
     ],
   )
 })
+
+test('status --rows names the threads of each verifier and their load, and the listing without it does not', () => {
+  const run = status([row('one', 1, 'passed')])
+  run['attempts'][0].verify = {
+    busy: 0.972,
+    endedAt: 13_300,
+    own: 0.968,
+    pressure: 0.02,
+    reserved: true,
+    startedAt: 1000,
+    steal: 0.001,
+    threads: [3],
+    waitMs: 40,
+  }
+  const text =
+    'verify_cpus=3 reserved (busy 97.2 %, others 0.4 %, steal 0.1 %, pressure 2.0 %, waited 0.0 s, 12.3 s)'
+  assert.equal(
+    shown(run, { rows: true, tasks: false }).split('\n').at(-1),
+    '  one1 suite/one haiku #1 passed ' + text,
+  )
+  assert.equal(
+    shown(run, { rows: false, tasks: false }).split('\n').at(-1),
+    '  one1 suite/one haiku #1 passed',
+  )
+  assert.ok(!summary(run).includes('verify_cpus'))
+})

@@ -3,7 +3,12 @@ import * as Path from 'node:path'
 
 export type Held = { cpus: number; slots: number }
 
-export type Peer = { cpus?: number; slots: number; threads?: readonly number[] }
+export type Peer = {
+  cpus?: number
+  slots: number
+  threads?: readonly number[]
+  verifyCores?: true
+}
 
 export function alive(pid: number): boolean {
   try {
@@ -61,10 +66,11 @@ export declare namespace others {
 
 export function parse(text: string): Peer | undefined {
   try {
-    const { cpus, slots, threads } = JSON.parse(text) as {
+    const { cpus, slots, threads, verifyCores } = JSON.parse(text) as {
       cpus?: unknown
       slots?: unknown
       threads?: unknown
+      verifyCores?: unknown
     }
     if (!Number.isInteger(slots) || (slots as number) < 1) return undefined
     return {
@@ -73,6 +79,7 @@ export function parse(text: string): Peer | undefined {
       ...(Array.isArray(threads) && threads.every((thread) => Number.isInteger(thread))
         ? { threads: threads as number[] }
         : {}),
+      ...(verifyCores === true ? { verifyCores: true as const } : {}),
     }
   } catch {
     return undefined

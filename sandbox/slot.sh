@@ -39,10 +39,11 @@ fault() {
 }
 
 spawn() {
-  local status=$1 log=$2
+  local status=$1 log=$2 pin=()
   shift 2
+  if [ -s "${status%/*}/pin" ]; then pin=(taskset -c "$(cat "${status%/*}/pin")"); fi
   printf 'running\n' >"$status"
-  setsid nohup bash -c 'status=$1; shift; "$@"; code=$?; printf "exit:%s\n" "$code" >"$status.tmp"; mv "$status.tmp" "$status"' bash "$status" "$@" >"$log" 2>&1 </dev/null &
+  setsid nohup "${pin[@]}" bash -c 'status=$1; shift; "$@"; code=$?; printf "exit:%s\n" "$code" >"$status.tmp"; mv "$status.tmp" "$status"' bash "$status" "$@" >"$log" 2>&1 </dev/null &
   printf '%s\n' "$!" >"$status.pid"
 }
 
@@ -65,6 +66,71 @@ has() {
 
 key() {
   printf '%s' "$1" | sha256sum | cut -c1-24
+}
+
+allowed() {
+  local name value
+  while read -r name value; do
+    if [ "$name" = Cpus_allowed_list: ]; then printf '%s\n' "$value"; fi
+  done 2>/dev/null <"/proc/$1/status" || true
+}
+
+ended() {
+  local name value
+  while read -r name value _; do
+    if [ "$name" = State: ]; then printf '%s\n' "$value"; fi
+  done 2>/dev/null <"/proc/$1/status" || true
+}
+
+ticks() {
+  local line fields
+  read -r line <"/proc/$1/stat"
+  read -r -a fields <<<"${line##*) }"
+  printf '%s\n' "$(((fields[$2] + fields[$2 + 1]) * 1000000 / $(getconf CLK_TCK)))"
+}
+
+window() {
+  local dir=$1 edge=$2 pid=$3 field=$4
+  shift 4
+  {
+    printf 'at %s\n' "$(date +%s%3N)"
+    printf 'threads %s\n' "$(allowed "$pid")"
+    grep '^cpu[0-9]' /proc/stat
+    grep '^some ' /proc/pressure/cpu
+    if [ -s "$dir/cgroup" ]; then
+      awk '$1 == "usage_usec" { print "own " $2 }' "$(cat "$dir/cgroup")/cpu.stat"
+    elif [ -n "$field" ]; then
+      printf 'own %s\n' "$(ticks "$pid" "$field")"
+    fi
+    if [ "$#" -gt 0 ]; then vm "$dir" exec "$@" --user 0 -- cat /proc/stat | sed -n '1s/^/guest /p'; fi
+  } >"$dir/verify.$edge.tmp" 2>/dev/null || true
+  mv "$dir/verify.$edge.tmp" "$dir/verify.$edge"
+}
+
+family() {
+  ps -e -o pid= -o ppid= -o sess= | awk -v roots="$1" -v sessions="$2" '
+    BEGIN {
+      count = split(roots, list, " ")
+      for (at = 1; at <= count; at++) member[list[at]] = 1
+      count = split(sessions, list, " ")
+      for (at = 1; at <= count; at++) session[list[at]] = 1
+    }
+    {
+      pid[NR] = $1
+      parent[$1] = $2
+      if ($3 in session) member[$1] = 1
+    }
+    END {
+      do {
+        grew = 0
+        for (at = 1; at <= NR; at++)
+          if (!(pid[at] in member) && (parent[pid[at]] in member)) {
+            member[pid[at]] = 1
+            grew = 1
+          }
+      } while (grew)
+      for (at = 1; at <= NR; at++) if (pid[at] in member) print pid[at]
+    }'
 }
 
 launcher() {
@@ -918,17 +984,20 @@ cmd__verify() {
   workdir=$(cat "$dir/workdir")
   local run='if command -v bash >/dev/null 2>&1; then exec bash "$1"; else exec sh "$1"; fi'
   local options=()
-  rm -rf "$dir/verifier"
+  rm -rf "$dir/verifier" "$dir/verify.before" "$dir/verify.after"
   mkdir -p "$dir/verifier"
   case $(cat "$dir/backend") in
     dir)
       if [ -f "$dir/verifier.env" ]; then
         while IFS= read -r line; do options+=("$line"); done <"$dir/verifier.env"
       fi
+      window "$dir" before "$$" 13
       (cd "$workdir" && env "${options[@]}" NANOEVAL_VERIFIER_LOGS="$dir/verifier" timeout -k 10 "$seconds" sh -c "$run" sh "$dir/task/tests/test.sh") || code=$?
+      window "$dir" after "$$" 13
       ;;
     krun | ns)
       mapfile -t options < <(guest_options "$dir")
+      local guest=("${options[@]}")
       vm "$dir" exec "${options[@]}" --user 0 -- sh -c 'rm -rf /logs/verifier "$1" && mkdir -p /logs/verifier && chmod 777 /logs/verifier' sh "$agent_home"
       guest_copy "$dir" tests "${options[@]}"
       local kept='' fill='' key mode user
@@ -968,7 +1037,14 @@ cmd__verify() {
           options+=(--forward "$archive")
         fi
       fi
+      local measured=("$(cat "$dir/vm.pid")" '')
+      if [ "$(cat "$dir/backend")" = krun ]; then
+        measured[1]=11
+        measured+=("${guest[@]}")
+      fi
+      window "$dir" before "${measured[@]}"
       (cd "$dir" && timeout -k 10 "$seconds" "$krun/nanoeval-krun" exec "${options[@]}" -- sh -c "$run" sh /tests/test.sh) || code=$?
+      window "$dir" after "${measured[@]}"
       if [ -n "$fill" ] && [ "$code" = 0 ]; then
         rm -rf "$dir/io/cache"
         if vm "$dir" copy-out --socket vm.sock "$tools" cache && [ -n "$(ls -A "$dir/io/cache")" ]; then
@@ -984,6 +1060,55 @@ cmd__verify() {
       ;;
   esac
   return "$code"
+}
+
+cmd_pin() {
+  local list=$1 want slot dir file pid task roots sessions members moved=1 stuck again=' '
+  shift
+  [[ $list =~ ^[0-9]+(,[0-9]+)*$ ]] || die "pin takes hardware threads as N,N...: $list"
+  has taskset || die 'this machine has no taskset, which pins a slot to hardware threads'
+  want=$(taskset -c "$list" 2>/dev/null bash -c 'while read -r name value; do if [ "$name" = Cpus_allowed_list: ]; then printf "%s\n" "$value"; fi; done </proc/self/status') || die "this machine runs no process on the hardware threads $list"
+  for slot in "$@"; do
+    valid "$slot"
+    dir=$home/slots/$slot
+    [ -d "$dir" ] || continue
+    { printf '%s\n' "$list" >"$dir/pin.tmp" && mv "$dir/pin.tmp" "$dir/pin"; } 2>/dev/null || [ ! -d "$dir" ] || die "slot $slot does not keep its hardware threads"
+  done
+  while [ "$moved" = 1 ]; do
+    moved=0
+    roots=''
+    sessions=''
+    stuck=$again
+    again=' '
+    for slot in "$@"; do
+      dir=$home/slots/$slot
+      for file in vm.pid relay.pid; do
+        pid=$(cat "$dir/$file" 2>/dev/null) || continue
+        if [ "$(readlink "/proc/$pid/cwd" 2>/dev/null)" = "$(readlink -f "$dir")" ]; then roots+=" $pid"; fi
+      done
+      for file in "$dir"/*.status.pid; do
+        [ -f "$file" ] || continue
+        if [ "$(state "${file%.pid}")" = running ]; then sessions+=" $(cat "$file" 2>/dev/null || true)"; fi
+      done
+    done
+    members=$(family "$roots" "$sessions")
+    for pid in $members; do
+      for task in "/proc/$pid/task"/*; do
+        [ -e "$task" ] || continue
+        [ "$(allowed "$pid/task/${task##*/}")" != "$want" ] || continue
+        if ! taskset -cp "$list" "${task##*/}" >/dev/null 2>&1 || [ "$(allowed "$pid/task/${task##*/}")" != "$want" ]; then
+          case $(ended "$pid/task/${task##*/}") in
+            Z | X | '') continue ;;
+          esac
+          case $stuck in
+            *" ${task##*/} "*) die "the process ${task##*/} of a slot does not move to the hardware threads $list" ;;
+          esac
+          again+="${task##*/} "
+        fi
+        moved=1
+      done
+    done
+  done
 }
 
 cmd_down() {
@@ -1176,10 +1301,10 @@ cmd_file() {
 }
 
 command=${1:-}
-[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|tools|agents|up|fork|hand|preflight|agent|solve|verify|oom|gone|down|drop|destroy|prune|status|log|files|file> ...'
+[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|tools|agents|up|fork|hand|preflight|agent|solve|verify|pin|oom|gone|down|drop|destroy|prune|status|log|files|file> ...'
 shift
 case $command in
-  probe | setup | _setup | tools | agents | up | _up | fork | _fork | _ns | drop | _drop | hand | _hand | preflight | agent | _agent | solve | _solve | verify | _verify | oom | gone | down | destroy | prune | status | log | files | file)
+  probe | setup | _setup | tools | agents | up | _up | fork | _fork | _ns | drop | _drop | hand | _hand | preflight | agent | _agent | solve | _solve | verify | _verify | pin | oom | gone | down | destroy | prune | status | log | files | file)
     "cmd_$command" "$@"
     ;;
   *) die "unknown command: $command" ;;

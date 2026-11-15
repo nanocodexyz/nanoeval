@@ -1,4 +1,5 @@
 import type * as Result from './Result.ts'
+import type * as Window from './Window.ts'
 
 export const report = 'ctrf.json'
 export const reward = 'reward.txt'
@@ -84,6 +85,7 @@ export type Verifier = {
   memoryMb?: number
   oom?: number
   reward: number | null
+  window?: Window.Load
 }
 
 export const limitPrefix = 'the limit of the run ended the verifier'

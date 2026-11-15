@@ -96,6 +96,7 @@ export function create(options: create.Options) {
     ) => call('log', slot, phase, String(bytes)),
     offlineFile: (slot: string) => home + '/slots/' + slot + '/offline',
     oom: (slot: string) => call('oom', slot),
+    pin: (threads: string, names: readonly string[]) => call('pin', threads, ...names),
     preflight: (slot: string, timeoutSec: number) =>
       call('preflight', slot, String(Math.ceil(timeoutSec))),
     probe: () => call('probe'),

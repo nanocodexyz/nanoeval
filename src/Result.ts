@@ -1,6 +1,7 @@
 import type * as Atif from './Atif.ts'
 import type * as Installed from './Installed.ts'
 import * as Route from './Route.ts'
+import type * as Window from './Window.ts'
 
 export type FailureKind =
   | 'agent'
@@ -70,6 +71,7 @@ export type Attempt = {
   }
   usage: Atif.Usage | null
   verifierMaxSec?: number
+  verify?: Window.Load
 }
 
 export type AgentSummary = {

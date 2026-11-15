@@ -121,6 +121,7 @@ export type Runner = {
   token: string
   url: string
   verifierCache?: true
+  verifyCores?: true
 }
 
 const thinking = ['none', 'low', 'medium', 'high', 'xhigh', 'max']

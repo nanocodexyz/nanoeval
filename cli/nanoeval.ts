@@ -40,6 +40,7 @@ import * as Subset from '../src/Subset.ts'
 import * as Task from '../src/Task.ts'
 import * as Timeline from '../src/Timeline.ts'
 import * as Unsound from '../src/Unsound.ts'
+import * as Window from '../src/Window.ts'
 import * as Doctor from './Doctor.ts'
 import * as Import from './Import.ts'
 import * as Login from './Login.ts'
@@ -360,7 +361,7 @@ const usage = `nanoeval <command>
   runner    --url URL --token T (--run RUN | --standing --backend krun|ns|dir [--location HINT])
             [--home DIR] [--ends-in-sec N]
             [--backend krun|ns] [--slots N] [--memory-mb N] [--memory-overcommit]
-            [--cpus-per-thread N] [--slots-only]
+            [--cpus-per-thread N] [--slots-only] [--verify-cores]
             [--free-disk-mb N] [--poll-ms N] [--store DIR] [--cache DIR]
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
             [--package-archive]
@@ -384,6 +385,18 @@ const usage = `nanoeval <command>
             less --memory-mb, a fifth of it by default). Rows that later fill what they
             declare can together ask for more than the machine has: the kernel then ends
             a slot, and its row goes back to the run.
+            With --verify-cores a verifier runs alone on hardware threads: the runner
+            keeps as many of its threads as the task declares CPUs for the slot while its
+            verifier runs, moves every other slot of this runner off them, and gives them
+            back when the verifier ends. A row waits for free threads before the time
+            limit of its verifier starts, and its result names the wait. The rows that
+            verify and that wait count for those whole threads when the runner admits by
+            more than one vCPU a thread. The runner is refused with --slots-only, and
+            when another runner of this machine uses the same threads: pin each runner
+            to threads of its own. With or without the option, status --rows names for
+            each row the threads its verifier ran on, how busy they were and how much of
+            that was other work, the steal a microVM saw, and the CPU pressure of the
+            machine while the verifier ran.
             With --package-archive, the verifier of a krun or ns slot reaches
             deb.debian.org and security.debian.org through this runner: each request goes
             to the mirror it names, and a file under pool/ that the mirror answers 404 for
@@ -1271,7 +1284,7 @@ export function shown(
 ): string {
   const unsound = input.unsound ?? []
   const full = summary(status, { unsound })
-  if (input.rows) return full
+  if (input.rows) return summary(status, { unsound, verify: true })
   if (input.tasks) return summary(status, { tasks: true, unsound })
   return input.height !== undefined && full.split('\n').length > input.height
     ? summary(status, { tasks: true, unsound }) +
@@ -1281,7 +1294,7 @@ export function shown(
 
 export function summary(
   status: Record<string, any>,
-  options: { tasks?: boolean; unsound?: readonly string[] } = {},
+  options: { tasks?: boolean; unsound?: readonly string[]; verify?: boolean } = {},
 ): string {
   const cancelled = (status['attempts'] as Record<string, any>[]).filter(
     (attempt) => attempt['failure']?.kind === 'cancelled',
@@ -1591,6 +1604,7 @@ export function summary(
               Math.round(attempt['modelWaits'].sec) +
               ' s)'
             : '',
+          options.verify && attempt['verify'] ? Window.text(attempt['verify'] as Window.Load) : '',
           attempt['claims'] > 1 ? 'claims=' + attempt['claims'] : '',
           attempt['retries'] ? 'retries=' + attempt['retries'] : '',
           attempt['retryOf']
@@ -2018,6 +2032,7 @@ async function main(
       unsound: { type: 'string' },
       url: { default: process.env['NANOEVAL_URL'], type: 'string' },
       'verifier-cache': { default: false, type: 'boolean' },
+      'verify-cores': { default: false, type: 'boolean' },
       'verifier-max-sec': { type: 'string' },
       wait: { default: false, type: 'boolean' },
       'warm-budget-usd': { default: '0', type: 'string' },
@@ -2916,6 +2931,11 @@ async function main(
     ...(values['slots-only'] ? { cpusPerThread: null } : {}),
   }
 
+  if (values['verify-cores'] && command !== 'runner')
+    throw new Error(
+      '--verify-cores is an option of nanoeval runner, which owns the hardware threads its verifiers get',
+    )
+
   if (command === 'runner' && values.standing) {
     if (backend === 'auto') throw new Error('a standing runner names its --backend')
     const home = Path.resolve(values.home ?? Path.join('output', 'runners', 'standing'))
@@ -2939,6 +2959,7 @@ async function main(
         ...(values['memory-mb'] ? { memoryMb: Number(values['memory-mb']) } : {}),
         ...admission,
         ...(values['memory-overcommit'] ? { memoryOvercommit: true as const } : {}),
+        ...(values['verify-cores'] ? { verifyCores: true as const } : {}),
         ...(values['poll-ms'] ? { pollMs: Number(values['poll-ms']) } : {}),
         ...(values.slots ? { slots: Number(values.slots) } : {}),
       },
@@ -2985,6 +3006,7 @@ async function main(
         ...(values['memory-mb'] ? { memoryMb: Number(values['memory-mb']) } : {}),
         ...admission,
         ...(values['memory-overcommit'] ? { memoryOvercommit: true as const } : {}),
+        ...(values['verify-cores'] ? { verifyCores: true as const } : {}),
         ...(values['poll-ms'] ? { pollMs: Number(values['poll-ms']) } : {}),
         ...(values.slots ? { slots: Number(values.slots) } : {}),
         url: access.url,

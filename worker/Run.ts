@@ -36,6 +36,7 @@ import * as SqlSetup from '../src/Sql.ts'
 import * as Timeline from '../src/Timeline.ts'
 import * as Turn from '../src/Turn.ts'
 import * as Verdict from '../src/Verdict.ts'
+import type * as Window from '../src/Window.ts'
 import * as Blobs from './Blobs.ts'
 import type { Env } from './Env.ts'
 import * as Evals from './Evals.ts'
@@ -1405,6 +1406,7 @@ export class Run extends DurableObject<Env> {
       reward: result?.reward,
       runner: row.runner,
       task: row.task,
+      verify: result?.verify,
     }
   }
 
@@ -3585,6 +3587,7 @@ export class Run extends DurableObject<Env> {
       memoryMb?: number
       oomKills?: number
       reward: number | null
+      window?: Window.Load
     }
     const refusals = new Set(
       this.sql
@@ -3613,6 +3616,7 @@ export class Run extends DurableObject<Env> {
         }),
         ...(body.verifier.memoryMb === undefined ? {} : { memoryMb: body.verifier.memoryMb }),
         ...(body.verifier.oom ? { oomKills: body.verifier.oom } : {}),
+        ...(body.verifier.window ? { window: body.verifier.window } : {}),
       }
       if (refusals.has('budget') && Result.outcome(end.reward, end.failure) !== 'passed')
         end = {
@@ -3726,6 +3730,7 @@ export class Run extends DurableObject<Env> {
       memoryMb?: number
       oomKills?: number
       reward: number | null
+      window?: Window.Load
     },
   ): Promise<void> {
     const meta = this.meta()!
@@ -3898,6 +3903,7 @@ export class Run extends DurableObject<Env> {
       ...(config.limits.verifierMaxSec === undefined
         ? {}
         : { verifierMaxSec: config.limits.verifierMaxSec }),
+      ...(end.window ? { verify: end.window } : {}),
     }
     Ledger.finish(this.sql, {
       ...(end.ending ? { ending: end.ending } : {}),

@@ -238,6 +238,11 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: dir
           NANOEVAL_E2E_SCENARIO: wide
+      - name: End to end, directory slots, verifiers that run alone on hardware threads while the agent of another row is busy
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: cores
       - name: End to end, directory slots, a runner that admits rows by the memory its machine uses
         run: npm run e2e
         env:

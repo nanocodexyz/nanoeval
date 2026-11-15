@@ -19,8 +19,10 @@ import * as Slot from '../src/Slot.ts'
 import * as Task from '../src/Task.ts'
 import type * as Timeline from '../src/Timeline.ts'
 import * as Verdict from '../src/Verdict.ts'
+import * as Window from '../src/Window.ts'
 import * as Archive from './Archive.ts'
 import * as Converter from './Converter.ts'
+import * as Cores from './Cores.ts'
 import * as Cpus from './Cpus.ts'
 import * as Disks from './Disks.ts'
 import * as Host from './Host.ts'
@@ -72,6 +74,8 @@ type Serving = { ahead(): string[]; rows(): Work[]; wake(): void; yield(): void 
 type Shared = {
   entering: { enter(): void; serving: Serving }[]
   inside?: Serving
+  own?: string
+  pinning: Promise<void>
   ready?: Ready
   serving: Set<Serving>
   stopping: boolean
@@ -79,12 +83,23 @@ type Shared = {
   unpacking: Map<string, Promise<void>>
 }
 
-type Stage = 'agent' | 'attach' | 'cli' | 'fork' | 'judge' | 'prepare' | 'solve' | 'up' | 'verify'
+type Stage =
+  | 'agent'
+  | 'attach'
+  | 'cli'
+  | 'cores'
+  | 'fork'
+  | 'judge'
+  | 'prepare'
+  | 'solve'
+  | 'up'
+  | 'verify'
 
 type Work = {
   at: number
   busy: boolean
   changed: number
+  cores?: number[]
   delay: number
   diskMb?: number
   down?: Promise<void>
@@ -95,15 +110,20 @@ type Work = {
   memoryMb?: number
   message: string
   next: number
+  pin?: string
   round: 1 | 2
   row: Protocol.Claimed
   session?: Protocol.Session
   stage: Stage
   stir?: () => void
+  waitMs?: number
   watcher?: FSWatcher
 }
 
-type Saved = Pick<Work, 'at' | 'memoryMb' | 'message' | 'round' | 'row' | 'session' | 'stage'>
+type Saved = Pick<
+  Work,
+  'at' | 'cores' | 'memoryMb' | 'message' | 'round' | 'row' | 'session' | 'stage' | 'waitMs'
+>
 
 type Mark = { at: number; ms?: number; name: string }
 
@@ -414,6 +434,7 @@ export async function run(options: Options): Promise<void> {
   const log = options.log ?? ((line: string) => console.log(new Date().toISOString() + ' ' + line))
   const shared: Shared = {
     entering: [],
+    pinning: Promise.resolve(),
     serving: new Set(),
     stopping: false,
     stops: new Set(),
@@ -702,12 +723,14 @@ async function attend(
   const save = async (item: Work) => {
     const saved: Saved = {
       at: item.at,
+      ...(item.cores ? { cores: item.cores } : {}),
       ...(item.memoryMb === undefined ? {} : { memoryMb: item.memoryMb }),
       message: item.message,
       round: item.round,
       row: item.row,
       ...(item.session ? { session: item.session } : {}),
       stage: item.stage,
+      ...(item.waitMs === undefined ? {} : { waitMs: item.waitMs }),
     }
     const file = Path.join(directory(item), 'row.json')
     await Fs.writeFile(file + '.tmp', JSON.stringify(saved))
@@ -759,6 +782,9 @@ async function attend(
   const down = (item: Work, evict: boolean) => (item.down ??= takeDown(item, evict))
 
   const takeDown = async (item: Work, evict: boolean) => {
+    const held = item.cores !== undefined
+    delete item.cores
+    delete item.pin
     archives.get(item.row.id)?.close()
     archives.delete(item.row.id)
     const disk = await text(Path.join(directory(item), 'disk'))
@@ -782,6 +808,10 @@ async function attend(
     signal()
     serving.yield()
     for (const other of shared.serving) if (other !== serving) other.wake()
+    if (held)
+      await freed().catch((error) =>
+        log('the slots were not moved onto the hardware threads a verifier left: ' + String(error)),
+      )
   }
 
   const needed = () =>
@@ -975,6 +1005,10 @@ async function attend(
       requestedMb: task.resources.memoryMb,
     })
     await packages(item)
+    if (reserve) {
+      item.pin = ''
+      await settle()
+    }
     const up = await output(
       slots.up(item.row.slot, {
         backend,
@@ -1140,6 +1174,10 @@ async function attend(
     const task = item.row.task
     await rowCall(item, 'verify', solve ? { solve } : {})
     if (task.verifier.finalMessage) await verifierInput(item, 'final_message.txt', item.message)
+    if (reserve) {
+      item.round = 1
+      return move(item, 'cores')
+    }
     await packages(item)
     await shell(slots.verify(item.row.slot, task.verifier.timeoutSec))
     item.round = 1
@@ -1203,6 +1241,12 @@ async function attend(
       }
     }
     const memoryMb = item.memoryMb ?? Admission.clamp(task.resources.memoryMb, capacity)
+    const window = Window.load({
+      after: (await text(Path.join(target, 'verify.after'))) ?? '',
+      before: (await text(Path.join(target, 'verify.before'))) ?? '',
+      reserved: item.waitMs !== undefined,
+      ...(item.waitMs === undefined ? {} : { waitMs: item.waitMs }),
+    })
     await finish(item, {
       verifier: {
         code,
@@ -1211,6 +1255,7 @@ async function attend(
         ...(memoryMb < task.resources.memoryMb ? { memoryMb } : {}),
         ...(oom ? { oom } : {}),
         reward,
+        ...(window ? { window } : {}),
       },
     })
   }
@@ -1287,6 +1332,10 @@ async function attend(
           if (elapsed > setupSec * 1000)
             return fail(item, 'environment', 'the branches did not fork within ' + setupSec + ' s')
           return pending(item)
+        }
+        if (reserve) {
+          item.pin = ''
+          await settle()
         }
         item.marks.push({ at: item.at, ms: now - item.at, name: 'attempt.fork' })
         for (const index of Branch.indexes(item.row.agent.branches!)) {
@@ -1400,6 +1449,41 @@ async function attend(
         item.message = (await text(Path.join(target, 'task', Task.finalMessagePath))) ?? ''
         return startVerifier(item, { code })
       }
+      case 'cores': {
+        if (reserve && !item.cores) {
+          const granted = Cores.grant({
+            count: Cores.count(task.resources.cpus, reserve.threads.length),
+            held: everything().flatMap((other) => (other.cores ? [other.cores] : [])),
+            others: Cores.needed(
+              everything()
+                .filter((other) => other !== item && !other.cores && other.stage !== 'cores')
+                .map((other) => declared(other, reserve.vcpus)),
+              reserve.perThread,
+            ),
+            threads: reserve.threads,
+          })
+          if (!granted) return pending(item)
+          item.cores = granted
+          item.waitMs = now - item.at
+          log(
+            item.row.id +
+              ' verifies alone on the hardware threads ' +
+              Window.ranges(granted) +
+              ', for which it waited ' +
+              item.waitMs +
+              ' ms',
+          )
+        }
+        if (reserve) await settle()
+        await packages(item)
+        await shell(
+          item.round === 2
+            ? slots.reverify(item.row.slot, task.verifier.timeoutSec)
+            : slots.verify(item.row.slot, task.verifier.timeoutSec),
+        )
+        if (item.round === 1) delete item.diskMb
+        return move(item, 'verify')
+      }
       case 'verify': {
         await packages(item)
         const code = Slot.exit(await phase(Path.join(target, 'verify.status')))
@@ -1410,6 +1494,10 @@ async function attend(
           return pending(item)
         }
         if (code !== 0 && (await gone(item))) return
+        if (item.cores) {
+          delete item.cores
+          await freed()
+        }
         item.marks.push({ at: item.at, ms: now - item.at, name: 'attempt.verifier' })
         return timed(item, 'attempt.collect', () => collect(item, code))
       }
@@ -1424,6 +1512,10 @@ async function attend(
           )
         if (judged.state !== 'answered') return fail(item, 'verifier', judged.error)
         await verifierInput(item, Judge.responseFile, judged.response)
+        if (reserve) {
+          item.round = 2
+          return move(item, 'cores')
+        }
         await packages(item)
         await shell(slots.reverify(item.row.slot, task.verifier.timeoutSec))
         item.round = 2
@@ -1509,6 +1601,7 @@ async function attend(
       errors: 0,
       marks: [],
       next: 0,
+      ...(config.verifyCores ? { pin: '' } : {}),
     }
     work.set(item.row.id, item)
     up.add(item)
@@ -1526,13 +1619,59 @@ async function attend(
       { at: startedAt, name: 'runner.start' },
       { at: startedAt, ms: Date.now() - startedAt, name: 'runner.setup' },
     )
-  const peers = Peers.held(
-    threads,
-    await Peers.others({ alive: Peers.alive, cache, pid: process.pid }),
-  )
+  const beside = await Peers.others({ alive: Peers.alive, cache, pid: process.pid })
+  const peers = Peers.held(threads, beside)
   const perThread = config.cpusPerThread === undefined ? Cpus.cpusPerThread : config.cpusPerThread
   const vcpus =
     perThread === null ? undefined : Cpus.vcpus(capabilities.cpus, { held: peers.cpus, perThread })
+  const refused = Cores.refusal({
+    own: threads,
+    peers: beside,
+    perThread,
+    reserves: config.verifyCores === true,
+  })
+  if (refused) {
+    await decline(config)
+    throw new RefusedError(refused)
+  }
+  const reserve =
+    config.verifyCores && threads && perThread !== null && vcpus !== undefined
+      ? { perThread, threads, vcpus }
+      : undefined
+  const declared = (item: Work, bound: number) =>
+    Math.min(Math.ceil(item.row.task.resources.cpus), bound) * (item.row.agent.branches ?? 1)
+  const settle = () => {
+    const done = shared.pinning.then(async () => {
+      if (!reserve) return
+      const rows = everything()
+      const open = Cores.free(
+        reserve.threads,
+        rows.flatMap((row) => (row.cores ? [row.cores] : [])),
+      )
+      const rest = open.join(',')
+      if (rest && shared.own !== rest) {
+        await shell('taskset -a -cp ' + rest + ' ' + process.pid)
+        shared.own = rest
+      }
+      const moves = new Map<string, Work[]>()
+      for (const row of rows) {
+        const list = (row.cores ?? open).join(',')
+        if (row.pin === undefined || row.pin === list || !list) continue
+        moves.set(list, [...(moves.get(list) ?? []), row])
+      }
+      for (const [list, moved] of moves) {
+        await shell(slots.pin(list, moved.flatMap(branchSlots)))
+        for (const row of moved) if (row.pin !== undefined) row.pin = list
+      }
+    })
+    shared.pinning = done.catch(() => {})
+    return done
+  }
+  const freed = async () => {
+    for (const other of everything()) if (other.stage === 'cores') other.next = 0
+    signal()
+    await settle()
+  }
   const capacity: Admission.Capacity = {
     ...(vcpus === undefined ? {} : { cpus: vcpus }),
     ...(config.freeDiskMb === undefined ? {} : { freeDiskMb: config.freeDiskMb }),
@@ -1543,6 +1682,7 @@ async function attend(
     ...(vcpus === undefined ? {} : { cpus: vcpus }),
     slots: capacity.slots,
     ...(threads ? { threads } : {}),
+    ...(reserve ? { verifyCores: true as const } : {}),
   })
   if (!config.ready) {
     const helloAt = Date.now()
@@ -1626,6 +1766,14 @@ async function attend(
     vcpus,
   })
   if (overcommitting) log(overcommitting)
+  if (reserve) {
+    log(
+      'a verifier runs alone on as many of the hardware threads ' +
+        Window.ranges(reserve.threads) +
+        ' as its task declares CPUs, and waits for them before its time limit starts',
+    )
+    await settle()
+  }
 
   const load = async (): Promise<Admission.Load> => {
     const rows = everything()
@@ -1637,8 +1785,13 @@ async function attend(
             cpus: rows.reduce(
               (total, item) =>
                 total +
-                Math.min(Math.ceil(item.row.task.resources.cpus), vcpus) *
-                  (item.row.agent.branches ?? 1),
+                (reserve && (item.cores || item.stage === 'cores')
+                  ? Cores.weight({
+                      count: Cores.count(item.row.task.resources.cpus, reserve.threads.length),
+                      declared: declared(item, vcpus),
+                      perThread: reserve.perThread,
+                    })
+                  : declared(item, vcpus)),
               0,
             ),
           }),

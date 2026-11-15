@@ -116,3 +116,16 @@ test('a second runner on the threads of the first has what is left of two slots 
     'two runners that are pinned apart each have their own threads',
   )
 })
+
+test('the file of a runner says that it reserves hardware threads for its verifiers', async () => {
+  const root = cache({})
+  const file = Peers.file({ cache: root, pid: process.pid, run: 'r1' })
+  await Peers.write(file, { cpus: 2, slots: 4, threads: [2, 3], verifyCores: true })
+  assert.deepEqual(Peers.parse(Fs.readFileSync(file, 'utf8')), {
+    cpus: 2,
+    slots: 4,
+    threads: [2, 3],
+    verifyCores: true,
+  })
+  assert.equal(Peers.parse('{"slots":4,"verifyCores":"yes"}')?.verifyCores, undefined)
+})

@@ -33,6 +33,7 @@ import * as Proxy from '../src/Proxy.ts'
 import type * as Result from '../src/Result.ts'
 import * as Retry from '../src/Retry.ts'
 import * as Slot from '../src/Slot.ts'
+import * as Window from '../src/Window.ts'
 import * as Guest from './Guest.ts'
 import * as Krun from './Krun.ts'
 import * as MockGateway from './MockGateway.ts'
@@ -82,6 +83,7 @@ const ending = scenario === 'ending'
 const attached =
   ending ||
   [
+    'cores',
     'lost',
     'machine',
     'overcommit',
@@ -267,6 +269,12 @@ const solutions: [marker: string, right: string, wrong: string][] = [
   ['port.token', 'sh start.sh', 'true'],
   ['network.checks', 'sh check.sh', 'true'],
   ['cached.txt', 'echo ready > cached.txt', 'true'],
+  ['alone.txt', 'echo ready > alone.txt', 'true'],
+  [
+    'busy.txt',
+    'end=$(($(date +%s) + 12)); while [ "$(date +%s)" -lt "$end" ]; do echo "$(date +%s) $(grep Cpus_allowed_list /proc/self/status | tr -dc 0-9,-)" >>busy.txt; done',
+    'true',
+  ],
 ]
 
 function sse(events: [string, unknown][]): string {
@@ -1797,48 +1805,60 @@ async function main(): Promise<void> {
     const wide = scenario === 'wide'
     const derived = scenario === 'threads' || wide
     const bounded = scenario === 'bounded'
+    const cored = scenario === 'cores'
     const boundSec = 10
     const lost = 'tasks/write-greeting'
     const directories = judged
       ? ['final-answer', 'judged-answer'].map((name) => Path.join('test/fixtures', name))
       : alone || branching || direct || midturn || preflighted || subagent
         ? [Path.join('tasks', 'write-greeting')]
-        : packing || derived || overcommitted
-          ? ['extract-todos', 'uppercase-message', 'write-greeting'].map((name) =>
-              Path.join('tasks', name),
+        : cored
+          ? ['alone-verifier-a', 'alone-verifier-b', 'busy-agent'].map((name) =>
+              Path.join('test/fixtures', name),
             )
-          : bounded
-            ? [
-                ...['long-agent', 'long-verifier'].map((name) => Path.join('test/fixtures', name)),
-                Path.join('tasks', 'write-greeting'),
-              ]
-            : failures
+          : packing || derived || overcommitted
+            ? ['extract-todos', 'uppercase-message', 'write-greeting'].map((name) =>
+                Path.join('tasks', name),
+              )
+            : bounded
               ? [
-                  ...[
-                    'large-tests',
-                    'no-reward',
-                    'slow-agent',
-                    'unreported-tests',
-                    ...(backend === 'dir'
-                      ? []
-                      : ['background-process', 'memory-limit', 'plain-user']),
-                  ].map((name) => Path.join('test/fixtures', name)),
-                  lost,
+                  ...['long-agent', 'long-verifier'].map((name) =>
+                    Path.join('test/fixtures', name),
+                  ),
+                  Path.join('tasks', 'write-greeting'),
                 ]
-              : isolated
-                ? [Network.fixture]
-                : closed
-                  ? ['closed-agent', 'closed-network', 'closed-verifier'].map((name) =>
-                      Path.join('test/fixtures', name),
-                    )
-                  : cached
-                    ? [Path.join('test/fixtures', 'cached-verifier')]
-                    : slotGone
-                      ? [Path.join('test/fixtures', underAgent ? 'slow-solution' : 'slow-verifier')]
-                      : [
-                          ...taskNames.map((name) => Path.join('tasks', name)),
-                          ...(unsound ? [Path.join('test/fixtures', 'stale-solution')] : []),
-                        ]
+              : failures
+                ? [
+                    ...[
+                      'large-tests',
+                      'no-reward',
+                      'slow-agent',
+                      'unreported-tests',
+                      ...(backend === 'dir'
+                        ? []
+                        : ['background-process', 'memory-limit', 'plain-user']),
+                    ].map((name) => Path.join('test/fixtures', name)),
+                    lost,
+                  ]
+                : isolated
+                  ? [Network.fixture]
+                  : closed
+                    ? ['closed-agent', 'closed-network', 'closed-verifier'].map((name) =>
+                        Path.join('test/fixtures', name),
+                      )
+                    : cached
+                      ? [Path.join('test/fixtures', 'cached-verifier')]
+                      : slotGone
+                        ? [
+                            Path.join(
+                              'test/fixtures',
+                              underAgent ? 'slow-solution' : 'slow-verifier',
+                            ),
+                          ]
+                        : [
+                            ...taskNames.map((name) => Path.join('tasks', name)),
+                            ...(unsound ? [Path.join('test/fixtures', 'stale-solution')] : []),
+                          ]
     const agents: Config.Agent[] =
       model === 'oracle'
         ? [oracle]
@@ -1901,6 +1921,7 @@ async function main(): Promise<void> {
                       bounded ||
                       cached ||
                       closed ||
+                      cored ||
                       derived ||
                       failures ||
                       isolated ||
@@ -1920,6 +1941,7 @@ async function main(): Promise<void> {
                             bounded ||
                             cached ||
                             closed ||
+                            cored ||
                             derived ||
                             failures ||
                             isolated ||
@@ -1985,6 +2007,15 @@ async function main(): Promise<void> {
         spawnSync('taskset', ['-pc', pinned.join(','), String(process.pid)]).status,
         0,
         'the lane pins itself, and so the runner it starts, to one hardware thread fewer than it has rows',
+      )
+    if (
+      cored &&
+      (Cpus.allowed(Fs.readFileSync(Cpus.host.status, 'utf8')) ?? []).length < directories.length
+    )
+      throw new Error(
+        'the cores scenario needs a hardware thread for each of its ' +
+          directories.length +
+          ' rows',
       )
     const importStarted = Date.now()
     const imported = await Import.cases(cases(), options)
@@ -2114,6 +2145,7 @@ async function main(): Promise<void> {
         branching ||
         cached ||
         closed ||
+        cored ||
         derived ||
         direct ||
         failures ||
@@ -2182,7 +2214,7 @@ async function main(): Promise<void> {
               }),
             }
           : {}),
-        ...(derived ? {} : { cpusPerThread: null, slots }),
+        ...(derived || cored ? {} : { cpusPerThread: null, slots }),
         timeoutSec: 3600,
         ...(cached ? { verifierCache: true as const } : {}),
         ...(warm ? { warm: { idleSec: 2 * noticeSec + 2, usd: 1 } } : {}),
@@ -2347,6 +2379,8 @@ async function main(): Promise<void> {
         ),
       )
       attach(created.id, 'b')
+    } else if (cored) {
+      attach(created.id, 'a', ['--verify-cores'])
     } else if (overcommitted) {
       attach(created.id, 'a', ['--memory-mb', String(admittedMb), '--memory-overcommit'])
     } else if (attached && !stood) {
@@ -2854,6 +2888,19 @@ async function main(): Promise<void> {
     const details: Record<string, any>[] = []
     for (const attempt of status['attempts'] as { id: string }[])
       details.push(await api.attempt(created.id, attempt.id))
+    if (scenario === 'tasks' && process.platform === 'linux')
+      for (const detail of details)
+        if (typeof detail['result']?.reward === 'number') {
+          const found = detail['result'].verify as Window.Load | undefined
+          assert.ok(
+            found !== undefined &&
+              found.threads.length > 0 &&
+              found.reserved === undefined &&
+              found.startedAt <= found.endedAt,
+            'a row whose verifier ran names its window and the hardware threads it ran on: ' +
+              JSON.stringify(found),
+          )
+        }
     for (const detail of details) {
       const artifacts = detail['artifacts'] as string[]
       if (
@@ -4968,6 +5015,95 @@ async function main(): Promise<void> {
           ' of ' +
           total +
           ' rows at once',
+      )
+      await pass()
+      return
+    }
+
+    if (cored) {
+      const named = (name: string) =>
+        details.find((detail) => detail['attempt'].task === 'fixtures/' + name)!
+      for (const detail of details) {
+        assert.equal(detail['attempt'].outcome, 'passed', JSON.stringify(detail['attempt'].failure))
+        const found = detail['result'].verify as Window.Load
+        assert.equal(
+          found.reserved,
+          true,
+          'a result says that the threads of its verifier were kept',
+        )
+        assert.equal(found.threads.length, 1, 'the verifier of a task of one CPU has one thread')
+        assert.ok(
+          found.startedAt <= found.endedAt,
+          'the window of the verifier has a start and an end',
+        )
+        assert.ok(found.waitMs! >= 0, 'and the time the row waited for its threads')
+        assert.ok(found.busy! >= 0 && found.busy! <= 1, 'the threads were busy for a share of it')
+        assert.deepEqual(detail['attempt'].verify, found, 'the row of a status has the same record')
+      }
+      const windows = ['alone-verifier-a', 'alone-verifier-b'].map(
+        (name) => named(name)['result'].verify as Window.Load,
+      ) as [Window.Load, Window.Load]
+      assert.ok(
+        windows[0].startedAt < windows[1].endedAt && windows[1].startedAt < windows[0].endedAt,
+        'the two verifiers ran at the same time: ' + JSON.stringify(windows),
+      )
+      assert.ok(
+        !windows[0].threads.some((thread) => windows[1].threads.includes(thread)),
+        'two verifiers that run at the same time share no hardware thread',
+      )
+      let beside = 0
+      if (backend === 'dir') {
+        for (const name of ['alone-verifier-a', 'alone-verifier-b']) {
+          const detail = named(name)
+          assert.equal(
+            (await api.artifact(created.id, detail['attempt'].id, 'verifier/threads.txt')).trim(),
+            Window.ranges(detail['result'].verify.threads),
+            'a verifier may run on the threads its result names and on no other',
+          )
+        }
+        const samples = (
+          await api.artifact(created.id, named('busy-agent')['attempt'].id, 'verifier/busy.txt')
+        )
+          .trim()
+          .split('\n')
+          .map((line) => line.split(' '))
+          .map(([second, list]) => ({
+            at: Number(second) * 1000,
+            threads: Window.list(list ?? '') ?? [],
+          }))
+        for (const found of windows) {
+          const inside = samples.filter(
+            (sample) => sample.at >= found.startedAt && sample.at + 1000 <= found.endedAt,
+          )
+          assert.ok(inside.length > 0, 'the agent of another row was busy while the verifier ran')
+          assert.ok(
+            inside.every(
+              (sample) =>
+                sample.threads.length > 0 &&
+                !sample.threads.some((thread) => found.threads.includes(thread)),
+            ),
+            'the commands of another row run on no thread of a verifier while it runs',
+          )
+          beside += inside.length
+        }
+      }
+      assert.match(
+        (await cli(['status', created.id, '--rows'])).text,
+        /verify_cpus=[0-9]+ reserved \(busy [0-9.]+ %/,
+        'status --rows names the threads of each verifier and how busy they were',
+      )
+      assert.match(
+        Fs.readFileSync(Path.join(out, 'runner-a.log'), 'utf8'),
+        / verifies alone on the hardware threads [0-9]+, for which it waited [0-9]+ ms/,
+      )
+      console.log(
+        'cores: two verifiers ran at the same time on the hardware threads ' +
+          windows.map((found) => Window.ranges(found.threads)).join(' and ') +
+          ', ' +
+          windows.map((found) => Window.text(found)).join('; ') +
+          (backend === 'dir'
+            ? ', and ' + beside + ' samples of a busy agent of another row were on neither'
+            : ''),
       )
       await pass()
       return
