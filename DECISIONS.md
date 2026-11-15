@@ -6067,3 +6067,32 @@ The run ended 197 s sooner, 8.2 % of the run before. The rows whose outcome diff
 - A limit that a provider sends as an error event inside a `200` stream. It reaches the agent as before.
 - An agent whose client gives up on a request that waits long and asks again. The run then waits for both, and the admission of the first is held until the row ends.
 - krun and ns slots: the lane is a step of the directory job only. A deployed Worker. The workflow on GitHub: Actions is disabled for the repository.
+
+## 2026-11-15: every harness runs in all 89 task images of Terminal-Bench 2.1
+
+The entries of fx, opencode and pi name three limits found on fixtures: fx's shell tool needs Bash or zsh, opencode needs about 550 MB and its musl build needs `libstdc++` and `libgcc`, and pi has no musl build. Whether a task image of Terminal-Bench 2.1 meets one of them was not known, so it was not known whether arms of different harnesses compare on the same tasks. They do: every harness ran in every image. Nothing was changed for it.
+
+### What ran
+
+One run of 534 rows at `ace6b12`: the 89 tasks, one attempt, six arms (`claude-code`, `codex-cli`, `fx-chat`, `opencode-chat`, `pi-chat`, and a `claude` session of nanocode as the reference), krun slots, ten at a time on four threads of a 48-thread Linux machine with KVM, x86_64. The model was a scripted endpoint outside the repository, behind the Worker's `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL`: it answers the first request of a conversation with one call of the harness's shell tool and the next with a final message. The command it asks for reads `/proc`: the high-water mark of the resident memory of each process from its own shell upward, `MemTotal`, and which shells and loaders the image has. A row counts as runnable when the run counted its model calls, the output of that command came back as the tool result, and the row has no agent, environment or infrastructure error.
+
+| Harness | Runnable | Resident memory of the harness at its command, MB: least, median, most | Most of a slot's memory |
+| --- | --- | --- | --- |
+| nanocode session, whose hand is what runs in the slot | 89 of 89 | 22, 23, 23 | 1.1% |
+| Codex CLI 0.166.0 | 89 of 89 | 141, 150, 219 | 10.8% |
+| Claude Code 2.1.318 | 89 of 89 | 155, 164, 186 | 9.2% |
+| fx 0.0.17 | 89 of 89 | 3, 5, 5 | 0.3% |
+| opencode 1.19.5 | 89 of 89 | 472, 515, 614 | 30.3% |
+| pi 1.5.2 | 89 of 89 | 83, 86, 92 | 4.5% |
+
+Every image has the glibc loader and none the musl one. Every image has Bash, 87 at `/usr/bin/bash` and 2 at `/bin/bash`, and none has zsh. A slot has 2,027 MB in 68 tasks, 3,941 MB in 13 and 7,966 MB in 8. So fx's shell tool always finds Bash, opencode and pi always take their glibc builds, and opencode's memory always fits.
+
+That run did not run the tasks' verifiers. Its checkout had one line of `sandbox/slot.sh` changed so that the verifier command writes a reward of 0: the verdict was not the question, the agent has exited before the verifier starts, and the verifiers are most of the time of such a row. Its rows therefore end as `verifier` errors, which were read as a clean exit of the agent. With the repository as it is and the tasks' own verifiers, 93 rows on 16 of the tasks ran in three smaller runs at the same commit, one of them cancelled after six of its tasks: 93 of 93 runnable, each `failed`, as an unsolved task is, and none errored.
+
+### What it means for a comparison
+
+No task has to be left out for a harness. What differs is how much of the task's memory the harness itself holds, since an installed agent runs inside the slot and a slot has the memory of its task: after one tool call opencode holds 23 to 30% of a 2 GB task, Codex CLI 7 to 11%, Claude Code 8 to 9%, pi 4.5%, fx 0.3%, and the hand of a nanocode session 1.1%. A task whose own work needs most of its memory has less of it under opencode than under the others. That is the task's limit, so the slot was not given more.
+
+### Not verified
+
+One attempt for each row. The memory is the high-water mark at the first tool call of an exchange of two requests, not that of a long session. ns and directory slots, arm64, and fx, opencode and pi over Messages and Responses did not run in these images. Nine nanocode rows of the smaller runs are not counted: the scripted endpoint sent them a script that Code Mode could not run, an error of the measurement.
