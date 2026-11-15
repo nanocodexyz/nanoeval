@@ -1943,7 +1943,14 @@ async function main(): Promise<void> {
                           ? { id: 'right', model: 'gpt-right', provider: 'codex' }
                           : { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
                         {
-                          ...(longCell ? { cellYieldMs: namedYieldMs } : {}),
+                          ...(longCell
+                            ? {
+                                briefFinish: true as const,
+                                cellYieldMs: namedYieldMs,
+                                foldFinish: true as const,
+                                lowEffortRounds: true as const,
+                              }
+                            : {}),
                           id: 'wrong',
                           model: 'claude-sonnet-4-6',
                           provider: 'claude',
@@ -2994,15 +3001,45 @@ async function main(): Promise<void> {
           longCellSec +
           ' s ends in its exec',
       )
+      const folded = 'Before your final message, check the work'
+      const brief = 'reply with one line that says the task is done'
+      assert.ok(
+        namedCells.some((request) => request.received.includes(folded)) &&
+          namedCells.some((request) => request.received.includes(brief)),
+        'the model of the agent that names fold_finish and brief_finish gets the finish checklist with its prompt, and a finish check that asks for one line',
+      )
+      assert.ok(
+        longCells.every(
+          (request) => !request.received.includes(folded) && !request.received.includes(brief),
+        ),
+        'the model of the agent that names neither gets no checklist with its prompt, and a finish check that asks for its final message',
+      )
       for (const detail of details) {
         const turns = (await api.artifact(created.id, detail['attempt'].id, 'agent/turns.jsonl'))
           .trim()
           .split('\n')
-          .map((line) => JSON.parse(line) as { cell_yield_ms?: number })
+          .map(
+            (line) =>
+              JSON.parse(line) as {
+                brief_finish?: true
+                cell_yield_ms?: number
+                fold_finish?: true
+                low_effort_rounds?: true
+              },
+          )
         assert.deepEqual(
           turns.map((turn) => turn.cell_yield_ms),
           turns.map(() => (detail['attempt'].agent === 'wrong' ? namedYieldMs : undefined)),
           'the record of the turns of a row names the cellYieldMs of its agent, and none where the agent names none',
+        )
+        assert.deepEqual(
+          turns.map((turn) => [turn.brief_finish, turn.fold_finish, turn.low_effort_rounds]),
+          turns.map(() =>
+            detail['attempt'].agent === 'wrong'
+              ? [true, true, true]
+              : [undefined, undefined, undefined],
+          ),
+          'the record of the turns of a row names brief_finish, fold_finish and low_effort_rounds where its agent does',
         )
         assert.ok(turns.length > 0)
       }
