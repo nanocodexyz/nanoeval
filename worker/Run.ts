@@ -2384,9 +2384,9 @@ export class Run extends DurableObject<Env> {
       await this.complete(row, {
         failure: {
           at: now,
-          kind: 'environment',
+          kind: 'unscheduled',
           message:
-            'no runner of the run could take the row for ' +
+            Result.unscheduledPrefix +
             config.limits.setupSec +
             ' s: ' +
             (able.length

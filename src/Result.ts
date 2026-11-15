@@ -10,6 +10,7 @@ export type FailureKind =
   | 'cancelled'
   | 'environment'
   | 'internal'
+  | 'unscheduled'
   | 'verifier'
   | 'verifier_limit'
   | 'verifier_timeout'
@@ -109,6 +110,16 @@ export function outcome(reward: number | null, failure: Failure | undefined): At
 export function error(attempt: Pick<Attempt, 'failure' | 'outcome'>): Failure | undefined {
   return attempt.outcome === 'errored' ? attempt.failure : undefined
 }
+
+export function unscheduled(attempt: Pick<Attempt, 'failure' | 'outcome'>): boolean {
+  const failure = error(attempt)
+  return (
+    failure?.kind === 'unscheduled' ||
+    (failure?.kind === 'environment' && failure.message.startsWith(unscheduledPrefix))
+  )
+}
+
+export const unscheduledPrefix = 'no runner of the run could take the row for '
 
 export function timeout(attempt: {
   failure?: Failure
