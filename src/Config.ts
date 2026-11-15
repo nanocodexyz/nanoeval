@@ -21,6 +21,7 @@ export type Backend = Slot.Backend | 'auto'
 export type Agent = {
   api?: Installed.Api
   branches?: number
+  briefFinal?: true
   briefFinish?: true
   cellYieldMs?: number
   foldFinish?: true
@@ -51,7 +52,7 @@ export const payers: readonly Payer[] = ['deployment', 'plan']
 
 export type RefusalFallback = 'return_once' | 'session'
 
-export const finishLevers = ['briefFinish', 'foldFinish', 'lowEffortRounds'] as const
+export const finishLevers = ['briefFinal', 'briefFinish', 'foldFinish', 'lowEffortRounds'] as const
 
 export const planSignIn = 'nanoeval plans sign-in claude'
 
@@ -293,6 +294,7 @@ export function parse(value: unknown): Config {
     return {
       ...(agent.api ? { api: agent.api } : {}),
       ...(agent.branches === undefined ? {} : { branches: agent.branches }),
+      ...(agent.briefFinal ? { briefFinal: true as const } : {}),
       ...(agent.briefFinish ? { briefFinish: true as const } : {}),
       ...(agent.cellYieldMs === undefined ? {} : { cellYieldMs: agent.cellYieldMs }),
       ...(agent.foldFinish ? { foldFinish: true as const } : {}),

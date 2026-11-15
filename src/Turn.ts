@@ -1,6 +1,7 @@
 import type * as Config from './Config.ts'
 
 export type Turn = {
+  briefFinal?: true
   briefFinish?: true
   cellYieldMs?: number
   deadline?: { atMs: number; limitMs: number }
@@ -21,6 +22,7 @@ export const record = 'agent/turns.jsonl'
 
 function levers(turn: Turn): Record<string, true> {
   return {
+    ...(turn.briefFinal ? { brief_final: true as const } : {}),
     ...(turn.briefFinish ? { brief_finish: true as const } : {}),
     ...(turn.foldFinish ? { fold_finish: true as const } : {}),
     ...(turn.lowEffortRounds ? { low_effort_rounds: true as const } : {}),
