@@ -6246,3 +6246,15 @@ The rows of the 89 were compared with the rows of the import made one at a time 
 - More than six tasks at once on all 89, more than twelve on any, and a machine with threads to itself: what 24 at once take on 48 threads is not known, and the 120 s that were the aim of this change are not shown.
 - `--jobs` with `--store r2`: several multipart uploads through the Worker at once.
 - The wait for room on a disk that is in fact nearly full. The rule is unit tested with the free space given by the test.
+
+## 2026-11-15: a registry dataset reads its task archives ahead of the import
+
+**What was left.** With conversions side by side, the piece of an import of Terminal-Bench 2.1 that still ran in turn was its adapter: one request to the Harbor registry for the archive of each task, awaited before the next was asked, 51.7 s for the 89 in the import the entry above starts from and 46.8 s in the import that converted six at once. The archives are small, 51 MB in all, and the time is the round trip. Six conversions hid it. More would not: tasks would arrive one every half second, and an import of 89 would take the 50 s of its requests however many builders the machine had.
+
+**What changed.** `Dataset.Context` has `ahead`, how many tasks the reader of the cases takes at once, and `nanoeval import` gives it its `--jobs`. The registry adapter keeps a request in flight for the task it is about to yield and for the next `ahead - 1` after it, so there is one for each task the import can start and never more. The cases still come in the order of their ids, each is still checked against its pinned digest when it is yielded, and an archive that the registry does not serve fails at its own task, after the ones before it were yielded. Without `ahead`, and with `--jobs` left at one, the adapter asks for one archive at a time, as it did. The other adapters read one file for the whole dataset and have nothing to read ahead.
+
+**Measured.** The machine, the threads, the load and the layers of the entry above, fresh task sources, all 89 tasks at `--jobs 6`: 189.7 s where it was 205.1 s, every task imported, the adapter 2.2 s summed over the tasks where it was 46.8 s. One run each. The rows were again those of the import one at a time, 89 of 89 with the packed disk left out and in the same order.
+
+**Checked.** A unit test with a registry of five tasks whose archive requests it counts: one in flight without `ahead`, three with `ahead` 3, the same five cases in the same order either way, and with the third archive refused the first two cases are yielded and the read fails with the registry's answer. It fails when `ahead` is ignored, when every archive is asked for at once, and when a refused archive that was read ahead is left unhandled until its turn. On the 5-core machine without KVM: `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test` with no failure.
+
+**Not verified.** How many requests at once the registry accepts beyond the six that were in flight here. A dataset of thousands of registry tasks. `terminal-bench-2.0`, which the same adapter reads, was not imported.

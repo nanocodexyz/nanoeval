@@ -82,9 +82,11 @@ export function create(options: create.Options): Dataset.Adapter {
       if (byId.size !== versions.length)
         throw new DigestError(options.package + ' lists one task name more than once')
 
-      for (const id of Dataset.select([...byId.keys()], context)) {
+      const ids = Dataset.select([...byId.keys()], context)
+      const archives = new Map<string, Promise<Uint8Array>>()
+      const read = (id: string) => {
         const entry = byId.get(id)!
-        const archive = await Source.kept(
+        const archive = Source.kept(
           context.store,
           'harbor-hub/' + entry.content_hash + '.tar.gz',
           () =>
@@ -93,6 +95,15 @@ export function create(options: create.Options): Dataset.Adapter {
               url: hub.url + '/storage/v1/object/packages/' + entry.archive_path,
             }),
         )
+        archive.catch(() => undefined)
+        return archive
+      }
+      for (const [index, id] of ids.entries()) {
+        const entry = byId.get(id)!
+        for (const next of ids.slice(index, index + (context.ahead ?? 1)))
+          if (!archives.has(next)) archives.set(next, read(next))
+        const archive = await archives.get(id)!
+        archives.delete(id)
         const unpacked = Tar.unpack(Zlib.gunzipSync(archive))
         const files = Object.fromEntries(unpacked.map((file) => [file.path, file.data]))
         const checksum = await Task.checksum(files)

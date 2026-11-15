@@ -25,6 +25,7 @@ export type Selection = {
 }
 
 export type Context = Selection & {
+  ahead?: number
   store: Source.Store
 }
 

@@ -2492,7 +2492,7 @@ async function main(
       console.error(adapter.name + ' is not verified end to end: ' + adapter.proof)
     if (!adapter && !values.task?.length) throw new Error('import takes a DATASET or --task DIR')
     const result = adapter
-      ? await imported(adapter.cases({ ...selection, store: sources }), {
+      ? await imported(adapter.cases({ ...selection, ahead: jobs, store: sources }), {
           dataset: adapter.name,
           name: values.eval ?? adapter.name,
           source: adapter.source,
@@ -2747,7 +2747,7 @@ async function main(
             ' that the lab does not hold yet',
         )
       if (wanted && dataset)
-        await imported(dataset.cases({ ...wanted, store: sources }), {
+        await imported(dataset.cases({ ...wanted, ahead: jobs, store: sources }), {
           dataset: dataset.name,
           name,
           source: dataset.source,

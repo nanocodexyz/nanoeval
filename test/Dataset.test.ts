@@ -231,6 +231,92 @@ test('a registry dataset is refused when its task list or an archive does not ma
   Fs.rmSync(root, { recursive: true })
 })
 
+test('a registry dataset reads as many archives ahead as its reader takes at once, in the order of its ids', async () => {
+  const source = await readTask('tasks/write-greeting')
+  const names = ['a', 'b', 'c', 'd', 'e']
+  const packages = await Promise.all(
+    names.map(async (name) => {
+      const files = { ...source.files, 'instruction.md': Bytes.fromText('Write ' + name + '.\n') }
+      return {
+        archive: Zlib.gzipSync(
+          Tar.pack(
+            Object.entries(files).map(([path, data]) => ({
+              data,
+              executable: source.executable?.includes(path) ?? false,
+              path,
+            })),
+          ),
+        ),
+        digest: await Task.checksum(files),
+        name,
+      }
+    }),
+  )
+  const seen = { lost: '', most: 0, now: 0 }
+  const store = (root: string): Source.Store => ({
+    async fetch(url) {
+      const { pathname } = new URL(url)
+      if (pathname === '/rest/v1/dataset_version') return Response.json([{ id: 'version-1' }])
+      if (pathname === '/rest/v1/dataset_version_task')
+        return Response.json(
+          packages.map((entry) => ({
+            task_version: {
+              archive_path: entry.name,
+              content_hash: entry.digest,
+              package: { name: entry.name },
+            },
+          })),
+        )
+      seen.most = Math.max(seen.most, ++seen.now)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      seen.now--
+      const found = packages.find((entry) => pathname.endsWith('/' + entry.name))!
+      return found.name === seen.lost
+        ? new Response('', { status: 503 })
+        : new Response(found.archive)
+    },
+    root,
+  })
+  const adapter = HarborHub.create({
+    description: 'a fixture',
+    name: 'fixture',
+    package: 'fixture/suite',
+    proof: 'unit tests',
+    state: 'verified',
+    tasks: HarborHub.tasksDigest(packages.map((entry) => entry.digest)),
+    version: 'ab'.repeat(32),
+  })
+  const read = async (context: Dataset.Context) => {
+    const cases: Dataset.Case[] = []
+    for await (const item of adapter.cases(context)) cases.push(item)
+    return cases
+  }
+  const root = temporary()
+  const turn = await read({ store: store(Path.join(root, 'turn')) })
+  assert.equal(seen.most, 1)
+  seen.most = 0
+  const ahead = await read({ ahead: 3, store: store(Path.join(root, 'ahead')) })
+  assert.equal(seen.most, 3)
+  assert.deepEqual(
+    ahead.map((item) => item.id),
+    names,
+  )
+  assert.deepEqual(ahead, turn)
+
+  seen.lost = 'c'
+  const got: string[] = []
+  await assert.rejects(async () => {
+    for await (const item of adapter.cases({ ahead: 3, store: store(Path.join(root, 'lost')) }))
+      got.push(item.id)
+  }, Source.FetchError)
+  assert.deepEqual(
+    got,
+    ['a', 'b'],
+    'an archive that is not served fails the task it is, not an earlier one',
+  )
+  Fs.rmSync(root, { recursive: true })
+})
+
 test('a download is kept under its digest and refused when it does not match', async () => {
   const root = temporary()
   const bytes = Bytes.fromText('pinned\n')
