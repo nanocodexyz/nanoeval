@@ -1,4 +1,5 @@
 import type { App } from 'nanocode-ts/cloudflare'
+import type * as WorkersAi from './WorkersAi.ts'
 import type { PlanVault } from './Vault.ts'
 
 export type Env = App.Env & {
@@ -37,6 +38,10 @@ export type Env = App.Env & {
   TEMPO_KEY?: string
   TEMPO_PRIVATE_KEY?: string
   TICK_MS: string
+  /** The Workers AI binding that answers a codex session's `@cf/` model when no WORKERS_AI_TOKEN is set. */
+  AI?: WorkersAi.Binding
+  /** An AI Gateway that the binding's requests go through. */
+  WORKERS_AI_GATEWAY?: string
   WORKERS_AI_GATEWAY_URL?: string
   WORKERS_AI_TOKEN?: string
 }

@@ -1,5 +1,6 @@
 import * as Proxy from '../src/Proxy.ts'
 import * as Retry from '../src/Retry.ts'
+import type * as WorkersAi from './WorkersAi.ts'
 
 export type Outcome = {
   again?: true
@@ -97,7 +98,7 @@ async function forwarded(
     if (heldMs) await new Promise((resolve) => setTimeout(resolve, heldMs))
     const waited = heldMs ? { waitMs: heldMs } : {}
     const at = Date.now()
-    const upstream = await fetch(input.url, {
+    const upstream = await (input.fetch ?? fetch)(input.url, {
       ...(input.body === undefined ? {} : { body: input.body }),
       headers: input.headers,
       method: input.method,
@@ -187,6 +188,8 @@ export declare namespace relay {
   type Input = {
     body?: ArrayBuffer
     cost?: false
+    /** Answers the request instead of the network, such as a Workers AI binding. */
+    fetch?: WorkersAi.Fetch
     headers: Headers
     hooks: Hooks
     method: string

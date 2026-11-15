@@ -19,6 +19,7 @@
     { "tag": "v3", "new_sqlite_classes": ["Pool"] },
     { "tag": "v4", "new_sqlite_classes": ["PlanVault"] },
   ],
+  "ai": { "binding": "AI" },
   "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "nanoeval-blobs" }],
   "vars": {
     "CELL_YIELD_MS": "120000",
@@ -36,6 +37,7 @@
     "REMOTE_TIMEOUT_MS": "30000",
     "RUNTIME_MEMORY_BUDGET_BYTES": "67108864",
     "TICK_MS": "2000",
+    "WORKERS_AI_ACCOUNT_ID": "0a39052b0a32ba8c8444345fe21b7595",
   },
   "observability": { "enabled": true },
 }
