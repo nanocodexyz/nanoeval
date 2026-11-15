@@ -76,6 +76,7 @@ export type Observation = {
 export type Usage = {
   cacheWriteTokens: number
   cachedTokens: number
+  costBy?: 'list'
   costUsd: number | undefined
   inputTokens: number
   modelCalls: number
@@ -132,6 +133,7 @@ export function sum(usages: readonly Usage[]): Usage {
   for (const usage of usages) {
     total.cacheWriteTokens += usage.cacheWriteTokens
     total.cachedTokens += usage.cachedTokens
+    if (usage.costBy) total.costBy = usage.costBy
     if (usage.costUsd !== undefined) total.costUsd = (total.costUsd ?? 0) + usage.costUsd
     total.inputTokens += usage.inputTokens
     total.modelCalls += usage.modelCalls

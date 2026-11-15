@@ -14,6 +14,7 @@ import * as Converter from '../sandbox/Converter.ts'
 import * as Prune from '../sandbox/Prune.ts'
 import * as Runner from '../sandbox/Runner.ts'
 import * as Store from '../sandbox/Store.ts'
+import * as Arms from '../src/Arms.ts'
 import * as Baseline from '../src/Baseline.ts'
 import * as Bootstrap from '../src/Bootstrap.ts'
 import * as Compare from '../src/Compare.ts'
@@ -24,6 +25,7 @@ import * as Installed from '../src/Installed.ts'
 import * as Logins from '../src/Logins.ts'
 import type * as Ledger from '../src/Ledger.ts'
 import * as Pins from '../src/Pins.ts'
+import * as Price from '../src/Price.ts'
 import * as Protocol from '../src/Protocol.ts'
 import * as Result from '../src/Result.ts'
 import * as Route from '../src/Route.ts'
@@ -151,6 +153,7 @@ const usage = `nanoeval <command>
             [--sandboxes 1] [--memory-mb N] [--network private|host] [--template NAME]
             [--sandbox-timeout-sec N] [--sandbox-lease-sec 300] [--runtime | --runtime-blob SHA256]
             [--sandbox-budget-usd 0] [--model-budget-usd N] [--setup-sec 600] [--attach-sec 60]
+            [--model-price MODEL=INPUT,CACHED,OUTPUT]...
             [--lease-sec 60] [--claims 3] [--step-retries 3] [--poll-ms 250]
             [--disks keep|remove] [--free-disk-mb N] [--verifier-cache] [--name NAME] [--wait]
             [--key-deposit N] [--key-top-up N]
@@ -204,6 +207,11 @@ const usage = `nanoeval <command>
             budget by less than one request. Where responses carry no cost, on a plan or a
             key of a provider, the spend is what sessions estimate when their attempts end,
             and only the provider's web searches, at list price, count request by request.
+            --model-price gives the list price of a model whose endpoint names no cost, in
+            USD for a million input tokens, cached input tokens and output tokens. A
+            response of an agent or a judge on that model that carries no cost is priced
+            from its tokens when it ends: the price counts in the spend and against the
+            budget as a reported cost does, and the attempt says its cost is by list.
             With --disks remove, the default for --provider e2b and gateway, a runner removes
             each environment disk it unpacked once no row of the run needs it. With --free-disk-mb, a runner claims only while its
             machine has that much free disk, and prepares one environment at a time.
@@ -388,6 +396,21 @@ const usage = `nanoeval <command>
             their reruns. It prints how many sound tasks pass and each that does not, then
             the unsound ones with their outcome, reason and report, and exits 4 when the
             solution of a sound task failed or errored, and 0 otherwise.
+  arms      [--url URL --token T RUN...] [--results FILE]... [--with-reruns]
+            [--model-price MODEL=INPUT,CACHED,OUTPUT]... [--json]
+            Print one line for each arm of a run, an agent of it: the rows that passed of
+            the rows that ended, the pass rate of its scored attempts (micro) and the mean
+            over its tasks of each task's pass rate (macro), an attempt that errored being
+            no trial of either, what a pass cost, the whole cost of the arm over its
+            passes, its input, cached and output tokens, the time from the start of its
+            first attempt to the end of its last, and its errors by class: infrastructure
+            (environment, internal, verifier, verifier_timeout) apart from the agent or its
+            model (agent, agent_timeout, budget) and from rows that were cancelled. Several
+            runs print one table, a row an arm, and --json prints the arms as JSON instead.
+            --results reads a run from a file that holds what the Worker answers for
+            /v1/runs/RUN/results, and needs no Worker. An attempt whose usage names no cost
+            is priced from its tokens with --model-price, as run --model-price does when
+            the run is made, and the line says which costs are at list prices.
   revision  [--nanocode REV|DIR|pinned] [--nanocode-ts REV|DIR|pinned] [--sdk REV|DIR|pinned]
             [--sdk-fallback pinned] [--lab DIR] [--hand-profile release]
             [--nanocode-repository URL|DIR] [--nanocode-ts-repository URL|DIR] [--build-only]
@@ -617,6 +640,31 @@ async function candidate(api: Api, id: string): Promise<Baseline.Candidate> {
       ),
     ),
   }
+}
+
+async function resultFiles(files: readonly string[]): Promise<Compare.Run[]> {
+  return Promise.all(
+    files.map(async (file) => {
+      const run = JSON.parse(await Fs.readFile(file, 'utf8')) as Compare.Run
+      if (typeof run?.id !== 'string' || !Array.isArray(run.attempts))
+        throw new Error(
+          file +
+            ' does not hold the results of a run, what a Worker answers for /v1/runs/RUN/results',
+        )
+      return run
+    }),
+  )
+}
+
+export function armsText(
+  runs: readonly Compare.Run[],
+  options: { json: boolean; prices: readonly string[] },
+): string {
+  const arms = Arms.arms(runs, Price.list(options.prices))
+  if (options.json) return JSON.stringify(arms, null, 2) + '\n'
+  return new Set(arms.map((arm) => arm.run)).size > 1
+    ? Arms.table(arms)
+    : arms.map((arm) => Arms.line(arm) + '\n').join('')
 }
 
 async function withReruns(api: Api, ids: readonly string[]): Promise<string[]> {
@@ -957,6 +1005,7 @@ function used(
     cachedTokens: number
     costUsd: number | null
     inputTokens: number
+    listed?: number
     outputTokens: number
     reasoningTokens?: number | null
   },
@@ -979,7 +1028,8 @@ function used(
         ')'
       : '') +
     ', cost ' +
-    (row.costUsd === null ? 'not known' : '$' + Number(row.costUsd).toFixed(4))
+    (row.costUsd === null ? 'not known' : '$' + Number(row.costUsd).toFixed(4)) +
+    (row.listed ? ' at list prices' : '')
   )
 }
 
@@ -1024,6 +1074,12 @@ export function summary(
         ? ''
         : ' of a budget of $' + status['spend'].modelBudgetUsd) +
       (!status['key'] && status['spend'].unpricedResponses ? ' estimated from tokens' : '') +
+      (status['spend'].listedResponses
+        ? ', ' +
+          status['spend'].listedResponses +
+          (status['spend'].listedResponses === 1 ? ' response' : ' responses') +
+          ' priced at the list prices of the run'
+        : '') +
       (status['spend'].uncostedAttempts
         ? ', without ' +
           status['spend'].uncostedAttempts +
@@ -1412,6 +1468,7 @@ export function rerunConfig(
   const { named, parent } = input
   const from = <T>(flag: string, mine: T, theirs: T): T => (named.has(flag) ? mine : theirs)
   const modelUsd = from('model-budget-usd', own.budget.modelUsd, parent.budget.modelUsd)
+  const prices = from('model-price', own.prices, parent.prices)
   const freeDiskMb = from('free-disk-mb', own.sandbox.freeDiskMb, parent.sandbox.freeDiskMb)
   const leaseSec = from('sandbox-lease-sec', own.sandbox.leaseSec, parent.sandbox.leaseSec)
   const memoryMb = from('memory-mb', own.sandbox.memoryMb, parent.sandbox.memoryMb)
@@ -1430,6 +1487,7 @@ export function rerunConfig(
       setupSec: from('setup-sec', own.limits.setupSec, parent.limits.setupSec),
       stepRetries: from('step-retries', own.limits.stepRetries, parent.limits.stepRetries),
     },
+    ...(prices === undefined ? {} : { prices }),
     sandbox: {
       backend: from('backend', own.sandbox.backend, parent.sandbox.backend),
       disks: from('disks', own.sandbox.disks, parent.sandbox.disks),
@@ -1594,11 +1652,13 @@ async function main(
       'key-top-up': { type: 'string' },
       lab: { type: 'string' },
       layers: { type: 'string' },
+      json: { default: false, type: 'boolean' },
       'lease-sec': { default: '60', type: 'string' },
       limit: { type: 'string' },
       location: { type: 'string' },
       'memory-mb': { type: 'string' },
       'model-budget-usd': { type: 'string' },
+      'model-price': { multiple: true, type: 'string' },
       name: { type: 'string' },
       nanocode: { type: 'string' },
       'nanocode-repository': { default: Revision.repositories.nanocode, type: 'string' },
@@ -1624,6 +1684,7 @@ async function main(
       remove: { default: false, type: 'boolean' },
       report: { type: 'string' },
       rerun: { type: 'string' },
+      results: { multiple: true, type: 'string' },
       rows: { default: false, type: 'boolean' },
       root: { type: 'string' },
       run: { type: 'string' },
@@ -2209,6 +2270,7 @@ async function main(
   if (
     !command ||
     ![
+      'arms',
       'attempt',
       'cancel',
       'compare',
@@ -2230,6 +2292,16 @@ async function main(
   ) {
     if (command) throw unknown(command)
     console.log(usage)
+    return
+  }
+  if (command === 'arms' && !rest.length) {
+    if (!values.results?.length) throw new Error('RUN is required, or --results FILE')
+    process.stdout.write(
+      armsText(await resultFiles(values.results), {
+        json: values.json,
+        prices: values['model-price'] ?? [],
+      }),
+    )
     return
   }
   if (!values.url)
@@ -2723,6 +2795,7 @@ async function main(
         sandboxUsd: Number(values['sandbox-budget-usd']),
       },
       eval: reference,
+      ...(values['model-price']?.length ? { prices: Price.list(values['model-price']) } : {}),
       ...(values.judge
         ? { judge: parseJudge(values.judge) }
         : parent?.judge
@@ -2934,9 +3007,21 @@ async function main(
 
   const run = await runId(api, required(rest[0], 'RUN'))
   const runIds =
-    command === 'compare' || command === 'oracle'
+    command === 'arms' || command === 'compare' || command === 'oracle'
       ? [run, ...(await Promise.all(rest.slice(1).map((name) => runId(api, name))))]
       : [run]
+  if (command === 'arms') {
+    const read = await Promise.all(
+      (values['with-reruns'] ? await withReruns(api, runIds) : runIds).map((id) => api.results(id)),
+    )
+    process.stdout.write(
+      armsText([...read, ...(await resultFiles(values.results ?? []))], {
+        json: values.json,
+        prices: values['model-price'] ?? [],
+      }),
+    )
+    return
+  }
   if (command === 'compare') {
     const on = gates(values['fail-on'])
     if ((on.has('regression') || on.has('lost')) && !values.baseline?.length)

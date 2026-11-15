@@ -2,6 +2,7 @@ import * as Branch from './Branch.ts'
 import * as Eval from './Eval.ts'
 import * as Installed from './Installed.ts'
 import type * as Ledger from './Ledger.ts'
+import * as Price from './Price.ts'
 import type * as Protocol from './Protocol.ts'
 import type * as Sandbox from './Sandbox.ts'
 import * as Slot from './Slot.ts'
@@ -61,6 +62,7 @@ export type Config = {
   name: string
   only?: readonly string[]
   payer?: Payer
+  prices?: Price.List
   rerun?: { run: string; select: Ledger.Selection }
   sandbox: {
     backend: Backend
@@ -330,6 +332,24 @@ export function parse(value: unknown): Config {
     name: config.name,
     ...(config.only?.length ? { only: [...config.only] } : {}),
     ...(payer === 'plan' ? { payer } : {}),
+    ...(config.prices === undefined
+      ? {}
+      : {
+          prices: Object.fromEntries(
+            Object.entries(
+              typeof config.prices === 'object' && config.prices !== null
+                ? config.prices
+                : fail('prices holds a price for each model it names'),
+            ).map(([model, price]) => [
+              model,
+              {
+                cachedUsd: amount(price?.cachedUsd, 'prices.' + model + '.cachedUsd'),
+                inputUsd: amount(price?.inputUsd, 'prices.' + model + '.inputUsd'),
+                outputUsd: amount(price?.outputUsd, 'prices.' + model + '.outputUsd'),
+              },
+            ]),
+          ),
+        }),
     ...(config.rerun === undefined
       ? {}
       : {

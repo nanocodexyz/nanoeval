@@ -18,6 +18,7 @@ import * as Converter from '../sandbox/Converter.ts'
 import * as Runner from '../sandbox/Runner.ts'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
 import * as Store from '../sandbox/Store.ts'
+import * as Arms from '../src/Arms.ts'
 import type * as Atif from '../src/Atif.ts'
 import type * as Branch from '../src/Branch.ts'
 import * as Compare from '../src/Compare.ts'
@@ -25,6 +26,7 @@ import * as Config from '../src/Config.ts'
 import type * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
 import * as Pins from '../src/Pins.ts'
+import * as Price from '../src/Price.ts'
 import * as Protocol from '../src/Protocol.ts'
 import * as Proxy from '../src/Proxy.ts'
 import type * as Result from '../src/Result.ts'
@@ -95,6 +97,9 @@ const spent = scenario === 'spent'
 const funded = scenario === 'funded'
 const budgeted = scenario === 'budget'
 const searching = scenario === 'searches'
+const priced = scenario === 'priced'
+const listPrice = { cachedUsd: 25, inputUsd: 250, outputUsd: 500 }
+const scriptedTokens = { cachedTokens: 0, inputTokens: 8, outputTokens: 4 }
 const budgetUsd = budgeted ? 0.12 : 0.05
 const budgetSteps = 5
 const webUsd = 0.012
@@ -753,12 +758,14 @@ function paced(
 }
 
 function metered(body: { messages?: unknown; model?: string }): string {
-  const search = !JSON.stringify(body.messages ?? []).includes('"tool_use"')
+  const search = !priced && !JSON.stringify(body.messages ?? []).includes('"tool_use"')
   const cost = budgeted
     ? MockGateway.modelUsd['/v1/messages'] + (search ? webUsd : 0)
-    : search
-      ? 2 * Proxy.toolUsd.claude['web_search']!
-      : 0
+    : priced
+      ? listUsd(scriptedTokens)
+      : search
+        ? 2 * Proxy.toolUsd.claude['web_search']!
+        : 0
   budgetLog.push({ cost, search })
   return scripted(
     body,
@@ -848,7 +855,7 @@ function scripted(
       : { input: { code: kin.code }, name: 'exec' }
     : midturn
       ? stepwise(body.messages, command!)
-      : budgeted || searching
+      : budgeted || searching || priced
         ? paced(body.messages, command!)
         : answered
           ? undefined
@@ -876,7 +883,7 @@ function scripted(
           type: 'message',
           usage: kin?.child
             ? { cache_read_input_tokens: 12, input_tokens: 30, output_tokens: 0 }
-            : { input_tokens: 8, output_tokens: 0 },
+            : { input_tokens: scriptedTokens.inputTokens, output_tokens: 0 },
         },
         type: 'message_start',
       },
@@ -892,12 +899,21 @@ function scripted(
         usage: {
           ...(cost === undefined ? {} : { cost }),
           ...used,
-          output_tokens: kin?.child ? 6 : 4,
+          output_tokens: kin?.child ? 6 : scriptedTokens.outputTokens,
         },
       },
     ],
     ['message_stop', { type: 'message_stop' }],
   ])
+}
+
+function listUsd(tokens: Price.Tokens): number {
+  return (
+    ((tokens.inputTokens - tokens.cachedTokens) * listPrice.inputUsd +
+      tokens.cachedTokens * listPrice.cachedUsd +
+      tokens.outputTokens * listPrice.outputUsd) /
+    Price.perTokens
+  )
 }
 
 async function listen(handler: Http.RequestListener): Promise<{ close(): void; url: string }> {
@@ -1161,7 +1177,7 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
           jobMentions.push(codex ? 'codex' : 'claude')
         const reply = body.fake_cli
           ? fake(codex && !chat ? '/v1/responses' : request.url!, body)
-          : budgeted || searching
+          : budgeted || searching || priced
             ? metered(body)
             : codex && midturnPair
               ? pairwise(body)
@@ -1796,6 +1812,7 @@ async function main(): Promise<void> {
                       subagent ||
                       budgeted ||
                       searching ||
+                      priced ||
                       model !== 'scripted'
                     ? [
                         {
@@ -1810,7 +1827,8 @@ async function main(): Promise<void> {
                             slotGone ||
                             subagent ||
                             budgeted ||
-                            searching
+                            searching ||
+                            priced
                               ? 'right'
                               : 'nanocode',
                           model: subagent ? 'claude-haiku-5-5' : realModel,
@@ -1974,8 +1992,16 @@ async function main(): Promise<void> {
           : isolated
             ? slots
             : attempts,
-      budget: { modelUsd: budgeted || searching ? budgetUsd : 1, sandboxUsd: gateway ? 1 : 0 },
+      budget: {
+        modelUsd: budgeted || searching || priced ? budgetUsd : 1,
+        sandboxUsd: gateway ? 1 : 0,
+      },
       eval: { name: evalName, version: version.digest },
+      ...(priced
+        ? { prices: { [realModel]: listPrice } }
+        : installedKind
+          ? { prices: { 'gpt-right': listPrice } }
+          : {}),
       ...(judged ? { judge: { model: 'claude-haiku-4-5', provider: 'claude' as const } } : {}),
       ...(planned ? { payer: 'plan' as const } : {}),
       ...(funded ? { key: { topUp: 5 } } : {}),
@@ -3630,7 +3656,7 @@ async function main(): Promise<void> {
       return
     }
 
-    if (budgeted || searching) {
+    if (budgeted || searching || priced) {
       const rows = status['attempts'] as Record<string, any>[]
       const errored = rows.filter((row) => row['outcome'] === 'errored')
       const costs = budgetLog.map((entry) => entry.cost)
@@ -3731,6 +3757,90 @@ async function main(): Promise<void> {
             ' of the model spend',
         )
         if (slots > 2) assert.ok(budgetPeak > 1, 'requests of several rows were in flight at once')
+      } else if (priced) {
+        assert.equal(slots, 1, 'the priced scenario runs one row at a time')
+        assert.equal(tools, undefined)
+        assert.equal(largest, listUsd(scriptedTokens))
+        assert.equal(
+          status['spend'].listedResponses,
+          costs.length,
+          'every response that was answered is priced at the list price of its model',
+        )
+        assert.equal(status['spend'].unpricedResponses, 0)
+        assert.equal(status['spend'].uncostedAttempts, 0)
+        assert.equal(passed.length, Math.floor(budgetUsd / ((budgetSteps + 1) * largest)))
+        assert.equal(
+          answered.length,
+          passed.length + 1,
+          'the row that was refused a request had a response before it',
+        )
+        for (const detail of answered)
+          assert.equal(detail['result'].usage.costBy, 'list', 'an attempt says its cost is by list')
+        assert.ok(
+          Math.abs(
+            answered.reduce((all, detail) => all + detail['result'].usage.costUsd, 0) - answeredUsd,
+          ) < 1e-9,
+          'the cost of the attempts is the tokens of their responses at the list price',
+        )
+        const requests = (
+          await api.artifact(created.id, passed[0]!['attempt'].id, 'agent/model-requests.jsonl')
+        )
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line))
+        assert.equal(requests.length, budgetSteps + 1)
+        for (const request of requests)
+          assert.deepEqual(
+            [request.usage.costBy, request.usage.costUsd],
+            ['list', largest],
+            'a response in the request log of its attempt carries its list price',
+          )
+        assert.ok(
+          summary(status).includes(
+            ', ' + costs.length + ' responses priced at the list prices of the run',
+          ),
+        )
+        assert.match(summary(status), /\nright: .*, cost \$[0-9.]+ at list prices\n/)
+        const arms = JSON.parse((await cli(['arms', created.id, '--json'])).text) as Arms.Arm[]
+        assert.equal(arms.length, 1)
+        assert.ok(Math.abs(arms[0]!.costUsd! - answeredUsd) < 1e-9)
+        assert.deepEqual(
+          [arms[0]!.listed, arms[0]!.priced, arms[0]!.passed, arms[0]!.rows],
+          [answered.length, answered.length, passed.length, rows.length],
+        )
+        assert.deepEqual(arms[0]!.errors, {
+          agent: { budget: errored.length },
+          cancelled: {},
+          infrastructure: {},
+        })
+        const line = (await cli(['arms', created.id])).text
+        assert.equal(line, Arms.line(arms[0]!) + '\n')
+        assert.ok(
+          line.includes(
+            ': passed ' +
+              passed.length +
+              '/' +
+              rows.length +
+              ' rows, pass micro 100.0% of ' +
+              passed.length +
+              ' scored, ',
+          ) &&
+            line.includes(
+              '$' +
+                (answeredUsd / passed.length).toFixed(4) +
+                ' a pass ($' +
+                answeredUsd.toFixed(4) +
+                ' at list prices)',
+            ) &&
+            line.includes(
+              ', errors: infrastructure 0, agent or model ' +
+                errored.length +
+                ' (budget ' +
+                errored.length +
+                ')',
+            ),
+          line,
+        )
       } else {
         assert.equal(slots, 1, 'the searches scenario runs one row at a time')
         assert.equal(
@@ -4729,7 +4839,10 @@ async function main(): Promise<void> {
             detail['result'].usage,
             gateway
               ? { ...used, costUsd: MockGateway.modelUsd[codex ? '/v1/responses' : '/v1/messages'] }
-              : used,
+              : installedKind && codex
+                ? { ...used, costBy: 'list', costUsd: listUsd(fakeUsage['codex-cli']) }
+                : used,
+            'the agent whose model has a list price is priced by it, and the other has no cost',
           )
           assert.equal(trajectory.agent.name, kind)
           assert.equal(trajectory.steps[0].source, 'user')
@@ -4779,8 +4892,12 @@ async function main(): Promise<void> {
         assert.ok(
           Math.abs(
             status['spend'].modelUsd -
-              fakeUsage['claude-code'].costUsd *
-                (closed || installedKind || slotGone ? 0 : total / 2),
+              (installedKind
+                ? listUsd(fakeUsage['codex-cli']) *
+                  (status['attempts'] as { agent: string }[]).filter(
+                    (attempt) => attempt.agent === 'right',
+                  ).length
+                : fakeUsage['claude-code'].costUsd * (closed || slotGone ? 0 : total / 2)),
           ) < 1e-9,
           'the cost an installed agent reports counts against the model budget',
         )

@@ -22,6 +22,7 @@ import * as Payment from '../src/Payment.ts'
 import * as Pins from '../src/Pins.ts'
 import * as Members from '../src/Pool.ts'
 import * as Preflight from '../src/Preflight.ts'
+import * as Price from '../src/Price.ts'
 import * as Protocol from '../src/Protocol.ts'
 import * as Proxy from '../src/Proxy.ts'
 import * as Result from '../src/Result.ts'
@@ -107,6 +108,7 @@ const agentEvents = 'agent/events.jsonl'
 const agentTrajectory = 'agent/trajectory.json'
 const judgeRequest = 'verifier/' + Judge.requestFile
 const judgeResponse = 'verifier/' + Judge.responseFile
+const judgePath = 'judge/'
 const judgeRequestId = 'judge'
 const modelRequests = 'agent/model-requests.jsonl'
 const partCharacters = 524_288
@@ -169,7 +171,8 @@ const tables = [
     searches INTEGER,
     tools_usd REAL,
     unpriced INTEGER,
-    wait INTEGER
+    wait INTEGER,
+    listed INTEGER
   )`,
   `CREATE TABLE IF NOT EXISTS model_flights (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -253,6 +256,7 @@ export class Run extends DurableObject<Env> {
     const added: [table: string, column: string, type: string][] = [
       ['claims', 'error', 'TEXT'],
       ['model_requests', 'cost', 'REAL'],
+      ['model_requests', 'listed', 'INTEGER'],
       ['model_requests', 'refusal', 'TEXT'],
       ['model_requests', 'searches', 'INTEGER'],
       ['model_requests', 'tools_usd', 'REAL'],
@@ -856,12 +860,19 @@ export class Run extends DurableObject<Env> {
     provider: Proxy.Provider
   }): void {
     const { outcome } = input
-    const usage = outcome.usage
-    const tools = usage ? Proxy.tools(input.provider, usage, { listed: input.listed }) : undefined
+    const reported = outcome.usage
+    const tools = reported
+      ? Proxy.tools(input.provider, reported, { listed: input.listed })
+      : undefined
+    const price = reported && reported.costUsd === undefined ? this.price(input) : undefined
+    const usage: Proxy.Usage | undefined =
+      reported && price
+        ? { ...reported, costBy: 'list', costUsd: Price.usd(price, reported) + (tools?.usd ?? 0) }
+        : reported
     if (outcome.flight !== undefined)
       this.sql.run('DELETE FROM model_flights WHERE id = ?', outcome.flight)
     this.sql.run(
-      'INSERT INTO model_requests (attempt, claim, at, path, ms, status, usage, cost, refusal, searches, tools_usd, unpriced, wait) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO model_requests (attempt, claim, at, path, ms, status, usage, cost, refusal, searches, tools_usd, unpriced, wait, listed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       input.attempt,
       input.claim,
       outcome.at,
@@ -875,12 +886,22 @@ export class Run extends DurableObject<Env> {
       tools?.usd ?? null,
       tools ? tools.unpriced : null,
       outcome.waitMs ?? null,
+      price ? 1 : null,
     )
     const { refused, ...rest } = this.meta()!
     if (refused && outcome.status < 400) {
       this.setMeta(rest)
       Timeline.add(this.sql, { at: outcome.at, name: 'model.paid' })
     }
+  }
+
+  private price(input: { attempt: string; path: string }): Price.Price | undefined {
+    const config = this.config()
+    const row = Ledger.get(this.sql, input.attempt)
+    const model = input.path.startsWith(judgePath)
+      ? config.judge?.model
+      : row && this.agentOf(row).model
+    return model === undefined ? undefined : config.prices?.[model]
   }
 
   private refuse(refused: Meter.Refused): number | undefined {
@@ -1286,7 +1307,7 @@ export class Run extends DurableObject<Env> {
       'SELECT COUNT(*) AS responses, COALESCE(SUM(searches), 0) AS searches FROM model_requests WHERE status = 200 AND usage IS NOT NULL AND cost IS NULL',
     )[0]!
     const tools = this.sql.all(
-      'SELECT COALESCE(SUM(searches), 0) AS calls, COALESCE(SUM(unpriced), 0) AS unpriced, COALESCE(SUM(tools_usd), 0) AS usd FROM model_requests',
+      'SELECT COALESCE(SUM(searches), 0) AS calls, COALESCE(SUM(unpriced), 0) AS unpriced, COALESCE(SUM(tools_usd), 0) AS usd, COALESCE(SUM(listed), 0) AS listed FROM model_requests',
     )[0]!
     const claims = Ledger.claims(this.sql).filter(Ledger.lost)
     const lost = claims.at(-1)
@@ -1358,6 +1379,7 @@ export class Run extends DurableObject<Env> {
         state: row.state,
       })),
       spend: {
+        listedResponses: tools['listed'] as number,
         ...(config.budget.modelUsd === undefined ? {} : { modelBudgetUsd: config.budget.modelUsd }),
         modelUsd: this.modelSpent(),
         sandboxBudgetUsd: config.budget.sandboxUsd,
@@ -1555,6 +1577,7 @@ export class Run extends DurableObject<Env> {
       total.outputTokens += usage.outputTokens
       if (usage.reasoningTokens !== undefined)
         total.reasoningTokens = (total.reasoningTokens ?? 0) + usage.reasoningTokens
+      if (usage.costBy) total.costBy = usage.costBy
       costs.push(usage.costUsd)
     }
     if (costs.length && costs.every((cost) => cost !== undefined))
@@ -3571,14 +3594,14 @@ export class Run extends DurableObject<Env> {
 
     if (end.collect !== false) {
       const requests = this.sql.all(
-        'SELECT claim, cost, path, tools_usd FROM model_requests WHERE attempt = ? ORDER BY id',
+        'SELECT claim, cost, listed, path, tools_usd FROM model_requests WHERE attempt = ? ORDER BY id',
         row.id,
       )
       const priced = requests.filter(
         (request) =>
           request['claim'] === row.claims &&
           request['cost'] !== null &&
-          !(request['path'] as string).startsWith('judge/'),
+          !(request['path'] as string).startsWith(judgePath),
       )
       const listed = requests
         .filter(
@@ -3586,12 +3609,13 @@ export class Run extends DurableObject<Env> {
             request['claim'] === row.claims &&
             request['cost'] === null &&
             request['tools_usd'] !== null &&
-            !(request['path'] as string).startsWith('judge/'),
+            !(request['path'] as string).startsWith(judgePath),
         )
         .reduce((sum, request) => sum + (request['tools_usd'] as number), 0)
       if (usage && !kind && priced.length)
         usage = {
           ...usage,
+          ...(priced.some((request) => request['listed']) ? { costBy: 'list' as const } : {}),
           costUsd: priced.reduce((sum, request) => sum + (request['cost'] as number), 0),
         }
       else if (usage && !kind && usage.costUsd !== undefined && listed > 0)

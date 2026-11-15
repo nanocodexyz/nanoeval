@@ -51,6 +51,7 @@ The shape of the second is the shape here: import once, a durable table, runners
 | `src/Task.ts`, `src/Atif.ts`, `src/Harbor.ts`, `src/Result.ts`, `src/Verdict.ts` | Worker and CLI | Harbor task loading, ATIF-v1.7 trajectories, Harbor job export, outcomes, and what a verifier's facts mean |
 | `src/Judge.ts` | Worker | The judge request a verifier writes and the answer it reads |
 | `src/Compare.ts`, `src/Baseline.ts` | CLI | The table of `nanoeval compare`: the agents of one or more runs side by side, which agent of a baseline an agent is set against and whether the two are the same agent, and the baseline that `latest` stands for |
+| `src/Price.ts`, `src/Arms.ts` | Worker and CLI | The list price a run is given for a model whose endpoint names no cost, and the one line of `nanoeval arms` for each arm of a run |
 | `src/Route.ts` | Worker and CLI | Who paid for the model of an attempt and how its session reached it: what a run records, how it reads, and where two sides differ |
 | `datasets/` | Node | The dataset adapters behind `nanoeval import` |
 | `cli/nanoeval.ts`, `cli/Import.ts`, `cli/Plan.ts` | Node | Import, run, read status and artifacts, serve `sandboxd`, attach a runner, start the Worker under local workerd with its credentials |

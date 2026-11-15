@@ -82,6 +82,7 @@ export type AgentSummary = {
     inputTokens: number
     outputTokens: number
   }
+  listed: number
   meanReward: number | null
   modelWaits: { attempts: number; count: number; sec: number }
   outputTokens: number
@@ -138,6 +139,7 @@ export function summarize(attempts: readonly Attempt[]): Record<string, AgentSum
       inputTokens: 0,
       cachedTokens: 0,
       judge: { attempts: 0, cachedTokens: 0, costUsd: null, inputTokens: 0, outputTokens: 0 },
+      listed: 0,
       meanReward: null,
       modelWaits: { attempts: 0, count: 0, sec: 0 },
       outputTokens: 0,
@@ -159,6 +161,7 @@ export function summarize(attempts: readonly Attempt[]): Record<string, AgentSum
         summary.reasoningTokens = (summary.reasoningTokens ?? 0) + attempt.usage.reasoningTokens
       if (attempt.usage.costUsd !== undefined)
         summary.costUsd = (summary.costUsd ?? 0) + attempt.usage.costUsd
+      if (attempt.usage.costBy === 'list') summary.listed++
     }
     if (attempt.modelWaits) {
       summary.modelWaits.attempts++

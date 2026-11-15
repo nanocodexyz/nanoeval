@@ -244,7 +244,7 @@ export function arms(given: readonly Run[]): Arm[] {
   return found.map((entry) => entry.arm)
 }
 
-function duration(value: number): string {
+export function duration(value: number): string {
   const whole = Math.round(value)
   if (whole < 60) return whole + ' s'
   const minutes = Math.floor(whole / 60)
@@ -253,7 +253,7 @@ function duration(value: number): string {
     : Math.floor(minutes / 60) + ' h ' + (minutes % 60) + ' min'
 }
 
-function cells(rows: readonly (readonly string[])[]): string {
+export function cells(rows: readonly (readonly string[])[]): string {
   const [head, ...body] = rows
   return [head!, head!.map(() => '---'), ...body]
     .map((row) => '| ' + row.join(' | ') + ' |')

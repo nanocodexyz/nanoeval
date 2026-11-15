@@ -21,6 +21,7 @@ export type Variables = {
 export type Usage = {
   cacheWriteTokens: number
   cachedTokens: number
+  costBy?: 'list'
   costUsd?: number
   inputTokens: number
   model?: string

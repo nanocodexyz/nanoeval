@@ -1,0 +1,225 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { armsText } from '../cli/nanoeval.ts'
+import * as Arms from '../src/Arms.ts'
+import type * as Atif from '../src/Atif.ts'
+import type * as Compare from '../src/Compare.ts'
+import type * as Result from '../src/Result.ts'
+
+const glm = '@cf/zai-org/glm-5.3-flash'
+
+const used = (tokens: Partial<Atif.Usage>): Atif.Usage => ({
+  cacheWriteTokens: 0,
+  cachedTokens: 0,
+  costUsd: undefined,
+  inputTokens: 0,
+  modelCalls: 1,
+  outputTokens: 0,
+  toolCalls: 0,
+  ...tokens,
+})
+
+const row = (
+  task: string,
+  index: number,
+  given: {
+    agent?: Result.Attempt['agent']
+    at?: [startedAt: number, finishedAt: number]
+    kind?: Result.FailureKind
+    outcome: Result.Attempt['outcome']
+    retryOf?: Result.Attempt['retryOf']
+    usage?: Atif.Usage
+  },
+): Result.Attempt => ({
+  agent: given.agent ?? { api: 'chat', id: 'fx', model: glm, provider: 'fx' },
+  ...(given.kind ? { failure: { at: 1, kind: given.kind, message: 'it ended' } } : {}),
+  finishedAt: given.at?.[1] ?? 2000,
+  id: task + index,
+  index,
+  outcome: given.outcome,
+  ...(given.retryOf ? { retryOf: given.retryOf } : {}),
+  reward: given.outcome === 'errored' ? null : given.outcome === 'passed' ? 1 : 0,
+  sandbox: null,
+  session: 's',
+  startedAt: given.at?.[0] ?? 1000,
+  task: { checksum: 'sha256:' + task, name: 'suite/' + task },
+  timing: {},
+  usage: given.usage ?? null,
+})
+
+const run = (id: string, attempts: readonly Result.Attempt[]): Compare.Run => ({
+  attempts,
+  eval: { name: 'suite', version: 'a'.repeat(64) },
+  id,
+  name: 'run-' + id,
+  state: 'finished',
+})
+
+const tokens = { cachedTokens: 600_000, inputTokens: 1_000_000, outputTokens: 200_000 }
+const prices = { [glm]: { cachedUsd: 0.05, inputUsd: 0.15, outputUsd: 0.5 } }
+const listUsd = 0.4 * 0.15 + 0.6 * 0.05 + 0.2 * 0.5
+
+const open = run('one', [
+  row('a', 1, { at: [1000, 31_000], outcome: 'passed', usage: used(tokens) }),
+  row('a', 2, { outcome: 'passed', usage: used(tokens) }),
+  row('a', 3, { outcome: 'passed', usage: used(tokens) }),
+  row('b', 1, { outcome: 'passed', usage: used(tokens) }),
+  row('b', 2, { at: [2000, 126_000], outcome: 'failed', usage: used(tokens) }),
+  row('c', 1, { kind: 'verifier', outcome: 'errored', usage: used(tokens) }),
+  row('c', 2, { kind: 'verifier_timeout', outcome: 'errored', usage: used(tokens) }),
+  row('d', 1, { kind: 'agent', outcome: 'errored', usage: used({ modelCalls: 0 }) }),
+  row('d', 2, { kind: 'budget', outcome: 'errored' }),
+  row('d', 3, { kind: 'cancelled', outcome: 'errored' }),
+  row('e', 1, { kind: 'agent_timeout', outcome: 'failed', usage: used(tokens) }),
+  row('e', 2, { outcome: 'errored' }),
+])
+
+test('an arm is its passes, its two pass rates, its cost, its tokens, its time and its errors', () => {
+  const [arm, ...rest] = Arms.arms([open], prices)
+  assert.deepEqual(rest, [])
+  assert.deepEqual(arm, {
+    agent: 'fx',
+    cachedTokens: 8 * 600_000,
+    costUsd: arm!.costUsd,
+    errored: 6,
+    errors: {
+      agent: { agent: 1, budget: 1 },
+      cancelled: { cancelled: 1 },
+      infrastructure: { unrecorded: 1, verifier: 1, verifier_timeout: 1 },
+    },
+    failed: 2,
+    harness: 'fx-chat 0.0.17',
+    inputTokens: 8 * 1_000_000,
+    listed: 9,
+    metered: 9,
+    model: glm,
+    name: 'run-one',
+    outputTokens: 8 * 200_000,
+    passMacro: (1 + 1 / 2 + 0) / 3,
+    passMicro: 4 / 6,
+    passed: 4,
+    priced: 9,
+    rows: 12,
+    run: 'one',
+    scored: 6,
+    tasks: 3,
+    usdPerPass: arm!.costUsd! / 4,
+    wallSec: 125,
+  })
+  assert.ok(Math.abs(arm!.costUsd! - 8 * listUsd) < 1e-12, 'eight attempts with tokens, at list')
+  assert.equal(
+    Arms.line(arm!),
+    'run-one fx (fx-chat 0.0.17, ' +
+      glm +
+      '): passed 4/12 rows, pass micro 66.7% of 6 scored, pass macro 50.0% over 3 tasks, ' +
+      '$0.3800 a pass ($1.5200 at list prices), ' +
+      'input tokens 8,000,000 (4,800,000 cached), output tokens 1,600,000, wall time 2 min 5 s, ' +
+      'errors: infrastructure 3 or 25.0% of its rows (unrecorded 1, verifier 1, verifier_timeout 1), ' +
+      'agent or model 2 (agent 1, budget 1), cancelled 1',
+  )
+})
+
+test('a cost that was reported stands, and an attempt without one is said', () => {
+  const reported = run('two', [
+    row('a', 1, { outcome: 'passed', usage: used({ ...tokens, costUsd: 0.25 }) }),
+    row('b', 1, { outcome: 'passed', usage: used({ ...tokens, costBy: 'list', costUsd: 0.5 }) }),
+    row('c', 1, { outcome: 'failed', usage: used(tokens) }),
+  ])
+  const [bare] = Arms.arms([reported])
+  assert.deepEqual(
+    [bare!.costUsd, bare!.priced, bare!.listed, bare!.metered, bare!.usdPerPass],
+    [0.75, 2, 1, 3, 0.375],
+  )
+  assert.match(
+    Arms.line(bare!),
+    /, \$0\.3750 a pass \(\$0\.7500, 1 of 2 attempts at list prices, without 1 attempt that has no cost\), input/,
+  )
+  const [priced] = Arms.arms([reported], prices)
+  assert.ok(Math.abs(priced!.costUsd! - 0.75 - listUsd) < 1e-12, 'a price is no second cost')
+  assert.deepEqual([priced!.priced, priced!.listed], [3, 2])
+
+  const [unknown] = Arms.arms([
+    run('three', [row('a', 1, { outcome: 'failed', usage: used(tokens) })]),
+  ])
+  assert.match(Arms.line(unknown!), /over 1 task, cost not known, input tokens 1,000,000 /)
+  const [unpassed] = Arms.arms(
+    [run('three', [row('a', 1, { outcome: 'failed', usage: used(tokens) })])],
+    prices,
+  )
+  assert.match(
+    Arms.line(unpassed!),
+    /pass micro 0\.0% of 1 scored, pass macro 0\.0% over 1 task, no pass \(\$0\.1900 at list prices\), /,
+  )
+  const oracle = { id: 'oracle', model: 'oracle', provider: 'oracle' as const }
+  const [solved] = Arms.arms([
+    run('four', [
+      row('a', 1, { agent: oracle, outcome: 'passed' }),
+      row('b', 1, { agent: oracle, kind: 'environment', outcome: 'errored' }),
+    ]),
+  ])
+  assert.equal(
+    Arms.line(solved!),
+    'run-four oracle (oracle, the task solution): passed 1/2 rows, pass micro 100.0% of 1 scored, ' +
+      'pass macro 100.0% over 1 task, no model usage, wall time 1 s, ' +
+      'errors: infrastructure 1 or 50.0% of its rows (environment 1), agent or model 0',
+  )
+  const [none] = Arms.arms([run('five', [row('a', 1, { kind: 'agent', outcome: 'errored' })])])
+  assert.match(
+    Arms.line(none!),
+    /pass micro not known of 0 scored, pass macro not known over 0 tasks, /,
+  )
+})
+
+test('one run prints a line an arm, several runs a table, and both are JSON on request', () => {
+  const sonnet = { id: 'sonnet', model: 'claude-sonnet-5', provider: 'claude' as const }
+  const two = run('two', [
+    row('a', 1, { outcome: 'passed', usage: used({ ...tokens, costUsd: 0.25 }) }),
+    row('a', 1, { agent: sonnet, outcome: 'failed', usage: used({ ...tokens, costUsd: 1 }) }),
+  ])
+  const lines = armsText([two], { json: false, prices: [] })
+  assert.deepEqual(
+    lines.split('\n').map((line) => line.split(':')[0]),
+    ['run-two fx (fx-chat 0.0.17, ' + glm + ')', 'run-two sonnet (nanocode, claude-sonnet-5)', ''],
+  )
+  const table = armsText([open, two], { json: false, prices: [glm + '=0.15,0.05,0.50'] })
+  assert.deepEqual(table.split('\n'), [
+    '| Run | Arm | Harness | Model | Passed | Pass micro | Pass macro | USD a pass | Cost | Input tokens (cached) | Output tokens | Wall time | Infrastructure errors | Agent or model errors | Cancelled |',
+    '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+    '| run-one | fx | fx-chat 0.0.17 | ' +
+      glm +
+      ' | 4/12 | 66.7% of 6 | 50.0% over 3 | $0.3800 | $1.5200 at list prices | 8,000,000 (4,800,000) | 1,600,000 | 2 min 5 s | 3 or 25.0% of its rows (unrecorded 1, verifier 1, verifier_timeout 1) | 2 (agent 1, budget 1) | 1 |',
+    '| run-two | fx | fx-chat 0.0.17 | ' +
+      glm +
+      ' | 1/1 | 100.0% of 1 | 100.0% over 1 | $0.2500 | $0.2500 | 1,000,000 (600,000) | 200,000 | 1 s | 0 | 0 | 0 |',
+    '| run-two | sonnet | nanocode | claude-sonnet-5 | 0/1 | 0.0% of 1 | 0.0% over 1 | no pass | $1.0000 | 1,000,000 (600,000) | 200,000 | 1 s | 0 | 0 | 0 |',
+    '',
+  ])
+  assert.deepEqual(
+    JSON.parse(armsText([open, two], { json: true, prices: [glm + '=0.15,0.05,0.50'] })),
+    JSON.parse(JSON.stringify(Arms.arms([open, two], prices))),
+  )
+  assert.throws(() => armsText([two], { json: false, prices: ['glm'] }), {
+    name: 'Price.InvalidError',
+  })
+})
+
+test('an attempt that a rerun of the table retried counts once, as its retry', () => {
+  const first = run('one', [
+    row('a', 1, { outcome: 'passed' }),
+    row('b', 1, { kind: 'environment', outcome: 'errored' }),
+  ])
+  const rerun = run('two', [
+    row('b', 1, { outcome: 'passed', retryOf: { attempt: 'b1', run: 'one' } }),
+  ])
+  assert.deepEqual(
+    Arms.arms([first, rerun]).map((arm) => [arm.run, arm.passed, arm.rows, arm.errored]),
+    [
+      ['one', 1, 1, 0],
+      ['two', 1, 1, 0],
+    ],
+  )
+  assert.deepEqual(
+    Arms.arms([first]).map((arm) => [arm.run, arm.passed, arm.rows, arm.errored]),
+    [['one', 1, 2, 1]],
+  )
+})

@@ -6128,3 +6128,72 @@ The errored rows are verifiers that found the package lock held by the `apt-get`
 - The five tests of `test/Scripted.test.ts` pass, among them the cell run against a process that exits at its third poll, and the endpoint answering a cell that still runs with `wait`. Against the script as it was, three of the five fail.
 
 **What did not run.** An arm of the scripted model on krun slots with this change. Two more limits of the script show in the same arms and stay: a solution longer than one argument of a process is refused by the hand, `Argument list too long (os error 7)` (`make-doom-for-mips`), and a solution that reads other files of its `solution/` directory does not find them, since the script sends `solve.sh` alone (`headless-terminal`). Those are 6, 6 and 8 of the rows above. One row of the first run and three of the third failed the timing test of `tune-mjcf`, which the oracle also fails once in three attempts at 28 and at 56 slots, and one row of `make-mips-interpreter` in the third failed its tests after its solution had exited.
+
+## 2026-11-15: a model has a list price where its endpoint names no cost, and an arm is one line
+
+**What was missing.** An endpoint that reports tokens and no cost, such as an open model behind a chat completions route, left an installed agent with nothing that prices it. The two runs of fx, opencode and pi on two open models printed `cost not known` for every arm and `spend: model $0.0000 of a budget of $1 estimated from tokens, without 11 attempts whose model calls have no cost`: the budget counted nothing, so it bounded nothing. Their cost a pass was worked by hand from the token counts, and so was every line of a report: passes over rows, the two pass rates, tokens, the time and the errors by class were read from `status` and `compare` and put together outside nanoeval, by a script of 60 lines beside the runs.
+
+**The price.** `run --model-price MODEL=INPUT,CACHED,OUTPUT`, once for each model, gives the run a list price in USD for a million input tokens, cached input tokens and output tokens (`prices` of its configuration, `src/Price.ts`). A response costs its uncached input tokens at the first, its cached ones at the second and its output tokens at the third. The input tokens of a response hold its cached ones as `Proxy.meter` reads both APIs, so they are taken out before they are priced. Tokens written to a cache are priced as input: no endpoint that was seen without a cost reports them, and a fourth amount can follow the first that does.
+
+The run prices a response where it records it, as it ends (`record` of `worker/Run.ts`): a response with usage and no cost, of an agent or a judge whose model has a price. The amount goes where a reported cost goes, the cost of the request, so everything that reads a cost reads it and nothing else changed: the spend, the largest response that an admission reserves for each request in flight, the refusal once the budget is spent, and the cost of the attempt at its end, for a session and for an installed agent. A web search at its provider's list price in the same response is added to it. What says that it is no charge: `costBy: "list"` in the usage of the request and of the attempt, a column `listed` of the request, `spend.listedResponses`, `N responses priced at the list prices of the run` and `cost $0.0520 at list prices` in `status`, and the same words in `arms`.
+
+The price is looked up by the model of the agent, not by the name in the response. A run forwards an installed agent's request only for the model of its agent, and a response may name a dated alias of what was asked. A session whose subagent runs another model is priced as the model of its agent: read, not run.
+
+**Why the prices are given and none is kept.** The entry on tool prices holds three prices in this repository as the exception to having none. A table of model prices would be a fourth thing to keep true, for models that change by the week, and the person who starts a run on an endpoint without a cost has its price sheet open. A model that is given no price is as before: a session's estimate, or `not known`.
+
+**The line.** `nanoeval arms RUN` prints one line for each agent of a run (`src/Arms.ts`), a table with a row an arm for several runs, and the arms as JSON with `--json`. `--results FILE` reads a run from what the Worker answers for `/v1/runs/RUN/results`, so a run whose Worker is gone is read from the file kept of it, and `--model-price` prices its attempts that have tokens and no cost with the same function.
+
+- Passes over the rows that ended.
+- Micro: passes over scored attempts. Macro: the mean over the tasks of each task's pass rate, which is pass@1. An attempt that errored is a trial of neither, as everywhere in nanoeval, and both say how many attempts and tasks they rate.
+- The cost of a pass: the whole cost of the arm over its passes, with the rows that did not pass, and the cost beside it with how much of it is by list and how many attempts have none.
+- Input, cached and output tokens.
+- Wall time: from the start of the arm's first attempt to the end of its last. For the one arm of a run that is the time of the run.
+- Errors by class: infrastructure is `environment`, `internal`, `verifier` and `verifier_timeout`, with its share of the rows, the agent or its model is `agent`, `agent_timeout` and `budget`, and a row that was cancelled is neither. An attempt that errored without a recorded failure counts as infrastructure under `unrecorded`.
+
+**Read from stored results**, with no arithmetic by hand. The two runs of the entry on fx, opencode and pi, 4 tasks and 1 attempt for each of three agents, with `--model-price` at 0.15, 0.15 and 0.50 for the first model and 0.30, 0.30 and 1.20 for the second, which is how that entry priced them, cached tokens at the input price:
+
+| Agent | Model | Passed | USD a pass | Cost | Input tokens (cached) | Output tokens | Wall time | Agent or model errors |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| fx-chat 0.0.17 | glm-5.3-flash | 4/4 | $0.0217 | $0.0867 at list prices | 472,486 (364,288) | 31,753 | 7 min 13 s | 0 |
+| opencode-chat 1.19.5 | glm-5.3-flash | 4/4 | $0.0328 | $0.1312 at list prices | 755,846 (619,520) | 35,671 | 8 min 25 s | 0 |
+| pi-chat 1.5.2 | glm-5.3-flash | 3/4 | $0.0414 | $0.1243 at list prices | 681,312 (544,768) | 44,260 | 7 min 38 s | 1 (agent 1) |
+| fx-chat 0.0.17 | deepseek-v4.1-flash-1017 | 4/4 | $0.0370 | $0.1481 at list prices | 421,240 (376,576) | 18,101 | 5 min 30 s | 0 |
+| opencode-chat 1.19.5 | deepseek-v4.1-flash-1017 | 4/4 | $0.0424 | $0.1696 at list prices | 501,147 (452,672) | 16,027 | 6 min 7 s | 0 |
+| pi-chat 1.5.2 | deepseek-v4.1-flash-1017 | 1/4 | $0.1111 | $0.1111 at list prices | 310,315 (278,784) | 14,997 | 4 min 59 s | 3 (agent 3) |
+
+Without a price the same command prints `not known` in both cost columns. The six costs a pass are the ones worked by hand; the first total was written $0.0868 there and is $0.086749. The time here is the span of the arm, where that entry summed the agent time of its rows. Two arms of the solutions of all 89 tasks, 3 attempts each, on 28 microVM slots: both `passed 247/267 rows, pass micro 95.0% of 260 scored, pass macro 95.0% over 87 tasks, no model usage`, `wall time 39 min 59 s` and `36 min 43 s`, `errors: infrastructure 7 or 2.6% of its rows (verifier 6, verifier_timeout 1), agent or model 0`, which is what the script beside those runs had counted, 2,401 s and 2,204 s on its own clock.
+
+**Checked.** On a machine with 5 cores and no KVM, by a user who is not root, on directory slots.
+
+- A new lane, `NANOEVAL_E2E_SCENARIO=priced`: a scripted model that names no cost, 8 input and 4 output tokens a response, 6 responses a row, 6 rows one at a time, a price of 250, 25 and 500 and a budget of $0.05. 13 responses were answered, at $0.004 each $0.052, which the run recorded to the millionth of a dollar; 2 rows passed at $0.024, the third was refused its second request, and 3 never started, 4 `budget` errors. The run passed its budget by $0.002, under the $0.004 of one request. Every answered response is in `spend.listedResponses`, none is unpriced, every attempt says `costBy: "list"`, each request in the log of an attempt carries its price, and `arms` of the run, as JSON and as its line, has the cost, the passes over rows and `agent or model 4 (budget 4)`.
+- The lanes of fx, opencode and pi with a scripted command now give the model of their chat completions agent a price and leave their Messages agent without one, in one run: the first has 100 input tokens of which 40 cached and 7 output tokens a response, $0.0195 by list, and a spend of $0.0585 for its 3 rows, and the second has tokens and no cost.
+- On main at `ace6b12`: `npm run lint`, `npm run check:types` and `npm test` with 430 tests, 425 passed, 5 skipped, 0 failed; the lane of prices 5 of 5, in 15 to 30 s; the lane of fx 2 of 2, of opencode and of pi 1 of 1; and once each the lanes that read a cost: web searches at list price, both lanes of a model budget, the judge, the scripted tasks and the installed agents. No run failed.
+- On main at `a35ddf7`, where the record of a request had gained the wait a provider's limit asks for, from a fresh clone: `npm ci`, `npm run lint`, `npm run check:types`, `npm run dry-run`, `npm test` with 436 tests, 431 passed, 5 skipped, 0 failed, and 1 of 1 each: the lane of prices and the lane of fx.
+
+The unit tests are 4 of prices, with a rerun that keeps the prices of its run, and 4 of arms with their sums by hand.
+
+**What each catches**, one run each on main at `ace6b12`, with the code broken by hand in a copy:
+
+| Broken by hand | Result |
+| --- | --- |
+| the run finds no price for any response | the lane of prices failed after 20 s: `the rows ask for more than the budget`. All 6 rows passed with 36 responses, $0.144 by list against the budget of $0.05, and the run recorded $0.001008, the estimate of its sessions |
+| the same, in the lane of fx | failed after 15 s: `the agent whose model has a list price is priced by it, and the other has no cost` |
+| cached input tokens are priced as input | the lane of fx failed after 18 s on that line, and 4 of the 8 unit tests of prices and arms fail. A first run of the lane passed: it worked its expectation with `Price.usd`, and now has the sum in its own words |
+| the price is written to the usage of the request and not to its cost | the lane of prices failed after 18 s: `the rows ask for more than the budget`, with the same 36 responses |
+| micro is taken over the rows, not over the scored attempts | the lane of prices failed after 14 s on the line of `arms`, `pass micro 33.3% of 2 scored`, and 3 of the 8 unit tests fail |
+
+**Rejected.**
+
+- Pricing at the end of the attempt, from the usage of its session, as the estimate of nanocode is. The budget would see a row when it ends: 6 responses a row here, and many more on a real task.
+- A price in the agent, `--agent ID=HARNESS:MODEL:...`. Two agents on one model would name it twice, and a judge has no agent.
+- Two amounts, with cached tokens at the input price when no third is given. A default that is right for one endpoint is a wrong price on the next, and it would not say so.
+- Reading the price from the endpoint's list of models. The one that was run reports none.
+- A new column of `compare`. It compares runs against a baseline and gates on it. A report wants one line that can be pasted, and the two share `Compare.standing`, so a rerun counts once in both.
+
+**Not verified.**
+
+- A run on a real model with `--model-price`. The six rows above were made before it existed and are priced from their stored tokens. What the endpoint charged for them is not known to nanoeval.
+- krun and ns slots. Nothing in the change is in a slot.
+- A judge priced by list, a subagent on another model, and a response that has both a list price and a search at list price: read, in no lane.
+- An installed agent that reports a cost of its own on an endpoint that names none, with a price given: the price of the run stands, read in `metered`, in no lane.
+- The workflow on GitHub: Actions is disabled for the repository.
