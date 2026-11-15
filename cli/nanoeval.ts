@@ -219,7 +219,7 @@ const usage = `nanoeval <command>
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
             puts what it printed before the instruction, in an <environment_facts> block.
-            fx and opencode are named with the API their model is asked over, as in fx-chat
+            fx, opencode and pi are named with the API their model is asked over, as in fx-chat
             (chat completions), fx-messages (Anthropic Messages) or fx-responses (OpenAI
             Responses), since their command lines speak all three and the run adds the
             credential of that provider.

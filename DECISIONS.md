@@ -5805,3 +5805,24 @@ Before this commit, on its tree. Hosted Linux x86_64 without KVM: lint, both typ
 
 - A real model (the closing entry has the first rows), a plan, an OpenAI-compatible provider, linux/arm64, and an x86_64 machine without AVX2, where the pinned builds are expected to stop: the release has baseline builds that are not pinned.
 - Its cost. opencode prints one for each step from the prices of its catalog, which has none for a model of a provider it was given, so the stream said 0 and it is not read.
+
+## 2026-11-15: pi as an installed agent, and a command that exits 0 on an error
+
+pi 1.5.2 is the coding agent of `badlogic/pi-mono`. Its npm package moved: `@mariozechner/pi-coding-agent` stops at 0.73.1 of May, the repository publishes `@earendil-works/pi-coding-agent` and needs Node 22.19. The GitHub release `v1.5.2` has a compiled binary for Linux x86_64 and aarch64 with its files beside it, so that is what is pinned, by the SHA-256 of both archives, and no Node is fetched.
+
+### What was established
+
+- **A models file configures it.** `models.json` in the directory `PI_CODING_AGENT_DIR` names adds a provider with an `api` of `openai-completions`, `openai-responses` or `anthropic-messages`, a `baseUrl`, and an `apiKey` that pi takes from the environment when it is written `$NAME`. Against a scripted endpoint it sent `<baseUrl>/chat/completions`, `<baseUrl>/responses` and `<baseUrl>/v1/messages?beta=true`, each with the token as a bearer, and ran its `bash` tool in print mode without a prompt.
+- **pi exits 0 when it never reached its model.** With nothing listening it tried four times in 16 s and exited 0. The failure is in its stream: an assistant message with `stopReason: error` and the text, then `auto_retry_end`. A runner that read only the exit code would have sent such a row to the verifier as a model's failure. So an installed agent that exits 0 with an error as the last word of its stream is an `agent` error (`sandbox/Runner.ts`). For Codex CLI and Claude Code the summary already took the error from the stream, and both exit non-zero with it, so no row of theirs is known to change.
+- **No musl build.** The binary asks for the glibc loader and four glibc libraries. The command looks for the builds its release has, so in an Alpine image it prints that the image has no loader a build of pi runs with and exits 127: an `agent` error, 6 of 6 times on the Alpine fixtures.
+- **A thinking level on Messages.** For a model its file adds, pi sent `thinking: {type: enabled, budget_tokens: 15360}` at `--thinking high`. The file sets `forceAdaptiveThinking` for such an agent, which is pi's switch for the form fx and opencode send.
+- **What a subscription would take.** With a key that starts with `sk-ant-oat`, pi sent what Claude Code sends: a bearer token, the betas `claude-code-20250219` and `oauth-2025-04-20`, the user agent of `claude-cli`, Claude Code's first system block and tools renamed `Read`, `Bash`, `Edit`, `Write`. With any other key it sent its own prompt. The token of an attempt is not shaped like a plan token, so pi here sends its own prompt, which Anthropic does not serve for a plan token. An arm that hands pi a token of that shape would make it a different harness on a plan than on a key, and is not built. Its ChatGPT API (`openai-codex-responses`) stopped at "Failed to extract accountId from token": it reads the account from a ChatGPT token.
+
+### What ran
+
+Before this commit, on its tree. Hosted Linux x86_64 without KVM: lint, both type checks, `node --test test/Installed.test.ts` (27 of 27). On a 48-thread Linux machine with KVM, four of its threads: the new lane on krun, directory and ns slots, 1 of 1 each, and the lanes of the two older commands on krun slots, 1 of 1 each, with the new rule in the runner. The pinned build in krun slots against the scripted endpoint of the fx entry: three agents on a Debian 12 image, 3 of 3 passed at 256 MB and 3 of 3 at 2 GB, two model requests a row.
+
+### Not verified
+
+- A real model (the closing entry), a plan, an OpenAI-compatible provider, linux/arm64.
+- A row of Codex CLI or Claude Code that ends with exit 0 and an error in its stream: none was produced.

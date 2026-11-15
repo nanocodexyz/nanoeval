@@ -11,6 +11,7 @@ export type Kind =
   | 'nanocode-claude'
   | 'nanocode-codex'
   | 'opencode'
+  | 'pi'
   | 'stock-claude'
   | 'stock-codex'
 
@@ -47,6 +48,7 @@ export const kinds: readonly Kind[] = [
   'nanocode-claude',
   'nanocode-codex',
   'opencode',
+  'pi',
   'stock-claude',
   'stock-codex',
 ]
@@ -60,6 +62,7 @@ const claude =
 const codex = 'https://github.com/openai/codex/releases/download/rust-v0.166.0'
 const fx = 'https://github.com/vercel-labs/fx/releases/download/v0.0.17'
 const opencode = 'https://github.com/sst/opencode/releases/download/v1.19.5'
+const pi = 'https://github.com/badlogic/pi-mono/releases/download/v1.5.2'
 const leaderboardClaude =
   'https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.300'
 const leaderboardCodex = 'https://github.com/openai/codex/releases/download/rust-v0.162.1'
@@ -184,6 +187,27 @@ export const releases: Record<Kind, Release> = {
     provider: 'api',
     source: 'release',
     version: '1.19.5',
+  },
+  pi: {
+    binaries: [
+      {
+        arch: 'aarch64',
+        libc: 'gnu',
+        sha256: '42805cd5615952fcbbfc9c56b04f8feb84395134952e169a6cdc8d7676975666',
+        url: pi + '/pi-linux-arm64.tar.gz',
+      },
+      {
+        arch: 'x86_64',
+        libc: 'gnu',
+        sha256: '811c6f2c9e7aaee252b5404252e556fb713aa209c1f7f924226aa77d4ef70cb5',
+        url: pi + '/pi-linux-x64.tar.gz',
+      },
+    ],
+    entry: 'pi/pi',
+    format: 'tar.gz',
+    provider: 'api',
+    source: 'release',
+    version: '1.5.2',
   },
   'stock-claude': {
     binaries: [
@@ -410,6 +434,49 @@ function opencodeRun(agent: Agent, url: string): string {
   )
 }
 
+const piApis: Record<Api, { api: string; thinking: Record<string, unknown> }> = {
+  chat: { api: 'openai-completions', thinking: {} },
+  messages: { api: 'anthropic-messages', thinking: { compat: { forceAdaptiveThinking: true } } },
+  responses: { api: 'openai-responses', thinking: {} },
+}
+
+function piPrint(agent: Agent, url: string): string {
+  if (!agent.api) throw new Error('pi names no API for its model')
+  const api = piApis[agent.api]
+  const models = {
+    providers: {
+      nanoeval: {
+        api: api.api,
+        apiKey: '$' + tokenVariable,
+        authHeader: true,
+        baseUrl: url,
+        models: [
+          { id: agent.model, ...(agent.thinking ? { ...api.thinking, reasoning: true } : {}) },
+        ],
+      },
+    },
+  }
+  return (
+    [
+      ...preamble,
+      ...build('pi', 'pi'),
+      'export PI_CODING_AGENT_DIR="$NANOEVAL_AGENT_HOME/pi" PI_OFFLINE=1',
+      'mkdir -p "$PI_CODING_AGENT_DIR"',
+      'cat >"$PI_CODING_AGENT_DIR/models.json" <<\'NANOEVAL_PI_MODELS\'',
+      JSON.stringify(models, null, 2),
+      'NANOEVAL_PI_MODELS',
+      [
+        'exec "$cli"',
+        '-p',
+        '--mode json',
+        '--no-session',
+        '--model ' + quote('nanoeval/' + agent.model),
+        ...(agent.thinking ? ['--thinking ' + quote(agent.thinking)] : []),
+      ].join(' '),
+    ].join('\n') + '\n'
+  )
+}
+
 function stockCodex(agent: Agent, url: string): string {
   const root = '"$NANOEVAL_AGENT_RT"/agents/stock-codex/any'
   const catalog = '/tmp/hlb-codex-model-catalog.json'
@@ -558,6 +625,7 @@ export function script(agent: Agent, options: { url: string }): string {
   }
   if (agent.kind === 'fx') return fxAsk(agent, options.url)
   if (agent.kind === 'opencode') return opencodeRun(agent, options.url)
+  if (agent.kind === 'pi') return piPrint(agent, options.url)
   if (agent.kind === 'stock-codex') return stockCodex(agent, options.url)
   if (agent.kind === 'stock-claude') return stockClaude(agent, options.url)
   if (agent.kind === 'codex-cli') {
@@ -646,6 +714,17 @@ function count(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
+function piBlocks(message: Line): Line[] {
+  return Array.isArray(message['content']) ? message['content'] : []
+}
+
+function piText(message: Line, type: 'text' | 'thinking'): string {
+  return piBlocks(message)
+    .filter((block) => block['type'] === type)
+    .map((block) => text(block[type]))
+    .join('')
+}
+
 export type Summary = {
   costUsd: number | undefined
   error: string | undefined
@@ -671,6 +750,17 @@ export function summarize(kind: Kind, stream: string): Summary {
       if (line['type'] === 'tool_use') summary.toolCalls++
       if (line['type'] === 'error')
         summary.error = text(line['error']?.data?.message ?? line['error']?.name)
+      continue
+    }
+    if (kind === 'pi') {
+      const message = line['message'] as Line | undefined
+      if (line['type'] === 'message_end' && message?.['role'] === 'assistant') {
+        const said = piText(message, 'text')
+        if (said) summary.message = said
+        summary.error =
+          message['stopReason'] === 'error' ? text(message['errorMessage']) : undefined
+      }
+      if (line['type'] === 'tool_execution_end') summary.toolCalls++
       continue
     }
     if (codexEvents(kind)) {
@@ -788,6 +878,45 @@ export function trajectory(
       }
       if (line['type'] === 'error')
         step('system', 'error: ' + text(line['error']?.data?.message ?? line['error']?.name))
+      continue
+    }
+    if (kind === 'pi') {
+      const message = line['message'] as Line | undefined
+      if (line['type'] === 'session') session = text(line['id']) || session
+      if (line['type'] === 'message_end' && message?.['role'] === 'assistant') {
+        if (message['stopReason'] === 'error') {
+          step('system', 'error: ' + text(message['errorMessage']))
+          continue
+        }
+        const target = step('agent', piText(message, 'text'))
+        const used = (message['usage'] ?? {}) as Line
+        const thought = piText(message, 'thinking')
+        target.model_name = text(message['model']) || model
+        if (thought) target.reasoning_content = thought
+        target.metrics = {
+          prompt_tokens:
+            count(used['input']) + count(used['cacheRead']) + count(used['cacheWrite']),
+          completion_tokens: count(used['output']),
+          cached_tokens: count(used['cacheRead']),
+          extra: { cache_write_input_tokens: count(used['cacheWrite']) },
+        }
+        for (const block of piBlocks(message))
+          if (block['type'] === 'toolCall')
+            call(target, {
+              tool_call_id: text(block['id']),
+              function_name: text(block['name']),
+              arguments: (block['arguments'] ?? {}) as Record<string, unknown>,
+            })
+      }
+      if (line['type'] === 'tool_execution_end') {
+        const id = text(line['toolCallId'])
+        const target = calls.get(id) ?? step('agent', '')
+        ;(target.observation ??= { results: [] }).results.push({
+          source_call_id: id,
+          content: text(line['result']?.content),
+          extra: { duration_ns: null, status: line['isError'] ? 'failed' : 'completed' },
+        })
+      }
       continue
     }
     if (codexEvents(kind)) {

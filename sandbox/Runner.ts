@@ -1018,6 +1018,8 @@ async function attend(
           ': ' +
           (summary.error ?? errors.slice(-2000)),
       )
+    if (input.code === 0 && summary.error !== undefined)
+      return fail(item, 'agent', input.cli.kind + ' ended with an error: ' + summary.error)
     item.message = Verdict.timeoutCodes.includes(input.code) ? '' : summary.message
     return startVerifier(item, { code: input.code })
   }

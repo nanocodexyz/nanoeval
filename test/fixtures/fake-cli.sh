@@ -5,6 +5,7 @@ kind=claude-code
 if [ "${1:-}" = exec ]; then kind=codex-cli; fi
 if [ "${1:-}" = ask ]; then kind=fx; fi
 if [ "${1:-}" = run ]; then kind=opencode; fi
+if [ "${2:-}" = --mode ]; then kind=pi; fi
 model=
 provider=
 previous=
@@ -34,6 +35,17 @@ elif [ "$kind" = fx ]; then
   case $(sed -n 's/.*"protocol": "\([^"]*\)".*/\1/p' "$FX_HOME/settings.json") in
     anthropic-messages) url=$base/messages ;;
     openai-chat-completions) url=$base/chat/completions ;;
+    openai-responses) url=$base/responses ;;
+    *) exit 64 ;;
+  esac
+elif [ "$kind" = pi ]; then
+  [ -f "$PI_CODING_AGENT_DIR/models.json" ] || exit 64
+  base=$(sed -n 's/.*"baseUrl": "\([^"]*\)".*/\1/p' "$PI_CODING_AGENT_DIR/models.json")
+  variable=$(sed -n 's/.*"apiKey": "\$\([^"]*\)".*/\1/p' "$PI_CODING_AGENT_DIR/models.json")
+  eval "token=\$$variable"
+  case $(sed -n 's/.*"api": "\([^"]*\)".*/\1/p' "$PI_CODING_AGENT_DIR/models.json") in
+    anthropic-messages) url=$base/v1/messages ;;
+    openai-completions) url=$base/chat/completions ;;
     openai-responses) url=$base/responses ;;
     *) exit 64 ;;
   esac
@@ -70,6 +82,14 @@ if [ "$kind" = codex-cli ]; then
   printf '{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"sh -c scripted","aggregated_output":"","exit_code":%s,"status":"completed"}}\n' "$code"
   printf '%s\n' '{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"The task is complete."}}'
   printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":7}}'
+elif [ "$kind" = pi ]; then
+  failed=false
+  sh -c "$command" >/dev/null 2>&1 || failed=true
+  printf '{"type":"session","version":3,"id":"fake-session"}\n'
+  printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"scripted"}}],"model":"%s","usage":{"input":60,"output":7,"cacheRead":40,"cacheWrite":0},"stopReason":"toolUse"}}\n' "$model"
+  printf '{"type":"tool_execution_end","toolCallId":"call_1","toolName":"bash","result":{"content":[{"type":"text","text":""}]},"isError":%s}\n' "$failed"
+  printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"The task is complete."}],"model":"%s","usage":{"input":60,"output":7,"cacheRead":40,"cacheWrite":0},"stopReason":"stop"}}\n' "$model"
+  printf '{"type":"agent_settled","aborted":false}\n'
 elif [ "$kind" = opencode ]; then
   status=completed
   sh -c "$command" >/dev/null 2>&1 || status=error

@@ -111,7 +111,7 @@ test('an agent names a session harness or an installed command', () => {
   )
   assert.throws(
     () => Config.parse({ ...config, agents: [{ id: 'x', model: 'm', provider: 'cursor' }] }),
-    /provider must be one of claude, codex, oracle, claude-code, codex-cli, fx, nanocode-claude, nanocode-codex, opencode/,
+    /provider must be one of claude, codex, oracle, claude-code, codex-cli, fx, nanocode-claude, nanocode-codex, opencode, pi/,
   )
   assert.throws(
     () => Config.parse({ ...config, judge: { model: 'gpt-6.1-sol', provider: 'codex-cli' } }),
@@ -185,7 +185,10 @@ test('every pinned release names a checksum for each build it fetches', () => {
   }
 })
 
-function install(kind: 'claude-code' | 'codex-cli' | 'fx' | 'opencode', libc: string): string {
+function install(
+  kind: 'claude-code' | 'codex-cli' | 'fx' | 'opencode' | 'pi',
+  libc: string,
+): string {
   const rt = Path.join(root, 'rt-' + kind + '-' + libc)
   const release = Installed.releases[kind]
   assert.equal(release.source, 'release')
@@ -197,7 +200,7 @@ function install(kind: 'claude-code' | 'codex-cli' | 'fx' | 'opencode', libc: st
       '#!/bin/sh',
       'printf "argument:%s\\n" "$@"',
       'printf "input:%s\\n" "$(cat)"',
-      'env | grep -E "^(ANTHROPIC|CLAUDE|CODEX|DISABLE|FX|IS_SANDBOX|NANOEVAL_AGENT|OPENCODE|XDG)" | sort',
+      'env | grep -E "^(ANTHROPIC|CLAUDE|CODEX|DISABLE|FX|IS_SANDBOX|NANOEVAL_AGENT|OPENCODE|PI_|XDG)" | sort',
       '',
     ].join('\n'),
     { mode: 0o755 },
@@ -479,6 +482,156 @@ test('the event stream of opencode gives the final message, the tool calls and a
     content: 'File not found',
     extra: { duration_ns: null, status: 'error' },
   })
+})
+
+test('the command of pi is its glibc build and names the endpoint in its models file', () => {
+  const url = 'http://127.0.0.1:8787/v1/runs/r/model/a00001'
+  const expected: [Installed.Api, string, Record<string, unknown>][] = [
+    ['chat', 'openai-completions', {}],
+    ['responses', 'openai-responses', {}],
+    ['messages', 'anthropic-messages', { compat: { forceAdaptiveThinking: true } }],
+  ]
+  for (const [api, named, thinking] of expected) {
+    const out = run(
+      { api, kind: 'pi', model: "open/model'x", thinking: 'high' },
+      install('pi', 'any'),
+    )
+    assert.deepEqual(
+      out
+        .split('\n')
+        .filter((line) => line.startsWith('argument:'))
+        .map((line) => line.slice('argument:'.length)),
+      [
+        '-p',
+        '--mode',
+        'json',
+        '--no-session',
+        '--model',
+        "nanoeval/open/model'x",
+        '--thinking',
+        'high',
+      ],
+    )
+    assert.match(out, /^input:Write it's done\.$/m)
+    assert.match(out, /^PI_CODING_AGENT_DIR=.*home-pi\/pi$/m)
+    assert.match(out, /^PI_OFFLINE=1$/m)
+    assert.deepEqual(
+      JSON.parse(Fs.readFileSync(Path.join(root, 'home-pi', 'pi', 'models.json'), 'utf8')),
+      {
+        providers: {
+          nanoeval: {
+            api: named,
+            apiKey: '$NANOEVAL_AGENT_TOKEN',
+            authHeader: true,
+            baseUrl: url,
+            models: [{ id: "open/model'x", ...thinking, reasoning: true }],
+          },
+        },
+      },
+    )
+    assert.equal(
+      out.split(attemptToken).length,
+      2,
+      'the token reaches the command in one variable, in no argument and in no file',
+    )
+  }
+  const plain = run({ api: 'chat', kind: 'pi', model: 'open-model' }, install('pi', 'any'))
+  assert.doesNotMatch(plain, /^argument:--thinking$/m)
+  assert.deepEqual(
+    JSON.parse(Fs.readFileSync(Path.join(root, 'home-pi', 'pi', 'models.json'), 'utf8')).providers
+      .nanoeval.models,
+    [{ id: 'open-model' }],
+  )
+  assert.doesNotMatch(
+    Installed.script({ api: 'chat', kind: 'pi', model: 'm' }, { url }),
+    /ld-musl/,
+    'pi ships no musl build, so its command looks for none',
+  )
+  assert.throws(
+    () => Installed.script({ kind: 'pi', model: 'm' }, { url }),
+    /pi names no API for its model/,
+  )
+})
+
+const piStream = [
+  '{"type":"session","version":3,"id":"session-pi","cwd":"/app"}',
+  '{"type":"agent_start"}',
+  '{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"Write the file."}]}}',
+  '{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"plan"},{"type":"text","text":"I will write the file."},{"type":"toolCall","id":"call_1","name":"bash","arguments":{"command":"echo hi > a.txt"}}],"model":"open-model","usage":{"input":160,"output":12,"cacheRead":40,"cacheWrite":5},"stopReason":"toolUse"}}',
+  '{"type":"tool_execution_end","toolCallId":"call_1","toolName":"bash","result":{"content":[{"type":"text","text":"ok"}]},"isError":false}',
+  '{"type":"message_end","message":{"role":"toolResult","toolCallId":"call_1","content":[{"type":"text","text":"ok"}]}}',
+  '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Done."}],"model":"open-model","usage":{"input":40,"output":8,"cacheRead":160,"cacheWrite":0},"stopReason":"stop"}}',
+  '{"type":"agent_settled","aborted":false}',
+  '',
+].join('\n')
+
+const piUnreached = [
+  '{"type":"session","version":3,"id":"session-pi","cwd":"/app"}',
+  '{"type":"message_end","message":{"role":"assistant","content":[],"model":"open-model","stopReason":"error","errorMessage":"Connection error."}}',
+  '{"type":"auto_retry_end","success":false,"attempt":3,"finalError":"Connection error."}',
+  '{"type":"agent_settled","aborted":false}',
+  '',
+].join('\n')
+
+test('the event stream of pi gives the final message, the tool calls, an error it exits 0 with and an ATIF trajectory', () => {
+  assert.deepEqual(Installed.summarize('pi', piStream), {
+    costUsd: undefined,
+    error: undefined,
+    message: 'Done.',
+    toolCalls: 1,
+  })
+  assert.deepEqual(Installed.summarize('pi', piUnreached), {
+    costUsd: undefined,
+    error: 'Connection error.',
+    message: '',
+    toolCalls: 0,
+  })
+  assert.equal(
+    Installed.summarize('pi', piUnreached + piStream).error,
+    undefined,
+    'an error that a later answer followed is not the end of the stream',
+  )
+  const trajectory = Installed.trajectory(
+    'pi',
+    { instruction: 'Write the file.', stream: piStream, usage },
+    { model: 'open-model', name: 'pi', session: 'fallback', version: '1.5.2' },
+  )
+  assert.equal(trajectory.session_id, 'session-pi')
+  assert.deepEqual(
+    trajectory.steps.map((step) => [step.step_id, step.source, step.message]),
+    [
+      [1, 'user', 'Write the file.'],
+      [2, 'agent', 'I will write the file.'],
+      [3, 'agent', 'Done.'],
+    ],
+  )
+  assert.equal(trajectory.steps[1]!.reasoning_content, 'plan')
+  assert.deepEqual(trajectory.steps[1]!.metrics, {
+    prompt_tokens: 205,
+    completion_tokens: 12,
+    cached_tokens: 40,
+    extra: { cache_write_input_tokens: 5 },
+  })
+  assert.deepEqual(trajectory.steps[1]!.tool_calls, [
+    { tool_call_id: 'call_1', function_name: 'bash', arguments: { command: 'echo hi > a.txt' } },
+  ])
+  assert.deepEqual(trajectory.steps[1]!.observation, {
+    results: [
+      {
+        source_call_id: 'call_1',
+        content: 'ok',
+        extra: { duration_ns: null, status: 'completed' },
+      },
+    ],
+  })
+  assert.deepEqual(
+    Installed.trajectory(
+      'pi',
+      { stream: piUnreached, usage },
+      { model: 'open-model', name: 'pi', session: 'fallback', version: '1.5.2' },
+    ).steps.map((step) => [step.source, step.message]),
+    [['system', 'error: Connection error.']],
+  )
 })
 
 const fxOutput =
