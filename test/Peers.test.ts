@@ -62,24 +62,27 @@ test('the process of this very test is alive and a process id that no process ha
 
 test('the slots and the vCPUs of another runner count on the threads the two share', () => {
   assert.deepEqual(Peers.held(range(0, 47), [{ cpus: 48, slots: 72, threads: range(0, 47) }]), {
+    ceiling: 48,
     cpus: 48,
     slots: 72,
   })
   assert.deepEqual(Peers.held(range(24, 47), [{ cpus: 24, slots: 48, threads: range(0, 23) }]), {
+    ceiling: 0,
     cpus: 0,
     slots: 0,
   })
   assert.deepEqual(
     Peers.held(range(12, 47), [{ cpus: 48, slots: 96, threads: range(0, 47) }]),
-    { cpus: 36, slots: 72 },
+    { ceiling: 36, cpus: 36, slots: 72 },
     'three quarters of its threads are shared',
   )
   assert.deepEqual(
     Peers.held(range(0, 47), [{ slots: 24 }]),
-    { cpus: 24, slots: 24 },
+    { ceiling: 24, cpus: 24, slots: 24 },
     'a runner that names no threads, and counts no vCPUs: each of its slots is one at least',
   )
   assert.deepEqual(Peers.held(undefined, [{ cpus: 12, slots: 24, threads: range(0, 11) }]), {
+    ceiling: 12,
     cpus: 12,
     slots: 24,
   })
@@ -88,9 +91,27 @@ test('the slots and the vCPUs of another runner count on the threads the two sha
       { cpus: 12, slots: 24, threads: range(0, 11) },
       { slots: 36, threads: range(12, 47) },
     ]),
-    { cpus: 48, slots: 60 },
+    { ceiling: 48, cpus: 48, slots: 60 },
   )
-  assert.deepEqual(Peers.held(range(0, 47), []), { cpus: 0, slots: 0 })
+  assert.deepEqual(Peers.held(range(0, 47), []), { ceiling: 0, cpus: 0, slots: 0 })
+  const pressured = Peers.held(range(0, 47), [
+    { ceiling: 96, cpus: 48, slots: 96, threads: range(0, 47) },
+  ])
+  assert.deepEqual(
+    pressured,
+    { ceiling: 96, cpus: 48, slots: 96 },
+    'a runner that admits above its bound by CPU pressure holds its ceiling',
+  )
+  assert.equal(
+    Cpus.vcpus(48, { held: pressured.ceiling, perThread: 2 }),
+    1,
+    'and a second runner on its threads has no ceiling of two a thread left',
+  )
+  assert.deepEqual(Peers.parse(JSON.stringify({ ceiling: 96, cpus: 48, slots: 96 })), {
+    ceiling: 96,
+    cpus: 48,
+    slots: 96,
+  })
 })
 
 test('a second runner on the threads of the first has what is left of two slots and of one vCPU a thread', () => {

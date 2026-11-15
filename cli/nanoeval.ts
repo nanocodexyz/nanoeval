@@ -163,6 +163,8 @@ const usage = `nanoeval <command>
             (--agent ID=HARNESS:MODEL[:THINKING]... | --oracle) [--judge PROVIDER:MODEL[:THINKING]]
             [--attempts 1] [--provider local|e2b|gateway] [--backend auto|krun|ns|dir] [--slots N]
             [--sandboxes 1] [--memory-mb N] [--cpus-per-thread N] [--slots-only]
+            [--pressure-admit P] [--pressure-hold P] [--pressure-ceiling N]
+            [--pressure-interval-sec N] [--no-pressure]
             [--network private|host] [--template NAME]
             [--sandbox-timeout-sec N] [--sandbox-lease-sec 300] [--runtime | --runtime-blob SHA256]
             [--sandbox-budget-usd 0] [--model-budget-usd N] [--setup-sec 600] [--attach-sec 60]
@@ -347,6 +349,8 @@ const usage = `nanoeval <command>
             [--home DIR] [--ends-in-sec N]
             [--backend krun|ns] [--slots N] [--memory-mb N] [--memory-overcommit]
             [--cpus-per-thread N] [--slots-only]
+            [--pressure-admit P] [--pressure-hold P] [--pressure-ceiling N]
+            [--pressure-interval-sec N] [--no-pressure]
             [--free-disk-mb N] [--poll-ms N] [--store DIR] [--cache DIR]
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
             [--package-archive]
@@ -364,6 +368,15 @@ const usage = `nanoeval <command>
             counts no vCPUs, as before: rows by --slots and memory alone. Above one a
             thread the runner says so in one line of its log. Without either, it takes
             what nanoeval run named for the run with the same two options.
+            Above that bound it admits a row while the CPU pressure of its machine allows,
+            as /proc/pressure/cpu reports it: 'some avg60' under --pressure-admit P (10 %),
+            'some avg10' not over --pressure-hold P (25 %), the declared vCPUs in flight
+            under --pressure-ceiling N for each hardware thread (2), and one row every
+            --pressure-interval-sec N (10, the window of avg10), so the pressure answers
+            one row before the next. Its log has one line for each change between
+            admitting, holding, waiting and the ceiling, and the timeline of each row has
+            the pressure and the declared vCPUs in flight at its claim. --no-pressure, a
+            machine without that file, and --slots-only leave the vCPU bound alone.
             With --memory-overcommit it counts the memory its machine uses instead of the
             memory its running rows declare: a row starts while the machine has free what
             the row declares beside what the runner leaves unused (the machine's memory
@@ -1652,6 +1665,15 @@ export function rerunConfig(
     named.has('cpus-per-thread') || named.has('slots-only')
       ? own.sandbox.cpusPerThread
       : parent.sandbox.cpusPerThread
+  const pressure = [
+    'no-pressure',
+    'pressure-admit',
+    'pressure-ceiling',
+    'pressure-hold',
+    'pressure-interval-sec',
+  ].some((flag) => named.has(flag))
+    ? own.sandbox.pressure
+    : parent.sandbox.pressure
   const freeDiskMb = from('free-disk-mb', own.sandbox.freeDiskMb, parent.sandbox.freeDiskMb)
   const leaseSec = from('sandbox-lease-sec', own.sandbox.leaseSec, parent.sandbox.leaseSec)
   const memoryMb = from('memory-mb', own.sandbox.memoryMb, parent.sandbox.memoryMb)
@@ -1687,6 +1709,7 @@ export function rerunConfig(
       network:
         named.has('network') || named.has('backend') ? own.sandbox.network : parent.sandbox.network,
       pollMs: from('poll-ms', own.sandbox.pollMs, parent.sandbox.pollMs),
+      ...(pressure === undefined ? {} : { pressure }),
       provider: from('provider', own.sandbox.provider, parent.sandbox.provider),
       ...(own.sandbox.runtime ? { runtime: own.sandbox.runtime } : {}),
       ...(slots === undefined ? {} : { slots }),
@@ -1883,6 +1906,7 @@ async function main(
       'nanocode-ts-repository': { default: Revision.repositories.nanocodeTs, type: 'string' },
       network: { type: 'string' },
       'no-deadline': { default: false, type: 'boolean' },
+      'no-pressure': { default: false, type: 'boolean' },
       only: { multiple: true, type: 'string' },
       'only-file': { multiple: true, type: 'string' },
       'opened-at': { type: 'string' },
@@ -1891,6 +1915,10 @@ async function main(
       'package-archive': { default: false, type: 'boolean' },
       payer: { type: 'string' },
       'poll-ms': { type: 'string' },
+      'pressure-admit': { type: 'string' },
+      'pressure-ceiling': { type: 'string' },
+      'pressure-hold': { type: 'string' },
+      'pressure-interval-sec': { type: 'string' },
       port: { type: 'string' },
       provider: { default: 'local', type: 'string' },
       'public-url': { type: 'string' },
@@ -2833,9 +2861,24 @@ async function main(
     throw new Error(
       '--cpus-per-thread is a number above 0, the vCPUs that rows in flight may declare for each hardware thread of the runner',
     )
+  const pressure = {
+    ...(values['pressure-admit'] ? { admit: Number(values['pressure-admit']) } : {}),
+    ...(values['pressure-ceiling'] ? { ceiling: Number(values['pressure-ceiling']) } : {}),
+    ...(values['pressure-hold'] ? { hold: Number(values['pressure-hold']) } : {}),
+    ...(values['pressure-interval-sec']
+      ? { intervalSec: Number(values['pressure-interval-sec']) }
+      : {}),
+  }
+  if (values['no-pressure'] && Object.keys(pressure).length)
+    throw new Error('--no-pressure reads no CPU pressure and --pressure-... bounds it: name one')
   const admission = {
     ...(values['cpus-per-thread'] ? { cpusPerThread: Number(values['cpus-per-thread']) } : {}),
     ...(values['slots-only'] ? { cpusPerThread: null } : {}),
+    ...(values['no-pressure']
+      ? { pressure: null }
+      : Object.keys(pressure).length
+        ? { pressure: Config.pressure(pressure) }
+        : {}),
   }
 
   if (command === 'runner' && values.standing) {

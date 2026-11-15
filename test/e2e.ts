@@ -16,6 +16,7 @@ import * as Runtime from '../cli/Runtime.ts'
 import type * as Dataset from '../datasets/Dataset.ts'
 import * as Converter from '../sandbox/Converter.ts'
 import * as Cpus from '../sandbox/Cpus.ts'
+import * as Pressure from '../sandbox/Pressure.ts'
 import * as Runner from '../sandbox/Runner.ts'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
 import * as Store from '../sandbox/Store.ts'
@@ -1785,7 +1786,8 @@ async function main(): Promise<void> {
     const packing = scenario === 'packing'
     const overcommitted = scenario === 'overcommit'
     const wide = scenario === 'wide'
-    const derived = scenario === 'threads' || wide
+    const pressured = scenario === 'pressure'
+    const derived = scenario === 'threads' || wide || pressured
     const bounded = scenario === 'bounded'
     const boundSec = 10
     const lost = 'tasks/write-greeting'
@@ -2160,7 +2162,9 @@ async function main(): Promise<void> {
               }),
             }
           : {}),
-        ...(derived ? {} : { cpusPerThread: null, slots }),
+        ...(derived
+          ? { pressure: pressured ? { admit: 100, hold: 100, intervalSec: 0 } : null }
+          : { cpusPerThread: null, slots }),
         timeoutSec: 3600,
         ...(cached ? { verifierCache: true as const } : {}),
         ...(warm ? { warm: { idleSec: 2 * noticeSec + 2, usd: 1 } } : {}),
@@ -4806,6 +4810,57 @@ async function main(): Promise<void> {
         vcpus,
         'and the vCPUs its rows may declare at once',
       )
+      if (pressured) {
+        const marks = (await api.timeline(created.id)).marks
+        const named = (prefix: string) =>
+          marks.filter((mark) => mark.attempt !== undefined && mark.name.startsWith(prefix))
+        assert.equal(
+          named('attempt.claim.vcpus.').length,
+          total,
+          'the timeline of each row has the declared vCPUs in flight at its claim',
+        )
+        if ((await Pressure.read(Pressure.host)) === undefined) {
+          assert.equal(peak, vcpus, 'a machine that reports no CPU pressure admits by the bound')
+          assert.equal(named('attempt.claim.over').length, 0)
+          console.log('pressure: this machine reports no CPU pressure, ' + peak + ' rows at once')
+          await pass()
+          return
+        }
+        const ceiling = Cpus.vcpus(threads, { held: 0, perThread: Pressure.defaults.ceiling })
+        assert.equal(
+          peak,
+          Math.min(total, ceiling),
+          'rows run above one vCPU a thread while the CPU pressure of the machine allows',
+        )
+        assert.equal(
+          named('attempt.claim.over').length,
+          Math.min(total, ceiling) - vcpus,
+          'the rows admitted above the bound say so in their timeline',
+        )
+        const over = named('attempt.claim.over').map((mark) => mark.attempt)
+        assert.deepEqual(
+          named('attempt.claim.vcpus.')
+            .filter((mark) => over.includes(mark.attempt))
+            .map((mark) => mark.name),
+          over.map((_, index) => 'attempt.claim.vcpus.' + (vcpus + index)),
+          'a row above the bound is claimed with the bound in flight, and the next with one more',
+        )
+        assert.equal(named('attempt.claim.some10.').length, total)
+        assert.equal(named('attempt.claim.some60.').length, total)
+        console.log(
+          'pressure: a runner that may use ' +
+            threads +
+            ' hardware threads and admits ' +
+            vcpus +
+            ' declared vCPUs ran ' +
+            peak +
+            ' rows of one vCPU at once, ' +
+            named('attempt.claim.over').length +
+            ' admitted above the bound by CPU pressure',
+        )
+        await pass()
+        return
+      }
       assert.equal(peak, vcpus, 'rows of one vCPU run one a thread, whatever slots are free')
       if (wide) {
         const declared = (detail: Record<string, any>) =>

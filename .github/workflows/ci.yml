@@ -238,6 +238,11 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: dir
           NANOEVAL_E2E_SCENARIO: wide
+      - name: End to end, directory slots, a runner that admits rows above its vCPU bound while the CPU pressure of its machine allows
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: pressure
       - name: End to end, directory slots, a runner that admits rows by the memory its machine uses
         run: npm run e2e
         env:

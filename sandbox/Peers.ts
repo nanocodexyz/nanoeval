@@ -1,9 +1,9 @@
 import * as Fs from 'node:fs/promises'
 import * as Path from 'node:path'
 
-export type Held = { cpus: number; slots: number }
+export type Held = { ceiling: number; cpus: number; slots: number }
 
-export type Peer = { cpus?: number; slots: number; threads?: readonly number[] }
+export type Peer = { ceiling?: number; cpus?: number; slots: number; threads?: readonly number[] }
 
 export function alive(pid: number): boolean {
   try {
@@ -34,11 +34,12 @@ export function held(own: readonly number[] | undefined, peers: readonly Peer[])
           ? peer.threads.filter((thread) => own.includes(thread)).length / peer.threads.length
           : 1
       return {
+        ceiling: total.ceiling + (peer.ceiling ?? peer.cpus ?? peer.slots) * part,
         cpus: total.cpus + (peer.cpus ?? peer.slots) * part,
         slots: total.slots + peer.slots * part,
       }
     },
-    { cpus: 0, slots: 0 },
+    { ceiling: 0, cpus: 0, slots: 0 },
   )
 }
 
@@ -61,13 +62,17 @@ export declare namespace others {
 
 export function parse(text: string): Peer | undefined {
   try {
-    const { cpus, slots, threads } = JSON.parse(text) as {
+    const { ceiling, cpus, slots, threads } = JSON.parse(text) as {
+      ceiling?: unknown
       cpus?: unknown
       slots?: unknown
       threads?: unknown
     }
     if (!Number.isInteger(slots) || (slots as number) < 1) return undefined
     return {
+      ...(Number.isInteger(ceiling) && (ceiling as number) > 0
+        ? { ceiling: ceiling as number }
+        : {}),
       ...(Number.isInteger(cpus) && (cpus as number) > 0 ? { cpus: cpus as number } : {}),
       slots: slots as number,
       ...(Array.isArray(threads) && threads.every((thread) => Number.isInteger(thread))

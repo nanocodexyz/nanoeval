@@ -26,6 +26,7 @@ import * as Disks from './Disks.ts'
 import * as Host from './Host.ts'
 import * as Memory from './Memory.ts'
 import * as Peers from './Peers.ts'
+import * as Pressure from './Pressure.ts'
 import * as Store from './Store.ts'
 
 export class GoneError extends Error {
@@ -1533,6 +1534,20 @@ async function attend(
   const perThread = config.cpusPerThread === undefined ? Cpus.cpusPerThread : config.cpusPerThread
   const vcpus =
     perThread === null ? undefined : Cpus.vcpus(capabilities.cpus, { held: peers.cpus, perThread })
+  const policy =
+    config.pressure === null || vcpus === undefined ? undefined : Pressure.policy(config.pressure)
+  const measured = (await Pressure.read(Pressure.host)) !== undefined
+  const ceiling =
+    policy && measured && vcpus !== undefined
+      ? Math.max(
+          vcpus,
+          Cpus.vcpus(capabilities.cpus, { held: peers.ceiling, perThread: policy.ceiling }),
+        )
+      : undefined
+  const pressured =
+    policy && ceiling !== undefined && vcpus !== undefined
+      ? { bound: vcpus, ceiling, policy }
+      : undefined
   const capacity: Admission.Capacity = {
     ...(vcpus === undefined ? {} : { cpus: vcpus }),
     ...(config.freeDiskMb === undefined ? {} : { freeDiskMb: config.freeDiskMb }),
@@ -1540,6 +1555,7 @@ async function attend(
     slots: config.slots ?? Cpus.slots(capabilities.cpus, peers.slots),
   }
   await Peers.write(Peers.file({ cache, pid: process.pid, run: config.run }), {
+    ...(ceiling === undefined ? {} : { ceiling }),
     ...(vcpus === undefined ? {} : { cpus: vcpus }),
     slots: capacity.slots,
     ...(threads ? { threads } : {}),
@@ -1603,6 +1619,17 @@ async function attend(
                 Math.round(peers.cpus) +
                 ' of other runners on this machine leave of one a thread'
               : ', one a thread'
+            : '') +
+          (pressured
+            ? ', and up to ' +
+              pressured.ceiling +
+              ' while the CPU pressure of the machine allows: some avg60 under ' +
+              pressured.policy.admit +
+              ' %, some avg10 not over ' +
+              pressured.policy.hold +
+              ' %, a row every ' +
+              pressured.policy.intervalSec +
+              ' s'
             : '')) +
       ', ' +
       backend +
@@ -1626,6 +1653,12 @@ async function attend(
     vcpus,
   })
   if (overcommitting) log(overcommitting)
+  if (policy && !measured)
+    log(
+      'this machine does not report its CPU pressure in ' +
+        Pressure.host +
+        ': rows are admitted by the vCPU bound alone',
+    )
 
   const load = async (): Promise<Admission.Load> => {
     const rows = everything()
@@ -1673,6 +1706,8 @@ async function attend(
   let holding = false
   let idleMs = config.pollMs
   let over = false
+  let overAt: number | undefined
+  let regime: Pressure.Regime | undefined
   let yielding = false
   const beatMs = (config.leaseSec * 1000) / 3
   serving.wake = () => {
@@ -1750,10 +1785,29 @@ async function attend(
             await reclaim(capacity.freeDiskMb)
             current = await load()
           }
-          const offer = Admission.offer(current, capacity)
+          const reading = measured ? await Pressure.read(Pressure.host) : undefined
+          const facts =
+            pressured && reading && current.cpus !== undefined
+              ? { ...pressured, cpus: current.cpus, reading }
+              : undefined
+          const decided = facts
+            ? Pressure.decide({ ...facts, lastAt: overAt, now: Date.now() })
+            : { over: false }
+          if (facts && decided.regime && decided.regime !== regime) {
+            regime = decided.regime
+            log(Pressure.line(regime, facts))
+          }
+          const above = pressured !== undefined && decided.over
+          const offer =
+            pressured && decided.over
+              ? Pressure.offer(
+                  Admission.offer(current, { ...capacity, cpus: pressured.ceiling }),
+                  pressured.bound,
+                )
+              : Admission.offer(current, capacity)
           if (offer.slots > 0 || Admission.starved(current, capacity)) {
             const sentAt = Date.now()
-            const waitMs = shared.serving.size > 1 || shared.entering.length ? 0 : holdMs
+            const waitMs = above || shared.serving.size > 1 || shared.entering.length ? 0 : holdMs
             holding = waitMs > 0
             const answer = await call<Protocol.ClaimResponse>('/claims', {
               offer,
@@ -1764,6 +1818,24 @@ async function attend(
             } satisfies Protocol.ClaimRequest)
             holding = false
             const claimed: Mark = { at: sentAt, ms: Date.now() - sentAt, name: 'attempt.claim' }
+            const said = Pressure.marks({ at: sentAt, cpus: current.cpus, over: above, reading })
+            if (above && answer.rows.length) overAt = Date.now()
+            if (answer.rows.length && (reading || current.cpus !== undefined))
+              log(
+                'claim of ' +
+                  answer.rows.length +
+                  (above ? ' above the vCPU bound' : '') +
+                  (current.cpus === undefined
+                    ? ''
+                    : ' at ' + current.cpus + ' declared vCPUs in flight') +
+                  (reading
+                    ? ', some avg10 ' +
+                      reading.avg10.toFixed(2) +
+                      ' % avg60 ' +
+                      reading.avg60.toFixed(2) +
+                      ' %'
+                    : ''),
+              )
             finished = answer.finished
             if (answer.drained !== undefined) {
               drained = true
@@ -1781,7 +1853,7 @@ async function attend(
                 changed: 0,
                 delay: firstPollMs,
                 errors: 0,
-                marks: [claimed],
+                marks: [claimed, ...said],
                 message: '',
                 next: 0,
                 round: 1,

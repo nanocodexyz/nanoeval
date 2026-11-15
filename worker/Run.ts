@@ -2161,6 +2161,7 @@ export class Run extends DurableObject<Env> {
       oracle: Config.oracle(config) !== undefined,
       pollMs: config.sandbox.pollMs,
       ...(pool ? { pool } : {}),
+      ...(config.sandbox.pressure === undefined ? {} : { pressure: config.sandbox.pressure }),
       protocol: Protocol.version,
       run: meta.id,
       runner,

@@ -82,6 +82,7 @@ export type Config = {
     memoryMb?: number
     network: Slot.Network
     pollMs: number
+    pressure?: Pressure | null
     provider: 'e2b' | 'gateway' | 'local'
     runtime?: Eval.Blob
     slots?: number
@@ -91,6 +92,8 @@ export type Config = {
     warm?: { idleSec: number; usd: number }
   }
 }
+
+export type Pressure = { admit?: number; ceiling?: number; hold?: number; intervalSec?: number }
 
 export type Runner = {
   ahead?: Protocol.Ahead[]
@@ -107,6 +110,7 @@ export type Runner = {
   oracle: boolean
   pollMs: number
   pool?: Protocol.Standing
+  pressure?: Pressure | null
   protocol?: number
   ready?: true
   run: string
@@ -192,6 +196,48 @@ export function oracle(config: Pick<Config, 'agents'>): Agent | undefined {
 
 export function disks(provider: Config['sandbox']['provider']): Config['sandbox']['disks'] {
   return provider === 'local' ? 'keep' : 'remove'
+}
+
+export function pressure(value: unknown): Pressure {
+  const named = value as Record<string, unknown> | null
+  const fields = ['admit', 'ceiling', 'hold', 'intervalSec']
+  const fail = (message: string): never => {
+    throw new InvalidError(message)
+  }
+  if (
+    typeof named !== 'object' ||
+    named === null ||
+    Object.keys(named).some((key) => !fields.includes(key))
+  )
+    return fail(
+      'sandbox.pressure holds admit, ceiling, hold and intervalSec, or is null to admit rows by the vCPU bound alone',
+    )
+  const percent = (field: 'admit' | 'hold') => {
+    const found = named[field]
+    return typeof found === 'number' && found > 0 && found <= 100
+      ? found
+      : fail('sandbox.pressure.' + field + ' is a percentage above 0 and at most 100')
+  }
+  return {
+    ...(named['admit'] === undefined ? {} : { admit: percent('admit') }),
+    ...(named['ceiling'] === undefined
+      ? {}
+      : {
+          ceiling:
+            typeof named['ceiling'] === 'number' && named['ceiling'] > 0
+              ? named['ceiling']
+              : fail('sandbox.pressure.ceiling is a number of declared vCPUs a thread above 0'),
+        }),
+    ...(named['hold'] === undefined ? {} : { hold: percent('hold') }),
+    ...(named['intervalSec'] === undefined
+      ? {}
+      : {
+          intervalSec:
+            typeof named['intervalSec'] === 'number' && named['intervalSec'] >= 0
+              ? named['intervalSec']
+              : fail('sandbox.pressure.intervalSec is a number of seconds, 0 or more'),
+        }),
+  }
 }
 
 export function rerunAgents(parent: readonly Agent[], ids: readonly string[]): Agent[] {
@@ -473,6 +519,9 @@ export function parse(value: unknown): Config {
         : { memoryMb: integer(sandbox.memoryMb, 'sandbox.memoryMb', 1) }),
       network: sandbox.network,
       pollMs: integer(sandbox.pollMs, 'sandbox.pollMs', 1),
+      ...(sandbox.pressure === undefined
+        ? {}
+        : { pressure: sandbox.pressure === null ? null : pressure(sandbox.pressure) }),
       provider: choice(sandbox.provider, 'sandbox.provider', ['e2b', 'gateway', 'local']),
       ...(sandbox.runtime === undefined
         ? {}

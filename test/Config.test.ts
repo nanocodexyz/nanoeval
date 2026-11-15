@@ -68,6 +68,27 @@ test('the funding of the key is a deposit above zero, a top-up of at least zero,
   assert.equal(bound(null), null, 'null counts no vCPUs: rows by slots and memory alone')
   for (const refused of [0, -1, '2', true])
     assert.throws(() => bound(refused), /sandbox.cpusPerThread/)
+  const pressure = (named: unknown) =>
+    Config.parse({ ...derived, sandbox: { ...derived.sandbox, pressure: named } }).sandbox.pressure
+  assert.equal(pressure(undefined), undefined, 'a run names no policy: a runner takes its own')
+  assert.equal(pressure(null), null, 'null reads no pressure: rows by the vCPU bound alone')
+  assert.deepEqual(pressure({}), {})
+  assert.deepEqual(pressure({ admit: 5, ceiling: 1.5, hold: 100, intervalSec: 0 }), {
+    admit: 5,
+    ceiling: 1.5,
+    hold: 100,
+    intervalSec: 0,
+  })
+  for (const refused of [
+    { admit: 0 },
+    { admit: 101 },
+    { hold: '25' },
+    { ceiling: 0 },
+    { intervalSec: -1 },
+    { admits: 5 },
+    7,
+  ])
+    assert.throws(() => pressure(refused), /sandbox.pressure/)
   assert.deepEqual(Config.parse(config({ deposit: 5, topUp: 0 })).key, { deposit: 5, topUp: 0 })
   assert.deepEqual(Config.parse(config({ topUp: 2 })).key, { topUp: 2 })
   for (const key of [{}, { deposit: 0 }, { topUp: -1 }, { deposit: '5' }, null])
