@@ -190,7 +190,7 @@ export function infrastructure(input: {
   if (failure.kind === 'budget' || failure.kind === 'agent_timeout' || failure.kind === 'cancelled')
     return undefined
   if (
-    failure.message.includes('No space left on device') ||
+    Verdict.full.test(failure.message) ||
     (failure.kind === 'environment' && failure.message.startsWith(Verdict.fullPrefix))
   )
     return 'the slot ran out of disk'

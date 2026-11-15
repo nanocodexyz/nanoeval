@@ -32,6 +32,15 @@ const withdrawn = [
   '/tests/test.sh: line 8: curl: command not found',
 ].join('\n')
 
+const wrapped = [
+  '  × Failed to download `torch==2.5.1+cpu`',
+  '  ├─▶ Failed to extract archive: torch-2.5.1+cpu-cp311-cp311-linux_x86_64.whl',
+  '  ├─▶ I/O operation failed during extraction',
+  '  ╰─▶ failed to write to file',
+  '      `/root/.cache/uv/.tmptUryCQ/torch/lib/libtorch_cpu.so`: No space left on',
+  '      device (os error 28)',
+].join('\n')
+
 const broken = [
   '  × Failed to download `pandas==2.3.2`',
   '  ╰─▶ failed to create file',
@@ -95,6 +104,27 @@ test('a verifier whose disk failed or filled is an error of the slot and is retr
   assert.equal(roomy.failure!.kind, 'verifier')
   assert.equal(roomy.failure!.message, 'the verifier exited with 101 and wrote no reward: ' + cut)
   assert.equal(retried(roomy.failure), undefined)
+})
+
+test('a verifier whose log wraps the words of a full disk is an error of the slot and is retried', () => {
+  for (const log of [wrapped, wrapped.replace('left on\n      device', 'left\n      on device')]) {
+    const verdict = Verdict.verifier({ ...base, facts: unreported, log })
+    assert.equal(verdict.reward, null)
+    assert.equal(verdict.failure!.kind, 'environment')
+    assert.equal(
+      verdict.failure!.message,
+      Verdict.fullPrefix + ', so its tests did not run: ' + log,
+    )
+    assert.equal(retried(verdict.failure), 'the slot ran out of disk')
+    assert.equal(
+      retried({ kind: 'agent', message: 'pi exited with 1: ' + log }),
+      'the slot ran out of disk',
+    )
+  }
+  assert.equal(
+    retried({ kind: 'agent', message: 'pi exited with 1: no space on the device' }),
+    undefined,
+  )
 })
 
 test('a verifier whose tests ran is scored whatever its log or the disk says', () => {

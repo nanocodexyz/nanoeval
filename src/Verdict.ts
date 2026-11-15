@@ -11,6 +11,8 @@ export const unfetchedPrefix = 'the verifier could not download what its test.sh
 export const withdrawnPrefix =
   'the verifier could not install what its test.sh installs: its package archive answered 404 Not Found'
 
+export const full = /No\s+space\s+left\s+on\s+device/
+
 const unreachable: readonly RegExp[] = [
   /\bnetwork timeout\b/,
   /\bcurl: \((6|7|28|35|52|56)\)/,
@@ -122,8 +124,7 @@ function untested(input: {
       kind: 'environment',
       message: fullPrefix + ': the machine had less than 1 MB of free disk' + because,
     }
-  if (tail.includes('No space left on device'))
-    return { kind: 'environment', message: fullPrefix + because }
+  if (full.test(tail)) return { kind: 'environment', message: fullPrefix + because }
   if (tail.includes('Input/output error'))
     return { kind: 'environment', message: brokenPrefix + because }
   if (unreachable.some((pattern) => pattern.test(tail)))
