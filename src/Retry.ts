@@ -12,6 +12,8 @@ export const refusedPrefix = 'the run ended the turn'
 
 export const refusing: readonly number[] = [401, 402, 403, 404]
 
+export const rejectedPrefix = 'the model provider rejected the plan login of the run'
+
 export const stalledPrefix = 'the agent never reached its model'
 
 export const unansweredPrefix = 'the model endpoint never answered the agent'
@@ -111,6 +113,15 @@ export function refused(input: {
   }
 }
 
+export function rejected(input: {
+  failure: Result.Failure
+  requests: readonly { refusal?: Proxy.Refusal }[]
+}): Result.Failure | undefined {
+  const { failure } = input
+  if (failure.kind !== 'agent' || input.requests.at(-1)?.refusal !== 'login') return undefined
+  return { at: failure.at, kind: 'environment', message: rejectedPrefix + ': ' + failure.message }
+}
+
 export function stalled(input: {
   failure: Result.Failure
   oomKills?: number
@@ -178,6 +189,8 @@ export function infrastructure(input: {
     return 'the model endpoint was not reached'
   if (failure.kind === 'environment' && failure.message.startsWith(limitedPrefix))
     return 'the model provider limited its requests'
+  if (failure.kind === 'environment' && failure.message.startsWith(rejectedPrefix))
+    return 'the model provider rejected the plan login'
   if (
     failure.kind === 'agent' &&
     (/\berror code: (502|530|1016)\b/.test(failure.message) ||

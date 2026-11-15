@@ -30,6 +30,7 @@ import * as Price from '../src/Price.ts'
 import * as Protocol from '../src/Protocol.ts'
 import * as Proxy from '../src/Proxy.ts'
 import type * as Result from '../src/Result.ts'
+import * as Retry from '../src/Retry.ts'
 import * as Slot from '../src/Slot.ts'
 import * as Guest from './Guest.ts'
 import * as Krun from './Krun.ts'
@@ -160,6 +161,7 @@ const scriptedLogins = Object.fromEntries(
       paid: 0,
       refresh: 'scripted-' + kind + '-refresh-' + Crypto.randomBytes(8).toString('hex'),
       rejected: 0,
+      rejecting: false,
       revokeAt: undefined as number | undefined,
     },
   ]),
@@ -956,6 +958,7 @@ type ScriptedLogin = {
   paid: number
   refresh: string
   rejected: number
+  rejecting: boolean
   revokeAt: number | undefined
 }
 
@@ -1072,7 +1075,7 @@ function loginPays(request: Http.IncomingMessage, installedAgent: boolean): bool
       ? request.headers['chatgpt-account-id'] === scriptedAccount
       : !installedAgent ||
         String(request.headers['anthropic-beta']).split(',').includes('oauth-2025-04-20'))
-  if (!fresh) {
+  if (!fresh || state.rejecting) {
     state.rejected++
     return false
   }
@@ -3360,6 +3363,19 @@ async function main(): Promise<void> {
         asked,
         'a token that ends later is not refreshed',
       )
+
+      for (const kind of kinds) scriptedLogins[kind].rejecting = true
+      const fourth = await api.create({ ...config, name: config.name + '-rejected' })
+      const rejected = await finished(fourth.id)
+      for (const kind of kinds) scriptedLogins[kind].rejecting = false
+      console.log(summary(rejected))
+      assert.equal(rejected['refused'], null, 'a login that is rejected does not stop the run')
+      for (const row of rejected['attempts'] as Record<string, any>[]) {
+        assert.equal(row['outcome'], 'errored')
+        assert.equal(row['failure'].kind, 'environment', row['failure'].message)
+        assert.ok(row['failure'].message.startsWith(Retry.rejectedPrefix + ': '))
+        assert.equal(row['claims'], 2, 'a row whose login was rejected is retried once')
+      }
 
       const secret = [
         vars['LOGIN_SECRET']!,

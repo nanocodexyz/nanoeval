@@ -3453,20 +3453,27 @@ export class Run extends DurableObject<Env> {
       })
     } else if (body.failure) {
       const unpaid = refusals.has('plan') ? this.meta()!.refused : undefined
-      end = {
-        failure: {
-          at: now,
-          ...body.failure,
-          ...(body.failure.kind === 'agent' && refusals.has('spent')
-            ? { kind: 'budget' as const }
-            : {}),
-          ...(body.failure.kind === 'agent' && refusals.has('budget')
-            ? { kind: 'budget' as const, message: cut + ': ' + body.failure.message }
-            : {}),
-          ...(unpaid?.plan ? { kind: 'environment' as const, message: unpaid.message } : {}),
-        },
-        reward: null,
+      const failure: Result.Failure = {
+        at: now,
+        ...body.failure,
+        ...(body.failure.kind === 'agent' && refusals.has('spent')
+          ? { kind: 'budget' as const }
+          : {}),
+        ...(body.failure.kind === 'agent' && refusals.has('budget')
+          ? { kind: 'budget' as const, message: cut + ': ' + body.failure.message }
+          : {}),
+        ...(unpaid?.plan ? { kind: 'environment' as const, message: unpaid.message } : {}),
       }
+      const requests = this.sql
+        .all(
+          "SELECT refusal FROM model_requests WHERE attempt = ? AND claim = ? AND status IS NOT NULL AND path NOT LIKE 'judge/%' ORDER BY id",
+          row.id,
+          row.claims,
+        )
+        .map((request) =>
+          request['refusal'] === null ? {} : { refusal: request['refusal'] as Proxy.Refusal },
+        )
+      end = { failure: Retry.rejected({ failure, requests }) ?? failure, reward: null }
     } else throw new Refusal(400, 'finishing an attempt reports a verifier or a failure')
     if (row.session && row.phase === 'run' && this.submitted(row))
       for (const name of this.branchSessions(row)) await this.halt(name)

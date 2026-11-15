@@ -136,7 +136,7 @@ export const nanocode = App.create<Env>({
           Meter.relay({
             body,
             headers: to.headers,
-            hooks,
+            hooks: signed || login ? Meter.rejecting(hooks) : hooks,
             method: request.method,
             provider: name,
             signal: request.signal,

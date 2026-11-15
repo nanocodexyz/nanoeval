@@ -13,7 +13,11 @@ export type Outcome = {
 
 export type Limited = { retryAfterMs?: number; status: number; tries: number }
 
-export type Refused = { kind: Exclude<Proxy.Refusal, 'budget'>; text: string; tries: number }
+export type Refused = {
+  kind: Exclude<Proxy.Refusal, 'budget' | 'login'>
+  text: string
+  tries: number
+}
 
 export type Admission = { flight?: number; pauseMs?: number; refused?: string }
 
@@ -41,6 +45,14 @@ function kept(source: Headers): Headers {
     if (!hopHeaders.includes(name)) headers.set(name, value)
   })
   return headers
+}
+
+export function rejecting(hooks: Hooks): Hooks {
+  return {
+    ...hooks,
+    settle: (outcome) =>
+      hooks.settle(outcome.status === 401 ? { ...outcome, refusal: 'login' } : outcome),
+  }
 }
 
 export async function relay(input: relay.Input): Promise<Response> {

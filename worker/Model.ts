@@ -63,7 +63,7 @@ export async function forward(env: Env, input: forward.Input): Promise<Response>
     return Meter.relay({
       body,
       headers: target.headers,
-      hooks: input.hooks,
+      hooks: credential.kind === 'plan' ? Meter.rejecting(input.hooks) : input.hooks,
       method: request.method,
       provider,
       url:
