@@ -182,6 +182,7 @@ const tables = [
     instance TEXT NOT NULL
   )`,
   ...Ledger.tables,
+  ...Payment.tables,
   ...Timeline.tables,
 ]
 
@@ -243,11 +244,13 @@ export class Run extends DurableObject<Env> {
   private readonly specs = new Map<string, Eval.Task>()
   private readonly sql: SqlSetup.Sql
   private ticking: Promise<void> | undefined
+  private readonly wallet: Payment.Wallet
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
     this.sql = Storage.sql(ctx)
     SqlSetup.setup(this.sql, tables)
+    this.wallet = Payment.wallet(Payment.stored(this.sql))
     const columns = this.sql.all('PRAGMA table_info(sandboxes)')
     if (!columns.some((column) => column['name'] === 'paid_until'))
       this.sql.run('ALTER TABLE sandboxes ADD COLUMN paid_until INTEGER')
@@ -1126,9 +1129,28 @@ export class Run extends DurableObject<Env> {
       pay: Payment.payer({
         account: privateKeyToAccount(this.env.TEMPO_PRIVATE_KEY as `0x${string}`),
         budget,
+        maxDepositUsd: config.budget.sandboxUsd,
         onCharge,
+        wallet: this.wallet,
       }),
     })
+  }
+
+  private async closeChannels(): Promise<void> {
+    if (!Payment.open(this.wallet) || !this.env.TEMPO_PRIVATE_KEY) return
+    const startedAt = Date.now()
+    const result = await Payment.close({
+      account: privateKeyToAccount(this.env.TEMPO_PRIVATE_KEY as `0x${string}`),
+      wallet: this.wallet,
+    })
+    const ms = Date.now() - startedAt
+    result.closed.forEach(() =>
+      Timeline.add(this.sql, { at: startedAt, ms, name: 'payment.close' }),
+    )
+    for (const unclosed of result.unclosed) {
+      Timeline.add(this.sql, { at: startedAt, ms, name: 'payment.unclosed' })
+      console.error('nanoeval channel not closed', unclosed.channelId, unclosed.error)
+    }
   }
 
   private putArtifact(attempt: string, name: string, content: string | Uint8Array): void {
@@ -1475,6 +1497,11 @@ export class Run extends DurableObject<Env> {
     )
     if (this.rows().every((row) => row.phase === 'done') && !open) {
       await this.readKey('end')
+      try {
+        await this.closeChannels()
+      } catch (error) {
+        console.error('nanoeval channels not closed', message(error))
+      }
       const finishedAt = Date.now()
       this.setMeta({ ...this.meta()!, finishedAt })
       const { errored, failed, passed } = this.counts()

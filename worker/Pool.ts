@@ -12,7 +12,7 @@ import * as Members from '../src/Pool.ts'
 import type * as Protocol from '../src/Protocol.ts'
 import type * as Sandbox from '../src/Sandbox.ts'
 import * as Slot from '../src/Slot.ts'
-import type * as SqlSetup from '../src/Sql.ts'
+import * as SqlSetup from '../src/Sql.ts'
 import { locations, type Env } from './Env.ts'
 import * as Storage from './Storage.ts'
 
@@ -72,11 +72,14 @@ export class Pool extends DurableObject<Env> {
   private location: string | undefined
   private readonly sql: SqlSetup.Sql
   private sweeping: Promise<void> | undefined
+  private readonly wallet: Payment.Wallet
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
     this.sql = Storage.sql(ctx)
     Members.setup(this.sql)
+    SqlSetup.setup(this.sql, Payment.tables)
+    this.wallet = Payment.wallet(Payment.stored(this.sql))
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -292,8 +295,20 @@ export class Pool extends DurableObject<Env> {
         account: privateKeyToAccount(this.env.TEMPO_PRIVATE_KEY as `0x${string}`),
         budget,
         onCharge,
+        wallet: this.wallet,
       }),
     })
+  }
+
+  private async closeChannels(): Promise<void> {
+    if (!Payment.open(this.wallet) || !this.env.TEMPO_PRIVATE_KEY) return
+    if (Members.all(this.sql).some((member) => ['assigned', 'idle'].includes(member.state))) return
+    const result = await Payment.close({
+      account: privateKeyToAccount(this.env.TEMPO_PRIVATE_KEY as `0x${string}`),
+      wallet: this.wallet,
+    })
+    for (const unclosed of result.unclosed)
+      console.error('nanoeval pool channel not closed', unclosed.channelId, unclosed.error)
   }
 
   private async shut(member: Members.Member, reason: string): Promise<void> {
@@ -306,6 +321,11 @@ export class Pool extends DurableObject<Env> {
       }
     Members.end(this.sql, { ...(error === undefined ? {} : { error }), id: member.id })
     this.release(member.id)
+    try {
+      await this.closeChannels()
+    } catch (failure) {
+      console.error('nanoeval pool channels not closed', message(failure))
+    }
   }
 
   private sweep(): Promise<void> {
