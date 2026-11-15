@@ -7726,4 +7726,6 @@ On a machine with 12 hardware threads and KVM, in the same tree, krun slots on a
 
 Each was run once. The verifier of both `relayed` lanes printed `ok` for `internet no`, `address no`, `forward no`, `gateway no` and `session no` of the agent, where `session` is the port of the Worker on the loopback of the machine. The session and the model requests of the installed agent can then only have gone through the relay.
 
-**Not verified.** The two steps added to the `e2e-krun` job of `ci.yml` on a hosted runner. A session over `wss://` through the relay for the length of a real attempt, and a run of the 21 tasks against a deployed Worker without the proxy. A Worker behind a proxy that needs HTTP/2. ns slots, where a closed agent is refused.
+On the same machine, one run against a deployed Worker at an `https://` address, with no proxy: 21 tasks that close the network of their agent and their verifier, each with its solution, one attempt, a runner of this tree with `--backend krun --slots 4`. 21 of 21 passed, 0 errors, 13 s from the first claim to the last verdict with disks that an earlier run had cached.
+
+**Not verified.** The two steps added to the `e2e-krun` job of `ci.yml` on a hosted runner. A session over `wss://` through the relay for the length of an attempt with a model: the sessions of the run above lasted seconds. An installed agent against a deployed Worker, whose model requests go through the relay over `https://`. A Worker behind a proxy that needs HTTP/2. ns slots, where a closed agent is refused.
