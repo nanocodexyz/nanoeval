@@ -2263,11 +2263,11 @@ async function main(): Promise<void> {
     let underAt: number | undefined
     let beside: { id: string } | undefined
     let cappedAt: number | undefined
-    let cappedEnded: number | undefined
     const cappedLines: string[] = []
     let cappedRefusals = 0
     let besideStatus: Record<string, any> | undefined
     let besidePool: Record<string, any>[] | undefined
+    let endedId: number | undefined
     const members = async () => (await api.pool())['members'] as Record<string, any>[]
     const inspect = async (run: string) => {
       const flying = ((await api.status(run))['attempts'] as Record<string, any>[]).filter(
@@ -2427,7 +2427,7 @@ async function main(): Promise<void> {
           mock!.tell(true)
           mock!.crowd(2 * MockGateway.waitSec)
           cappedRefusals = mock!.capped.length
-          cappedEnded = serving!.id
+          endedId = serving!.id
           await mock!.die(serving!.handle)
         } else if (
           cappedAt !== undefined &&
@@ -2470,9 +2470,9 @@ async function main(): Promise<void> {
         }
       }
       if (fleet && !restarted) {
-        const first = (status['sandboxes'] as { runner: number; state: string }[]).find(
-          (sandbox) => sandbox.state === 'ready',
-        )
+        const first = (
+          status['sandboxes'] as { handle: string; id: number; runner: number; state: string }[]
+        ).find((sandbox) => sandbox.state === 'ready')
         const busy = (status['attempts'] as { phase: string; runner: number | null }[]).some(
           (attempt) =>
             first !== undefined &&
@@ -2481,7 +2481,8 @@ async function main(): Promise<void> {
         )
         if (busy && parked) {
           restarted = true
-          await mock!.die([...mock!.sandboxes.keys()][0]!)
+          endedId = first!.id
+          await mock!.die(first!.handle)
         }
       }
       if (
@@ -2965,7 +2966,7 @@ async function main(): Promise<void> {
       }[]
       assert.equal(status['counts'].errored, 0, 'no row ended as an error: ' + summary(status))
       assert.match(rows[0]!.error!, /the gateway refused create with 503: /)
-      const ended = rows.find((row) => row.id === cappedEnded)!
+      const ended = rows.find((row) => row.id === endedId)!
       assert.equal(ended.state, 'failed', 'the sandbox that its provider ended is failed')
       assert.match(ended.error!, /the runner stopped answering|refused renew with 404: /)
       const refusals = rows.filter((row) => /refused create with 429: /.test(row.error ?? ''))
@@ -3066,20 +3067,30 @@ async function main(): Promise<void> {
       )
       assert.ok(wallMs < config.limits.setupSec * 1000)
     } else if (fleet) {
-      const rows = status['sandboxes'] as { error: string | null; state: string }[]
+      const rows = status['sandboxes'] as {
+        error: string | null
+        id: number
+        runner: number
+        state: string
+      }[]
       assert.match(rows[0]!.error!, /the gateway refused create with 503: /)
-      assert.equal(rows[1]!.state, 'failed', 'the sandbox that died is failed, not waited for')
-      assert.match(rows[1]!.error!, /the runner stopped answering|refused renew with 404: /)
-      assert.ok(rows.length >= 3, 'another sandbox worked the run')
-      for (const row of rows.slice(2)) assert.equal(row.state, 'closed')
+      const died = rows.find((row) => row.id === endedId)!
+      assert.equal(died.state, 'failed', 'the sandbox that died is failed, not waited for')
+      assert.match(died.error!, /the runner stopped answering|refused renew with 404: /)
+      const others = rows.slice(1).filter((row) => row !== died)
+      assert.ok(others.length >= 1, 'another sandbox worked the run')
+      for (const row of others) assert.equal(row.state, 'closed')
       assert.ok(status['lostClaims'] >= 1, 'the rows of the sandbox that died lost their claims')
       const again = (status['attempts'] as { claims: number; runner: number }[]).filter(
         (attempt) => attempt.claims === 2,
       )
       assert.ok(again.length >= 1, 'a row of the sandbox that died was claimed again')
-      const dead = (status['sandboxes'] as { runner: number }[])[1]!.runner
       for (const attempt of again)
-        assert.notEqual(attempt.runner, dead, 'a row that was claimed again ends on another runner')
+        assert.notEqual(
+          attempt.runner,
+          died.runner,
+          'a row that was claimed again ends on another runner',
+        )
     } else {
       const opened = (status['sandboxes'] as { state: string }[]).filter(
         (sandbox) => sandbox.state !== 'failed',
@@ -4836,10 +4847,13 @@ async function main(): Promise<void> {
           'every sandbox ended, by its lease or by the run, and none was renewed',
         )
       } else if (!warm) {
+        const died = (status['sandboxes'] as { handle: string | null; id: number }[]).find(
+          (row) => row.id === endedId,
+        )?.handle
         assert.deepEqual(
           leased.map((sandbox) => sandbox.ended),
           capped || fleet
-            ? ['died', ...leased.slice(1).map(() => 'terminated')]
+            ? [...mock.sandboxes.keys()].map((id) => (id === died ? 'died' : 'terminated'))
             : sooner
               ? ['lapsed', 'terminated']
               : ['terminated'],

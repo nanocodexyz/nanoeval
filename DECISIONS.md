@@ -5917,3 +5917,20 @@ In the three runs of the second row the lane's script did what it is for: the sa
 **What it leaves.** The change does not make the run that failed a pass. A lane with a scripted gateway asks at its end that no sandbox was left to lapse, and the first sandbox had lapsed: with the change that run fails in about a minute and names the sandbox, where it took five and named the lane's own script. The cause is the lease. This lane, the lane of two leased sandboxes and the lane of a sandbox ended sooner lease their sandbox for 3 s with a notice of 3 s, which the entry "a status line that counted a sandbox still asked for, and checks that read a clock where an order was meant" replaced for the lanes with tasks through the gateway and of a kept sandbox by a time measured on the machine. The same for this lane is not in this change: it asks that the pause its gateway names is longer than the notice of the run, and that a second refusal is asked again after the notice, so its script and its waits change with the notice. The lane of two leased sandboxes ends the first sandbox its gateway opened, as this one did, and is unchanged.
 
 **Not verified.** The failure under a load, which was not tried here: the late answers stand for it. Nothing ran with KVM or on ns slots.
+
+## 2026-11-14: the lane of two leased sandboxes ends the sandbox that serves its rows
+
+**What was wrong.** The entry above closes with it. The lane on directory slots of two leased sandboxes of which one dies ended the first sandbox its scripted gateway had opened, and asked of the second sandbox of the run what it asks of the one that died. With the gateway late by hand as in that entry, the first sandbox lost its lease before its runner said hello, the lane ended a sandbox that was gone, the row whose model request the lane holds kept its runner, and the lane failed 1 of 1 after 321 s with `the rows of the sandbox that died lost their claims`, at `3451d08`.
+
+**What changed.** The lane ends the sandbox that the status of the run shows as ready with a row in flight, by its handle. It asks by the id of that sandbox that it is failed, that every other sandbox after the first refusal is closed, and that a row claimed again ended on another runner than its. This lane and the lane of a capped provider ask at their end that the scripted gateway saw that sandbox die and every other one terminated, where they asked that the first one it opened died.
+
+**Checked.** On a machine with 5 cores, 14 GB and no KVM, shared with other jobs, each run with a lane slot of its own. "By hand" is the change of the entry above: the scripted gateway answers the paid `exec` and `renew` of the first sandbox it opened 3.5 s late.
+
+| Lane | Tree | Gateway | Result |
+| --- | --- | --- | --- |
+| two leased sandboxes | the change on `4b8f4bf` | late by hand | failed 1 of 1 after 33 s: `'failed' !== 'closed'` for a sandbox that the lane did not end, the first, which had lapsed |
+| two leased sandboxes | the change on `4b8f4bf` | as it is | passed 1 of 1 in 28 s |
+| two leased sandboxes | the change on `0269937` | late by hand | failed 1 of 1 after 44 s, as above |
+| a capped provider | the change on `0269937` | late by hand | failed 1 of 1 after 64 s: `every sandbox was terminated, not left to lapse`, where the gateway saw `lapsed`, `died`, `terminated`, `terminated` and the lane asks `terminated`, `died`, `terminated`, `terminated` |
+
+**What it leaves.** As the entry above: a lane whose first sandbox lost its lease still fails, in under a minute and on that sandbox. The lease is the next entry, and the counts of the lane as it is are there.
