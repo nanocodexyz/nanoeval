@@ -1193,8 +1193,13 @@ async function attend(
 
   const gradeOthers = async (item: Work) => {
     const archive = await text(slots.archiveFile(item.row.slot))
+    const up = await text(slots.separateFile(item.row.slot, 'up'))
     for (const { slot } of await graded(item)) {
       if (archive !== undefined) await Fs.writeFile(slots.archiveFile(slot), archive)
+      if (up !== undefined) {
+        await Fs.mkdir(slots.separateFile(slot, ''), { recursive: true })
+        await Fs.writeFile(slots.separateFile(slot, 'up'), up)
+      }
       await output(slots.verify(slot, item.row.task.verifier.timeoutSec), env)
     }
   }
