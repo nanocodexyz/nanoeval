@@ -117,8 +117,8 @@ const midturnSleepSec = 20
 const midturnYieldMs = 10_000
 const sandboxLeaseSec = Number(process.env['NANOEVAL_E2E_SANDBOX_LEASE_SEC'] ?? leaseSec)
 const slowStart = gateway && (scenario === 'tasks' || scenario === 'warm')
+const measuredLease = slowStart || (gateway && (capped || fleet || sooner))
 const cappedLifeSec = 1800
-const soonerLifeSec = 6 * sandboxLeaseSec + 1
 const seededDisk = 'e'.repeat(64)
 const slotGone = scenario === 'gone'
 const underAgent = slotGone && killAt === 'agent'
@@ -1317,7 +1317,6 @@ async function main(): Promise<void> {
     ? await MockGateway.start({
         ...(slowStart ? { bootstrapMs: () => noticeSec * 1000 + 1000 } : {}),
         ...(capped ? { cap: 1, lifetimeSec: cappedLifeSec } : {}),
-        ...(sooner ? { lifetimeSec: soonerLifeSec } : {}),
         key: 'sk-tempo-' + Crypto.randomBytes(16).toString('hex'),
         model: (path, body, cost) => {
           if ((capped || fleet) && !parked) {
@@ -1454,8 +1453,9 @@ async function main(): Promise<void> {
     await exited
   }
   let worker = await start()
-  const noticeSec = leaseSec + (slowStart ? Math.ceil(3 * workerSec!) : 0)
-  if (slowStart)
+  const noticeSec = leaseSec + (measuredLease ? Math.ceil(3 * workerSec!) : 0)
+  if (sooner) mock?.lifetime(6 * noticeSec + 1)
+  if (measuredLease)
     console.log(
       'gateway: the Worker of this machine answered ' +
         workerSec +
@@ -1983,7 +1983,7 @@ async function main(): Promise<void> {
         disks: scenario === 'disks' || scenario === 'disk' ? 'remove' : 'keep',
         ...(scenario === 'disk' ? { freeDiskMb: 2 ** 40 } : {}),
         ...(gateway
-          ? { leaseSec: lapse ? lapseLeaseSec! : slowStart ? noticeSec : sandboxLeaseSec }
+          ? { leaseSec: lapse ? lapseLeaseSec! : measuredLease ? noticeSec : sandboxLeaseSec }
           : {}),
         max: attached ? 0 : capped || fleet ? 2 : 1,
         ...(packing ? { memoryMb: 768 } : {}),
@@ -2425,7 +2425,7 @@ async function main(): Promise<void> {
           )
           mock!.cap(0)
           mock!.tell(true)
-          mock!.crowd(2 * MockGateway.waitSec)
+          mock!.crowd(3 * noticeSec)
           cappedRefusals = mock!.capped.length
           endedId = serving!.id
           await mock!.die(serving!.handle)
@@ -3006,7 +3006,7 @@ async function main(): Promise<void> {
       const later = refusals.find((row) => row.id > unpriced[0]!.id)!
       const named = Number(/asks it again in (\d+) s/.exec(unpriced[0]!.error!)![1])
       assert.ok(
-        named > leaseSec,
+        named > noticeSec,
         'the pause the gateway named is longer than the notice of the run',
       )
       assert.ok(
@@ -3027,11 +3027,11 @@ async function main(): Promise<void> {
         assert.ok(leased.expiresAt < openedAt.get(row.id)! + config.sandbox.timeoutSec! * 1000)
       }
       assert.ok(
-        openedAt.get(earlier[1]!.id)! - openedAt.get(earlier[0]!.id)! < leaseSec * 1000,
+        openedAt.get(earlier[1]!.id)! - openedAt.get(earlier[0]!.id)! < noticeSec * 1000,
         'the first refusal is asked again at once',
       )
       assert.ok(
-        openedAt.get(earlier[2]!.id)! - openedAt.get(earlier[1]!.id)! >= leaseSec * 1000,
+        openedAt.get(earlier[2]!.id)! - openedAt.get(earlier[1]!.id)! >= noticeSec * 1000,
         'the second refusal in a row is asked again after the notice of the run, not with every tick',
       )
       assert.match(

@@ -5934,3 +5934,62 @@ In the three runs of the second row the lane's script did what it is for: the sa
 | a capped provider | the change on `0269937` | late by hand | failed 1 of 1 after 64 s: `every sandbox was terminated, not left to lapse`, where the gateway saw `lapsed`, `died`, `terminated`, `terminated` and the lane asks `terminated`, `died`, `terminated`, `terminated` |
 
 **What it leaves.** As the entry above: a lane whose first sandbox lost its lease still fails, in under a minute and on that sandbox. The lease is the next entry, and the counts of the lane as it is are there.
+
+## 2026-11-14: three more lanes of the scripted gateway lease their sandboxes for a time measured on the machine
+
+**What was wrong.** The two entries above leave it. The lanes on directory slots of a provider that refuses sandboxes for a cap, of two leased sandboxes of which one dies and of a sandbox that its provider ends sooner leased their sandboxes for 3 s and renewed 3 s before the end. A first sandbox that loses its lease fails each of them at the check that no sandbox was left to lapse, and a Worker that a loaded machine holds up for 3 s loses it. It is the failure of "Leases of three seconds" in the entry "a status line that counted a sandbox still asked for, and checks that read a clock where an order was meant", in three lanes that entry did not change, and the first of the two entries above has the pass of the whole workflow in which it failed.
+
+**What changed.** The three lanes take the lease and the notice of that entry: 3 s and three times the seconds their Worker took to answer after it was started. What each lane had derived from the 3 s now follows the measured time.
+
+- The lane of a capped provider asks, against the notice of the run, that the first refusal is asked again inside a notice and the second no sooner than a notice after it.
+- Once that lane has ended the sandbox, its gateway refuses a create before its price and names a pause, and the lane asks that the create after it came no sooner than named. The pause was 10 s, more than the notice of 3 s, so that the wait shows the pause that was named and not the run's own, which is a notice. A run learns within a notice that its sandbox ended: its renewal comes a notice before the paid end, and a runner is lost after a notice without a word. The gateway now opens a pause of three notices when the lane ends the sandbox, so the refusal names two notices or more, and the lane still asks that the named pause is longer than the notice.
+- The first sandbox of the lane of a sandbox ended sooner lives six leases and a second, as it did, of the measured lease.
+- The lane of two leased sandboxes had derived nothing from the 3 s.
+
+**Checked.** The machines: "5 cores" is Linux with 5 cores, 14 GB and no KVM, shared with other jobs, each run with a lane slot of its own. "4 threads" is four hardware threads of a machine with 48 and KVM (kernel 6.8), to which every process of a run was pinned, with five loops of these lanes at once on them and other jobs on the other threads. "Busy" adds one busy loop (`sh -c 'while :; do :; done'`) pinned to each of the four threads for the whole time. "Late by hand" is the change of the two entries above, in no commit: the scripted gateway answers the paid `exec` and `renew` of the first sandbox it opened 3.5 s late, which failed the lanes of a capped provider and of two leased sandboxes with the lease of 3 s. The third lane was not run that way with that lease. The tree of every line of the table: this change on main at `0269937`.
+
+| Lane | Machine | Passed | A run took | The Worker answered after | Lease |
+| --- | --- | --- | --- | --- | --- |
+| two leased sandboxes | 5 cores | 5 of 5 | 32 to 46 s | 3.3 to 5.3 s | 13 to 19 s |
+| a capped provider | 5 cores | 5 of 5 | 134 to 229 s | 3.6 to 8.5 s | 14 to 29 s |
+| a sandbox ended sooner | 5 cores | 5 of 5 | 110 to 178 s | 3.2 to 6.2 s | 13 to 22 s |
+| two leased sandboxes | 4 threads, late by hand | 15 of 15 | 26 to 37 s | 2.1 to 5.6 s | 10 to 20 s |
+| a capped provider | 4 threads, late by hand | 15 of 15 | 81 to 153 s | 2.0 to 5.7 s | 10 to 21 s |
+| a sandbox ended sooner | 4 threads, late by hand | 15 of 15 | 79 to 168 s | 2.2 to 6.1 s | 10 to 22 s |
+| two leased sandboxes | 4 threads, busy | 15 of 15 | 30 to 44 s | 4.1 to 7.1 s | 16 to 25 s |
+| a capped provider | 4 threads, busy | 15 of 15 | 135 to 188 s | 4.7 to 7.2 s | 18 to 25 s |
+| a sandbox ended sooner | 4 threads, busy | 15 of 15 | 128 to 213 s | 4.1 to 7.9 s | 16 to 27 s |
+
+No run of these lines failed. On main at `4b8f4bf`, where the three lanes are the same, they had passed 6 of 6, 2 of 2 and 5 of 5 on the 5 cores in that order, and the lane of two leased sandboxes 12 of 12 late by hand.
+
+From fresh clones of this change, before this entry had its counts, which are the only difference, on the 4 threads with no busy loop. On main at `68b4a1a`: every run step of the jobs `check` and `e2e-dir` of the workflow passed at the first try, 5 of 5 and 56 of 56, no lane skipped itself, and `npm test` had 423 tests, 418 passed, 5 skipped for KVM or root, 0 failed; then the three lanes 5 of 5 each, at once and beside one more loop of them, in 22 to 31 s, 97 to 131 s and 95 to 132 s. On main at `c942d25`, which pins another build of nanocode-ts: the job `check` 5 of 5 with the same count of tests, and the three lanes 1 of 1 each. On the 5 cores, on main at `1bdab26`: `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test` pass, with 417 tests, 412 passed, 5 skipped, 0 failed.
+
+**What each still catches**, one run each on the 5 cores unless it says otherwise, with the behaviour broken by hand in the run or in the lane's own script:
+
+| Lane | Broken by hand | Result |
+| --- | --- | --- |
+| a capped provider | the run waits a notice after the first refusal too | failed after 225 s: `the first refusal is asked again at once` |
+| a capped provider | the run asks again with every tick, whatever was refused before | failed after 103 s: `the second refusal in a row is asked again after the notice of the run, not with every tick` |
+| a capped provider | the run does not keep the pause a refusal names | failed after 110 s: `creates were refused for the cap before and after`. The run asked again inside the pause and was refused before its price twice, which the lane counts before it reads the waits |
+| a capped provider | the gateway of the lane opens a pause of one notice | failed after 103 s on the 4 threads, on main at `68b4a1a`: `the pause the gateway named is longer than the notice of the run` |
+| a capped provider, with the lease of 3 s | the gateway late by hand | failed after 64 s: `every sandbox was terminated, not left to lapse`, with `lapsed` for the first sandbox and `died` for the one the lane ended |
+| two leased sandboxes | the run fails no sandbox whose runner stopped answering or whose renewal is refused with `404` | failed after 52 s: `the sandbox that died is failed, not waited for` |
+| two leased sandboxes | the run renews no lease | failed after 41 s on the same line, with `closed` for it |
+| a sandbox ended sooner | the run does not take the end that a refused renewal names | failed after 116 s: `the renewal that would pass the end of the sandbox was asked once, not with every tick`, 28 where it asks 1 |
+| a sandbox ended sooner | the run renews no lease | failed after 47 s on that line, 0 where it asks 1 |
+| two leased sandboxes, a sandbox ended sooner, a capped provider | the run terminates no sandbox when it closes it | failed after 38, 112 and 128 s: `no sandbox directory outlives the run`, which is asked before the gateway's record of each end |
+
+**The price.** The lanes wait in notices, so they take longer. On the 5 cores the lane of a capped provider took 51 to 55 s and takes 134 to 229 s, the lane of a sandbox ended sooner about 41 s and takes 110 to 178 s, and the lane of two leased sandboxes about 29 s and takes 32 to 46 s. The job `e2e-dir`, 56 steps from a fresh clone on the 4 threads with no busy loop, took 16.3 of its 20 minutes, of which the three lanes took 18, 70 and 102 s.
+
+**Rejected.**
+
+- A measured lease with the notice left at 3 s. The renewal would still come 3 s before the end, which is what a Worker held up for 3 s misses.
+- A pause of the gateway of one notice and a flat margin, as the 10 s were 3 s and 7. The margin is a time that a loaded machine outruns, as the 3 s were, and the run may take a whole notice to learn that its sandbox ended.
+- Fewer than six leases for the sandbox that ends sooner. The lane would be shorter, and how many renewals it sees before the one that is refused is the lane's as it was written.
+- Holding the scripted gateway's lapse in these lanes. The run ends a sandbox by its own clock, as that entry found.
+
+**Not verified.**
+
+- A machine whose Worker takes more than about 30 s to answer. The lease is then 100 s or more, the first sandbox of the lane of a sandbox ended sooner lives longer than the 600 s a runner has to start, and the lane of a capped provider takes longer than the 600 s it asks for. The Worker is given 60 s to answer.
+- krun and ns slots: the three lanes are steps of the directory job only.
+- The workflow on GitHub: Actions is disabled for the repository.
