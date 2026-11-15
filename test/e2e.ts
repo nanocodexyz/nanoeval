@@ -4009,6 +4009,7 @@ async function main(): Promise<void> {
           agent: { budget: errored.length },
           cancelled: {},
           infrastructure: {},
+          limit: {},
           task: {},
         })
         const line = (await cli(['arms', created.id])).text
