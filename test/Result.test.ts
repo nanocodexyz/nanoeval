@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import * as Admission from '../src/Admission.ts'
+import * as Arms from '../src/Arms.ts'
 import * as Atif from '../src/Atif.ts'
 import * as Budget from '../src/Budget.ts'
 import * as Harbor from '../src/Harbor.ts'
@@ -769,4 +770,35 @@ test('a summary counts the rows whose verifier the limit of the run ended, which
     '240 s',
     "the task's own",
   ])
+})
+
+test('a row that no runner took is unscheduled, under its kind and under the kind before it', () => {
+  const message =
+    'no runner of the run could take the row for 600 s: the run has no runner, and opens no sandbox itself'
+  const row = (failure: Result.Failure | undefined, outcome: Result.Attempt['outcome']) => ({
+    ...(failure ? { failure } : {}),
+    outcome,
+  })
+
+  assert.equal(Result.outcome(null, { at: 1, kind: 'unscheduled', message }), 'errored')
+  assert.equal(Result.unscheduled(row({ at: 1, kind: 'unscheduled', message }, 'errored')), true)
+  assert.equal(Result.unscheduled(row({ at: 1, kind: 'environment', message }, 'errored')), true)
+  assert.equal(
+    Result.unscheduled(
+      row({ at: 1, kind: 'environment', message: 'the slot ran out of disk' }, 'errored'),
+    ),
+    false,
+  )
+  assert.equal(
+    Result.unscheduled(
+      row({ at: 1, kind: 'cancelled', message: 'the run was cancelled' }, 'errored'),
+    ),
+    false,
+  )
+  assert.equal(
+    Result.unscheduled(row({ at: 1, kind: 'agent', message: 'the model failed' }, 'errored')),
+    false,
+  )
+  assert.equal(Result.unscheduled(row(undefined, 'failed')), false)
+  assert.equal(Arms.classes.unscheduled, 'infrastructure')
 })

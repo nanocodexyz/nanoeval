@@ -17,6 +17,7 @@ const exceptions: Record<Result.FailureKind, string> = {
   cancelled: 'CancelledError',
   environment: 'EnvironmentError',
   internal: 'InternalError',
+  unscheduled: 'UnscheduledError',
   verifier: 'VerifierError',
   verifier_limit: 'VerifierTimeoutError',
   verifier_timeout: 'VerifierTimeoutError',

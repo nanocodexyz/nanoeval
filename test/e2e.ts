@@ -3780,7 +3780,7 @@ async function main(): Promise<void> {
       const rows = status['attempts'] as Record<string, any>[]
       for (const row of rows) {
         assert.equal(row['outcome'], 'errored')
-        assert.equal(row['failure'].kind, 'environment')
+        assert.equal(row['failure'].kind, 'unscheduled')
         assert.ok(
           row['failure'].message.startsWith(
             'no runner of the run could take the row for ' + config.limits.setupSec + ' s: ',

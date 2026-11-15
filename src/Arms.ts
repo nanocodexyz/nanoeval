@@ -14,6 +14,7 @@ export const classes: Record<Result.FailureKind, Class> = {
   cancelled: 'cancelled',
   environment: 'infrastructure',
   internal: 'infrastructure',
+  unscheduled: 'infrastructure',
   verifier: 'infrastructure',
   verifier_limit: 'limit',
   verifier_timeout: 'infrastructure',
