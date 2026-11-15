@@ -4619,6 +4619,16 @@ async function main(): Promise<void> {
         started['nanoeval/write-greeting']! < started['nanoeval/uppercase-message']!,
         'a small attempt starts while a larger one ahead of it waits for memory',
       )
+      const waitedMs = started['nanoeval/uppercase-message']! - Math.min(...Object.values(started))
+      console.log(
+        'packing: the attempt that waited for memory was claimed ' +
+          waitedMs +
+          ' ms after the first',
+      )
+      assert.ok(
+        waitedMs < (leaseSec * 1000) / 3,
+        'an attempt that waited for memory is claimed when a slot frees, before the held claim of its runner runs out',
+      )
       await pass()
       return
     }

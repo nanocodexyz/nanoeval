@@ -747,6 +747,7 @@ async function attend(
     claimAt = 0
     frees++
     signal()
+    serving.yield()
     for (const other of shared.serving) if (other !== serving) other.wake()
   }
 
