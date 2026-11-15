@@ -7067,6 +7067,8 @@ The sessions need nanocode-ts d56a177 (`claude_orchestration`) and nanocode 498e
 
 **Not verified.** A deployed Worker, a model on the new hand and package, a `claude-direct` session end to end (it has unit tests and no lane of its own), a model that reaches its deadline, and a branched attempt with a deadline.
 
+**Wave 7b: headless sessions.** The App of `worker/Sessions.ts` now sets `headless: true`, so every eval session, Claude and Codex, opens headless. For Codex this turns on the guard that does not end a turn while its work is not persisted and the delivery of held job results within the turn; for Claude, from nanocode-ts af7b1a8 (nanocode 8131a9e31), one finish-check message at the first end of a root turn, unless the last deadline reminder has passed. Both are meant for runs that no person watches, as evals are. The Claude half needs a nanocode-ts pin at af7b1a8 or later: the pin stays at d56a177 here, and the releasing lane moves it.
+
 ## 2026-11-15: a task list `five-minute`, and the one arm with a model that ended inside five minutes
 
 **What changed.** `subsets.json` has `five-minute`: 73 of the 89 tasks of `terminal-bench-2.1`, `fifteen-minute` without eleven more. No code changed. A unit test now reads the lists of this checkout: each names a task once, in order, and `five-minute` holds 73 tasks, all of them tasks of `fifteen-minute`, which holds 84.

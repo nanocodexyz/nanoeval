@@ -166,6 +166,7 @@ export const nanocode = App.create<Env>({
       },
     }),
   hands: 'always',
+  headless: true,
   hedge: { cap_percent: 0 },
   subscription: async (_account, env, provider) =>
     Logins.held(env, provider) ||
