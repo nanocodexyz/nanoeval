@@ -3259,8 +3259,10 @@ export class Run extends DurableObject<Env> {
     const agent = this.agentOf(row)
     if (agent.provider !== 'claude' && agent.provider !== 'codex')
       throw new Refusal(409, 'the agent of the attempt is not a session')
+    const limitMs = this.task(row.task).agent.timeoutSec * 1000
     try {
       return await Harness.submit(this.env, input.session, {
+        deadline: { atMs: Date.now() + limitMs, limitMs },
         hand: Protocol.handName,
         model: agent.model,
         ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),

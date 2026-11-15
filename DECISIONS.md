@@ -7036,3 +7036,11 @@ So on this machine a row puts about half the bytes and a fifth of the writes on 
 - `npm run lint`, `check:types`, `dry-run` and `npm test`: 495 tests, 490 passed, 5 skipped, none failed.
 
 **Not run.** A whole arm with the option: its time, its passes, and the minutes in which the machine uses most, which the twin reached 378 s in. A machine on which the count binds: here it stood at a third of the limit. The option on a runner that a provider starts, which `run` does not pass. Two runners on one machine. ns slots.
+
+## 2026-11-15: a session turn carries the agent deadline of its attempt
+
+**What.** A run that asks a session for its first turn sends `deadline: { at_ms, limit_ms }` with it: `limit_ms` is the task's agent timeout (`task.agent.timeoutSec` times 1000) and `at_ms` is the time of the ask plus that limit. The ledger's `deadline_at`, at which the run cancels the turn, is set after the ask returns, so the deadline the agent gets is never later than the one the run enforces. The value is host policy and nothing else: the run adds no text to the prompt. nanocode-ts 6f43bb6 keeps it with the turn and passes it to the Claude harness of nanocode 9cc200cfe, which tells the model the time remaining at 50%, 75% and 90% of the limit and caps a Bash timeout or an exec or wait yield at the time remaining. A nanocode-ts build without that change ignores the field, so the pinned `build-1d71a9d` runs as before. The Codex harness ignores it.
+
+**Why.** In one run of the 89 tasks three times the nanocode session had no idea of its limit. Two attempts of train-fasttext (3600 s) had a passing model 13 to 18 minutes before the cancel and never copied it to `/app/model.bin`, one of extract-moves (1800 s) had its transcript at 1466 s and never wrote `/app/solution.txt`, and two of make-doom (900 s) were cancelled inside 300 s steps they started at 682 s and 647 s. The fractions and their measurements are in nanocode's DECISIONS.md.
+
+**Checked.** `npm run lint`, `npm run check:types`, and `node --test test/Turn.test.ts test/Preflight.test.ts` (the new body test passes; the preflight probe test fails on macOS before and after this change). The Worker is not deployed and `package.json` still pins nanocode-ts `build-1d71a9d`: a release of nanocode-ts 6f43bb6 or later is needed before a run sees the deadline.
