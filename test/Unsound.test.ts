@@ -7,6 +7,7 @@ import * as Catalog from '../datasets/Catalog.ts'
 import type * as Compare from '../src/Compare.ts'
 import * as Result from '../src/Result.ts'
 import * as Unsound from '../src/Unsound.ts'
+import * as Verdict from '../src/Verdict.ts'
 
 const checksum = (task: string) =>
   'sha256:' + Buffer.from(task).toString('hex').padEnd(64, '0').slice(0, 64)
@@ -118,6 +119,40 @@ test('a summary rates an agent over its sound tasks beside all of them', () => {
       'unsound, set apart: 1 of 2 tasks, whose own solution does not pass its verifier (nanoeval oracle says why): drifted',
     ],
   )
+})
+
+test('an attempt lost a dependency of its task when its verifier names the 404 of its archive and the list names its version', () => {
+  const withdrawn = {
+    at: 1,
+    kind: 'verifier' as const,
+    message:
+      Verdict.withdrawnPrefix +
+      ', so its tests did not run: E: Failed to fetch http://deb.debian.org/debian-security/pool/updates/main/c/curl/curl_7.74.0-1.3%2bdeb11u16_amd64.deb  404  Not Found',
+  }
+  const lost = row('drifted', 'errored', { agent: haiku, failure: withdrawn })
+  assert.equal(Unsound.gone(lost, list), true)
+  assert.equal(Unsound.gone(lost, {}), false)
+  assert.equal(Unsound.gone(row('one', 'errored', { failure: withdrawn }), list), false)
+  assert.equal(Unsound.gone(row('drifted', 'errored', { version: 'drifted-2' }), list), false)
+  assert.equal(Unsound.gone(row('drifted', 'errored'), list), false)
+  assert.equal(
+    Unsound.gone(
+      row('drifted', 'errored', { failure: { ...withdrawn, kind: 'environment' } }),
+      list,
+    ),
+    false,
+  )
+  assert.equal(Unsound.gone(row('drifted', 'failed', { failure: withdrawn }), list), false)
+  const attempts = [
+    row('one', 'passed', { agent: haiku }),
+    lost,
+    row('drifted', 'errored', { agent: haiku, failure: withdrawn, index: 2 }),
+    row('flaky', 'errored', { agent: haiku }),
+  ]
+  assert.deepEqual(Unsound.summary(attempts, list).slice(1), [
+    'unsound, set apart: 2 of 3 tasks, whose own solution does not pass its verifier (nanoeval oracle says why): drifted, flaky',
+    'task dependency gone: 2 errored attempts of drifted, whose verifier could not install from its package archive, which answered 404, as for its own solution: counted apart from the infrastructure errors',
+  ])
 })
 
 test('the summary of a run prints the sound lines under its agents', () => {

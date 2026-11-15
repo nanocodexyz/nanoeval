@@ -3961,6 +3961,7 @@ async function main(): Promise<void> {
           agent: { budget: errored.length },
           cancelled: {},
           infrastructure: {},
+          task: {},
         })
         const line = (await cli(['arms', created.id])).text
         assert.equal(line, Arms.line(arms[0]!) + '\n')

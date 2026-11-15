@@ -5,6 +5,7 @@ import { test } from 'node:test'
 import type * as Compare from '../src/Compare.ts'
 import * as Loop from '../src/Loop.ts'
 import type * as Result from '../src/Result.ts'
+import * as Verdict from '../src/Verdict.ts'
 
 const machine: Loop.Machine = { backend: 'krun', threads: 48 }
 const arms = ['fx=fx-chat:qwen', 'pi=pi-chat:qwen']
@@ -16,11 +17,14 @@ const row = (
   given: {
     at?: [startedAt: number, finishedAt: number]
     kind?: Result.FailureKind
+    message?: string
     outcome: Result.Attempt['outcome']
   },
 ): Result.Attempt => ({
   agent: { id: agent, model: 'claude-haiku-4-5', provider: 'claude' },
-  ...(given.kind ? { failure: { at: 1, kind: given.kind, message: 'it ended' } } : {}),
+  ...(given.kind
+    ? { failure: { at: 1, kind: given.kind, message: given.message ?? 'it ended' } }
+    : {}),
   finishedAt: given.at?.[1] ?? 2000,
   id: agent + task + index,
   index,
@@ -160,7 +164,13 @@ test('a baseline named by a word is the latest finished run of that name', () =>
 })
 
 test('the scorecard holds every arm with pass@k and its verdict, and the rows, the time and the infrastructure errors of the loop', () => {
-  const card = Loop.scorecard(change, { baseline: [main], prices: {}, slots: 5, wallSec: 125 })
+  const card = Loop.scorecard(change, {
+    baseline: [main],
+    prices: {},
+    unsound: {},
+    slots: 5,
+    wallSec: 125,
+  })
   assert.deepEqual(
     card.arms.map((arm) => [
       arm.agent,
@@ -197,6 +207,7 @@ test('the scorecard holds every arm with pass@k and its verdict, and the rows, t
     rows: 26,
     runSec: 60,
     slots: 5,
+    taskErrors: 0,
     wallSec: 125,
   })
   assert.deepEqual(card.baseline, { names: ['main'], runs: [main.id] })
@@ -218,7 +229,13 @@ test('the scorecard holds every arm with pass@k and its verdict, and the rows, t
 })
 
 test('an improvement is the verdict only when no arm regressed, and a run without a baseline has none', () => {
-  const better = Loop.scorecard(main, { baseline: [change], prices: {}, slots: 1, wallSec: 1 })
+  const better = Loop.scorecard(main, {
+    baseline: [change],
+    prices: {},
+    unsound: {},
+    slots: 1,
+    wallSec: 1,
+  })
   assert.deepEqual(
     better.arms.map((arm) => arm.against?.verdict),
     ['improvement', 'none'],
@@ -236,6 +253,7 @@ test('an improvement is the verdict only when no arm regressed, and a run withou
   const both = Loop.scorecard(crossed('e', 'a'), {
     baseline: [crossed('f', 'b')],
     prices: {},
+    unsound: {},
     slots: 1,
     wallSec: 1,
   })
@@ -248,7 +266,13 @@ test('an improvement is the verdict only when no arm regressed, and a run withou
     Loop.text(both),
     /\nverdict: regression against crossed \(f0000000\); regression: b; improvement: a\n$/,
   )
-  const first = Loop.scorecard(main, { baseline: [], prices: {}, slots: 1, wallSec: 1 })
+  const first = Loop.scorecard(main, {
+    baseline: [],
+    prices: {},
+    unsound: {},
+    slots: 1,
+    wallSec: 1,
+  })
   assert.equal(first.baseline, null)
   assert.equal(first.verdict, null)
   assert.deepEqual(
@@ -260,7 +284,13 @@ test('an improvement is the verdict only when no arm regressed, and a run withou
   const apart = run('d0000000-0000-4000-8000-000000000000', 'apart', [
     row('z', 't1', 1, { outcome: 'passed' }),
   ])
-  const strangers = Loop.scorecard(apart, { baseline: [main], prices: {}, slots: 1, wallSec: 1 })
+  const strangers = Loop.scorecard(apart, {
+    baseline: [main],
+    prices: {},
+    unsound: {},
+    slots: 1,
+    wallSec: 1,
+  })
   assert.equal(strangers.verdict, null)
   assert.match(
     Loop.text(strangers),
@@ -297,7 +327,13 @@ test('the scorecard of a loop under a limit on the time of its agents says the l
     ...twice('a', () => 'passed').map((attempt) => ({ ...attempt, agentMaxSec: 600 })),
     ...steady,
   ])
-  const card = Loop.scorecard(bounded, { baseline: [], prices: {}, slots: 5, wallSec: 125 })
+  const card = Loop.scorecard(bounded, {
+    baseline: [],
+    prices: {},
+    unsound: {},
+    slots: 5,
+    wallSec: 125,
+  })
   assert.deepEqual(
     card.arms.map((arm) => [arm.agent, arm.agentLimits]),
     [
@@ -310,7 +346,68 @@ test('the scorecard of a loop under a limit on the time of its agents says the l
   assert.match(a!, / \| 1 s \| 600 s \| 0 \| /)
   assert.match(b!, / \| 1 s \| the task's own \| 0 \| /)
   assert.doesNotMatch(
-    Loop.text(Loop.scorecard(main, { baseline: [], prices: {}, slots: 5, wallSec: 125 })),
+    Loop.text(
+      Loop.scorecard(main, { baseline: [], prices: {}, unsound: {}, slots: 5, wallSec: 125 }),
+    ),
     /Agent time limit/,
   )
+})
+
+test('the scorecard counts the errors of a task whose dependency is gone apart from the infrastructure errors of the loop', () => {
+  const lost = {
+    kind: 'verifier' as const,
+    message: Verdict.withdrawnPrefix + ', so its tests did not run: E: Failed to fetch',
+    outcome: 'errored' as const,
+  }
+  const gone = run('e0000000-0000-4000-8000-000000000000', 'gone', [
+    ...twice('a', () => 'passed'),
+    row('a', 't7', 1, lost),
+    row('a', 't7', 2, lost),
+    row('a', 't8', 1, lost),
+    row('a', 't9', 1, { kind: 'environment', outcome: 'errored' }),
+  ])
+  const unsound = {
+    suite: [
+      {
+        checksum: 'sha256:t7',
+        reason: 'its verifier installs from an archive that is gone.',
+        task: 't7',
+        upstream: 'https://example.com/t7',
+      },
+    ],
+  }
+  const card = Loop.scorecard(gone, { baseline: [], prices: {}, slots: 5, unsound, wallSec: 125 })
+  assert.deepEqual(card.arms[0]!.errors, {
+    agent: {},
+    cancelled: {},
+    infrastructure: { environment: 1, verifier: 1 },
+    task: { t7: 2 },
+  })
+  assert.deepEqual(
+    [card.loop.rows, card.loop.infrastructureErrors, card.loop.infrastructureRate],
+    [16, 2, 2 / 16],
+  )
+  assert.equal(card.loop.taskErrors, 2)
+  const [header, , a, line] = Loop.text(card).split('\n')
+  assert.match(
+    header!,
+    / \| Infrastructure errors \| Task dependency gone \| Agent or model errors \| /,
+  )
+  assert.match(
+    a!,
+    / \| 2 or 12\.5% of its rows \(environment 1, verifier 1\) \| 2 or 12\.5% of its rows \(t7 2\) \| 0 \| 0 \| /,
+  )
+  assert.match(
+    line!,
+    /, infrastructure errors 2 or 12\.5% of the rows, task dependency gone 2, agent or model errors 0$/,
+  )
+  const unread = Loop.scorecard(gone, {
+    baseline: [],
+    prices: {},
+    slots: 5,
+    unsound: {},
+    wallSec: 1,
+  })
+  assert.deepEqual([unread.loop.infrastructureErrors, unread.loop.taskErrors], [4, 0])
+  assert.doesNotMatch(Loop.text(unread), /ask dependency gone/)
 })

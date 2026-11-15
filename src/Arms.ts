@@ -1,8 +1,9 @@
 import * as Compare from './Compare.ts'
 import * as Price from './Price.ts'
 import * as Result from './Result.ts'
+import * as Unsound from './Unsound.ts'
 
-export type Class = 'agent' | 'cancelled' | 'infrastructure'
+export type Class = 'agent' | 'cancelled' | 'infrastructure' | 'task'
 
 export const classes: Record<Result.FailureKind, Class> = {
   agent: 'agent',
@@ -57,7 +58,11 @@ function cost(
   return price ? { listed: true, usd: Price.usd(price, usage) } : undefined
 }
 
-export function arms(given: readonly Compare.Run[], prices: Price.List = {}): Arm[] {
+export function arms(
+  given: readonly Compare.Run[],
+  input: { prices?: Price.List; unsound?: Unsound.List } = {},
+): Arm[] {
+  const { prices = {}, unsound = {} } = input
   const found: Arm[] = []
   for (const run of Compare.standing(given)) {
     const own = new Map<string, Result.Attempt[]>()
@@ -70,7 +75,7 @@ export function arms(given: readonly Compare.Run[], prices: Price.List = {}): Ar
         cachedTokens: 0,
         costUsd: null,
         errored: 0,
-        errors: { agent: {}, cancelled: {}, infrastructure: {} },
+        errors: { agent: {}, cancelled: {}, infrastructure: {}, task: {} },
         failed: 0,
         harness: Compare.harness(attempts[0]!.agent, run.nanocode),
         inputTokens: 0,
@@ -104,8 +109,10 @@ export function arms(given: readonly Compare.Run[], prices: Price.List = {}): Ar
         arm[attempt.outcome]++
         if (attempt.outcome === 'errored') {
           const kind = attempt.failure?.kind
-          const kinds = arm.errors[kind ? classes[kind] : 'infrastructure']
-          kinds[kind ?? unrecorded] = (kinds[kind ?? unrecorded] ?? 0) + 1
+          const gone = Unsound.gone(attempt, unsound)
+          const kinds = arm.errors[gone ? 'task' : kind ? classes[kind] : 'infrastructure']
+          const key = gone ? Unsound.short(attempt.task.name) : (kind ?? unrecorded)
+          kinds[key] = (kinds[key] ?? 0) + 1
         } else {
           const task = tasks.get(attempt.task.name) ?? { passed: 0, scored: 0 }
           tasks.set(attempt.task.name, task)
@@ -164,13 +171,21 @@ function kinds(found: Record<string, number>): string {
   return named.length ? ' (' + named.map(([kind, n]) => kind + ' ' + n).join(', ') + ')' : ''
 }
 
+function share(arm: Arm, found: Record<string, number>): string {
+  const n = count(found)
+  return n + (n ? ' or ' + percent(n / arm.rows) + ' of its rows' : '') + kinds(found)
+}
+
 export function infrastructure(arm: Arm): string {
-  const n = count(arm.errors.infrastructure)
-  return (
-    n +
-    (n ? ' or ' + percent(n / arm.rows) + ' of its rows' : '') +
-    kinds(arm.errors.infrastructure)
-  )
+  return share(arm, arm.errors.infrastructure)
+}
+
+export function task(arm: Arm): string {
+  return share(arm, arm.errors.task)
+}
+
+export function apart(found: readonly Arm[]): boolean {
+  return found.some((arm) => count(arm.errors.task))
 }
 
 export function agent(arm: Arm): string {
@@ -258,6 +273,7 @@ export function line(arm: Arm): string {
     (arm.waits ? ', model waits ' + waited(arm) : '') +
     ', errors: infrastructure ' +
     infrastructure(arm) +
+    (apart([arm]) ? ', task dependency gone ' + task(arm) : '') +
     ', agent or model ' +
     agent(arm) +
     (cancelled ? ', cancelled ' + cancelled : '')
@@ -283,6 +299,7 @@ export function table(found: readonly Arm[]): string {
         ...(bounded(found) ? ['Agent time limit'] : []),
         'Model waits',
         'Infrastructure errors',
+        ...(apart(found) ? ['Task dependency gone'] : []),
         'Agent or model errors',
         'Cancelled',
       ],
@@ -304,6 +321,7 @@ export function table(found: readonly Arm[]): string {
         ...(bounded(found) ? [limited(arm)] : []),
         arm.waits ? waited(arm) : '0',
         infrastructure(arm),
+        ...(apart(found) ? [task(arm)] : []),
         agent(arm),
         String(count(arm.errors.cancelled)),
       ]),

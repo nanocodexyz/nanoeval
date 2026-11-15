@@ -3,6 +3,7 @@ import * as Baseline from './Baseline.ts'
 import * as Compare from './Compare.ts'
 import type * as Price from './Price.ts'
 import * as Result from './Result.ts'
+import type * as Unsound from './Unsound.ts'
 
 export const defaults = { attempts: 3, eval: 'terminal-bench-2.1', subset: 'hourly' }
 
@@ -132,6 +133,7 @@ export type Scorecard = {
     rows: number
     runSec: number
     slots: number
+    taskErrors: number
     wallSec: number
   }
   name: string
@@ -156,13 +158,14 @@ export function scorecard(
     baseline: readonly Compare.Run[]
     prices: Price.List
     slots: number
+    unsound: Unsound.List
     wallSec: number
   },
 ): Scorecard {
   const [standing] = Compare.standing([run])
   const summaries = Result.summarize(standing!.attempts)
   const changes = input.baseline.length ? Compare.changes(input.baseline, run) : []
-  const arms = Arms.arms([run], input.prices).map((arm): Arm => {
+  const arms = Arms.arms([run], input).map((arm): Arm => {
     const change = changes.find((each) => each.agent === arm.agent)
     const moved = (kind: Compare.Moved) =>
       (change?.tasks ?? []).filter((task) => task.moved === kind).map((task) => task.name)
@@ -207,6 +210,7 @@ export function scorecard(
           1000
         : 0,
       slots: input.slots,
+      taskErrors: arms.reduce((sum, arm) => sum + count(arm.errors.task), 0),
       wallSec: input.wallSec,
     },
     name: run.name,
@@ -283,6 +287,7 @@ export function text(card: Scorecard): string {
         'Wall time',
         ...(Arms.bounded(card.arms) ? ['Agent time limit'] : []),
         'Infrastructure errors',
+        ...(Arms.apart(card.arms) ? ['Task dependency gone'] : []),
         'Agent or model errors',
         'Cancelled',
         'Against the baseline',
@@ -304,6 +309,7 @@ export function text(card: Scorecard): string {
         Compare.duration(arm.wallSec),
         ...(Arms.bounded(card.arms) ? [Arms.limited(arm)] : []),
         Arms.infrastructure(arm),
+        ...(Arms.apart(card.arms) ? [Arms.task(arm)] : []),
         Arms.agent(arm),
         String(count(arm.errors.cancelled)),
         against(arm, card.baseline),
@@ -324,7 +330,9 @@ export function text(card: Scorecard): string {
     loop.infrastructureErrors +
     ' or ' +
     percent(loop.infrastructureRate) +
-    ' of the rows, agent or model errors ' +
+    ' of the rows' +
+    (loop.taskErrors ? ', task dependency gone ' + loop.taskErrors : '') +
+    ', agent or model errors ' +
     loop.agentErrors +
     (loop.cancelled ? ', cancelled ' + loop.cancelled : '') +
     '\nverdict: ' +

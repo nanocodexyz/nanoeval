@@ -5,6 +5,8 @@ import * as Arms from '../src/Arms.ts'
 import type * as Atif from '../src/Atif.ts'
 import type * as Compare from '../src/Compare.ts'
 import type * as Result from '../src/Result.ts'
+import type * as Unsound from '../src/Unsound.ts'
+import * as Verdict from '../src/Verdict.ts'
 
 const glm = '@cf/zai-org/glm-5.3-flash'
 
@@ -26,13 +28,16 @@ const row = (
     agent?: Result.Attempt['agent']
     at?: [startedAt: number, finishedAt: number]
     kind?: Result.FailureKind
+    message?: string
     outcome: Result.Attempt['outcome']
     retryOf?: Result.Attempt['retryOf']
     usage?: Atif.Usage
   },
 ): Result.Attempt => ({
   agent: given.agent ?? { api: 'chat', id: 'fx', model: glm, provider: 'fx' },
-  ...(given.kind ? { failure: { at: 1, kind: given.kind, message: 'it ended' } } : {}),
+  ...(given.kind
+    ? { failure: { at: 1, kind: given.kind, message: given.message ?? 'it ended' } }
+    : {}),
   finishedAt: given.at?.[1] ?? 2000,
   id: task + index,
   index,
@@ -75,7 +80,7 @@ const open = run('one', [
 ])
 
 test('an arm is its passes, its two pass rates, its cost, its tokens, its time and its errors', () => {
-  const [arm, ...rest] = Arms.arms([open], prices)
+  const [arm, ...rest] = Arms.arms([open], { prices })
   assert.deepEqual(rest, [])
   assert.deepEqual(arm, {
     agent: 'fx',
@@ -87,6 +92,7 @@ test('an arm is its passes, its two pass rates, its cost, its tokens, its time a
       agent: { agent: 1, budget: 1 },
       cancelled: { cancelled: 1 },
       infrastructure: { unrecorded: 1, verifier: 1, verifier_timeout: 1 },
+      task: {},
     },
     failed: 2,
     harness: 'fx-chat 0.0.17',
@@ -137,7 +143,7 @@ test('a cost that was reported stands, and an attempt without one is said', () =
     Arms.line(bare!),
     /, \$0\.3750 a pass \(\$0\.7500, 1 of 2 attempts at list prices, without 1 attempt that has no cost\), input/,
   )
-  const [priced] = Arms.arms([reported], prices)
+  const [priced] = Arms.arms([reported], { prices })
   assert.ok(Math.abs(priced!.costUsd! - 0.75 - listUsd) < 1e-12, 'a price is no second cost')
   assert.deepEqual([priced!.priced, priced!.listed], [3, 2])
 
@@ -147,7 +153,7 @@ test('a cost that was reported stands, and an attempt without one is said', () =
   assert.match(Arms.line(unknown!), /over 1 task, cost not known, input tokens 1,000,000 /)
   const [unpassed] = Arms.arms(
     [run('three', [row('a', 1, { outcome: 'failed', usage: used(tokens) })])],
-    prices,
+    { prices },
   )
   assert.match(
     Arms.line(unpassed!),
@@ -199,7 +205,7 @@ test('one run prints a line an arm, several runs a table, and both are JSON on r
   ])
   assert.deepEqual(
     JSON.parse(armsText([open, two], { json: true, prices: [glm + '=0.15,0.05,0.50'] })),
-    JSON.parse(JSON.stringify(Arms.arms([open, two], prices))),
+    JSON.parse(JSON.stringify(Arms.arms([open, two], { prices }))),
   )
   assert.throws(() => armsText([two], { json: false, prices: ['glm'] }), {
     name: 'Price.InvalidError',
@@ -264,4 +270,64 @@ test('an arm of a run that bounds the time of its agents says the limit, and a t
     /, agent time limit 600 s and the task's own, errors: /,
     'rows under two limits are one arm that says both',
   )
+})
+
+test('an error of a task whose dependency is gone is counted apart, when its verifier says so and the list names its version', () => {
+  const withdrawn =
+    Verdict.withdrawnPrefix +
+    ', so its tests did not run: E: Failed to fetch http://deb.debian.org/debian-security/pool/updates/main/c/curl/curl_7.74.0-1.3%2bdeb11u16_amd64.deb  404  Not Found [IP: 151.101.66.132 80]'
+  const lost = { kind: 'verifier' as const, message: withdrawn, outcome: 'errored' as const }
+  const entry = (task: string): Unsound.Entry => ({
+    checksum: 'sha256:' + task,
+    reason: 'its verifier installs curl from an archive that is gone.',
+    task,
+    upstream: 'https://example.com/' + task,
+  })
+  const unsound = { suite: ['qemu-alpine-ssh', 'qemu-startup', 'stale'].map(entry) }
+  const real = run('real', [
+    row('a', 1, { outcome: 'passed' }),
+    row('a', 2, { outcome: 'failed' }),
+    row('qemu-alpine-ssh', 1, { kind: 'agent', outcome: 'errored' }),
+    row('qemu-alpine-ssh', 2, lost),
+    row('qemu-alpine-ssh', 3, lost),
+    row('qemu-startup', 1, lost),
+    row('qemu-startup', 2, lost),
+    row('qemu-startup', 3, lost),
+    row('stale', 1, { kind: 'verifier', outcome: 'errored' }),
+    row('unlisted', 1, lost),
+  ])
+  const [arm] = Arms.arms([real], { unsound })
+  assert.deepEqual(arm!.errors, {
+    agent: { agent: 1 },
+    cancelled: {},
+    infrastructure: { verifier: 2 },
+    task: { 'qemu-alpine-ssh': 2, 'qemu-startup': 3 },
+  })
+  assert.equal(arm!.errored, 8)
+  assert.ok(
+    Arms.line(arm!).endsWith(
+      ', errors: infrastructure 2 or 20.0% of its rows (verifier 2), task dependency gone 5 or 50.0% of its rows (qemu-alpine-ssh 2, qemu-startup 3), agent or model 1 (agent 1)',
+    ),
+    Arms.line(arm!),
+  )
+  const [unread] = Arms.arms([real])
+  assert.deepEqual(unread!.errors.infrastructure, { verifier: 7 })
+  assert.deepEqual(unread!.errors.task, {})
+  assert.doesNotMatch(Arms.line(unread!), /task dependency gone/)
+  const sound = run('sound', [row('a', 1, { outcome: 'passed' })])
+  const [header, , first, second] = armsText([real, sound], {
+    json: false,
+    prices: [],
+    unsound,
+  }).split('\n')
+  assert.match(
+    header!,
+    / \| Infrastructure errors \| Task dependency gone \| Agent or model errors \| /,
+  )
+  assert.match(
+    first!,
+    / \| 2 or 20\.0% of its rows \(verifier 2\) \| 5 or 50\.0% of its rows \(qemu-alpine-ssh 2, qemu-startup 3\) \| 1 \(agent 1\) \| 0 \|$/,
+  )
+  assert.match(second!, / \| 0 \| 0 \| 0 \| 0 \|$/)
+  assert.doesNotMatch(armsText([real, sound], { json: false, prices: [] }), /Task dependency gone/)
 })

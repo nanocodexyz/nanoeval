@@ -1,5 +1,6 @@
 import * as Compare from './Compare.ts'
 import * as Result from './Result.ts'
+import { withdrawnPrefix } from './Verdict.ts'
 
 export class InvalidError extends Error {
   override name = 'Unsound.InvalidError'
@@ -82,7 +83,16 @@ export function split(
   }
 }
 
-function short(name: string): string {
+export function gone(attempt: Result.Attempt, list: List): boolean {
+  return (
+    attempt.outcome === 'errored' &&
+    attempt.failure?.kind === 'verifier' &&
+    attempt.failure.message.startsWith(withdrawnPrefix) &&
+    find(list, attempt.task.checksum) !== undefined
+  )
+}
+
+export function short(name: string): string {
   return name.split('/').at(-1)!
 }
 
@@ -138,11 +148,21 @@ export function summary(attempts: readonly Result.Attempt[], list: List): string
   const { sound, unsound } = split(attempts, list)
   if (!unsound.length) return []
   const kept = Result.summarize(sound)
+  const lost = unsound.filter((attempt) => gone(attempt, list))
   return [
     ...Object.keys(Result.summarize(unsound)).map((agent) =>
       kept[agent] ? agent + ' on its ' + counts(kept[agent]) : agent + ' ran no sound task',
     ),
     apart(attempts, unsound),
+    ...(lost.length
+      ? [
+          'task dependency gone: ' +
+            some(lost.length, 'errored attempt') +
+            ' of ' +
+            names(lost).join(', ') +
+            ', whose verifier could not install from its package archive, which answered 404, as for its own solution: counted apart from the infrastructure errors',
+        ]
+      : []),
   ]
 }
 

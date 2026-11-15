@@ -376,6 +376,8 @@ const usage = `nanoeval <command>
             run holds tasks that the list of unsound tasks names (see oracle), each agent
             has a second line with its counts and pass@k over the sound tasks alone, and
             one line names the tasks set apart. run --wait and compare print the same.
+            status and run --wait add one line for the attempts that errored because the
+            dependency of their task is gone (see arms).
   timeline  --url URL --token T RUN
             Print where the time of a run went: every mark the run and its runners recorded,
             by its offset from the creation of the run, with the span it measured.
@@ -429,7 +431,7 @@ const usage = `nanoeval <command>
             the unsound ones with their outcome, reason and report, and exits 4 when the
             solution of a sound task failed or errored, and 0 otherwise.
   arms      [--url URL --token T RUN...] [--results FILE]... [--with-reruns]
-            [--model-price MODEL=INPUT,CACHED,OUTPUT]... [--json]
+            [--model-price MODEL=INPUT,CACHED,OUTPUT]... [--unsound FILE] [--json]
             Print one line for each arm of a run, an agent of it: the rows that passed of
             the rows that ended, the pass rate of its scored attempts (micro) and the mean
             over its tasks of each task's pass rate (macro), an attempt that errored being
@@ -437,7 +439,12 @@ const usage = `nanoeval <command>
             passes, its input, cached and output tokens, the time from the start of its
             first attempt to the end of its last, and its errors by class: infrastructure
             (environment, internal, verifier, verifier_timeout) apart from the agent or its
-            model (agent, agent_timeout, budget) and from rows that were cancelled. Several
+            model (agent, agent_timeout, budget) and from rows that were cancelled. An error
+            is counted apart from all three, as task dependency gone under the name of its
+            task, when both hold: its verifier could not install from its package archive,
+            which answered 404 Not Found, and the list of unsound tasks (see oracle) names
+            that version of the task, whose own solution loses the same way on any machine.
+            A 404 on a task the list does not name stays an infrastructure error. Several
             runs print one table, a row an arm, and --json prints the arms as JSON instead.
             --results reads a run from a file that holds what the Worker answers for
             /v1/runs/RUN/results, and needs no Worker. An attempt whose usage names no cost
@@ -512,10 +519,11 @@ const usage = `nanoeval <command>
             cost. After the summary and the comparison it prints a scorecard: one row an
             arm with its passes over its rows, the pass rate of its scored attempts (micro)
             and the mean over its tasks (macro, pass@1), pass@k for each further k, what a
-            pass cost, its cost, tokens and wall time, its errors by class, and its verdict
-            against the baseline; then one line for the loop, its rows, the time from the
-            start of the command, the time of the run on its slots and the infrastructure
-            errors as a share of the rows; then the verdict, a regression when any arm
+            pass cost, its cost, tokens and wall time, its errors by class as arms counts
+            them, and its verdict against the baseline; then one line for the loop, its
+            rows, the time from the start of the command, the time of the run on its slots,
+            the infrastructure errors as a share of the rows and beside them the errors of
+            tasks whose dependency is gone; then the verdict, a regression when any arm
             regressed. The same is written as JSON to scorecard.json in the job directory
             of the run, LAB/runs/RUN or --out, and the last line names the file.
             --baseline names the run to set the arms against as revision does, and here a
@@ -722,9 +730,12 @@ async function resultFiles(files: readonly string[]): Promise<Compare.Run[]> {
 
 export function armsText(
   runs: readonly Compare.Run[],
-  options: { json: boolean; prices: readonly string[] },
+  options: { json: boolean; prices: readonly string[]; unsound?: Unsound.List },
 ): string {
-  const arms = Arms.arms(runs, Price.list(options.prices))
+  const arms = Arms.arms(runs, {
+    prices: Price.list(options.prices),
+    ...(options.unsound ? { unsound: options.unsound } : {}),
+  })
   if (options.json) return JSON.stringify(arms, null, 2) + '\n'
   return new Set(arms.map((arm) => arm.run)).size > 1
     ? Arms.table(arms)
@@ -2412,6 +2423,7 @@ async function main(
       armsText(await resultFiles(values.results), {
         json: values.json,
         prices: values['model-price'] ?? [],
+        unsound: await unsoundList(values.unsound),
       }),
     )
     return
@@ -3142,6 +3154,7 @@ async function main(
             baseline: refusal ? [] : baseline,
             prices: Price.list(values['model-price'] ?? []),
             slots: given.loop.slots,
+            unsound,
             wallSec: (Date.now() - given.loop.startedAt) / 1000,
           })
           const file = Path.join(out, 'scorecard.json')
@@ -3174,6 +3187,7 @@ async function main(
       armsText([...read, ...(await resultFiles(values.results ?? []))], {
         json: values.json,
         prices: values['model-price'] ?? [],
+        unsound: await unsoundList(values.unsound),
       }),
     )
     return
