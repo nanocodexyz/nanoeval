@@ -31,7 +31,7 @@ const turn: Turn.Turn = {
 }
 
 const usage =
-  /\[:tool_result_tokens=N\]\[:persist_finish=on\]\[:skip_finish_check=on\]\[:late_finish_check_ms=N\]\[:result_effort=low\|medium\|high\|xhigh\|max\]\[:stop_at_target=on\]\[:yield_floor_ms=N\]\[:yield_share=N\], not x=/
+  /\[:tool_result_tokens=N\]\[:persist_finish=on\]\[:skip_finish_check=on\]\[:late_finish_check_ms=N\]\[:finish_check_min_requests=N\]\[:result_effort=low\|medium\|high\|xhigh\|max\]\[:stop_at_target=on\]\[:yield_floor_ms=N\]\[:yield_share=N\], not x=/
 
 test('an agent names a finish that goes on with an unmet requirement', () => {
   const plain = 'nano-plain-persist=claude:claude-opus-5-5:medium:persist_finish=on'

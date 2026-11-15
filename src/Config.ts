@@ -27,6 +27,7 @@ export type Agent = {
   escalateContextTokens?: number
   escalateModel?: string
   escalateToolErrors?: number
+  finishCheckMinRequests?: number
   foldFinish?: true
   id: string
   lateFinishCheckMs?: number
@@ -335,6 +336,16 @@ export function parse(value: unknown): Config {
       if (agent.skipFinishCheck !== undefined)
         fail(agent.id + ' has a skipFinishCheck and a lateFinishCheckMs, which never go in one arm')
     }
+    if (agent.finishCheckMinRequests !== undefined) {
+      integer(agent.finishCheckMinRequests, agent.id + ': finishCheckMinRequests', 1)
+      if (provider !== 'claude')
+        fail(agent.id + ' has a finishCheckMinRequests, which only a claude session takes')
+      if (agent.skipFinishCheck !== undefined)
+        fail(
+          agent.id +
+            ' has a skipFinishCheck and a finishCheckMinRequests, which never go in one arm',
+        )
+    }
     if (agent.resultEffort !== undefined) {
       choice(agent.resultEffort, agent.id + ': resultEffort', efforts)
       if (provider !== 'claude')
@@ -386,6 +397,9 @@ export function parse(value: unknown): Config {
       ...(agent.escalateToolErrors === undefined
         ? {}
         : { escalateToolErrors: agent.escalateToolErrors }),
+      ...(agent.finishCheckMinRequests === undefined
+        ? {}
+        : { finishCheckMinRequests: agent.finishCheckMinRequests }),
       ...(agent.foldFinish ? { foldFinish: true as const } : {}),
       id: agent.id,
       ...(agent.lateFinishCheckMs === undefined

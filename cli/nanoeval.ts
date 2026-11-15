@@ -323,6 +323,8 @@ const usage = `nanoeval <command>
             agent may also name :skip_finish_check=on (a turn ends at its first final message,
             with no finish check), :late_finish_check_ms=N (the finish check runs past the last
             deadline reminder while N ms are left; never with skip_finish_check),
+            :finish_check_min_requests=N (the finish check runs only in a turn that has made
+            N model requests by its first final message; never with skip_finish_check),
             :result_effort=low|medium|high|xhigh|max (the effort of a request that brings only
             tool results), :stop_at_target=on (a target the task sets ends it once met),
             :yield_floor_ms=N (an exec or wait yields after N ms at the soonest) and
@@ -332,8 +334,8 @@ const usage = `nanoeval <command>
             this order where several are named: branches, refusal_fallback, cell_yield_ms,
             brief_finish, fold_finish, low_effort_rounds, brief_final, lean_cells,
             escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens,
-            persist_finish, skip_finish_check, late_finish_check_ms, result_effort,
-            stop_at_target, yield_floor_ms, yield_share.
+            persist_finish, skip_finish_check, late_finish_check_ms, finish_check_min_requests,
+            result_effort, stop_at_target, yield_floor_ms, yield_share.
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
@@ -843,6 +845,12 @@ const agentOptions: readonly AgentOption[] = [
     name: 'late_finish_check_ms',
     read: (text) => ({ lateFinishCheckMs: Number(text) }),
     write: (agent) => agent.lateFinishCheckMs,
+  },
+  {
+    ...count,
+    name: 'finish_check_min_requests',
+    read: (text) => ({ finishCheckMinRequests: Number(text) }),
+    write: (agent) => agent.finishCheckMinRequests,
   },
   {
     ...efforts,

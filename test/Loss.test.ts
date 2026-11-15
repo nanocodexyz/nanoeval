@@ -31,7 +31,7 @@ const turn: Turn.Turn = {
 }
 
 const usage =
-  /\[:tool_result_tokens=N\]\[:persist_finish=on\]\[:skip_finish_check=on\]\[:late_finish_check_ms=N\]\[:result_effort=low\|medium\|high\|xhigh\|max\]\[:stop_at_target=on\]\[:yield_floor_ms=N\]\[:yield_share=N\], not x=/
+  /\[:tool_result_tokens=N\]\[:persist_finish=on\]\[:skip_finish_check=on\]\[:late_finish_check_ms=N\]\[:finish_check_min_requests=N\]\[:result_effort=low\|medium\|high\|xhigh\|max\]\[:stop_at_target=on\]\[:yield_floor_ms=N\]\[:yield_share=N\], not x=/
 
 const skipping =
   'nano-skip=claude:claude-opus-5-5:medium:cell_yield_ms=120000:skip_finish_check=on:result_effort=low:stop_at_target=on:yield_floor_ms=30000:yield_share=25'
@@ -263,5 +263,105 @@ test('a turn sends each loss lever its agent names and nothing new for an agent 
     }
     assert.equal(Turn.body(all).tool_result_tokens, 2000)
     assert.equal(Turn.body(all).lean_cells, true)
+  }
+})
+
+test('an agent names finish_check_min_requests after late_finish_check_ms and a turn sends it', () => {
+  const gated =
+    'nano-gate=claude:claude-opus-5-5:medium:cell_yield_ms=120000:late_finish_check_ms=120000:finish_check_min_requests=8:result_effort=low'
+  assert.deepEqual(parseAgent(gated), {
+    cellYieldMs: 120000,
+    finishCheckMinRequests: 8,
+    id: 'nano-gate',
+    lateFinishCheckMs: 120000,
+    model: 'claude-opus-5-5',
+    provider: 'claude',
+    resultEffort: 'low',
+    thinking: 'medium',
+  })
+  for (const text of [
+    gated,
+    'a=claude:claude-opus-5-5:finish_check_min_requests=1',
+    'b=claude-direct:claude-opus-5-5:high:tool_result_tokens=2000:finish_check_min_requests=12:yield_share=50',
+  ])
+    assert.equal(agentText(parseAgent(text)), text)
+  for (const text of [
+    'x=claude:claude-opus-5-5:finish_check_min_requests=',
+    'x=claude:claude-opus-5-5:finish_check_min_requests=-1',
+    'x=claude:claude-opus-5-5:finish_check_min_requests=2.5',
+    'x=claude:claude-opus-5-5:finish_check_min_requests=on',
+    'x=claude:claude-opus-5-5:finish_check_min_requests=8:late_finish_check_ms=120000',
+    'x=claude:claude-opus-5-5:result_effort=low:finish_check_min_requests=8',
+    'x=claude:claude-opus-5-5:finish_check_min_requests=8:finish_check_min_requests=9',
+  ])
+    assert.throws(() => parseAgent(text), usage)
+  assert.deepEqual(
+    Config.parse({
+      ...config,
+      agents: [parseAgent('nano=claude:claude-opus-5-5:medium'), parseAgent(gated)],
+    }).agents.map((agent) => [agent.id, agent.finishCheckMinRequests, agent.lateFinishCheckMs]),
+    [
+      ['nano', undefined, undefined],
+      ['nano-gate', 8, 120000],
+    ],
+  )
+  const agent = { id: 'x', model: 'm', provider: 'claude' }
+  for (const finishCheckMinRequests of [0, -1, 1.5, '8', Number.MAX_SAFE_INTEGER + 1, null])
+    assert.throws(
+      () => Config.parse({ ...config, agents: [{ ...agent, finishCheckMinRequests }] }),
+      /x: finishCheckMinRequests must be an integer of at least 1/,
+    )
+  assert.throws(
+    () =>
+      Config.parse({
+        ...config,
+        agents: [parseAgent('x=claude:claude-opus-5-5:finish_check_min_requests=0')],
+      }),
+    /x: finishCheckMinRequests must be an integer of at least 1/,
+  )
+  assert.throws(
+    () =>
+      Config.parse({
+        ...config,
+        agents: [
+          parseAgent('x=claude:claude-opus-5-5:skip_finish_check=on:finish_check_min_requests=8'),
+        ],
+      }),
+    /x has a skipFinishCheck and a finishCheckMinRequests, which never go in one arm/,
+  )
+  for (const provider of ['codex', 'codex-cli', 'claude-code', 'oracle'])
+    assert.throws(
+      () =>
+        Config.parse({
+          ...config,
+          agents: [{ id: 'x', model: 'm', provider, finishCheckMinRequests: 8 }],
+        }),
+      /x has a finishCheckMinRequests, which only a claude session takes/,
+    )
+  assert.throws(
+    () =>
+      Config.parse({
+        ...config,
+        agents: [parseAgent('nanox=codex:gpt-6-luna:high:finish_check_min_requests=8')],
+      }),
+    /nanox has a finishCheckMinRequests, which only a claude session takes/,
+  )
+  const input = { at: 1_800_000_000_000, session: 'run-a00001' }
+  for (const orchestration of [undefined, 'direct'] as const) {
+    const plain = { ...turn, ...(orchestration ? { orchestration } : {}) }
+    assert.equal('finish_check_min_requests' in Turn.body(plain), false)
+    assert.equal('finish_check_min_requests' in JSON.parse(Turn.sent(plain, input)), false)
+    const one = { ...plain, finishCheckMinRequests: 8 }
+    assert.equal(Turn.body(one).finish_check_min_requests, 8)
+    assert.equal(JSON.parse(Turn.sent(one, input)).finish_check_min_requests, 8)
+    assert.deepEqual(
+      Object.keys(Turn.body(one))
+        .filter((key) => key !== 'finish_check_min_requests')
+        .sort(),
+      Object.keys(Turn.body(plain)).sort(),
+    )
+    const both = { ...one, lateFinishCheckMs: 120000 }
+    assert.equal(Turn.body(both).finish_check_min_requests, 8)
+    assert.equal(Turn.body(both).late_finish_check_ms, 120000)
   }
 })
