@@ -811,6 +811,8 @@ jobs:
         run: node test/revision.ts
       - name: End to end, directory slots, nanoeval watch over nanoeval revision
         run: node test/revision.ts watch
+      - name: End to end, directory slots, nanoeval loop, two arms in one run, their scorecard, a regression against the run before and a baseline by its name
+        run: node test/revision.ts loop
       - name: Keep the logs of a failed run
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

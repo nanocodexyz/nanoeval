@@ -171,6 +171,10 @@ export function infrastructure(arm: Arm): string {
   )
 }
 
+export function agent(arm: Arm): string {
+  return count(arm.errors.agent) + kinds(arm.errors.agent)
+}
+
 export function total(arm: Arm): string {
   if (arm.costUsd === null) return arm.metered ? 'not known' : 'no model usage'
   const bare = arm.metered - arm.priced
@@ -244,8 +248,7 @@ export function line(arm: Arm): string {
     ', errors: infrastructure ' +
     infrastructure(arm) +
     ', agent or model ' +
-    count(arm.errors.agent) +
-    kinds(arm.errors.agent) +
+    agent(arm) +
     (cancelled ? ', cancelled ' + cancelled : '')
   )
 }
@@ -288,7 +291,7 @@ export function table(found: readonly Arm[]): string {
         Compare.duration(arm.wallSec),
         arm.waits ? waited(arm) : '0',
         infrastructure(arm),
-        count(arm.errors.agent) + kinds(arm.errors.agent),
+        agent(arm),
         String(count(arm.errors.cancelled)),
       ]),
     ]) + '\n'

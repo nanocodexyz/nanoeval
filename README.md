@@ -50,11 +50,13 @@ The plan makes the scripted model solve `extract-todos` every time, `uppercase-m
 - **With microVMs**, leave out `--backend dir` on a machine with KVM. `node cli/nanoeval.ts doctor` checks a machine for everything a run needs and prints, under each thing that is missing, the one command that gives it.
 - **Read the run again**: `node cli/nanoeval.ts revision --serve --port 8787 &`, then `export NANOEVAL_URL=http://127.0.0.1:8787 NANOEVAL_TOKEN=$(cat ~/.local/share/nanoeval/lab/token)` and `node cli/nanoeval.ts runs`, `status RUN` or `attempt RUN a00002 verifier/test-stdout.txt`, which prints why the verifier failed that row. A run is named by its id, by the start of its id or by its `--name`.
 - **Did a change break anything**: stop the scripted model, start it again with a plan that fails every attempt, `--plan extract-todos=fff --plan uppercase-message=fff --plan write-greeting=fff`, and add `--baseline previous --fail-on regression` to the last command. It prints the comparison with the run before, `verdict: regression`, and exits with 3. One task that went from 3/3 to 0/3 is `lost` and by itself no regression: the verdict asks all tasks together, and `--fail-on lost` gates on a single one.
+- **Several arms against each other and a baseline, in one command**: `node cli/nanoeval.ts loop --task tasks/extract-todos --task tasks/uppercase-message --task tasks/write-greeting --agent a=claude:claude-haiku-4-5 --agent b=claude:claude-haiku-4-5 --backend dir` runs both arms on the same rows of one run, three attempts a task on one slot for each hardware thread, and prints a scorecard after the summary: a row an arm, one line for the whole loop with its wall time and its infrastructure errors, and a verdict against the run before, with exit status 3 on a regression. With a model credential, on a machine with KVM or as root, `node cli/nanoeval.ts loop` and one `--agent` for each arm is the whole command for the 30 tasks of the subset `hourly` of Terminal-Bench 2.1: [The loop](#the-loop).
 - `node cli/nanoeval.ts help COMMAND` prints the usage of one command, and `node cli/nanoeval.ts` of all of them.
 
 | To | Read |
 | --- | --- |
 | Keep a Worker up and make runs against it: choose tasks by pattern, subset or file, rerun what did not pass, compare two runs, gate a script | [Run it locally](#run-it-locally) |
+| Set several arms against each other and a baseline in one command, with a scorecard | [The loop](#the-loop) |
 | Evaluate a commit or a checkout of nanocode against a baseline | [Evaluating a nanocode commit](#evaluating-a-nanocode-commit) |
 | Import a benchmark | [Datasets](#datasets) |
 | Run nanoeval as services, with microVM slots, from a bare machine | [Keep it running on a Linux machine](#keep-it-running-on-a-linux-machine) |
@@ -139,6 +141,7 @@ The table says what was run. "The first version" is the flow before the eval tab
 | `revision --sdk-fallback pinned`: a nanocode-ts that does not build on the nanocode it is given is built on the one it names itself, the failure is remembered, and the run names the pair it ran on; `nanoeval watch` records the builds of every evaluation and says when the two differ | Implemented, tested: the lane builds a package that fails on one nanocode and falls back, twice, the second time with nothing built, over two local repositories that stand in for nanocode and nanocode-ts; unit tests for what the watcher records and says. **Not run**: on nanocode and nanocode-ts themselves, where one pair that did not build was evaluated this way by a script outside this repository before the option existed |
 | `revision --quick`: "did this change break anything" in one command, the subset `quick` of `terminal-bench-2.1` at three attempts against the latest quick run on the pinned builds, with its agents, exit status 3 on a regression | Implemented, tested: unit tests of what a lab remembers, and the lane runs it three times on directory slots with a scripted model: on the pinned builds, on a checkout with uncommitted changes whose hand is built (exit 0), and again with a model that fails every task (exit 3). **Not run** with a model, and the six tasks of `quick` were not run through `--subset`: their pass counts are those the watcher recorded, see [DECISIONS.md](DECISIONS.md#2026-11-14-revision---quick-did-this-change-break-anything) |
 | Two task lists of `terminal-bench-2.1` in `subsets.json` for loops that set several arms against each other: `hourly`, 30 tasks, and `ten-minute`, 12 of them, chosen by a written rule from 914 recorded attempts | Chosen, **not run**: no run was made through `--subset hourly` or `--subset ten-minute`. In the records the oracle passed 90 of 90 attempts of the 30 tasks in each of two arms, the difference of two arms with no true difference has a standard error of 3.1 to 5.9 points at three attempts, and a slot model puts six arms at three attempts at 27 to 58 minutes on 36 slots, see [DECISIONS.md](DECISIONS.md#2026-11-15-two-task-lists-for-loops-that-compare-arms-chosen-from-recorded-attempts) |
+| `nanoeval loop`: several arms on the same tasks in one run of a lab, set against a baseline, with a scorecard and a verdict, in one command, see [The loop](#the-loop) | Implemented, tested: unit tests of what it takes by itself, what it refuses, the baseline by its name and the scorecard with sums by hand, and an end-to-end lane on directory slots with a scripted model that runs it three times: two arms on three tasks as the first run of a lab (no baseline, no verdict), again with a model that fails against the run before (exit 3), and again with the model that solves against the first run by its name (exit 0). Run once with six scripted arms on 12 stand-in tasks at 2 attempts, 144 rows on 4 directory slots: 1 min 42 s to 1 min 57 s from the command to its exit, a seeded regression caught in all six arms. **Not run** with a model, on krun or ns slots, or on the tasks of `hourly` themselves, see [DECISIONS.md](DECISIONS.md#2026-11-15-the-loop-is-one-command) |
 | What a run ran on: the nanocode-ts build of its Worker and the hand of each runner, in `status`, `compare`, the trajectory and the Harbor result, and `compare --baseline` | Implemented, tested: unit tests, every end-to-end lane asks that its run names the build of its Worker and one hand, and three runs on three builds of nanocode-ts in one state were compared under one of them, each baseline read under the build of the run set against it. A runner that starts from the runtime archive names the release its archive was built with, which the lanes on that archive ask |
 | How the model of each agent was paid for and reached: the gateway key, a key of the provider, a plan login or the plan signed in on the Worker, the transport, the host and the effort its sessions reported, and its reasoning tokens beside its output tokens, in `status`, the results of a run, the exported job and `compare` | Implemented, tested: unit tests on the events of a session on a key, on a plan login and of Claude, every end-to-end lane asks that its run names who paid for each agent and what its sessions reported, and the lanes with a scripted Codex ask for the reasoning tokens its answers carried. A run made before this reads `not recorded`. **Not run** with a real model or on a deployed Worker: the two arms it was written for were read again from their stored events, see [DECISIONS.md](DECISIONS.md#2026-11-14-a-run-records-who-paid-for-its-models-how-they-were-reached-and-their-reasoning-tokens) |
 | `compare --baseline`: an agent is set against the agent of the baseline that is the same harness and model at the same effort, whatever either was named; sides that differ in model, in a typed effort or in who paid are refused unless `--unlike` asks for the comparison, which then says how they differ, and a transport, a host or a reported effort that differs is said above a comparison that is made | Implemented, tested: unit tests, the two arms of one agent under two names read again from their stored results, and the lane of the signed-in plan, where the command line refuses to set a run the key paid for against one the plan paid for and compares them under `--unlike`. A side that records no route is compared with a warning, see [DECISIONS.md](DECISIONS.md#2026-11-14-agents-are-compared-by-what-they-are-and-sides-that-are-not-the-same-agent-are-refused) |
@@ -381,6 +384,54 @@ A long run on a machine with little disk takes two more options. `--disks remove
 Two more commands prune what imports leave, and both only list until `--remove` is given. `nanoeval prune layers --days N` lists the layers, configs and manifests of the layer cache that no import used for N days, with abandoned downloads, each with its size. `nanoeval prune store` asks the Worker for every version of every eval and lists the blobs of the directory store that none of them names, with the files an import that died left staged. A removal is refused while an import is converting from that cache or writing to that store, and `prune store --remove` is refused when the Worker names no blob of the store, unless `--allow-empty` says that emptying it is meant: a Worker started on the wrong state would otherwise take everything. Eval versions are never removed, and blobs in R2 are not pruned. [DESIGN.md](DESIGN.md#pruning) has the rules.
 
 `--verifier-cache` makes the verifier of a task find what uv downloaded for it before: an oracle run with the option keeps it in the runner's cache, and later attempts of that task on the machine start their verifier with it. It is off by default, and [DESIGN.md](DESIGN.md#verifier-cache) says what it does and does not change.
+
+## The loop
+
+`nanoeval loop` sets several arms against each other and against a baseline in one command. It is `nanoeval revision` with what a loop does not have to choose taken from the machine and from a subset: one run of the lab holds every `--agent` on the same tasks and attempts, so the arms share its slots, and the command starts the Worker and a runner, imports what the lab lacks, waits, prints and stops what it started.
+
+```sh
+# Six arms on the 30 tasks of the subset hourly, 3 attempts each, a slot for each hardware thread, against the run before.
+export ANTHROPIC_API_KEY=... OPENAI_API_KEY=...
+node cli/nanoeval.ts loop \
+  --agent haiku=claude:claude-haiku-5-5 --agent cc=claude-code:claude-haiku-5-5 --agent fx=fx-messages:claude-haiku-5-5 \
+  --agent luna=codex:gpt-6-luna --agent cli=codex-cli:gpt-6-luna --agent oc=opencode-responses:gpt-6-luna
+
+# A line to hold later loops against: name a loop once, then name it as the baseline.
+node cli/nanoeval.ts loop --name main --agent haiku=claude:claude-haiku-5-5 --agent luna=codex:gpt-6-luna
+node cli/nanoeval.ts loop --baseline main --agent haiku=claude:claude-haiku-5-5 --agent luna=codex:gpt-6-luna
+```
+
+**What it takes by itself**, and says in its first line. Each is replaced by naming the option:
+
+| Option | Without it |
+| --- | --- |
+| `--eval`, `--subset` | `terminal-bench-2.1` and its subset `hourly`, unless `--task`, `--only`, `--only-file` or `--limit` name tasks |
+| `--attempts` | 3 |
+| `--slots` | One for each hardware thread the command may run on |
+| `--backend` | `krun` where the machine has `/dev/kvm`, `ns` as root. A machine with neither is refused until `--backend dir` says that directories without isolation are meant |
+| `--baseline` | The run before this one in the lab that holds these arms and tasks. The first such run of a lab has none: it says `baseline: none` and gets no verdict |
+| `--fail-on` | `regression` |
+
+The other options are those of `nanoeval revision` and of `run`: `--model-budget-usd`, `--model-price` for a model whose endpoint names no cost, `--lab`, `--name`, and `--nanocode` to run the arms on a revision that is built first. `--build-only`, `--rerun` and `--serve` are refused: a loop makes a new run and waits for it. `--baseline` names a run as `revision` does, and in a loop a word that is the `--name` of runs of the lab stands for the latest finished one of them.
+
+**The scorecard** follows the summary and the comparison. Six scripted arms on 12 tasks at 2 attempts, set against a run in which the model solved more:
+
+```
+| Arm | Harness | Model | Passed | Pass micro | Pass macro | pass@2 | USD a pass | Cost | Input tokens (cached) | Output tokens | Wall time | Infrastructure errors | Agent or model errors | Cancelled | Against the baseline |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| arm1 | nanocode-ts build-8a77345, hand nanocode-cli-92f4e0d | claude-haiku-4-5 | 12/24 | 50.0% of 24 | 50.0% over 12 | 50.0% | $0.0001 | $0.0013 | 384 (0) | 192 | 1 min 39 s | 0 | 0 | 0 | regression, 6 down and 0 up of 12 |
+| arm2 | nanocode-ts build-8a77345, hand nanocode-cli-92f4e0d | claude-haiku-4-5 | 8/24 | 33.3% of 24 | 33.3% over 12 | 33.3% | $0.0002 | $0.0013 | 384 (0) | 192 | 1 min 39 s | 0 | 0 | 0 | regression, 6 down and 0 up of 12 |
+...
+loop: 144 rows of 6 arms in 1 min 57 s from the start of the command, the run 1 min 42 s from its first start to its last end on 4 slots, infrastructure errors 0 or 0.0% of the rows, agent or model errors 0
+verdict: regression against first (210fc3d5); regression: arm1, arm2, arm3, arm4, arm5, arm6
+scorecard written to LAB/runs/RUN/scorecard.json
+```
+
+A row holds the passes of an arm over its rows, the pass rate of its scored attempts (micro), the mean over its tasks of each task's pass rate (macro, which is pass@1), pass@k for each further k, the cost of a pass and of the arm, its tokens, the time from its first start to its last end, its errors by class as `nanoeval arms` counts them, and its verdict against the baseline with the tasks that moved down and up. The line of the loop has the rows of all arms, the time from the start of the command, which holds the Worker's start and an import, the time of the run on its slots, and the infrastructure errors as a share of the rows. The verdict is a regression when any arm regressed, and an arm the baseline does not hold is named as such.
+
+`scorecard.json` in the job directory of the run, `LAB/runs/RUN` or `--out`, holds the same: `arms`, each as `nanoeval arms --json` prints it with `passAtK`, `rated` and `against` (the verdict, the tasks compared, those that moved `down` and `up`, and the names `lost` and `gained`), `loop` (`rows`, `wallSec`, `runSec`, `slots`, `infrastructureErrors`, `infrastructureRate`, `agentErrors`, `cancelled`), `baseline` with the names and ids of its runs or `null`, `eval`, `name`, `run` and `verdict`.
+
+The command exits 3 on a regression, 1 when a row errored and 0 otherwise. A verdict asks all tasks of an arm together, as [a gate for a script](#run-it-locally) says, and at 3 attempts on `hourly` it shows a difference of 6 to 12 points and nothing smaller, see [DECISIONS.md](DECISIONS.md#2026-11-15-two-task-lists-for-loops-that-compare-arms-chosen-from-recorded-attempts). Slots are shared by the arms and not divided among them, and nothing bounds the wall time of a loop but the timeouts of its tasks.
 
 ## Evaluating a nanocode commit
 

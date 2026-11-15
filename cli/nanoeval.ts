@@ -11,6 +11,7 @@ import * as Dataset from '../datasets/Dataset.ts'
 import * as Source from '../datasets/Source.ts'
 import * as Sandboxd from '../sandbox/Sandboxd.ts'
 import * as Converter from '../sandbox/Converter.ts'
+import * as Host from '../sandbox/Host.ts'
 import * as Prune from '../sandbox/Prune.ts'
 import * as Runner from '../sandbox/Runner.ts'
 import * as Store from '../sandbox/Store.ts'
@@ -23,6 +24,7 @@ import * as E2b from '../src/E2b.ts'
 import * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
 import * as Logins from '../src/Logins.ts'
+import * as Loop from '../src/Loop.ts'
 import type * as Ledger from '../src/Ledger.ts'
 import * as Pace from '../src/Pace.ts'
 import * as Pins from '../src/Pins.ts'
@@ -479,6 +481,36 @@ const usage = `nanoeval <command>
             answers runs, status, compare, attempt and export for the lab until it is
             interrupted, to be read only, from the Worker of the evaluation that runs or
             else from one of its own on the pinned package, and holds no evaluation up.
+  loop      (--agent ID=HARNESS:MODEL[:THINKING]... | --oracle) [--subset NAME]... [--only TASK]...
+            [--attempts 3] [--baseline RUN|NAME|previous|latest]... [--name NAME] [--slots N]
+            [--backend krun|ns|dir] [--model-price MODEL=INPUT,CACHED,OUTPUT]... [--lab DIR]
+            and the other options of revision
+            Set several arms against each other and against a baseline in one command: one
+            run of the lab holds every --agent on the same tasks and attempts, so the arms
+            share its slots, and the command waits for it as nanoeval revision does, which
+            it is, with what a loop does not have to choose taken from the machine and the
+            subset: the eval terminal-bench-2.1 and its subset hourly unless --eval, --task,
+            --subset, --only, --only-file or --limit name tasks, 3 attempts a task, one slot
+            for each hardware thread this command may run on, krun slots where the machine
+            has /dev/kvm and ns slots as root (a machine with neither is refused until
+            --backend dir says that directories without isolation are meant), and
+            --fail-on regression. The model credential and its address are the variables
+            nanoeval worker takes, and --model-price prices a model whose endpoint names no
+            cost. After the summary and the comparison it prints a scorecard: one row an
+            arm with its passes over its rows, the pass rate of its scored attempts (micro)
+            and the mean over its tasks (macro, pass@1), pass@k for each further k, what a
+            pass cost, its cost, tokens and wall time, its errors by class, and its verdict
+            against the baseline; then one line for the loop, its rows, the time from the
+            start of the command, the time of the run on its slots and the infrastructure
+            errors as a share of the rows; then the verdict, a regression when any arm
+            regressed. The same is written as JSON to scorecard.json in the job directory
+            of the run, LAB/runs/RUN or --out, and the last line names the file.
+            --baseline names the run to set the arms against as revision does, and here a
+            word that is the --name of runs of the lab is the latest finished one of them,
+            so a loop made with --name main is the baseline of every later
+            --baseline main. Without --baseline it is the run before this one that holds
+            these arms and tasks; the first such run of a lab has none, says so, and gets
+            no verdict. It exits 3 on a regression, 1 when a row errored, 0 otherwise.
   cancel    --url URL --token T RUN
             Cancel a run: its rows that have not ended end as cancelled, and its sandboxes
             are closed.
@@ -711,6 +743,7 @@ async function baselines(
   input: {
     hand?: ((revision: string) => Promise<string>) | undefined
     named: readonly string[]
+    names?: boolean
     reruns: boolean
     wanted: () => Promise<Omit<Baseline.Wanted, 'rule'>>
   },
@@ -722,7 +755,8 @@ async function baselines(
       ids.push(await runId(api, name))
       continue
     }
-    const begun = kind === 'revision' ? begins(name, (await api.runs()).runs) : undefined
+    const listed = kind === 'revision' ? (await api.runs()).runs : []
+    const begun = begins(name, listed) ?? (input.names ? Loop.named(name, listed) : undefined)
     if (begun) {
       ids.push(begun)
       continue
@@ -736,11 +770,11 @@ async function baselines(
             ? { kind }
             : { hand: await input.hand!(name), kind },
     }
-    const listed = (await api.runs()).runs.filter(
+    const finished = (await api.runs()).runs.filter(
       (run) => run.state === 'finished' && run.eval.name === wanted.eval.name,
     )
     const found = await Baseline.find(wanted, {
-      ids: listed.map((run) => run.id),
+      ids: finished.map((run) => run.id),
       read: (id) => candidate(api, id),
     })
     const unpaid = wanted.members.filter(
@@ -1650,7 +1684,11 @@ export function workerVariables(
 
 async function main(
   lab?: Revision.Lab,
-  given: { hand?: (revision: string) => Promise<string>; values?: Record<string, unknown> } = {},
+  given: {
+    hand?: (revision: string) => Promise<string>
+    loop?: { first: boolean; startedAt: number }
+    values?: Record<string, unknown>
+  } = {},
 ): Promise<void> {
   const { positionals, tokens, values } = parseArgs({
     allowPositionals: true,
@@ -1778,11 +1816,11 @@ async function main(
     tasks: values.tasks,
   }
   const command = lab ? 'run' : named
-  if (values.quick && command !== 'revision' && !lab)
+  if (values.quick && named !== 'revision')
     throw new Error('--quick is an option of nanoeval revision')
   if (lab)
     Object.assign(values, given.values, {
-      backend: values.backend ?? 'krun',
+      backend: values.backend ?? given.values?.['backend'] ?? 'krun',
       sandboxes: '0',
       token: lab.token,
       url: lab.url,
@@ -1951,7 +1989,17 @@ async function main(
     process.exit(code)
   }
 
-  if (command === 'revision') {
+  if (command === 'revision' || command === 'loop') {
+    const startedAt = Date.now()
+    const looped: Loop.Settings = {}
+    if (command === 'loop')
+      Object.assign(
+        looped,
+        Loop.settings(values, {
+          backend: Doctor.backend({ kvm: Host.kvm(), root: process.getuid?.() === 0 }),
+          threads: Os.availableParallelism(),
+        }),
+      )
     const claude = values['claude-login'] ?? process.env['NANOEVAL_CLAUDE_LOGIN']
     const codex = values['codex-login'] ?? process.env['NANOEVAL_CODEX_LOGIN']
     const logins = {
@@ -2080,6 +2128,7 @@ async function main(
           (values['fail-on']?.length ? ', exit 3 on ' + values['fail-on'].join(' or ') : ''),
       )
     }
+    if (command === 'loop') log(Loop.said(values, looped))
     if (!values['build-only'])
       for (const kind of Revision.credentials({
         agents: values.oracle ? [] : (values.agent ?? []).map(parseAgent),
@@ -2112,6 +2161,7 @@ async function main(
         'nanocode ' +
         (values.nanocode ?? Revision.pinned) +
         (values.name ? ', ' + values.name : '') +
+        (command === 'loop' ? ', loop' : '') +
         (values['build-only'] ? ', build only' : ''),
     })
     let opened: Revision.Lab | undefined
@@ -2161,7 +2211,10 @@ async function main(
                   })
                 ).id,
               ),
-        values: quick,
+        ...(command === 'loop'
+          ? { loop: { first: looped.baseline !== undefined, startedAt } }
+          : {}),
+        values: { ...quick, ...looped },
       })
     } finally {
       await end()
@@ -2939,6 +2992,7 @@ async function main(
     const baseline = await baselines(api, {
       hand: given.hand,
       named: values.baseline ?? [],
+      names: given.loop !== undefined,
       reruns: values['with-reruns'],
       wanted: async () => {
         if (parent)
@@ -2960,6 +3014,11 @@ async function main(
           ),
         }
       },
+    }).catch((error: unknown) => {
+      if (!given.loop?.first || !(error instanceof Baseline.MissingError)) throw error
+      console.error('baseline: none, so this run gets no verdict: ' + error.message)
+      on.delete('regression')
+      return []
     })
     if (baseline.length && !values.unlike) {
       const refusal = Compare.unlike(
@@ -3040,6 +3099,17 @@ async function main(
         if (out) {
           await exportJob(api, { out, run: created.id })
           console.log('job written to ' + out)
+        }
+        if (given.loop && out) {
+          const card = Loop.scorecard(ended, {
+            baseline: refusal ? [] : baseline,
+            prices: Price.list(values['model-price'] ?? []),
+            slots: config.sandbox.slots,
+            wallSec: (Date.now() - given.loop.startedAt) / 1000,
+          })
+          const file = Path.join(out, 'scorecard.json')
+          await Fs.writeFile(file, JSON.stringify(card, null, 2) + '\n')
+          process.stdout.write('\n' + Loop.text(card) + 'scorecard written to ' + file + '\n')
         }
         if (refusal) throw new Error(refusal)
         judged(changes, on)

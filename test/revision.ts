@@ -3,9 +3,11 @@ import { type ChildProcess, spawn, spawnSync } from 'node:child_process'
 import * as Fs from 'node:fs'
 import * as Http from 'node:http'
 import type { AddressInfo } from 'node:net'
+import * as Os from 'node:os'
 import * as Path from 'node:path'
 import { client } from '../cli/nanoeval.ts'
 import * as Revision from '../cli/Revision.ts'
+import * as Loop from '../src/Loop.ts'
 
 const lane = process.argv[2] ?? 'revision'
 const out = Path.resolve('output/revision', lane)
@@ -762,9 +764,170 @@ async function watch(env: Record<string, string>): Promise<void> {
   )
 }
 
+async function loop(env: Record<string, string>): Promise<void> {
+  const run = (args: readonly string[]) => start(['loop', '--lab', lab, ...args, ...dir], env).done
+  const names = ['extract-todos', 'uppercase-message', 'write-greeting']
+  const subsets = Path.join(out, 'subsets.json')
+  Fs.writeFileSync(subsets, JSON.stringify({ samples: { [Loop.defaults.subset]: names } }))
+  const arms = ['--agent', 'a=claude:claude-haiku-5-5', '--agent', 'b=claude:claude-haiku-5-5']
+  const samples = ['--eval', 'samples', '--subsets', subsets, '--attempts', '2', ...arms]
+  const threads = Os.availableParallelism()
+  const card = (ended: Ended) => {
+    const file = /^scorecard written to (.+)$/m.exec(ended.stdout)?.[1]
+    assert.ok(file, 'the loop named no scorecard:\n' + ended.stdout)
+    return JSON.parse(Fs.readFileSync(file, 'utf8')) as Loop.Scorecard
+  }
+  const said = (selection: string, against: string) =>
+    stamped(
+      'loop: ' +
+        selection +
+        ', 2 attempts a task, 2 arms \\(a, b\\), ' +
+        threads +
+        ' dir slots, one for each thread of this machine, against ' +
+        against +
+        ', exit 3 on regression$',
+    )
+  const line = (arm: string, counts: string, against: string) =>
+    new RegExp(
+      '^\\| ' +
+        arm +
+        ' \\| [^|]+ \\| claude-haiku-5-5 \\| ' +
+        counts +
+        ' \\| .* \\| ' +
+        against +
+        ' \\|$',
+      'm',
+    )
+  const whole = (rows: number) =>
+    new RegExp(
+      '^loop: ' +
+        rows +
+        ' rows of 2 arms in [0-9a-z ]+ from the start of the command, the run [0-9a-z ]+ from its first start to its last end on ' +
+        threads +
+        ' slots, infrastructure errors 0 or 0\\.0% of the rows, agent or model errors 0$',
+      'm',
+    )
+
+  const first = passed(
+    'a loop of two arms on three task directories, the first run of the lab',
+    await run([
+      ...names.flatMap((name) => ['--task', Path.join('tasks', name)]),
+      '--eval',
+      'samples',
+      '--attempts',
+      '2',
+      ...arms,
+      '--name',
+      'first',
+    ]),
+  )
+  assert.match(
+    first.stderr,
+    said('3 task directories', 'the run before this one where the lab has one'),
+  )
+  assert.match(
+    first.stderr,
+    /^baseline: none, so this run gets no verdict: no finished run of samples /m,
+  )
+  assert.match(
+    first.stdout,
+    line('a', '6/6 \\| 100\\.0% of 6 \\| 100\\.0% over 3 \\| 100\\.0%', 'no baseline'),
+  )
+  assert.match(
+    first.stdout,
+    line('b', '6/6 \\| 100\\.0% of 6 \\| 100\\.0% over 3 \\| 100\\.0%', 'no baseline'),
+  )
+  assert.match(first.stdout, whole(12))
+  assert.match(first.stdout, /^verdict: none, the run has no baseline$/m)
+  const one = card(first)
+  assert.deepEqual(
+    [
+      one.name,
+      one.baseline,
+      one.verdict,
+      one.loop.rows,
+      one.loop.infrastructureRate,
+      one.loop.slots,
+    ],
+    ['first', null, null, 12, 0, threads],
+  )
+  assert.deepEqual(
+    one.arms.map((arm) => [arm.agent, arm.passed, arm.rows, arm.passAtK, arm.against]),
+    [
+      ['a', 6, 6, { '1': 1, '2': 1 }, null],
+      ['b', 6, 6, { '1': 1, '2': 1 }, null],
+    ],
+  )
+
+  model.wrong = true
+  const lost = passed(
+    'the same arms with a model that fails, against the run before: exit 3',
+    await run(samples),
+    3,
+  )
+  assert.match(
+    lost.stderr,
+    said('samples, the subset hourly', 'the run before this one where the lab has one'),
+  )
+  assert.match(
+    lost.stderr,
+    new RegExp('^baseline: ' + one.run + ', the run before this one, ', 'm'),
+  )
+  for (const arm of ['a', 'b'])
+    assert.match(
+      lost.stdout,
+      line(
+        arm,
+        '0/6 \\| 0\\.0% of 6 \\| 0\\.0% over 3 \\| 0\\.0%',
+        'regression, 3 down and 0 up of 3',
+      ),
+    )
+  assert.match(lost.stdout, whole(12))
+  assert.match(
+    lost.stdout,
+    new RegExp(
+      '^verdict: regression against first \\(' + one.run.slice(0, 8) + '\\); regression: a, b$',
+      'm',
+    ),
+  )
+  const two = card(lost)
+  assert.deepEqual(
+    [two.verdict, two.baseline],
+    ['regression', { names: ['first'], runs: [one.run] }],
+  )
+
+  model.wrong = false
+  const again = passed(
+    'the arms again with the model that solves, against the first run by its name',
+    await run([...samples, '--baseline', 'first', '--name', 'again']),
+  )
+  assert.match(again.stderr, said('samples, the subset hourly', 'first'))
+  assert.match(
+    again.stdout,
+    new RegExp(
+      '^verdict: no change beyond noise against first \\(' +
+        one.run.slice(0, 8) +
+        '\\); no change beyond noise: a, b$',
+      'm',
+    ),
+  )
+  const three = card(again)
+  assert.deepEqual(
+    [three.name, three.verdict, three.baseline],
+    ['again', 'none', { names: ['first'], runs: [one.run] }],
+  )
+  assert.deepEqual(
+    three.arms.map((arm) => [arm.passed, arm.against?.verdict, arm.against?.tasks]),
+    [
+      [6, 'none', 3],
+      [6, 'none', 3],
+    ],
+  )
+}
+
 async function main(): Promise<void> {
-  if (lane !== 'revision' && lane !== 'watch')
-    throw new Error('the lane is revision or watch, not ' + lane)
+  if (lane !== 'loop' && lane !== 'revision' && lane !== 'watch')
+    throw new Error('the lane is loop, revision or watch, not ' + lane)
   Fs.rmSync(out, { force: true, recursive: true })
   Fs.mkdirSync(out, { recursive: true })
   const scripted = await endpoint()
@@ -780,7 +943,7 @@ async function main(): Promise<void> {
     process.exitCode = 1
   }, limitMs)
   try {
-    await (lane === 'revision' ? revision(env) : watch(env))
+    await (lane === 'loop' ? loop(env) : lane === 'revision' ? revision(env) : watch(env))
     console.log(
       'e2e passed: ' +
         lane +
