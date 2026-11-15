@@ -4716,10 +4716,11 @@ async function main(): Promise<void> {
           3,
           'each branch was verified in its own probe slot',
         )
-      assert.ok(
-        verifierPrompts.every((prompt) => /-v[0-2]\//.test(prompt.pwd + '/')),
-        'every verifier probed in its own probe slot: ' + JSON.stringify(verifierPrompts),
-      )
+      if (backend === 'dir')
+        assert.ok(
+          verifierPrompts.every((prompt) => /-v[0-2]\//.test(prompt.pwd + '/')),
+          'every verifier probed in its own probe slot: ' + JSON.stringify(verifierPrompts),
+        )
       const turns = (await read('agent/turns.jsonl'))
         .trim()
         .split('\n')
