@@ -70,7 +70,7 @@ test('an agent names the ways its sessions end a turn at less cost', () => {
   ])
     assert.throws(
       () => parseAgent(text),
-      /\[:cell_yield_ms=N\]\[:brief_finish=on\]\[:fold_finish=on\]\[:low_effort_rounds=on\]\[:brief_final=on\]\[:lean_cells=on\], not x=/,
+      /\[:cell_yield_ms=N\]\[:brief_finish=on\]\[:fold_finish=on\]\[:low_effort_rounds=on\]\[:brief_final=on\]\[:lean_cells=on\]\[:escalate_model=MODEL\]\[:escalate_tool_errors=N\]\[:escalate_context_tokens=N\]\[:tool_result_tokens=N\], not x=/,
     )
   assert.deepEqual(
     Config.parse({
@@ -191,7 +191,7 @@ test('an agent names a final message of three lines at most', () => {
   ])
     assert.throws(
       () => parseAgent(text),
-      /\[:low_effort_rounds=on\]\[:brief_final=on\]\[:lean_cells=on\], not x=/,
+      /\[:low_effort_rounds=on\]\[:brief_final=on\]\[:lean_cells=on\]\[:escalate_model=MODEL\]\[:escalate_tool_errors=N\]\[:escalate_context_tokens=N\]\[:tool_result_tokens=N\], not x=/,
     )
   assert.deepEqual(
     Config.parse({
@@ -289,7 +289,10 @@ test('an agent names lean code cells', () => {
     'x=claude:claude-opus-5-5:lean_cells=on:cell_yield_ms=120000',
     'x=claude:claude-opus-5-5:lean_cells=on:lean_cells=on',
   ])
-    assert.throws(() => parseAgent(text), /\[:brief_final=on\]\[:lean_cells=on\], not x=/)
+    assert.throws(
+      () => parseAgent(text),
+      /\[:brief_final=on\]\[:lean_cells=on\]\[:escalate_model=MODEL\]\[:escalate_tool_errors=N\]\[:escalate_context_tokens=N\]\[:tool_result_tokens=N\], not x=/,
+    )
   assert.deepEqual(
     Config.parse({
       ...config,

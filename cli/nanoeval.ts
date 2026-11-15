@@ -303,9 +303,16 @@ const usage = `nanoeval <command>
             brief_finish=on:fold_finish=on:brief_final=on), and one that ends in :lean_cells=on
             for short code cells, bounded reads of output and no second read of an unchanged
             file (nano-st-lean=claude:claude-opus-5-5:medium:cell_yield_ms=120000:
-            brief_finish=on:fold_finish=on:brief_final=on:lean_cells=on). The options come in
+            brief_finish=on:fold_finish=on:brief_final=on:lean_cells=on). A claude or
+            claude-direct agent that names :escalate_model=MODEL with :escalate_tool_errors=N,
+            :escalate_context_tokens=N or both has its sessions go on with MODEL after N failed
+            tool calls in a row or at N tokens of context, and one that ends in
+            :tool_result_tokens=N has the result of a code cell bounded at N tokens
+            (nano-st-trunc=claude:claude-opus-5-5:medium:cell_yield_ms=120000:
+            brief_finish=on:fold_finish=on:tool_result_tokens=2000). The options come in
             this order where several are named: branches, refusal_fallback, cell_yield_ms,
-            brief_finish, fold_finish, low_effort_rounds, brief_final, lean_cells.
+            brief_finish, fold_finish, low_effort_rounds, brief_final, lean_cells,
+            escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens.
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
@@ -692,6 +699,8 @@ type AgentOption = {
 
 const count = { pattern: '[0-9]+', value: 'N' }
 
+const model = { pattern: '[^:]+', value: 'MODEL' }
+
 const on = { pattern: 'on', value: 'on' }
 
 const scopes = { pattern: 'return_once|session', value: 'return_once|session' }
@@ -744,6 +753,30 @@ const agentOptions: readonly AgentOption[] = [
     name: 'lean_cells',
     read: () => ({ leanCells: true }),
     write: (agent) => (agent.leanCells ? on.value : undefined),
+  },
+  {
+    ...model,
+    name: 'escalate_model',
+    read: (text) => ({ escalateModel: text }),
+    write: (agent) => agent.escalateModel,
+  },
+  {
+    ...count,
+    name: 'escalate_tool_errors',
+    read: (text) => ({ escalateToolErrors: Number(text) }),
+    write: (agent) => agent.escalateToolErrors,
+  },
+  {
+    ...count,
+    name: 'escalate_context_tokens',
+    read: (text) => ({ escalateContextTokens: Number(text) }),
+    write: (agent) => agent.escalateContextTokens,
+  },
+  {
+    ...count,
+    name: 'tool_result_tokens',
+    read: (text) => ({ toolResultTokens: Number(text) }),
+    write: (agent) => agent.toolResultTokens,
   },
 ]
 

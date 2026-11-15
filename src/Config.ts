@@ -24,6 +24,9 @@ export type Agent = {
   briefFinal?: true
   briefFinish?: true
   cellYieldMs?: number
+  escalateContextTokens?: number
+  escalateModel?: string
+  escalateToolErrors?: number
   foldFinish?: true
   id: string
   leanCells?: true
@@ -34,6 +37,7 @@ export type Agent = {
   provider: 'claude' | 'codex' | 'oracle' | Installed.Kind
   refusalFallback?: RefusalFallback
   thinking?: string
+  toolResultTokens?: number
 }
 
 export type Harness = 'installed' | 'oracle' | 'session'
@@ -281,6 +285,30 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude' && provider !== 'codex')
         fail(agent.id + ' has a cellYieldMs, which only claude and codex sessions take')
     }
+    if (
+      agent.escalateContextTokens !== undefined ||
+      agent.escalateModel !== undefined ||
+      agent.escalateToolErrors !== undefined
+    ) {
+      if (typeof agent.escalateModel !== 'string' || !agent.escalateModel)
+        fail(agent.id + ' escalates and names no escalateModel')
+      if (agent.escalateContextTokens === undefined && agent.escalateToolErrors === undefined)
+        fail(
+          agent.id +
+            ' has an escalateModel and neither an escalateToolErrors nor an escalateContextTokens',
+        )
+      if (agent.escalateContextTokens !== undefined)
+        integer(agent.escalateContextTokens, agent.id + ': escalateContextTokens', 1)
+      if (agent.escalateToolErrors !== undefined)
+        integer(agent.escalateToolErrors, agent.id + ': escalateToolErrors', 1)
+      if (provider !== 'claude')
+        fail(agent.id + ' has an escalateModel, which only a claude session takes')
+    }
+    if (agent.toolResultTokens !== undefined) {
+      integer(agent.toolResultTokens, agent.id + ': toolResultTokens', 1)
+      if (provider !== 'claude')
+        fail(agent.id + ' has a toolResultTokens, which only a claude session takes')
+    }
     for (const lever of finishLevers) {
       if (agent[lever] === undefined) continue
       if (agent[lever] !== true) fail(agent.id + ' has a ' + lever + ' that is not true')
@@ -298,6 +326,13 @@ export function parse(value: unknown): Config {
       ...(agent.briefFinal ? { briefFinal: true as const } : {}),
       ...(agent.briefFinish ? { briefFinish: true as const } : {}),
       ...(agent.cellYieldMs === undefined ? {} : { cellYieldMs: agent.cellYieldMs }),
+      ...(agent.escalateContextTokens === undefined
+        ? {}
+        : { escalateContextTokens: agent.escalateContextTokens }),
+      ...(agent.escalateModel ? { escalateModel: agent.escalateModel } : {}),
+      ...(agent.escalateToolErrors === undefined
+        ? {}
+        : { escalateToolErrors: agent.escalateToolErrors }),
       ...(agent.foldFinish ? { foldFinish: true as const } : {}),
       id: agent.id,
       ...(agent.leanCells ? { leanCells: true as const } : {}),
@@ -308,6 +343,7 @@ export function parse(value: unknown): Config {
       provider,
       ...(agent.refusalFallback ? { refusalFallback: agent.refusalFallback } : {}),
       ...(agent.thinking ? { thinking: agent.thinking } : {}),
+      ...(agent.toolResultTokens === undefined ? {} : { toolResultTokens: agent.toolResultTokens }),
     }
   })
   if (new Set(agents.map((agent) => agent.id)).size !== agents.length)
