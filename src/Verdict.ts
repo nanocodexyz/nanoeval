@@ -3,6 +3,7 @@ import type * as Result from './Result.ts'
 export const report = 'ctrf.json'
 export const reward = 'reward.txt'
 export const timeoutCodes: readonly number[] = [124, 137]
+export const killedCode = 137
 
 export const fullPrefix = 'the slot ran out of disk while the verifier ran'
 export const emptyRewardPrefix = 'the verifier left reward.txt without a reward'
@@ -23,6 +24,58 @@ const unreachable: readonly RegExp[] = [
   /\bRead timed out\b/,
   /\bFailed to fetch: `[^`]+`\n(\s+Caused by: .*\n)*\s+Caused by: operation timed out\b/,
 ]
+
+export function agent(input: agent.Input): agent.ReturnType {
+  if (input.code !== killedCode || input.sec >= input.timeoutSec) return undefined
+  const ran = ' after ' + Math.floor(input.sec) + ' s of its ' + input.timeoutSec + ' s'
+  if (!input.oom)
+    return {
+      kind: 'agent',
+      message:
+        'the agent was killed' +
+        ran +
+        ', so its time limit did not end it, and no OOM kill was counted in its slot',
+    }
+  if (input.memoryMb < input.taskMemoryMb)
+    return {
+      kind: 'environment',
+      message:
+        'the slot had ' +
+        input.memoryMb +
+        ' MB of the ' +
+        input.taskMemoryMb +
+        ' MB the task asks for, and that limit killed the agent' +
+        ran +
+        ', with ' +
+        input.oom +
+        ' OOM kills in its slot',
+      oom: input.oom,
+    }
+  return {
+    kind: 'agent_out_of_memory',
+    message:
+      'the memory limit of the slot, ' +
+      input.memoryMb +
+      ' MB, killed the agent' +
+      ran +
+      ', with ' +
+      input.oom +
+      ' OOM kills in its slot',
+    oom: input.oom,
+  }
+}
+
+export declare namespace agent {
+  type Input = {
+    code: number
+    memoryMb: number
+    oom: number
+    sec: number
+    taskMemoryMb: number
+    timeoutSec: number
+  }
+  type ReturnType = (Pick<Result.Failure, 'kind' | 'message'> & { oom?: number }) | undefined
+}
 
 export type Verifier = {
   code: number

@@ -477,7 +477,8 @@ const usage = `nanoeval <command>
             passes, its input, cached and output tokens, the time from the start of its
             first attempt to the end of its last, and its errors by class: infrastructure
             (environment, internal, verifier, verifier_timeout) apart from the agent or its
-            model (agent, agent_timeout, budget) and from rows that were cancelled. An error
+            model (agent, agent_out_of_memory, agent_timeout, budget) and from rows that were
+            cancelled. An error
             is counted apart from all three, as task dependency gone under the name of its
             task, when both hold: its verifier could not install from its package archive,
             which answered 404 Not Found, and the list of unsound tasks (see oracle) names

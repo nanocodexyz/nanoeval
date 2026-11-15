@@ -4,6 +4,7 @@ import * as Route from './Route.ts'
 
 export type FailureKind =
   | 'agent'
+  | 'agent_out_of_memory'
   | 'agent_timeout'
   | 'budget'
   | 'cancelled'

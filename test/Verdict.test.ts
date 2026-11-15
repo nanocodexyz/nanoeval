@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import * as Result from '../src/Result.ts'
 import * as Retry from '../src/Retry.ts'
 import * as Verdict from '../src/Verdict.ts'
 
@@ -219,4 +220,49 @@ test('a verifier that the limit of the run ended is not a verifier timeout, and 
   })
   const other = { at: 1, kind: 'verifier' as const, message: 'no reward' }
   assert.equal(Verdict.bounded(other, 900), other)
+})
+
+test('an agent that a kill ended before its time limit is not an agent timeout', () => {
+  const killed = {
+    code: 137,
+    memoryMb: 2048,
+    oom: 2,
+    sec: 93.4,
+    taskMemoryMb: 2048,
+    timeoutSec: 1800,
+  }
+  assert.deepEqual(Verdict.agent(killed), {
+    kind: 'agent_out_of_memory',
+    message:
+      'the memory limit of the slot, 2048 MB, killed the agent after 93 s of its 1800 s, with 2 OOM kills in its slot',
+    oom: 2,
+  })
+  assert.equal(Result.outcome(null, { at: 1, ...Verdict.agent(killed)! }), 'errored')
+  assert.equal(retried(Verdict.agent(killed)), undefined)
+  assert.deepEqual(Verdict.agent({ ...killed, memoryMb: 1024 }), {
+    kind: 'environment',
+    message:
+      'the slot had 1024 MB of the 2048 MB the task asks for, and that limit killed the agent after 93 s of its 1800 s, with 2 OOM kills in its slot',
+    oom: 2,
+  })
+  assert.deepEqual(Verdict.agent({ ...killed, oom: 0 }), {
+    kind: 'agent',
+    message:
+      'the agent was killed after 93 s of its 1800 s, so its time limit did not end it, and no OOM kill was counted in its slot',
+  })
+})
+
+test('an agent that its time limit ended stays an agent timeout, whatever its slot counted', () => {
+  const late = {
+    code: 137,
+    memoryMb: 2048,
+    oom: 2,
+    sec: 1810.2,
+    taskMemoryMb: 2048,
+    timeoutSec: 1800,
+  }
+  assert.equal(Verdict.agent(late), undefined)
+  assert.equal(Verdict.agent({ ...late, sec: 1800 }), undefined)
+  assert.equal(Verdict.agent({ ...late, code: 124, sec: 1799.9 }), undefined)
+  assert.equal(Verdict.agent({ ...late, code: 1, sec: 5 }), undefined)
 })

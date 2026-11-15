@@ -8,6 +8,7 @@ export type Class = 'agent' | 'cancelled' | 'infrastructure' | 'limit' | 'task'
 
 export const classes: Record<Result.FailureKind, Class> = {
   agent: 'agent',
+  agent_out_of_memory: 'agent',
   agent_timeout: 'agent',
   budget: 'agent',
   cancelled: 'cancelled',

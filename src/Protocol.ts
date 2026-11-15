@@ -106,7 +106,7 @@ export type Judgement =
 export type Fault = { message: string }
 
 export type Finish = {
-  failure?: { kind: Result.FailureKind; message: string }
+  failure?: { kind: Result.FailureKind; message: string; oom?: number }
   verifier?: Verdict.Verifier
 }
 

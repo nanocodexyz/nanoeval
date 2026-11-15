@@ -976,11 +976,7 @@ cmd__verify() {
       fi
       rm -rf "$dir/io/verifier"
       if vm "$dir" copy-out --socket vm.sock /logs/verifier verifier; then cp -R "$dir/io/verifier/." "$dir/verifier/"; fi
-      if [ -s "$dir/cgroup" ]; then
-        awk '$1 == "oom_kill" { print $2 }' "$(cat "$dir/cgroup")/memory.events" >"$dir/oom"
-      elif [ "$(cat "$dir/backend")" = krun ]; then
-        vm "$dir" exec "${options[@]}" --user 0 -- /opt/nanoeval/krun/boot/nanoeval-krun-guest oom-kills >"$dir/oom" 2>/dev/null || true
-      fi
+      count_oom "$dir" "${options[@]}"
       ;;
   esac
   return "$code"
@@ -1086,6 +1082,29 @@ free_disk() {
   df --output=avail -BM "${paths[@]}" 2>/dev/null | awk 'NR > 1 { free = $1 + 0; if (least == "" || free < least) least = free } END { print least == "" ? 0 : least }'
 }
 
+count_oom() {
+  local dir=$1
+  shift
+  if [ -s "$dir/cgroup" ]; then
+    awk '$1 == "oom_kill" { print $2 }' "$(cat "$dir/cgroup")/memory.events" >"$dir/oom"
+  elif [ "$(cat "$dir/backend")" = krun ]; then
+    vm "$dir" exec "$@" --user 0 -- /opt/nanoeval/krun/boot/nanoeval-krun-guest oom-kills >"$dir/oom" 2>/dev/null || true
+  fi
+}
+
+cmd_oom() {
+  local slot=$1
+  valid "$slot"
+  local dir=$home/slots/$slot options=()
+  [ "$(state "$dir/up.status")" = exit:0 ] || return 0
+  case $(cat "$dir/backend") in
+    krun | ns)
+      mapfile -t options < <(guest_options "$dir")
+      count_oom "$dir" "${options[@]}"
+      ;;
+  esac
+}
+
 cmd_gone() {
   local slot=$1 pid
   valid "$slot"
@@ -1153,10 +1172,10 @@ cmd_file() {
 }
 
 command=${1:-}
-[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|tools|agents|up|fork|hand|preflight|agent|solve|verify|gone|down|drop|destroy|prune|status|log|files|file> ...'
+[ -n "$command" ] || die 'usage: nanoeval-slot <probe|setup|tools|agents|up|fork|hand|preflight|agent|solve|verify|oom|gone|down|drop|destroy|prune|status|log|files|file> ...'
 shift
 case $command in
-  probe | setup | _setup | tools | agents | up | _up | fork | _fork | _ns | drop | _drop | hand | _hand | preflight | agent | _agent | solve | _solve | verify | _verify | gone | down | destroy | prune | status | log | files | file)
+  probe | setup | _setup | tools | agents | up | _up | fork | _fork | _ns | drop | _drop | hand | _hand | preflight | agent | _agent | solve | _solve | verify | _verify | oom | gone | down | destroy | prune | status | log | files | file)
     "cmd_$command" "$@"
     ;;
   *) die "unknown command: $command" ;;

@@ -3587,7 +3587,10 @@ export class Run extends DurableObject<Env> {
     } else if (body.failure) {
       const unpaid = refusals.has('plan') ? this.meta()!.refused : undefined
       const failure: Result.Failure = {
-        ...Verdict.bounded({ at: now, ...body.failure }, ownSec),
+        ...Verdict.bounded(
+          { at: now, kind: body.failure.kind, message: body.failure.message },
+          ownSec,
+        ),
         ...(body.failure.kind === 'agent' && refusals.has('spent')
           ? { kind: 'budget' as const }
           : {}),
@@ -3608,6 +3611,7 @@ export class Run extends DurableObject<Env> {
       end = {
         failure:
           Retry.rejected({ failure, requests }) ?? Retry.unserved({ failure, requests }) ?? failure,
+        ...(body.failure.oom ? { oomKills: body.failure.oom } : {}),
         reward: null,
       }
     } else throw new Refusal(400, 'finishing an attempt reports a verifier or a failure')

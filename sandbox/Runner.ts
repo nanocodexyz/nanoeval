@@ -1015,6 +1015,28 @@ async function attend(
     return move(item, 'cli')
   }
 
+  const ended = async (item: Work, code: number) => {
+    if (code !== Verdict.killedCode) return undefined
+    const task = item.row.task
+    const target = directory(item)
+    const [started, stopped] = await Promise.all([
+      Fs.stat(Path.join(target, 'agent.pid')),
+      Fs.stat(Path.join(target, 'agent.status')),
+    ])
+    const sec = (stopped.mtimeMs - started.mtimeMs) / 1000
+    if (sec >= task.agent.timeoutSec) return undefined
+    await shell(slots.oom(item.row.slot))
+    const oomText = (await text(Path.join(target, 'oom')))?.trim()
+    return Verdict.agent({
+      code,
+      memoryMb: item.memoryMb ?? Admission.clamp(task.resources.memoryMb, capacity),
+      oom: oomText !== undefined && /^[0-9]+$/.test(oomText) ? Number(oomText) : 0,
+      sec,
+      taskMemoryMb: task.resources.memoryMb,
+      timeoutSec: task.agent.timeoutSec,
+    })
+  }
+
   const endCli = async (item: Work, input: { cli: Installed.Agent; code: number }) => {
     const stream = await Fs.readFile(slots.agentOutput(item.row.slot)).catch(() => Buffer.alloc(0))
     const whole = stream.length <= Protocol.artifactBytes
@@ -1035,6 +1057,16 @@ async function attend(
     const errors = await slotLog(item, 'agent', Protocol.artifactBytes)
     await upload(item, 'agent/stderr.txt', errors + '\nthe agent exited with ' + input.code + '\n')
     const summary = Installed.summarize(input.cli.kind, stream.toString('utf8'))
+    const early = await ended(item, input.code)
+    if (early)
+      return finish(item, {
+        failure: {
+          ...early,
+          message:
+            early.message +
+            (early.kind === 'agent' ? ': ' + (summary.error ?? errors.slice(-2000)) : ''),
+        },
+      })
     if (input.code !== 0 && !Verdict.timeoutCodes.includes(input.code))
       return fail(
         item,

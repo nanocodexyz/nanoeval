@@ -11,6 +11,7 @@ export type Job = {
 
 const exceptions: Record<Result.FailureKind, string> = {
   agent: 'AgentError',
+  agent_out_of_memory: 'AgentOutOfMemoryError',
   agent_timeout: 'AgentTimeoutError',
   budget: 'BudgetExceededError',
   cancelled: 'CancelledError',
