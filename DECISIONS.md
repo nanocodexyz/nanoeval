@@ -7816,3 +7816,12 @@ A directory slot has no image. Its verifier root is an empty directory, an artif
 - Dir e2e lanes `branches`, `lazy`, `lazy-pass`, `picker` and `picker-lazy`.
 - The fresh-clone ci.yml result for this head is recorded in the entry after this one.
 - The krun and ns lanes skip on the hosted Hand (no KVM). They need a KVM box.
+
+## 2026-11-15: a verifier's own slot is proven by marks, on every backend
+
+**Problem.** On 7a26cd7 the e2e-ns lanes `picker` and `picker-lazy` failed "every verifier probed in its own probe slot". That assertion matched the verifier's `pwd` against the host path `<slot>-v<i>/`. Only a directory slot's workdir is a host path (`<slot>/work`). In an ns or krun guest, `pwd` is the image's workdir, such as `/app`, so the assertion could not pass off directory slots, whatever slot the verifier ran in. The fork path itself is the same on every backend: the runner's `probe` stage forks `Picker.slot(base, i)` live from `Branch.slot(base, i)`, and `attachHand` attaches the verifier session to that slot.
+
+**Behavior.**
+- Every verifier first counts the `.vmark-*` files in its workdir, then leaves one of its own. The lanes assert that every verifier counted 0. Three verifiers sharing one slot, or one verifier reaching another's slot, would count at least 1. The check holds on every backend.
+- The `pwd` check stays as an extra assertion on directory slots.
+- Unchanged, on every backend: `agent/probes.json` lists each branch once, the cheat scan is 0 and 0, and the kept branch passes after every verifier vandalised the graded file in its probe slot.

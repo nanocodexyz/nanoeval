@@ -103,7 +103,7 @@ const lazying = lazyFork || lazyPass
 const pickerLazy = scenario === 'picker-lazy'
 const picking = scenario === 'picker' || pickerLazy
 const branching = scenario === 'branches' || lazying || picking
-const verifierPrompts: { pass: boolean; pwd: string }[] = []
+const verifierPrompts: { others: number; pass: boolean; pwd: string }[] = []
 const branchRequests: { check: boolean; done: boolean }[] = []
 const branchSessions = new Map<string, number>()
 const subagent = scenario === 'subagent'
@@ -448,7 +448,7 @@ function responses(
       JSON.stringify(
         '[ "$(cat greeting.txt)" = \'hello from nanoeval\' ] && echo vcheck-$((40 + 2))-ok || echo vcheck-$((40 + 2))-bad',
       ) +
-      ' }); await tools.exec_command({ cmd: "printf vandal > greeting.txt" }); text(String(at.output).trim() + " " + JSON.stringify(result) + " cell tools: " + JSON.stringify(ALL_TOOLS.map((tool) => tool.name)))'
+      ' }); const seen = await tools.exec_command({ cmd: "ls -a | grep -c \'^[.]vmark-\' || true" }); await tools.exec_command({ cmd: "touch .vmark-$$-$(date +%s%N); printf vandal > greeting.txt" }); text(String(at.output).trim() + " vmarks-" + String(seen.output).trim() + "-seen " + JSON.stringify(result) + " cell tools: " + JSON.stringify(ALL_TOOLS.map((tool) => tool.name)))'
     : checking !== -1 && lazying
       ? 'const at = await tools.exec_command({ cmd: "pwd" }); const masked = String(at.output).includes("-b1/"); await tools.exec_command({ cmd: ' +
         JSON.stringify(
@@ -513,6 +513,7 @@ function responses(
   const verified = verifying && finished && JSON.stringify(output).includes('vcheck-42-ok')
   if (verifying && finished)
     verifierPrompts.push({
+      others: Number(/vmarks-([0-9]+)-seen/.exec(JSON.stringify(output))?.[1] ?? -1),
       pass: verified,
       pwd:
         /(\/\S+?)\s/.exec(
@@ -4716,6 +4717,12 @@ async function main(): Promise<void> {
           3,
           'each branch was verified in its own probe slot',
         )
+      assert.ok(verifierPrompts.length >= 3, 'every verifier reported what it saw')
+      assert.ok(
+        verifierPrompts.every((prompt) => prompt.others === 0),
+        'no verifier found the mark another verifier left, so each probed a slot of its own, on every backend: ' +
+          JSON.stringify(verifierPrompts),
+      )
       if (backend === 'dir')
         assert.ok(
           verifierPrompts.every((prompt) => /-v[0-2]\//.test(prompt.pwd + '/')),
