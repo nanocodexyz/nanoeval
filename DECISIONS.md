@@ -7311,3 +7311,13 @@ The 73 tasks that are kept had a verifier in 2,131 rows of those nine arms and t
 **Validation.** `npm run lint`, `npm run check:types` and `npm run dry-run` pass. `node --test test/Price.test.ts test/Arms.test.ts test/Config.test.ts test/Installed.test.ts test/Summary.test.ts test/Result.test.ts`: 74 of 74 pass on a 5-core Linux x86_64 host, and on an Apple Silicon Mac all but the 4 Installed tests that fail there on main too.
 
 **Not run.** The whole `npm test` on a clean Linux host: on the shared hosted host the disk filled during the run (25 failures, the slot, store and lab tests that write to disk among them, and the price test whose float comparison the next commit bounds), and on the Mac main fails its Linux-only tests. A run with the new price form on a deployed Worker.
+
+## 2026-11-15: an agent may name the session scope of the refusal fallback
+
+**Problem.** An agent could name one scope, `:refusal_fallback=return_once`, and `session` was what a session did when nothing was sent. nanocode 26c5f99e7 makes `return_once` the default of a Claude session, and nanocode-ts 026f051 reads an unset `refusal_fallback` as `return_once`. On those builds an agent without the option is the `return_once` arm, and no agent could be the `session` arm.
+
+**Behavior.** An agent spec may end in `:refusal_fallback=session`, and a run configuration may hold `refusalFallback: "session"`. Every turn of such an agent sends `refusal_fallback: "session"`, and its lines of `agent/turns.jsonl` name it. `:refusal_fallback=return_once` is unchanged. An agent that names neither still sends nothing, so its scope is the default of the pinned nanocode-ts. A pair of arms that names both scopes means the same on a build of either default. The rules of the earlier entry hold: only a `claude` agent takes the option, and another value is refused.
+
+**Checked.** Unit tests: the spec with `session` and its text again, another value refused, the configuration with the three arms (`test/Installed.test.ts`), the body of the turn and the line of `agent/turns.jsonl` with `session` (`test/Turn.test.ts`), the usage line of a refused spec (`test/Refusal.test.ts`): 45 of 45 in the three files. `npm run lint` and `npm run check:types` pass.
+
+**Not run.** A model, and a request that Claude refuses: no lane and no scripted model answers with a refusal, so neither scope was seen at work from this repository. A deployed Worker.

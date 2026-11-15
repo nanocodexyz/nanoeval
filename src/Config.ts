@@ -44,7 +44,7 @@ export type Payer = 'deployment' | 'plan'
 
 export const payers: readonly Payer[] = ['deployment', 'plan']
 
-export type RefusalFallback = 'return_once'
+export type RefusalFallback = 'return_once' | 'session'
 
 export const planSignIn = 'nanoeval plans sign-in claude'
 
@@ -258,7 +258,7 @@ export function parse(value: unknown): Config {
         fail(agent.id + ' branches, and only a claude or codex session can')
     }
     if (agent.refusalFallback !== undefined) {
-      choice(agent.refusalFallback, 'refusalFallback', ['return_once'])
+      choice(agent.refusalFallback, 'refusalFallback', ['return_once', 'session'])
       if (provider !== 'claude')
         fail(agent.id + ' has a refusalFallback, which only a claude session takes')
     }
