@@ -3697,6 +3697,30 @@ async function main(): Promise<void> {
       for (const row of rows) assert.equal(row['claims'], 2, 'each row was retried once')
       assert.equal(status['lostClaims'], 0)
       assert.equal(unreachedSeen.size, rows.length)
+      unreachedSeen.clear()
+      const second = await api.create({
+        ...config,
+        limits: { ...config.limits, claims: 1 },
+        name: config.name + '-once',
+      })
+      attach(second.id, 'once')
+      const once = await waitFor('the run of one claim a row', async () => {
+        const current = await api.status(second.id)
+        return current['state'] === 'finished' ? current : undefined
+      })
+      console.log(summary(once))
+      for (const row of once['attempts'] as Record<string, any>[]) {
+        assert.equal(row['claims'], 1, 'a run of one claim a row retries no row')
+        assert.equal(row['outcome'], 'errored')
+        assert.equal(row['failure'].kind, 'environment', row['failure'].message)
+        assert.ok(row['failure'].message.startsWith(Retry.unansweredPrefix + ': '))
+      }
+      assert.equal(once['lostClaims'], 0)
+      assert.equal(unreachedSeen.size, rows.length)
+      assert.ok(
+        !(await api.timeline(second.id)).marks.some((mark) => mark.name === 'attempt.retried'),
+        'the timeline of such a run has no retry',
+      )
       await pass()
       return
     }

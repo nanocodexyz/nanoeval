@@ -1895,7 +1895,7 @@ export class Run extends DurableObject<Env> {
     const requeued = Ledger.requeue(this.sql, {
       ending,
       id: row.id,
-      limit: final !== undefined ? 0 : ending === 'retried' ? row.claims + 1 : config.limits.claims,
+      limit: final !== undefined ? 0 : config.limits.claims,
       now: Date.now(),
       ...(usage ? { usage } : {}),
     })
@@ -3625,7 +3625,7 @@ export class Run extends DurableObject<Env> {
       end.failure && end.reward === null
         ? Retry.infrastructure({ failure: end.failure, statuses })
         : undefined
-    if (cause && !Ledger.retried(this.sql, row.id)) {
+    if (cause && Ledger.retriable(this.sql, { id: row.id, limit: config.limits.claims })) {
       Ledger.explain(this.sql, { claim: row.claim!, error: cause + ': ' + end.failure!.message })
       Timeline.add(this.sql, { at: now, attempt: row.id, name: 'attempt.retried' })
       await this.lose(Ledger.get(this.sql, row.id)!, 'retried')

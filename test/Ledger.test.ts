@@ -500,3 +500,37 @@ test('a claim that ends retried is remembered, so an attempt is retried once', (
   assert.equal(again!.claims, 2)
   assert.equal(Ledger.retried(sql, again!.id), true)
 })
+
+test('an attempt is retried within the claims of its row, so a run of one claim retries nothing', () => {
+  const sql = open([
+    { agent: 'agent', n: 1, task: 'small' },
+    { agent: 'agent', n: 2, task: 'small' },
+  ])
+  const [row, other] = claim(sql)
+  assert.equal(Ledger.retriable(sql, { id: 'a00009', limit: 3 }), false)
+  assert.equal(Ledger.retriable(sql, { id: row!.id, limit: 1 }), false)
+  assert.equal(Ledger.retriable(sql, { id: row!.id, limit: 2 }), true)
+  assert.equal(
+    Ledger.requeue(sql, { ending: 'retried', id: row!.id, limit: 1, now: 10 }),
+    false,
+    'the ledger gives no row back past the claims of the run, whatever ended its claim',
+  )
+  assert.equal(Ledger.get(sql, row!.id)!.phase, 'claimed')
+  assert.equal(Ledger.requeue(sql, { ending: 'retried', id: other!.id, limit: 3, now: 10 }), true)
+  const [again] = claim(sql, { now: 20 })
+  assert.equal(again!.id, other!.id)
+  assert.equal(
+    Ledger.retriable(sql, { id: again!.id, limit: 3 }),
+    false,
+    'a row that was retried is not retried again, with claims left',
+  )
+  assert.equal(Ledger.requeue(sql, { ending: 'expired', id: again!.id, limit: 3, now: 30 }), true)
+  const [last] = claim(sql, { now: 40 })
+  assert.equal(last!.claims, 3)
+  assert.equal(Ledger.requeue(sql, { ending: 'expired', id: last!.id, limit: 3, now: 50 }), false)
+  assert.equal(
+    Ledger.claims(sql, last!.id).length,
+    3,
+    'no row is claimed more often than the run allows',
+  )
+})

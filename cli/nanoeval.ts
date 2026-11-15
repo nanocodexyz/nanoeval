@@ -198,10 +198,13 @@ const usage = `nanoeval <command>
             --sandboxes, --slots, --setup-sec and the rest. --sandbox-timeout-sec and the
             runtime are not taken over.
             A row whose runner stops answering for --lease-sec is claimable again, at most
-            --claims times in all, and then ends as an error. Rows are claimed longest
-            timeouts first. A row that no runner could take for --setup-sec ends as an
-            error when the run opens no sandbox itself: no runner is attached, or the
-            sandbox of every runner ends before the timeouts of the row do.
+            --claims times in all, and then ends as an error. A row that the machine or
+            the way to the model failed is claimed once more within the same --claims, so
+            with --claims 1 no row is claimed twice, whatever ended its claim, and such a
+            row ends as the error it had. Rows are claimed longest timeouts first. A row
+            that no runner could take for --setup-sec ends as an error when the run opens
+            no sandbox itself: no runner is attached, or the sandbox of every runner ends
+            before the timeouts of the row do.
             A model request whose payment is refused in passing is sent again, at most
             --step-retries times. One that is refused because the key or its channel is
             spent waits and is sent again, and no row starts while it waits; one still

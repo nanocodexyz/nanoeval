@@ -323,6 +323,11 @@ export function retried(sql: Sql.Sql, attempt: string): boolean {
   )
 }
 
+export function retriable(sql: Sql.Sql, input: { id: string; limit: number }): boolean {
+  const row = get(sql, input.id)
+  return row !== undefined && row.claims < input.limit && !retried(sql, input.id)
+}
+
 export function lost(claim: Pick<Claim, 'ending'>): boolean {
   return claim.ending === 'expired' || claim.ending === 'forgotten' || claim.ending === 'released'
 }
