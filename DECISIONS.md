@@ -5837,3 +5837,63 @@ Before this commit, on its tree. Hosted Linux x86_64 without KVM: lint, both typ
 **Checked,** on the hosted Hand (5 cores, no KVM) at this tree: `npm ci`, `npm run lint`, `npm run check:types`, `npm test` (423 tests, 418 pass, 5 skipped, 0 fail), `npm run dry-run`; e2e on directory slots: the gateway lane (`NANOEVAL_E2E_GATEWAY=1`, three tasks: codex `ALL_TOOLS`, `<shell>bash</shell>`, no `query pwd`, no job tool) `e2e passed: scripted-dir-gateway`, the direct lane with the jobs agent `e2e passed: scripted-dir-direct`, the branches lane `e2e passed: scripted-dir-branches` and the Claude lane `e2e passed: scripted-dir`. On `build-ef48569` with the same hand the gateway, direct and branches lanes failed the new job assertion (3, 3 and 9 requests mentioning job_start).
 
 **Not verified.** A deployed Worker, a real model with codex-jobs, and the krun and ns lanes.
+
+## 2026-11-15: fx, opencode and pi on real models, and how their commits landed
+
+The three entries above were written before any of the three command lines had asked a real model. This entry has the first rows, what was checked of the commits as they landed, and what is still not verified.
+
+### How they landed
+
+The four commits (the chat completions route, fx, opencode, pi) were written on a main that moved under them: it gained `+preflight`, `branches` and the `codex-jobs` harness in the agent syntax. They were rebased onto it by hand. The parser keeps main's form and takes its installed names from `Installed.harnesses`, the kinds with one API and `fx-chat` and its like for the others, and the comparison labels and the configuration check carry both main's fields and the `api`.
+
+Checked on the landed tip from a fresh clone, hosted Linux x86_64 without KVM, in one hold of a lane slot, one run each: `npm ci`, `npm run lint`, `npm run check:types`, `npm run dry-run`, `npm test` (423 tests, 418 passed, 5 skipped, 0 failed), and the lanes of fx, opencode, pi and of the two older commands on directory slots, 4 of 4. Each of the four commits from the public repository on a 48-thread Linux machine with KVM, four of its threads: `npm ci`, lint, both type checks and `test/Installed.test.ts`, 21, 23, 25 and 27 tests, none failed. The SHA-256 of the four aarch64 archives was computed from a download and equals the pin. On the same machine, at the landed tip from the public repository: the job `check` of `ci.yml`, 5 of 5 steps (`npm test`: 423 tests, 422 passed, 1 skipped), the three new lanes three times each on directory and on krun slots and once on ns slots, 21 of 21, the lanes of the two older commands on krun slots (tasks, failure kinds, a restarted runner) and on ns slots, 4 of 4, and the whole job `e2e-dir`, 56 of 56 steps in 18.2 minutes on four threads beside other work. The job `e2e-krun` was still running when this was written.
+
+### The first rows on real models
+
+Four small Terminal-Bench 2.1 tasks (`fix-git`, `code-from-image`, `openssl-selfsigned-cert`, `log-summary-date-ranges`), one attempt each, krun slots, four at a time, on the machine with KVM. The model calls left through a Worker on that machine to an endpoint on another machine that held the credential: no key was on the machine of the slots, and none in a slot. These rows ran on the tree of the commits before their rebase: the adapters, the route and the runner's rule are the same lines.
+
+`claude-haiku-5-5` over Anthropic Messages, a provider key behind a meter that adds `usage.cost` at list prices, one run of 20 rows:
+
+| Arm | Harness | Passed | Agent time | Input tokens (cached) | Output tokens | Cost | Cost a pass |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `fx-messages` | fx 0.0.17 | 4 of 4 | 2 min 4 s | 230,998 (0) | 10,698 | $0.0284 | $0.0071 |
+| `opencode-messages` | opencode 1.19.5 | 4 of 4 | 1 min 48 s | 282,402 (235,142) | 8,874 | $0.0127 | $0.0032 |
+| `pi-messages` | pi 1.5.2 | 4 of 4 | 2 min 28 s | 111,511 (85,535) | 8,983 | $0.0086 | $0.0022 |
+| `claude-code` | Claude Code 2.1.318 | 4 of 4 | 1 min 14 s | 386,226 (334,801) | 8,924 | $0.0142 | $0.0036 |
+| `claude` | nanocode-ts build-39696b0, hand nanocode-cli-0bbcb64 | 4 of 4 | 1 min 14 s | 256,625 (220,199) | 9,325 | $0.0114 | $0.0029 |
+
+The run's spend was $0.0754 and the meter's ledger moved by the same. Since the endpoint reports a cost, every arm has one, the three new ones included. fx sends no `cache_control`: none of its prompt tokens were read from a cache, and it cost two to three times what the others did.
+
+`@cf/zai-org/glm-5.3-flash` over chat completions, Workers AI behind a forwarder that adds the credential and the gateway header, `OPENAI_BASE_URL` naming the forwarder, one run of 12 rows:
+
+| Arm | Harness | Passed | Errored | Agent time | Input tokens (cached) | Output tokens | Cost by tokens | Cost a pass |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `fx-chat` | fx 0.0.17 | 4 of 4 | 0 | 7 min 34 s | 472,486 (364,288) | 31,753 | $0.0868 | $0.0217 |
+| `opencode-chat` | opencode 1.19.5 | 4 of 4 | 0 | 12 min 5 s | 755,846 (619,520) | 35,671 | $0.1312 | $0.0328 |
+| `pi-chat` | pi 1.5.2 | 3 of 4 | 1 | 8 min 52 s | 681,312 (544,768) | 44,260 | $0.1243 | $0.0414 |
+
+This endpoint reports no cost, so the run says "not known" for all three: the cost here is the tokens of the run at $0.15 a million input tokens and $0.50 a million output tokens. The one error is the provider's: it answered `429`, "inference request per min rate reached", to each of the four requests of pi's `openssl-selfsigned-cert` row while the other rows ran. pi gave up and exited 0, and the row is an `agent` error with that line, by the rule of pi's commit. 165 of the 350 requests the forwarder saw for this model in those minutes were refused that way, other work's among them: fx and opencode asked again until they were answered.
+
+`@cf/deepseek-ai/deepseek-v4.1-flash-1017` over the same route, one run of 12 rows, $0.30 and $1.20 a million tokens:
+
+| Arm | Harness | Passed | Errored | Agent time | Input tokens (cached) | Output tokens | Cost by tokens | Cost a pass |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `fx-chat` | fx 0.0.17 | 4 of 4 | 0 | 7 min 31 s | 421,240 (376,576) | 18,101 | $0.1481 | $0.0370 |
+| `opencode-chat` | opencode 1.19.5 | 4 of 4 | 0 | 7 min 32 s | 501,147 (452,672) | 16,027 | $0.1696 | $0.0424 |
+| `pi-chat` | pi 1.5.2 | 1 of 4 | 3 | 4 min 14 s | 310,315 (278,784) | 14,997 | $0.1111 | $0.1111 |
+
+All three errors are pi's and are the same refusal for the rate: pi asks four times in about fifteen seconds and gives up, where fx and opencode kept asking. On a provider that limits requests a minute, pi's rows want fewer slots at once or a longer retry in pi's own settings, which the command does not set.
+
+This is a smoke test, not a comparison: four easy tasks and one attempt say that each arm runs end to end on both routes and that its row is recorded like the others, and nothing about which harness is better.
+
+### What was tried and did not measure anything
+
+`claude-opus-5-5` over Messages, one tiny fixture for `fx-messages` and `pi-messages`. The meter had no list price for the model and booked it at an upper bound. fx was answered twice (6,809 and 7,214 input tokens, none cached, 121 and 250 output tokens), ran the tool call it was given, and the run's model budget, counted at that bound, then refused its third request and pi's first: two `budget` errors, no verdict. It shows that fx's Messages requests are served for that model through the endpoint of a run, and that a budget ends an installed agent of each kind as a `budget` error. It was a planning mistake: the size of fx's prompt had been read from a scripted endpoint's made-up usage.
+
+### Not verified
+
+- `claude-opus-5-5` for any of the three, and a thinking level against a provider.
+- The Responses API of a provider for any of the three, an OpenAI key, a ChatGPT plan and a Claude plan. [DESIGN.md](DESIGN.md#installed-agents) says which of them can be served by a plan and why not the others: that is read from the requests each sent to a scripted endpoint, not from a provider's answer.
+- Cloudflare AI Gateway addressed directly: the rows above went through a forwarder that adds its token and, for a Workers AI model, the `cf-aig-gateway-id` header, which nothing here adds.
+- A nanocode session on a chat completions route. A `codex` session speaks Responses and a `claude` session Messages, so the open-model rows above have no nanocode arm beside them.
+- More than one attempt, the other 85 tasks, linux/arm64, and an x86_64 machine without AVX2.
