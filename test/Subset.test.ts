@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import * as Fs from 'node:fs/promises'
+import * as Path from 'node:path'
 import { test } from 'node:test'
 import * as Subset from '../src/Subset.ts'
 
@@ -102,4 +104,23 @@ test('a subset is named once in a file, by eval', () => {
       () => Subset.parse(wrong, file),
       /^Subset\.InvalidError: subsets\.json has to hold /,
     )
+})
+
+test('the lists of this checkout name each task once, and five-minute holds tasks of fifteen-minute only', async () => {
+  const file = Path.join(import.meta.dirname, '..', 'subsets.json')
+  const subsets = Subset.parse(await Fs.readFile(file, 'utf8'), file)
+  for (const lists of Object.values(subsets))
+    for (const tasks of Object.values(lists)) {
+      assert.equal(new Set(tasks).size, tasks.length)
+      assert.deepEqual(tasks, [...tasks].sort())
+    }
+  const list = (name: string) =>
+    Subset.named(subsets, { eval: 'terminal-bench-2.1', file, names: [name] })
+  const within = new Set(list('fifteen-minute'))
+  assert.equal(within.size, 84)
+  assert.equal(list('five-minute').length, 73)
+  assert.deepEqual(
+    list('five-minute').filter((task) => !within.has(task)),
+    [],
+  )
 })
