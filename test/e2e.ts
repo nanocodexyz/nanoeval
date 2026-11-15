@@ -81,9 +81,17 @@ const largeTestBytes = 3 * 1024 * 1024
 const ending = scenario === 'ending'
 const attached =
   ending ||
-  ['lost', 'machine', 'resume', 'runners', 'shared', 'standing', 'stopped', 'taken'].includes(
-    scenario,
-  )
+  [
+    'lost',
+    'machine',
+    'overcommit',
+    'resume',
+    'runners',
+    'shared',
+    'standing',
+    'stopped',
+    'taken',
+  ].includes(scenario)
 const alone = scenario === 'alone'
 const cancelled = scenario === 'cancelled'
 const capped = scenario === 'capped'
@@ -1759,6 +1767,7 @@ async function main(): Promise<void> {
       })
     }
     const packing = scenario === 'packing'
+    const overcommitted = scenario === 'overcommit'
     const derived = scenario === 'threads'
     const bounded = scenario === 'bounded'
     const boundSec = 10
@@ -1767,7 +1776,7 @@ async function main(): Promise<void> {
       ? ['final-answer', 'judged-answer'].map((name) => Path.join('test/fixtures', name))
       : alone || branching || direct || midturn || preflighted || subagent
         ? [Path.join('tasks', 'write-greeting')]
-        : packing || derived
+        : packing || derived || overcommitted
           ? ['extract-todos', 'uppercase-message', 'write-greeting'].map((name) =>
               Path.join('tasks', name),
             )
@@ -1869,6 +1878,7 @@ async function main(): Promise<void> {
                       failures ||
                       isolated ||
                       midturn ||
+                      overcommitted ||
                       packing ||
                       slotGone ||
                       subagent ||
@@ -1887,6 +1897,7 @@ async function main(): Promise<void> {
                             failures ||
                             isolated ||
                             midturn ||
+                            overcommitted ||
                             packing ||
                             slotGone ||
                             subagent ||
@@ -1940,6 +1951,12 @@ async function main(): Promise<void> {
     const imported = await Import.cases(cases(), options)
     const importMs = Date.now() - importStarted
     if (packing) for (const task of imported.tasks.slice(0, 2)) task.resources.memoryMb = 512
+    const meminfo = overcommitted ? Fs.readFileSync('/proc/meminfo', 'utf8') : ''
+    const kb = (name: string) =>
+      Number(new RegExp('^' + name + ':\\s+(\\d+) kB$', 'm').exec(meminfo)?.[1])
+    const admittedMb = 3 * Math.ceil((kb('MemTotal') - kb('MemAvailable')) / 1024)
+    if (overcommitted)
+      for (const task of imported.tasks) task.resources.memoryMb = Math.floor(admittedMb / 2) + 1
     if (alone) for (const task of imported.tasks) task.resources.memoryMb = 2 ** 30
     const evalName = 'e2e-' + label.replace(/[^a-z0-9.-]/g, '-')
     const { version } = await api.putVersion(evalName, {
@@ -2061,6 +2078,7 @@ async function main(): Promise<void> {
         direct ||
         failures ||
         midturn ||
+        overcommitted ||
         packing ||
         preflighted ||
         slotGone ||
@@ -2289,6 +2307,8 @@ async function main(): Promise<void> {
         ),
       )
       attach(created.id, 'b')
+    } else if (overcommitted) {
+      attach(created.id, 'a', ['--memory-mb', String(admittedMb), '--memory-overcommit'])
     } else if (attached && !stood) {
       attach(created.id, 'a')
       if (scenario !== 'resume') attach(created.id, 'b')
@@ -4685,6 +4705,33 @@ async function main(): Promise<void> {
           ' of ' +
           total +
           ' rows at once',
+      )
+      await pass()
+      return
+    }
+
+    if (overcommitted) {
+      for (const detail of details) assert.equal(detail['attempt'].outcome, 'passed')
+      const declaredMb = Math.floor(admittedMb / 2) + 1
+      assert.ok(2 * declaredMb > admittedMb, 'by what they declare, one row runs at a time')
+      assert.match(
+        Fs.readFileSync(Path.join(out, 'runner-a.log'), 'utf8'),
+        / MB counted as the machine uses it, not as rows declare it, /,
+      )
+      assert.ok(
+        peak > 1,
+        'rows that declare more than the runner admits together run at once while the machine has what each declares free',
+      )
+      console.log(
+        'overcommit: a runner that admits ' +
+          admittedMb +
+          ' MB ran ' +
+          peak +
+          ' of ' +
+          total +
+          ' rows at once, each declaring ' +
+          declaredMb +
+          ' MB',
       )
       await pass()
       return

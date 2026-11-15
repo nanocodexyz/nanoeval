@@ -96,6 +96,7 @@ export type Runner = {
   leaseSec: number
   limits: { attachSec: number; setupSec: number; stepRetries: number }
   memoryMb?: number
+  memoryOvercommit?: true
   network: Slot.Network
   oracle: boolean
   pollMs: number

@@ -43,6 +43,18 @@ export function alone(input: {
   return Math.min(input.requestedMb, Math.max(input.capacityMb, input.availableMb))
 }
 
+export function held(
+  rows: readonly { memoryMb: number; starting: boolean }[],
+  machine?: { availableMb: number; memoryMb: number },
+): number {
+  const declared = (list: typeof rows) => list.reduce((total, row) => total + row.memoryMb, 0)
+  if (!machine || !rows.length) return declared(rows)
+  return (
+    Math.max(0, machine.memoryMb - machine.availableMb) +
+    declared(rows.filter((row) => row.starting))
+  )
+}
+
 export function admits(load: Load, capacity: Capacity, requestedMemoryMb: number): boolean {
   return (
     load.running < capacity.slots &&

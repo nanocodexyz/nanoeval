@@ -705,11 +705,18 @@ async function attend(
     await Fs.rename(file + '.tmp', file)
   }
   const move = async (item: Work, stage: Stage) => {
+    const started = config.memoryOvercommit && item.stage === 'up'
     item.stage = stage
     item.at = Date.now()
     item.delay = firstPollMs
     item.next = 0
     await save(item)
+    if (started) {
+      claimAt = 0
+      frees++
+      serving.yield()
+      signal()
+    }
   }
   const later = (item: Work) => {
     item.next = Date.now() + item.delay
@@ -1496,6 +1503,10 @@ async function attend(
     memoryMb: config.memoryMb ?? Math.floor(capabilities.memory_mb * hostUtilization),
     slots: config.slots ?? capabilities.cpus,
   }
+  if (config.memoryOvercommit && (await availableMb()) === undefined)
+    throw new MachineError(
+      'this machine does not say what memory it has free, which --memory-overcommit admits by',
+    )
   log(
     'runner ' +
       config.runner +
@@ -1511,6 +1522,7 @@ async function attend(
       (config.memoryMb === undefined
         ? ' of the ' + capabilities.memory_mb + ' MB this runner may use'
         : '') +
+      (config.memoryOvercommit ? ' counted as the machine uses it, not as rows declare it' : '') +
       ', ' +
       backend +
       ' on the ' +
@@ -1524,14 +1536,19 @@ async function attend(
 
   const load = async (): Promise<Admission.Load> => {
     const rows = everything()
+    const availableNow = config.memoryOvercommit && rows.length ? await availableMb() : undefined
     return {
       ...(capacity.freeDiskMb === undefined ? {} : { freeDiskMb: await freeDiskMb([home, cache]) }),
-      memoryMb: rows.reduce(
-        (total, item) =>
-          total +
-          Admission.clamp(item.row.task.resources.memoryMb, capacity) *
+      memoryMb: Admission.held(
+        rows.map((item) => ({
+          memoryMb:
+            Admission.clamp(item.row.task.resources.memoryMb, capacity) *
             (item.row.agent.branches ?? 1),
-        0,
+          starting: item.stage === 'prepare' || item.stage === 'up',
+        })),
+        availableNow === undefined
+          ? undefined
+          : { availableMb: availableNow, memoryMb: capabilities.memory_mb },
       ),
       running: rows.reduce((total, item) => total + (item.row.agent.branches ?? 1), 0),
       starting: rows.filter((item) => item.stage === 'prepare' || item.stage === 'up').length,

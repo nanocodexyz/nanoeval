@@ -261,6 +261,57 @@ test('a rerun has one row for each attempt it retries, pointing at it', () => {
   )
 })
 
+test('a runner that overcommits counts what its machine uses and what its starting rows declare', () => {
+  const rows = [
+    { memoryMb: 2048, starting: false },
+    { memoryMb: 4096, starting: false },
+    { memoryMb: 8192, starting: true },
+  ]
+  const running = rows.slice(0, 2)
+  const machine = (availableMb: number) => ({ availableMb, memoryMb: 16000 })
+  assert.equal(Admission.held(rows), 14336)
+  assert.equal(Admission.held(rows, machine(13000)), 3000 + 8192)
+  assert.equal(Admission.held(running, machine(13000)), 3000)
+  assert.equal(Admission.held(running, machine(17000)), 0)
+  assert.equal(Admission.held([], machine(2000)), 0)
+
+  const capacity = { memoryMb: 12800, slots: 160 }
+  const declared = { memoryMb: Admission.held(running), running: 2 }
+  const used = (availableMb: number) => ({
+    memoryMb: Admission.held(running, machine(availableMb)),
+    running: 2,
+  })
+  assert.equal(Admission.admits(declared, capacity, 8192), false)
+  assert.equal(Admission.admits(used(13000), capacity, 8192), true)
+  assert.equal(Admission.offer(used(13000), capacity).memoryMb, 9800)
+  assert.equal(Admission.admits(used(11392), capacity, 8192), true)
+  assert.equal(Admission.admits(used(11391), capacity, 8192), false)
+  assert.equal(Admission.offer(used(3000), capacity).memoryMb, 0)
+  assert.equal(
+    Admission.admits(
+      { memoryMb: Admission.held(rows, machine(13000)), running: 3 },
+      capacity,
+      2048,
+    ),
+    false,
+  )
+  assert.deepEqual(
+    Admission.fill(
+      [{ item: 'whole', memoryMb: 16000 }],
+      Admission.offer({ memoryMb: Admission.held([], machine(2000)), running: 0 }, capacity),
+    ),
+    ['whole'],
+  )
+
+  const mean = 2899
+  const hundred = Array.from({ length: 100 }, () => ({ memoryMb: mean, starting: false }))
+  const admitted = { memoryMb: 309060, slots: 160 }
+  const free = (load: number) =>
+    Math.floor(Admission.offer({ memoryMb: load, running: 100 }, admitted).memoryMb / mean)
+  assert.equal(free(Admission.held(hundred)), 6)
+  assert.equal(free(Admission.held(hundred, { availableMb: 285031, memoryMb: 386326 })), 71)
+})
+
 test('a runner offers what its machine has free, and nothing while its disk is short', () => {
   const capacity = { memoryMb: 768, slots: 4 }
   assert.deepEqual(Admission.offer({ memoryMb: 256, running: 1 }, capacity), {

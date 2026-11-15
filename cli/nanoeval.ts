@@ -331,7 +331,7 @@ const usage = `nanoeval <command>
             option.
   runner    --url URL --token T (--run RUN | --standing --backend krun|ns|dir [--location HINT])
             [--home DIR] [--ends-in-sec N]
-            [--backend krun|ns] [--slots N] [--memory-mb N]
+            [--backend krun|ns] [--slots N] [--memory-mb N] [--memory-overcommit]
             [--free-disk-mb N] [--poll-ms N] [--store DIR] [--cache DIR]
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
             [--package-archive]
@@ -340,6 +340,12 @@ const usage = `nanoeval <command>
             hardware thread it may use), fetches their blobs by digest, boots each
             environment disk under a copy-on-write disk of its own, and reports to the run
             until the run is finished.
+            With --memory-overcommit it counts the memory its machine uses instead of the
+            memory its running rows declare: a row starts while the machine has free what
+            the row declares beside what the runner leaves unused (the machine's memory
+            less --memory-mb, a fifth of it by default). Rows that later fill what they
+            declare can together ask for more than the machine has: the kernel then ends
+            a slot, and its row goes back to the run.
             With --package-archive, the verifier of a krun or ns slot reaches
             deb.debian.org and security.debian.org through this runner: each request goes
             to the mirror it names, and a file under pool/ that the mirror answers 404 for
@@ -1820,6 +1826,7 @@ async function main(
       limit: { type: 'string' },
       location: { type: 'string' },
       'memory-mb': { type: 'string' },
+      'memory-overcommit': { default: false, type: 'boolean' },
       'model-budget-usd': { type: 'string' },
       'model-price': { multiple: true, type: 'string' },
       'model-requests-per-min': { multiple: true, type: 'string' },
@@ -2793,6 +2800,7 @@ async function main(
       override: {
         ...(values['free-disk-mb'] ? { freeDiskMb: Number(values['free-disk-mb']) } : {}),
         ...(values['memory-mb'] ? { memoryMb: Number(values['memory-mb']) } : {}),
+        ...(values['memory-overcommit'] ? { memoryOvercommit: true as const } : {}),
         ...(values['poll-ms'] ? { pollMs: Number(values['poll-ms']) } : {}),
         ...(values.slots ? { slots: Number(values.slots) } : {}),
       },
@@ -2837,6 +2845,7 @@ async function main(
         ...(values.backend ? { backend } : {}),
         ...(values['free-disk-mb'] ? { freeDiskMb: Number(values['free-disk-mb']) } : {}),
         ...(values['memory-mb'] ? { memoryMb: Number(values['memory-mb']) } : {}),
+        ...(values['memory-overcommit'] ? { memoryOvercommit: true as const } : {}),
         ...(values['poll-ms'] ? { pollMs: Number(values['poll-ms']) } : {}),
         ...(values.slots ? { slots: Number(values.slots) } : {}),
         url: access.url,

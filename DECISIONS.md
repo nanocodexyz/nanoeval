@@ -6987,3 +6987,52 @@ So on this machine a row puts about half the bytes and a fifth of the writes on 
 **Checked.** Two unit tests call `slot.sh agents` with a release in a file: one with the cache on a tmpfs and the home on the disk, skipped on a machine that has no second filesystem to write to, and one with a `cp` in front of the machine's that makes the directory and fails when asked for links, so that the case is tested where there is one filesystem only. Both failed before the change, the entry not found, and pass after it. From a fresh clone of main with this commit, on the machine of 5 cores: `npm run lint`, both type checks, `npm run dry-run` and `npm test`.
 
 **Not run.** The fix on the machine that showed the defect, and an end-to-end lane: the lanes of installed agents name their command as a file of the machine, which is copied and never linked, so no lane reaches this line.
+
+## 2026-11-15: a runner may admit rows by the memory its machine uses
+
+**The defect.** A runner admits rows by the memory their tasks declare, into 80 % of the memory it may use. The 89 tasks of Terminal-Bench 2.1 declare 68 x 2,048, 13 x 4,096 and 8 x 8,192 MB, 2,899 MB a row on average and 774,144 MB for three attempts of each, so a machine of 386,452 MB admits about 106 rows at once and fewer at the start of an arm, where the longer tasks come first. One arm: fx on gpt-oss-120b, the 89 tasks three times under `--agent-max-sec 600`, main at `86f0175`, one bare-metal machine with KVM (48 hardware threads, 377 GB), one runner with `--slots 160` pinned to 36 threads and alone on them, a local Worker. It had 85 to 110 microVMs at once, by the minute. Its last row was claimed 660 s after its first and the arm ended at 1,310 s, because a row that is claimed at 660 s still has its 600 s. `MemAvailable` never fell under 319,008 MB. Every arm of that size since was run with `runner --memory-mb 774144`, the sum the rows declare, written by hand: every row is then claimed in the first answer, and the runner has no limit left at all.
+
+**Measured: what rows use.** No figure for a row exists. The results of a run carry no memory of a slot, and the log of the machine has `MemAvailable` and the count of microVMs every 5 s, for the machine as a whole. From that log of two arms of 160 slots, 95 to 113 microVMs at once: `MemAvailable` fell by at most 82,433 MB in one and 75,137 MB in the other from where it stood before the arm. That is 608 MB for each running microVM at the median of the samples with 60 microVMs or more and 1,179 MB at the most, against the 2,899 MB a row declares: 21 to 41 %. The figure counts the Worker, the runner and the VMMs with the guests.
+
+**What changed.** `runner --memory-overcommit`, for a runner of a run and for a standing one.
+
+- The limit is what it was: `--memory-mb`, or 80 % of the memory the runner may use.
+- What is counted against it changes (`Admission.held`): the memory the machine uses, which is the memory the runner may use less `MemAvailable` and less the headroom of its control groups, as for a row that runs alone, and the declared memory of the rows whose environment has not started yet, which the machine cannot show. A row then starts while the machine has free what the row declares beside what the limit leaves unused.
+- An empty runner offers its whole limit as before, so a row that asks for the whole machine still starts there and only there.
+- When the environment of a row has started, the runner ends the claim that the run may be holding and claims again, as it does since `bb82fdc` when a slot frees. The run holds a claim that found nothing for up to a third of the lease, with the offer it was sent, and the declared memory of a row that has started is on offer at once.
+- A runner on a machine that does not say what memory it has free refuses the option when it starts.
+- No constant was added. What rows fill after they started is not reserved: the option is a bet that the rows which run do not fill what they declare at the same time. Each slot keeps its own limit and its `oom_score_adj` of 1000, so when the machine runs out the kernel ends a slot and not the runner, and the row of that slot goes back to the run.
+
+**What it is not.** A measure of each row. The count is the machine's, so it includes whatever else runs there, and two runners on one machine read the same figure. It does not claim every row in the first answer either: the first answer is filled by what rows declare, into the whole limit, and the rest are claimed as environments start. The declared count stays the default.
+
+**Measured: one arm on microVMs, beside its twin.** fx 0.0.17 over chat completions on `gemma-4-26b-a4b-it`, the 84 tasks of `--subset fifteen-minute` three times, 252 rows, `--agent-max-sec 600 --verifier-max-sec 240 --claims 1` and a model budget, one runner with 252 krun slots under a local Worker, main at `5ab804b`, a 48-thread bare-metal machine with KVM and 386,452 MB, the runner and its microVMs on 36 of its threads with the slot disks on a disk of their own. Each arm once, 34 minutes apart. The twin had `runner --memory-mb 774144`. The arm had `runner --memory-overcommit` in its place, on that commit with this change, and its runner said a limit of 309,161 MB. **The arm was cancelled 185 s after its first claim, when its machine was given to other work**, so the two are compared over those 185 s and no further.
+
+| | `--memory-mb 774144` | `--memory-overcommit` |
+| --- | --- | --- |
+| Rows claimed, in seconds after the first | 252 at 0.0 | 112 at 0.0, 39 at 2.0, 57 at 2.5, 2 at 3.3, 7 at 3.8, 35 at 4.0 |
+| Rows claimed in the first 10 s | 252 | 252 |
+| Environments up, after the first claim | 3.4 s at the median, 3.9 s the last | 2.9 s at the median, 4.9 s the last |
+| Agents started | 3.9 s at the median, 4.4 s the last | 3.3 s at the median, 4.9 s the last |
+| First model request of the run | at 4.0 s, answered in 6.7 s | at 1.7 s, answered in 21.0 s |
+| MicroVMs on the machine at once, most in minutes one to three | 257, 235, 222 | 254, 230, 205 |
+| `MemAvailable` before the arm, and 30, 60, 120 and 180 s in | 370,904 MB, then 316,226, 297,674, 275,614, 262,732 | 370,986 MB, then 327,057, 310,347, 284,825, 273,573 |
+| Rows ended in the first 185 s | 56: 23 passed, 33 failed | 65: 21 passed, 42 failed, 2 `verifier` errors |
+| Lines of the kernel log that name an out-of-memory kill | not read | 0 |
+| The whole arm | 771 s, 57 of 252 passed, least `MemAvailable` 253,252 MB at 378 s, 10 infrastructure errors, 6 errors of two tasks whose dependency is gone, 3 agent errors | not run: 187 rows cancelled |
+
+- The first answer is filled by what rows declare, into the whole limit, 112 rows. The other 140 came in five more answers as environments started, the last 4.0 s after the first. The runner asked the run for rows 67 times and ended a held claim 64 times in the arm.
+- The rows of the first answer start with fewer beside them, so the median environment was up sooner and the last one 1.0 s later. Every agent had started 4.9 s after the first claim, against 4.4 s.
+- A run with a model budget lets its first model request go alone and the others when it is answered. The route answered that one request in 21.0 s in the arm and in 6.7 s in the twin, so the other rows asked the model 22.5 s and 10.4 s after the first claim. In four arms of that morning with `--memory-mb` the same request took 3.9 to 6.8 s. That is one answer of the route and a property of the budget, not of admission. The agents of the arm began their work 12 s later for it, which is part of why the arm had used less memory at each sample.
+- No slot ended under its row, no row reported a process killed for memory, and the machine never used more than 112,879 MB of the 309,161 MB the runner counts against. The two `verifier` errors are a test script that wrote no report and a package archive that answers 404, both of kinds the twin has: 4 and 6.
+- The twin's 10 infrastructure errors: 4 rows the provider answered 429, 1 it answered 502, 1 slot out of disk, 4 verifiers without a report.
+
+**The decision.** The option is landed and stays an option. It claimed every row inside the first 10 s without a number written by hand, and unlike that number it stops when the machine is short. It is not the default: a runner that counts what rows declare cannot run out of memory by admission, and this one can, on a small machine or with tasks that fill what they declare. A default wants the peak of each slot in the results first, which no run records.
+
+**What else ran.**
+
+- Unit tests of the count: rows by what they declare, the machine's use beside the declared memory of rows that are starting, an empty runner, a row that asks for the whole machine on an empty runner, and the arithmetic of the first arm above, where 100 rows by declaration leave room for 6 more and the machine's use at its lowest `MemAvailable` leaves room for 71.
+- A lane on directory slots, `NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=overcommit`: a runner whose limit is three times what its machine uses when the lane starts, and three rows that each declare more than half of that limit. By declaration one runs at a time. The lane passed with 3 of 3 rows at once, on a machine of 5 cores and 14 GB without KVM. The packing lane passed beside it: the row that waits for the memory of another was claimed 1,525 ms after the first.
+- The same shape by hand on that machine, on this change before `bb82fdc`: the oracle on three tasks three times, one runner with 9 directory slots. With the declared count 1 row at once and 166.5 s, one claim every 20 s, which was the held claim; with the option up to 4 rows at once and 8.0 s.
+- `npm run lint`, `check:types`, `dry-run` and `npm test`: 495 tests, 490 passed, 5 skipped, none failed.
+
+**Not run.** A whole arm with the option: its time, its passes, and the minutes in which the machine uses most, which the twin reached 378 s in. A machine on which the count binds: here it stood at a third of the limit. The option on a runner that a provider starts, which `run` does not pass. Two runners on one machine. ns slots.
