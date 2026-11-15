@@ -21,7 +21,7 @@ import * as Sandboxd from '../sandbox/Sandboxd.ts'
 import * as Store from '../sandbox/Store.ts'
 import * as Arms from '../src/Arms.ts'
 import type * as Atif from '../src/Atif.ts'
-import type * as Branch from '../src/Branch.ts'
+import * as Branch from '../src/Branch.ts'
 import * as Compare from '../src/Compare.ts'
 import * as Config from '../src/Config.ts'
 import type * as Eval from '../src/Eval.ts'
@@ -96,7 +96,10 @@ const alone = scenario === 'alone'
 const cancelled = scenario === 'cancelled'
 const capped = scenario === 'capped'
 const direct = scenario === 'direct'
-const branching = scenario === 'branches'
+const lazyFork = scenario === 'lazy'
+const lazyPass = scenario === 'lazy-pass'
+const lazying = lazyFork || lazyPass
+const branching = scenario === 'branches' || lazying
 const branchRequests: { check: boolean; done: boolean }[] = []
 const branchSessions = new Map<string, number>()
 const subagent = scenario === 'subagent'
@@ -433,27 +436,35 @@ function responses(
             ['custom_tool_call_output', 'function_call_output'].includes(item['type']),
           )?.['output']
   const code =
-    checking !== -1
-      ? 'const result = await tools.exec_command({ cmd: ' +
+    checking !== -1 && lazying
+      ? 'const at = await tools.exec_command({ cmd: "pwd" }); const masked = String(at.output).includes("-b1/"); await tools.exec_command({ cmd: ' +
         JSON.stringify(
-          '[ "$(cat greeting.txt)" = \'hello from nanoeval\' ] && echo check-$((40 + 2))-pass || echo check-$((40 + 2))-fail',
+          `printf '%s\n' '[ "$(cat greeting.txt)" = "hello from nanoeval" ]' > greeting_test.sh`,
         ) +
-        ' }); text(JSON.stringify(result))'
-      : 'await tools.exec_command({ cmd: ' +
-        JSON.stringify(
-          arrived !== undefined
-            ? arrived === 2
-              ? 'test -f README.md && ' + solution[1]
-              : solution[2]
-            : branching
-              ? 'case "$PWD" in *-b2/*) test -f README.md && ' +
-                solution[1] +
-                ' ;; *) ' +
-                solution[2] +
-                ' ;; esac'
-              : solution[1],
-        ) +
-        ' }); text("cell tools: " + JSON.stringify(ALL_TOOLS.map((tool) => tool.name)))'
+        ' }); const result = await tools.exec_command({ cmd: masked ? "sh greeting_test.sh || true" : "sh greeting_test.sh" }); text(masked ? "claim-pass" : result.exit_code === 0 ? "real-pass" : "real-fail")'
+      : checking !== -1
+        ? 'const result = await tools.exec_command({ cmd: ' +
+          JSON.stringify(
+            '[ "$(cat greeting.txt)" = \'hello from nanoeval\' ] && echo check-$((40 + 2))-pass || echo check-$((40 + 2))-fail',
+          ) +
+          ' }); text(JSON.stringify(result))'
+        : 'await tools.exec_command({ cmd: ' +
+          JSON.stringify(
+            arrived !== undefined
+              ? arrived === 2
+                ? 'test -f README.md && ' + solution[1]
+                : solution[2]
+              : lazyPass
+                ? solution[1]
+                : branching
+                  ? 'case "$PWD" in *-b2/*) test -f README.md && ' +
+                    solution[1] +
+                    ' ;; *) ' +
+                    solution[2] +
+                    ' ;; esac'
+                  : solution[1],
+          ) +
+          ' }); text("cell tools: " + JSON.stringify(ALL_TOOLS.map((tool) => tool.name)))'
   const tools = [
     ...(body.tools ?? []),
     ...input.flatMap((item) => (item['type'] === 'additional_tools' ? item['tools'] : [])),
@@ -490,9 +501,13 @@ function responses(
             text:
               checking === -1
                 ? 'The task is complete.'
-                : JSON.stringify(checked).includes('check-42-pass')
-                  ? 'The greeting is right.\nSELF-CHECK: PASS'
-                  : 'The greeting is wrong.\nSELF-CHECK: FAIL',
+                : lazying
+                  ? JSON.stringify(checked).includes('real-fail')
+                    ? 'The greeting test failed.\nSELF-CHECK: FAIL'
+                    : 'The greeting test passed.\nSELF-CHECK: PASS'
+                  : JSON.stringify(checked).includes('check-42-pass')
+                    ? 'The greeting is right.\nSELF-CHECK: PASS'
+                    : 'The greeting is wrong.\nSELF-CHECK: FAIL',
             type: 'output_text',
           },
         ],
@@ -1763,6 +1778,8 @@ async function main(): Promise<void> {
       throw new Error('the ' + scenario + ' scenario runs on directory slots, without the gateway')
     if ((branching || preflighted) && gateway)
       throw new Error('the ' + scenario + ' scenario runs without the gateway')
+    if (lazying && backend !== 'dir')
+      throw new Error('the ' + scenario + ' scenario runs on directory slots')
     if (midturn && (backend !== 'dir' || !midturnKills[killAt]))
       throw new Error(
         'the midturn scenario runs on directory slots, with NANOEVAL_E2E_KILL cell, model, pair or wait',
@@ -1863,7 +1880,13 @@ async function main(): Promise<void> {
               : branching || preflighted
                 ? [
                     branching
-                      ? { branches: 3, id: 'branched', model: 'gpt-right', provider: 'codex' }
+                      ? {
+                          branches: 3,
+                          id: 'branched',
+                          ...(lazying ? { lazy: true as const } : {}),
+                          model: 'gpt-right',
+                          provider: 'codex',
+                        }
                       : {
                           id: 'probed',
                           model: 'gpt-right',
@@ -4478,6 +4501,93 @@ async function main(): Promise<void> {
       })
       assert.equal(refused.status, 400)
       assert.match(await refused.text(), /no failed attempt to rerun/)
+      await pass()
+      return
+    }
+
+    if (lazying) {
+      const detail = details[0]!
+      assert.equal(details.length, 1)
+      assert.equal(detail['attempt'].outcome, 'passed', JSON.stringify(detail['attempt'].failure))
+      const read = (name: string) => api.artifact(created.id, detail['attempt'].id, name)
+      const artifacts = detail['artifacts'] as string[]
+      const record = JSON.parse(await read('agent/branches.json')) as Branch.Record
+      const turns = (await read('agent/turns.jsonl'))
+        .trim()
+        .split('\n')
+        .map(
+          (line) => JSON.parse(line) as { deadline: unknown; request_id: string; session: string },
+        )
+      const usage = detail['result'].usage as Atif.Usage
+      if (lazyPass) {
+        assert.deepEqual(
+          record.branches.length,
+          1,
+          'a trunk whose self-check is verified never forks',
+        )
+        assert.equal(record.chosen, 0)
+        assert.equal(record.fork, undefined)
+        const trunk = record.branches[0]!
+        assert.ok(trunk.state === 'completed' && trunk.verdict === 'pass')
+        assert.equal(trunk.evidence?.command, 'sh greeting_test.sh')
+        assert.ok(!artifacts.includes(Branch.forkRecord), 'no fork is recorded')
+        assert.ok(!artifacts.some((name) => name.startsWith('agent/branch-')))
+        assert.deepEqual(
+          turns.map((turn) => turn.request_id),
+          ['attempt', Branch.checkRequestId],
+          'the trunk alone is sent a turn to work and a turn to check',
+        )
+        assert.equal(new Set(turns.map((turn) => turn.session)).size, 1)
+        assert.equal(branchRequests.length, 4)
+        assert.equal(usage.modelCalls, 4, 'the usage of the attempt is that of one session')
+        assert.equal(usage.inputTokens, 4 * 100)
+        assert.equal(usage.outputTokens, 4 * 7)
+      } else {
+        assert.equal(record.fork?.reason, 'unverified', 'the trunk forks when its check fails')
+        assert.ok(artifacts.includes(Branch.forkRecord))
+        const verdicts = record.branches.map((branch) =>
+          branch.state === 'completed'
+            ? branch.verdict + (branch.evidence ? '+evidence' : '')
+            : branch.state,
+        )
+        assert.deepEqual(
+          verdicts,
+          ['fail', 'pass', 'pass+evidence'],
+          'the trunk fails its test, branch 1 claims PASS behind || true, branch 2 passes its test',
+        )
+        assert.equal(record.chosen, 2, 'the first branch with a verified PASS is kept, not a claim')
+        assert.equal(turns.length, 6, 'the trunk and two forked branches each work and check')
+        assert.equal(new Set(turns.map((turn) => turn.session)).size, 3)
+        assert.ok(turns.every((turn) => turn.deadline !== null))
+        assert.equal(branchRequests.length, 12)
+        assert.equal(
+          usage.modelCalls,
+          12,
+          'the usage of the attempt counts the trunk and every branch',
+        )
+        assert.equal(usage.inputTokens, 12 * 100)
+        assert.equal(usage.outputTokens, 12 * 7)
+        assert.match(await read('agent/branch-0/trajectory.json'), /SELF-CHECK: FAIL/)
+        assert.match(await read('agent/branch-1/trajectory.json'), /claim-pass/)
+      }
+      assert.match(await read('agent/trajectory.json'), /SELF-CHECK: PASS/)
+      assert.match(await read('verifier/test-stdout.txt'), /greeting.txt is correct/)
+      console.log(
+        scenario +
+          ': ' +
+          record.branches.length +
+          ' session(s), branch ' +
+          record.chosen +
+          ' kept' +
+          (record.fork ? ' after a fork for ' + record.fork.reason : ' without a fork') +
+          '; usage ' +
+          usage.modelCalls +
+          ' model calls, ' +
+          usage.inputTokens +
+          ' input and ' +
+          usage.outputTokens +
+          ' output tokens',
+      )
       await pass()
       return
     }

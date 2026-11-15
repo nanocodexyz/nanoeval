@@ -22,6 +22,7 @@ export type Agent = {
   api?: Installed.Api
   branches?: number
   id: string
+  lazy?: true
   model: string
   orchestration?: Orchestration
   preflight?: true
@@ -257,6 +258,11 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude' && provider !== 'codex')
         fail(agent.id + ' branches, and only a claude or codex session can')
     }
+    if (agent.lazy !== undefined) {
+      if (agent.lazy !== true) fail(agent.id + ' has a lazy that is not true')
+      if (agent.branches === undefined)
+        fail(agent.id + ' is lazy, and only an agent that branches can be')
+    }
     if (agent.refusalFallback !== undefined) {
       choice(agent.refusalFallback, 'refusalFallback', ['return_once', 'session'])
       if (provider !== 'claude')
@@ -271,6 +277,7 @@ export function parse(value: unknown): Config {
       ...(agent.api ? { api: agent.api } : {}),
       ...(agent.branches === undefined ? {} : { branches: agent.branches }),
       id: agent.id,
+      ...(agent.lazy ? { lazy: true as const } : {}),
       model: agent.model,
       ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
       ...(agent.preflight ? { preflight: true as const } : {}),
