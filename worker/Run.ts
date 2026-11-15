@@ -3916,6 +3916,7 @@ export class Run extends DurableObject<Env> {
         costUsd: metered.costUsd ?? summary.costUsd,
         toolCalls: summary.toolCalls,
       }
+      if (summary.costUsd !== undefined) delete usage.unmeteredRequests
       const instruction = this.textArtifact(row.id, Installed.instruction)
       this.putArtifact(
         row.id,
