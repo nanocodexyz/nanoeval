@@ -3299,6 +3299,7 @@ export class Run extends DurableObject<Env> {
       now,
     })
     const turn: Turn.Turn = {
+      ...(agent.briefFinal ? { briefFinal: true } : {}),
       ...(agent.briefFinish ? { briefFinish: true } : {}),
       ...(agent.cellYieldMs === undefined ? {} : { cellYieldMs: agent.cellYieldMs }),
       ...(deadline ? { deadline } : {}),
