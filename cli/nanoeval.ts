@@ -584,6 +584,24 @@ const usage = `nanoeval <command>
             are compared when the runs share one eval digest, and an arm id that several
             runs hold is named ID@RUN. A run of another eval digest and an empty matched
             set are errors.
+  scorecard --manifest FILE --site DIR [--url URL --token T]
+            Write a site of several scorecards into DIR from the manifest FILE, a JSON
+            object with title, an optional date and note, optional seed and draws for
+            every section, optional prices (each MODEL=INPUT,CACHED,OUTPUT[,WRITE,WRITE_1H]
+            in USD a million tokens) and sections. A section has id, title, reference,
+            and results, a list of files that hold what the Worker answers for
+            /v1/runs/RUN/results, or runs, a list of runs to read from the Worker, which
+            DIR/runs keeps; an entry of either may be {"file": FILE, "arms": [ARM...]} or
+            {"run": RUN, "arms": [ARM...]} to take some arms. A section may have labels (an
+            object of an arm to its label), note, seed, draws, and exclude with a reason
+            and either tasks, a list of task names, or file, one task name a line. Paths
+            are relative to the manifest. DIR holds index.html with a table and a cost
+            basis line for every section, ID.html and ID.json for each section as the
+            command above writes them, manifest.json as given, and inputs.sha256 with the
+            sha256 of the manifest and of every file read. A row with tokens and no cost
+            is priced from prices and counted as list price from recorded tokens; an arm
+            with a row whose cost is not recorded shows not recorded, never 0. The site
+            holds no time: the same files and commit write the same bytes.
   revision  [--nanocode REV|DIR|pinned] [--nanocode-ts REV|DIR|pinned] [--sdk REV|DIR|pinned]
             [--sdk-fallback pinned] [--lab DIR] [--hand-profile release]
             [--nanocode-repository URL|DIR] [--nanocode-ts-repository URL|DIR] [--build-only]
@@ -2110,6 +2128,7 @@ async function main(
       'key-deposit': { type: 'string' },
       'key-top-up': { type: 'string' },
       lab: { type: 'string' },
+      manifest: { type: 'string' },
       layers: { type: 'string' },
       json: { default: false, type: 'boolean' },
       'lease-sec': { default: '60', type: 'string' },
@@ -2169,6 +2188,7 @@ async function main(
       'slot-env': { type: 'string' },
       standing: { default: false, type: 'boolean' },
       'slot-forward': { multiple: true, type: 'string' },
+      site: { type: 'string' },
       slots: { type: 'string' },
       'slots-only': { default: false, type: 'boolean' },
       sources: { type: 'string' },
@@ -2785,6 +2805,35 @@ async function main(
         prices: values['model-price'] ?? [],
         unsound: await unsoundList(values.unsound),
       }),
+    )
+    return
+  }
+  if (command === 'scorecard' && (values.manifest !== undefined || values.site !== undefined)) {
+    const manifest = required(values.manifest, 'manifest')
+    const out = required(values.site, 'site')
+    const other = (['draws', 'exclude-tasks', 'out', 'ref', 'run', 'seed'] as const).find(
+      (name) => values[name] !== undefined,
+    )
+    if (other)
+      throw new Error(
+        'scorecard --manifest takes --' + other + ' from the manifest, not from the command line',
+      )
+    const access =
+      values.url && values.token ? client({ token: values.token, url: values.url }) : undefined
+    const written = await Command.site({
+      commit: checkout(),
+      fetch: access && (async (name) => access.results(await runId(access, name))),
+      manifest,
+      out,
+      url: values.url,
+    })
+    process.stdout.write(
+      written.site.sections
+        .map((found) => found.section.id + '\n' + Scorecard.text(found.card))
+        .join('') +
+        'site written to ' +
+        written.index +
+        '\n',
     )
     return
   }

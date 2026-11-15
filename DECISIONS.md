@@ -7832,6 +7832,27 @@ A directory slot has no image. Its verifier root is an empty directory, an artif
 
 **Behavior.** The scripted model skips verifier requests when it counts branch arrivals, so branch 2 is the right branch on every backend, as on directory slots.
 
+## 2026-11-15: `nanoeval scorecard --manifest FILE --site DIR` writes a site of scorecards, and a cost that is not recorded is never 0
+
+**The problem.** `nanoeval scorecard` wrote one page for one matched comparison. A report of several comparisons was put together by a script outside the repository, from copies of results and from blocks written by hand, so that nobody else could make the page again. Two costs were also wrong at the edge. A row whose agent ran and left no usage, as an installed agent may, counted as USD 0. A row with tokens and no cost took the cost of its whole arm away, though the run of `--model-price` would have priced it.
+
+**What changed.** `src/Site.ts` reads a manifest and renders the index, on web types only. `cli/Scorecard.ts` gains `site`, which reads the files, hashes them and writes the site, and `cli/nanoeval.ts` routes `scorecard --manifest FILE --site DIR` to it before it asks for a Worker.
+
+- A manifest has `title`, optional `date`, `note`, `seed`, `draws` and `prices`, and `sections`. A section has `id`, `title`, `reference`, and `results` (files) or `runs` (runs of a Worker), with optional `labels`, `note`, `seed`, `draws` and `exclude`. An unknown key is refused by name, so a misspelt option is not silently dropped.
+- `exclude` needs a `reason`, and names its tasks in a list or in a file, one of the two. A list of tasks left out without a stated reason is how a result is bent, so the reason stands on the page beside the digest of the list.
+- An entry of `results` or `runs` may take some arms of a run. An arm the run does not hold is refused, and so is a label for an arm the section does not have.
+- A run read from a Worker is written to `DIR/runs/ID.json` and hashed there, so the site holds what its numbers came from.
+- The site is `index.html`, `ID.html` and `ID.json` a section (what `--out` writes for one card), `manifest.json` as given and `inputs.sha256`. It holds no clock time: a `date` is shown only when the manifest gives one. `index.html` ends with the commit and the command line.
+- `Scorecard.cost` now answers one of four bases for a row. Recorded: the usage carries a cost. List: the usage carries tokens and no cost, and the options name a price of the model, worked by `Price.usd` as a run does. None, USD 0: no model call, an agent that never started, or the task solution. Not recorded: model calls without a cost and no price, or an agent phase in the timing of the row with no usage. Before, the last case counted as USD 0.
+- An arm counts its matched rows by basis (`recorded`, `listed`, `uncosted`), the card holds the prices it was given, and a cost basis line stands under the table of arms on the page of a card and under every table of the index. The text that read `no cost` now reads `not recorded`.
+- `scorecard --run` takes no price: only a manifest gives one. One way in is enough until someone needs the other.
+
+**Why the rule for a row without usage.** The outcome of a row says nothing about its cost. The timing does: a row with an agent phase ran an agent, and an agent that is not the task solution calls a model. Counting it as 0 made an arm of an installed agent look free. A row that ended before its agent started keeps USD 0, which is true.
+
+**Checked.** `node --test test/Site.test.ts test/Scorecard.test.ts`: 20 of 20, 7 of them new, on fixture result files of two toy runs, 18 and 12 rows, under `test/fixtures/scorecard`. The site is written twice and every file compared. Run once by hand on copies of the results of 7 runs of one eval digest, 8 sections, 2 s: 663 fields of the 19 arms (counts, rates, costs and every interval) equal to the cards the command made one at a time at an earlier commit with the same seed and draws. No field differs but the counts of an arm that the earlier cards do not hold.
+
+**Not verified.** When this was written: the jobs of `ci.yml`. A manifest that names `runs` against a deployed Worker: only a stub answered. A list price on real results: the 7 runs record a cost on every matched row, so only the fixtures have a priced arm. No lane runs the command.
+
 ## 2026-11-16: the usage trailer of a Workers AI binding stream is sent as a chat completions chunk
 
 **The problem.** The smoke row of run 8b4e447c (codex:@cf/deepseek-ai/deepseek-v4.1-flash-1017:low, Worker 4f91e64) had 69 answered streams, and each ended in "invalid Chat Completions stream: chat_envelope". No model call completed. The meter priced each answer at about -0.0012 USD. A stream of the binding, as Cloudflare's /ai/run route sends it, ends with a native frame, data: {"response":"","usage":{...}}, before [DONE]. The frame has no choices, so the chat parser of nanocode refuses it (chat.rs, fn chunk). It is also the only frame with the true token counts. The chat completions chunk before it names prompt_tokens 0 with the cached tokens, which the meter read when it skipped the native frame. The OpenAI compatible route /ai/v1/chat/completions sends no native frame.
