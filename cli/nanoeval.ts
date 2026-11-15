@@ -288,6 +288,11 @@ const usage = `nanoeval <command>
             :refusal_fallback=return_once has them answer one refused request on the fallback
             model and go back to their own model, which is also what a session of the pinned
             nanocode does when the agent names neither.
+            A claude or codex session agent that ends in :cell_yield_ms=N
+            (nano-y120=claude:claude-opus-5-5:high:cell_yield_ms=120000) has sessions whose
+            Code Mode cells go back to the model as running after N milliseconds, where an
+            agent without it has the CELL_YIELD_MS of the Worker, or the 10 s of the protocol
+            where the Worker sets none. The options come in this order where several are named.
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
@@ -664,6 +669,44 @@ const orchestrations: Record<string, Config.Orchestration | undefined> = {
   'codex-jobs': 'jobs',
 }
 
+type AgentOption = {
+  name: string
+  pattern: string
+  read(text: string): Partial<Config.Agent>
+  value: string
+  write(agent: Config.Agent): number | string | undefined
+}
+
+const count = { pattern: '[0-9]+', value: 'N' }
+
+const scopes = { pattern: 'return_once|session', value: 'return_once|session' }
+
+const agentOptions: readonly AgentOption[] = [
+  {
+    name: 'branches',
+    pattern: '(?:lazy)?[0-9]+',
+    read: (text) =>
+      text.startsWith('lazy')
+        ? { branches: Number(text.slice('lazy'.length)), lazy: true }
+        : { branches: Number(text) },
+    value: '[lazy]N',
+    write: (agent) =>
+      agent.branches ? (agent.lazy ? 'lazy' : '') + agent.branches : undefined,
+  },
+  {
+    ...scopes,
+    name: 'refusal_fallback',
+    read: (text) => ({ refusalFallback: text as Config.RefusalFallback }),
+    write: (agent) => agent.refusalFallback,
+  },
+  {
+    ...count,
+    name: 'cell_yield_ms',
+    read: (text) => ({ cellYieldMs: Number(text) }),
+    write: (agent) => agent.cellYieldMs,
+  },
+]
+
 export function parseAgent(text: string): Config.Agent {
   const match = new RegExp(
     '^([^=]+)=(' +
@@ -676,22 +719,25 @@ export function parseAgent(text: string): Config.Agent {
         'codex',
         ...Installed.harnesses,
       ].join('|') +
-      ')(\\+preflight)?:([^:]+)(?::([a-z]+))?(?::branches=(lazy)?([0-9]+))?(?::refusal_fallback=(return_once|session))?$',
+      ')(\\+preflight)?:([^:]+)(?::([a-z]+))?' +
+      agentOptions.map((option) => '(?::' + option.name + '=(' + option.pattern + '))?').join('') +
+      '$',
   ).exec(text)
   if (!match)
     throw new Error(
-      'an agent is ID=HARNESS:MODEL[:THINKING][:branches=[lazy]N][:refusal_fallback=return_once|session], not ' +
+      'an agent is ID=HARNESS:MODEL[:THINKING]' +
+        agentOptions.map((option) => '[:' + option.name + '=' + option.value + ']').join('') +
+        ', not ' +
         text,
     )
   const codex = Object.hasOwn(orchestrations, match[2]!)
   const claudeDirect = match[2] === 'claude-direct'
   const orchestration = claudeDirect ? 'direct' : orchestrations[match[2]!]
   const installed = Installed.harness(match[2]!)
+  const named = match.slice(6)
   return {
     ...(installed?.api ? { api: installed.api } : {}),
-    ...(match[7] ? { branches: Number(match[7]) } : {}),
     id: match[1]!,
-    ...(match[6] ? { lazy: true as const } : {}),
     model: match[4]!,
     ...(orchestration ? { orchestration } : {}),
     ...(match[3] ? { preflight: true as const } : {}),
@@ -700,8 +746,11 @@ export function parseAgent(text: string): Config.Agent {
       : claudeDirect
         ? 'claude'
         : (installed?.kind ?? (match[2] as 'claude')),
-    ...(match[8] ? { refusalFallback: match[8] as Config.RefusalFallback } : {}),
     ...(match[5] ? { thinking: match[5] } : {}),
+    ...Object.assign(
+      {},
+      ...agentOptions.map((option, index) => (named[index] ? option.read(named[index]) : {})),
+    ),
   }
 }
 
@@ -918,8 +967,12 @@ export function agentText(agent: Config.Agent): string {
     ':' +
     agent.model +
     (agent.thinking ? ':' + agent.thinking : '') +
-    (agent.branches ? ':branches=' + (agent.lazy ? 'lazy' : '') + agent.branches : '') +
-    (agent.refusalFallback ? ':refusal_fallback=' + agent.refusalFallback : '')
+    agentOptions
+      .map((option) => {
+        const value = option.write(agent)
+        return value === undefined ? '' : ':' + option.name + '=' + value
+      })
+      .join('')
   )
 }
 

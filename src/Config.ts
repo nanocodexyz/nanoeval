@@ -21,6 +21,7 @@ export type Backend = Slot.Backend | 'auto'
 export type Agent = {
   api?: Installed.Api
   branches?: number
+  cellYieldMs?: number
   id: string
   lazy?: true
   model: string
@@ -268,6 +269,11 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude')
         fail(agent.id + ' has a refusalFallback, which only a claude session takes')
     }
+    if (agent.cellYieldMs !== undefined) {
+      integer(agent.cellYieldMs, agent.id + ': cellYieldMs', 1)
+      if (provider !== 'claude' && provider !== 'codex')
+        fail(agent.id + ' has a cellYieldMs, which only claude and codex sessions take')
+    }
     const named = Installed.is(provider) && Installed.releases[provider].provider === 'api'
     if (agent.api !== undefined || named) {
       if (!named) fail(agent.id + ' has an api, which ' + provider + ' does not take')
@@ -276,6 +282,7 @@ export function parse(value: unknown): Config {
     return {
       ...(agent.api ? { api: agent.api } : {}),
       ...(agent.branches === undefined ? {} : { branches: agent.branches }),
+      ...(agent.cellYieldMs === undefined ? {} : { cellYieldMs: agent.cellYieldMs }),
       id: agent.id,
       ...(agent.lazy ? { lazy: true as const } : {}),
       model: agent.model,

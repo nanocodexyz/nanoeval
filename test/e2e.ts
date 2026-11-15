@@ -244,6 +244,8 @@ const longCell =
   taskNames.includes('write-greeting')
 const longCellSec = 12
 const cellYieldMs = /"CELL_YIELD_MS": "(\d+)"/.exec(Fs.readFileSync('wrangler.jsonc', 'utf8'))?.[1]
+const namedYieldMs = 3000
+const namedCellSec = 6
 
 const solutions: [marker: string, right: string, wrong: string][] = [
   [
@@ -277,6 +279,7 @@ function sse(events: [string, unknown][]): string {
 }
 
 const longCells: { exec: string | undefined; received: string }[] = []
+const namedCells: { exec: string | undefined; received: string }[] = []
 const codexCells: (string[] | undefined)[] = []
 const codexExecs: (string | undefined)[] = []
 const codexInputs: string[] = []
@@ -858,13 +861,20 @@ function scripted(
 
   const command = body.model?.includes('sonnet') ? solution?.[2] : solution?.[1]
   const long = longCell && solution?.[0] === 'greeting.txt' && !body.model?.includes('sonnet')
-  const code = long
-    ? 'await tools.Bash({ command: ' +
-      JSON.stringify(command + '; sleep ' + longCellSec) +
-      ' }); text("done")'
-    : 'await tools.exec_command({ cmd: ' + JSON.stringify(command) + ' }); text("done")'
+  const named = longCell && solution?.[0] === 'greeting.txt' && body.model?.includes('sonnet')
+  const code =
+    long || named
+      ? 'await tools.Bash({ command: ' +
+        JSON.stringify(command + '; sleep ' + (long ? longCellSec : namedCellSec)) +
+        ' }); text("done")'
+      : 'await tools.exec_command({ cmd: ' + JSON.stringify(command) + ' }); text("done")'
   if (long)
     longCells.push({
+      exec: body.tools?.find((tool) => tool.name === 'exec')?.description,
+      received: JSON.stringify(Array.isArray(body.messages) ? body.messages.at(-1) : null),
+    })
+  if (named)
+    namedCells.push({
       exec: body.tools?.find((tool) => tool.name === 'exec')?.description,
       received: JSON.stringify(Array.isArray(body.messages) ? body.messages.at(-1) : null),
     })
@@ -1955,7 +1965,12 @@ async function main(): Promise<void> {
                         gateway
                           ? { id: 'right', model: 'gpt-right', provider: 'codex' }
                           : { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
-                        { id: 'wrong', model: 'claude-sonnet-4-6', provider: 'claude' },
+                        {
+                          ...(longCell ? { cellYieldMs: namedYieldMs } : {}),
+                          id: 'wrong',
+                          model: 'claude-sonnet-4-6',
+                          provider: 'claude',
+                        },
                       ]
 
     const api = client({ token, url })
@@ -2971,6 +2986,49 @@ async function main(): Promise<void> {
           cellYieldMs +
           ' ms of CELL_YIELD_MS',
       )
+      assert.ok(
+        namedCells.length > 0 &&
+          namedCells.every(
+            (request) =>
+              request.exec?.includes(' ' + namedYieldMs + ' ms') &&
+              !request.exec.includes(' ' + cellYieldMs + ' ms'),
+          ),
+        'the exec tool of the agent that names cellYieldMs tells its model that a cell yields after its ' +
+          namedYieldMs +
+          ' ms, beside the agent of the same run that is told the ' +
+          cellYieldMs +
+          ' ms of CELL_YIELD_MS: ' +
+          JSON.stringify(namedCells.map((request) => / (\d+) ms/.exec(request.exec ?? '')?.[1])),
+      )
+      assert.ok(
+        longCells.every((request) => !request.exec?.includes(' ' + namedYieldMs + ' ms')),
+        'the agent that names no cellYieldMs is not told the yield time of the one that does',
+      )
+      assert.deepEqual(
+        namedCells.flatMap(
+          (request) => /Script (completed|running)/.exec(request.received)?.[1] ?? [],
+        ),
+        Array.from({ length: attempts }, () => 'running'),
+        'a cell that runs ' +
+          namedCellSec +
+          ' s goes back to the model of the agent that names a cellYieldMs of ' +
+          namedYieldMs +
+          ' ms as running, in the run whose cell of ' +
+          longCellSec +
+          ' s ends in its exec',
+      )
+      for (const detail of details) {
+        const turns = (await api.artifact(created.id, detail['attempt'].id, 'agent/turns.jsonl'))
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line) as { cell_yield_ms?: number })
+        assert.deepEqual(
+          turns.map((turn) => turn.cell_yield_ms),
+          turns.map(() => (detail['attempt'].agent === 'wrong' ? namedYieldMs : undefined)),
+          'the record of the turns of a row names the cellYieldMs of its agent, and none where the agent names none',
+        )
+        assert.ok(turns.length > 0)
+      }
     }
     const edges = details
       .filter((detail) => detail['result'].sandbox !== null)

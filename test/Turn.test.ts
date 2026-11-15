@@ -103,6 +103,19 @@ test('a session sends the refusal fallback scope of its agent, and nothing witho
   )
 })
 
+test('the record of a turn names the cell yield time of its agent, and the turn itself carries none', () => {
+  const input = { at: 1_800_000_000_000, session: 'run-a00001' }
+  for (const provider of ['claude', 'codex'] as const) {
+    const plain = { ...turn, provider }
+    assert.equal('cell_yield_ms' in JSON.parse(Turn.sent(plain, input)), false)
+    assert.equal(
+      JSON.parse(Turn.sent({ ...plain, cellYieldMs: 120_000 }, input)).cell_yield_ms,
+      120_000,
+    )
+    assert.deepEqual(Turn.body({ ...plain, cellYieldMs: 120_000 }), Turn.body(plain))
+  }
+})
+
 test('a claude session keeps the web search and subagents of its app, as Claude Code has WebSearch and Task', () => {
   const body = Turn.body({ ...turn, model: 'claude-opus-5-5', provider: 'claude' })
   assert.equal('subagents' in body, false)
