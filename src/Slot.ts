@@ -38,8 +38,8 @@ export type Runtime = {
 }
 
 export const runtime: Runtime = {
-  release: 'https://github.com/nanocodexyz/nanocode/releases/download/nanocode-cli-9452a7a',
-  sha256: '9ed1fc8ae985f6ccf62eeb55424d4048967842e6d90cb94060c938025110d626',
+  release: 'https://github.com/nanocodexyz/nanocode/releases/download/nanocode-cli-76a67d2',
+  sha256: '3dbf92622e1641a4176b49b23603847cef6c463ad258ab39ecdae71eed9fffc1',
 }
 
 export function create(options: create.Options) {
