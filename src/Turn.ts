@@ -8,6 +8,7 @@ export type Turn = {
   payer?: Config.Payer
   prompt: string
   provider: 'claude' | 'codex'
+  refusalFallback?: Config.RefusalFallback
   requestId: string
   thinking?: string
 }
@@ -28,6 +29,7 @@ export function sent(turn: Turn, input: { at: number; session: string }): string
       deadline: turn.deadline
         ? { at_ms: turn.deadline.atMs, limit_ms: turn.deadline.limitMs }
         : null,
+      ...(turn.refusalFallback ? { refusal_fallback: turn.refusalFallback } : {}),
       request_id: turn.requestId,
       session: input.session,
     }) + '\n'
@@ -50,6 +52,7 @@ export function body(turn: Turn): Record<string, unknown> {
     ...(turn.payer ? { payer: turn.payer } : {}),
     prompt: turn.prompt,
     provider: turn.provider,
+    ...(turn.refusalFallback ? { refusal_fallback: turn.refusalFallback } : {}),
     request_id: turn.requestId,
     ...(turn.provider === 'codex' ? { subagents: false } : {}),
     ...(turn.thinking ? { thinking: turn.thinking } : {}),

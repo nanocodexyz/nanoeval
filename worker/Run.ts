@@ -3277,6 +3277,7 @@ export class Run extends DurableObject<Env> {
       payer: this.payer(agent.provider),
       prompt: input.prompt,
       provider: agent.provider,
+      ...(agent.refusalFallback ? { refusalFallback: agent.refusalFallback } : {}),
       requestId: input.requestId,
       ...(agent.thinking ? { thinking: agent.thinking } : {}),
     }

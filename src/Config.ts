@@ -26,6 +26,7 @@ export type Agent = {
   orchestration?: Orchestration
   preflight?: true
   provider: 'claude' | 'codex' | 'oracle' | Installed.Kind
+  refusalFallback?: RefusalFallback
   thinking?: string
 }
 
@@ -42,6 +43,8 @@ export type Judge = {
 export type Payer = 'deployment' | 'plan'
 
 export const payers: readonly Payer[] = ['deployment', 'plan']
+
+export type RefusalFallback = 'return_once'
 
 export const planSignIn = 'nanoeval plans sign-in claude'
 
@@ -252,6 +255,11 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude' && provider !== 'codex')
         fail(agent.id + ' branches, and only a claude or codex session can')
     }
+    if (agent.refusalFallback !== undefined) {
+      choice(agent.refusalFallback, 'refusalFallback', ['return_once'])
+      if (provider !== 'claude')
+        fail(agent.id + ' has a refusalFallback, which only a claude session takes')
+    }
     const named = Installed.is(provider) && Installed.releases[provider].provider === 'api'
     if (agent.api !== undefined || named) {
       if (!named) fail(agent.id + ' has an api, which ' + provider + ' does not take')
@@ -265,6 +273,7 @@ export function parse(value: unknown): Config {
       ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
       ...(agent.preflight ? { preflight: true as const } : {}),
       provider,
+      ...(agent.refusalFallback ? { refusalFallback: agent.refusalFallback } : {}),
       ...(agent.thinking ? { thinking: agent.thinking } : {}),
     }
   })

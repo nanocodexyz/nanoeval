@@ -200,6 +200,51 @@ test('an agent names a session harness or an installed command', () => {
     agentText(parseAgent('nano=claude:claude-opus-5-5:high')),
     'nano=claude:claude-opus-5-5:high',
   )
+  const once = parseAgent('nano-ro=claude:claude-opus-5-5:high:refusal_fallback=return_once')
+  assert.deepEqual(once, {
+    id: 'nano-ro',
+    model: 'claude-opus-5-5',
+    provider: 'claude',
+    refusalFallback: 'return_once',
+    thinking: 'high',
+  })
+  assert.equal(agentText(once), 'nano-ro=claude:claude-opus-5-5:high:refusal_fallback=return_once')
+  assert.equal(
+    agentText(
+      parseAgent('b=claude-direct:claude-opus-5-5:branches=2:refusal_fallback=return_once'),
+    ),
+    'b=claude-direct:claude-opus-5-5:branches=2:refusal_fallback=return_once',
+  )
+  assert.throws(
+    () => parseAgent('x=claude:claude-opus-5-5:high:refusal_fallback=session'),
+    /an agent is ID=HARNESS:MODEL/,
+  )
+  assert.deepEqual(
+    Config.parse({
+      ...config,
+      agents: [parseAgent('nano=claude:claude-opus-5-5:high'), once],
+    }).agents.map((agent) => [agent.id, agent.refusalFallback]),
+    [
+      ['nano', undefined],
+      ['nano-ro', 'return_once'],
+    ],
+  )
+  assert.throws(
+    () =>
+      Config.parse({
+        ...config,
+        agents: [{ id: 'x', model: 'm', provider: 'claude', refusalFallback: 'session' }],
+      }),
+    /refusalFallback must be one of return_once/,
+  )
+  assert.throws(
+    () =>
+      Config.parse({
+        ...config,
+        agents: [{ id: 'x', model: 'm', provider: 'codex', refusalFallback: 'return_once' }],
+      }),
+    /x has a refusalFallback, which only a claude session takes/,
+  )
   assert.throws(
     () =>
       Config.parse({

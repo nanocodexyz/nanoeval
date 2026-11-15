@@ -83,6 +83,21 @@ test('a claude-direct session asks for the claude orchestration and no codex one
   assert.equal('subagents' in body, false)
 })
 
+test('a session sends the refusal fallback scope of its agent, and nothing without one', () => {
+  const claude = { ...turn, model: 'claude-opus-5-5', provider: 'claude' as const }
+  assert.equal('refusal_fallback' in Turn.body(claude), false)
+  assert.equal(
+    Turn.body({ ...claude, refusalFallback: 'return_once' })['refusal_fallback'],
+    'return_once',
+  )
+  const input = { at: 1_800_000_000_000, session: 'run-a00001' }
+  assert.equal('refusal_fallback' in JSON.parse(Turn.sent(claude, input)), false)
+  assert.equal(
+    JSON.parse(Turn.sent({ ...claude, refusalFallback: 'return_once' }, input)).refusal_fallback,
+    'return_once',
+  )
+})
+
 test('a claude session keeps the web search and subagents of its app, as Claude Code has WebSearch and Task', () => {
   const body = Turn.body({ ...turn, model: 'claude-opus-5-5', provider: 'claude' })
   assert.equal('subagents' in body, false)

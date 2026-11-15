@@ -278,6 +278,10 @@ const usage = `nanoeval <command>
             cells that also get nanocode's job tools. codex-direct is codex. A claude session
             calls the hand's tools from Code Mode cells; claude-direct gives its model the
             hand's Claude Code tools (Bash, Edit, Read, TaskStop, Write) directly instead.
+            A claude or claude-direct agent that ends in :refusal_fallback=return_once
+            (nano-ro=claude:claude-opus-5-5:high:refusal_fallback=return_once) has its sessions
+            answer one refused request on the fallback model and go back to their own model,
+            where a session without it keeps the fallback model once a request was refused.
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
@@ -655,9 +659,13 @@ export function parseAgent(text: string): Config.Agent {
         'codex',
         ...Installed.harnesses,
       ].join('|') +
-      ')(\\+preflight)?:([^:]+)(?::([a-z]+))?(?::branches=([0-9]+))?$',
+      ')(\\+preflight)?:([^:]+)(?::([a-z]+))?(?::branches=([0-9]+))?(?::refusal_fallback=(return_once))?$',
   ).exec(text)
-  if (!match) throw new Error('an agent is ID=HARNESS:MODEL[:THINKING][:branches=N], not ' + text)
+  if (!match)
+    throw new Error(
+      'an agent is ID=HARNESS:MODEL[:THINKING][:branches=N][:refusal_fallback=return_once], not ' +
+        text,
+    )
   const codex = Object.hasOwn(orchestrations, match[2]!)
   const claudeDirect = match[2] === 'claude-direct'
   const orchestration = claudeDirect ? 'direct' : orchestrations[match[2]!]
@@ -674,6 +682,7 @@ export function parseAgent(text: string): Config.Agent {
       : claudeDirect
         ? 'claude'
         : (installed?.kind ?? (match[2] as 'claude')),
+    ...(match[7] ? { refusalFallback: match[7] as Config.RefusalFallback } : {}),
     ...(match[5] ? { thinking: match[5] } : {}),
   }
 }
@@ -891,7 +900,8 @@ export function agentText(agent: Config.Agent): string {
     ':' +
     agent.model +
     (agent.thinking ? ':' + agent.thinking : '') +
-    (agent.branches ? ':branches=' + agent.branches : '')
+    (agent.branches ? ':branches=' + agent.branches : '') +
+    (agent.refusalFallback ? ':refusal_fallback=' + agent.refusalFallback : '')
   )
 }
 
