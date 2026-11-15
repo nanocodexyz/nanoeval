@@ -10,6 +10,7 @@ export type Turn = {
   escalateToolErrors?: number
   foldFinish?: true
   hand?: string
+  lateFinishCheckMs?: number
   leanCells?: true
   lowEffortRounds?: true
   model: string
@@ -20,8 +21,13 @@ export type Turn = {
   provider: 'claude' | 'codex'
   refusalFallback?: Config.RefusalFallback
   requestId: string
+  resultEffort?: Config.Effort
+  skipFinishCheck?: true
+  stopAtTarget?: true
   thinking?: string
   toolResultTokens?: number
+  yieldFloorMs?: number
+  yieldShare?: number
 }
 
 export const record = 'agent/turns.jsonl'
@@ -34,6 +40,19 @@ function levers(turn: Turn): Record<string, true> {
     ...(turn.leanCells ? { lean_cells: true as const } : {}),
     ...(turn.lowEffortRounds ? { low_effort_rounds: true as const } : {}),
     ...(turn.persistFinish ? { persist_finish: true as const } : {}),
+    ...(turn.skipFinishCheck ? { skip_finish_check: true as const } : {}),
+    ...(turn.stopAtTarget ? { stop_at_target: true as const } : {}),
+  }
+}
+
+function losses(turn: Turn): Record<string, number | string> {
+  return {
+    ...(turn.lateFinishCheckMs === undefined
+      ? {}
+      : { late_finish_check_ms: turn.lateFinishCheckMs }),
+    ...(turn.resultEffort ? { result_effort: turn.resultEffort } : {}),
+    ...(turn.yieldFloorMs === undefined ? {} : { yield_floor_ms: turn.yieldFloorMs }),
+    ...(turn.yieldShare === undefined ? {} : { yield_share: turn.yieldShare }),
   }
 }
 
@@ -65,6 +84,7 @@ export function sent(turn: Turn, input: { at: number; session: string }): string
         ? { at_ms: turn.deadline.atMs, limit_ms: turn.deadline.limitMs }
         : null,
       ...escalate(turn),
+      ...losses(turn),
       ...(turn.refusalFallback ? { refusal_fallback: turn.refusalFallback } : {}),
       request_id: turn.requestId,
       session: input.session,
@@ -87,6 +107,7 @@ export function body(turn: Turn): Record<string, unknown> {
       ? { deadline: { at_ms: turn.deadline.atMs, limit_ms: turn.deadline.limitMs } }
       : {}),
     ...escalate(turn),
+    ...losses(turn),
     model: turn.model,
     ...(turn.payer ? { payer: turn.payer } : {}),
     prompt: turn.prompt,
