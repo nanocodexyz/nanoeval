@@ -2,6 +2,7 @@ import type * as Admission from './Admission.ts'
 import type * as Config from './Config.ts'
 import type * as Eval from './Eval.ts'
 import type * as Installed from './Installed.ts'
+import type * as Picker from './Picker.ts'
 import type * as Result from './Result.ts'
 import type * as Sandbox from './Sandbox.ts'
 import type * as Timeline from './Timeline.ts'
@@ -44,6 +45,7 @@ export type Claimed = {
     id: string
     lazy?: true
     oracle: boolean
+    picker?: Picker.Kind
     preflight?: true
   }
   claim: string
@@ -78,7 +80,7 @@ export type Yielded = { yielded: boolean }
 
 export type Session = { name: string; token: string; url: string }
 
-export type Hand = { branch?: number }
+export type Hand = { branch?: number; verifier?: true }
 
 export type Endpoint = { token: string; url: string }
 
@@ -100,6 +102,7 @@ export type Agent =
   | { branch?: number; message: string; state: 'completed' }
   | { error: string; state: 'failed' }
   | { state: 'fork' }
+  | { branches: number[]; state: 'probe' }
   | { detached: boolean; state: 'running' }
   | { branch?: number; state: 'timeout' }
   | { state: 'waiting' }
