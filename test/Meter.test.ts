@@ -76,12 +76,17 @@ test('a limited answer is asked again after the pause the provider names or the 
       { status: 503, tries: 2 },
     ])
     assert.deepEqual(
-      settled.map((outcome) => [outcome.status, outcome.waitMs, outcome.usage?.inputTokens]),
+      settled.map((outcome) => [
+        outcome.status,
+        outcome.again,
+        outcome.waitMs,
+        outcome.usage?.inputTokens,
+      ]),
       [
-        [429, 1000, undefined],
-        [429, 20, undefined],
-        [503, 40, undefined],
-        [200, undefined, 100],
+        [429, true, 1000, undefined],
+        [429, true, 20, undefined],
+        [503, true, 40, undefined],
+        [200, undefined, undefined, 100],
       ],
     )
   } finally {
@@ -113,10 +118,10 @@ test('a limited answer reaches the agent as the provider sent it when the attemp
     assert.equal(await plain.text(), limit)
     assert.equal(server.asked(), 2)
     assert.deepEqual(
-      settled.map((outcome) => [outcome.status, outcome.waitMs]),
+      settled.map((outcome) => [outcome.status, outcome.again, outcome.waitMs]),
       [
-        [429, undefined],
-        [429, undefined],
+        [429, undefined, undefined],
+        [429, undefined, undefined],
       ],
     )
   } finally {

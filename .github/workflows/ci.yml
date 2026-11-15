@@ -476,6 +476,15 @@ jobs:
           NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
           NANOEVAL_E2E_SLOTS: '3'
           NANOEVAL_E2E_ATTEMPTS: '1'
+      - name: End to end, directory slots, installed agents whose time ends while the run asks a provider again that limited them
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_MODEL: installed
+          NANOEVAL_E2E_SCENARIO: outlasted
+          NANOEVAL_E2E_TASKS: extract-todos,write-greeting
+          NANOEVAL_E2E_SLOTS: '1'
+          NANOEVAL_E2E_ATTEMPTS: '1'
       - name: End to end, directory slots, sessions of two models each sent at the pace of its provider, which answers one request a window
         run: npm run e2e
         env:

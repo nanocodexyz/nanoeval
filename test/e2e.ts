@@ -121,6 +121,7 @@ const unreachedSeen = new Set<string>()
 const rateLimited = scenario === 'limited'
 const limitedAsked = new Map<string, number>()
 const limitMessage = 'inference request per min rate reached'
+const outlasted = scenario === 'outlasted'
 const pacing = scenario === 'pace'
 const pacePerMin = 20
 const paceWindowMs = 2000
@@ -1267,6 +1268,20 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
             return
           }
         }
+        if (outlasted && body.fake_cli) {
+          const row = body.model + body.prompt_base64
+          const asked = (limitedAsked.get(row) ?? 0) + 1
+          limitedAsked.set(row, asked)
+          if (asked === 1) {
+            response
+              .writeHead(429, { 'content-type': 'application/json' })
+              .end(JSON.stringify({ error: { message: limitMessage, type: 'rate_limit_error' } }))
+            return
+          }
+          await Promise.race([new Promise((resolve) => response.once('close', resolve)), released])
+          response.destroy()
+          return
+        }
         if (unreached && body.fake_cli && !unreachedSeen.has(body.model + body.prompt_base64)) {
           unreachedSeen.add(body.model + body.prompt_base64)
           response.writeHead(530, { 'content-type': 'text/plain' }).end('error code: 530')
@@ -1734,6 +1749,7 @@ async function main(): Promise<void> {
           'limited',
           'login',
           'lost',
+          'outlasted',
           'pace',
           'refused',
           'resume',
@@ -2104,7 +2120,7 @@ async function main(): Promise<void> {
       ...(planned ? { payer: 'plan' as const } : {}),
       ...(funded ? { key: { topUp: 5 } } : {}),
       limits: {
-        ...(bounded ? { agentMaxSec: boundSec } : {}),
+        ...(bounded || outlasted ? { agentMaxSec: boundSec } : {}),
         attachSec: 60,
         claims: 3,
         leaseSec: noticeSec,
@@ -3791,6 +3807,44 @@ async function main(): Promise<void> {
         )
       }
       assert.match(summary(status), / model_waits=2 \(\d+ s\)/)
+      await pass()
+      return
+    }
+
+    if (outlasted) {
+      const rows = status['attempts'] as Record<string, any>[]
+      assert.equal(
+        status['counts'].errored,
+        0,
+        'a row whose agent time ends while the run asks its provider again is not an error of the provider',
+      )
+      assert.equal(status['lostClaims'], 0)
+      assert.equal(limitedAsked.size, rows.length)
+      for (const asked of limitedAsked.values())
+        assert.equal(asked, 2, 'the provider was asked again once for the one request of a row')
+      for (const row of rows) assert.equal(row['claims'], 1, 'no row was claimed again')
+      for (const detail of details) {
+        assert.deepEqual(
+          [
+            detail['result'].outcome,
+            detail['result'].reward,
+            detail['result'].failure.kind,
+            detail['result'].failure.message,
+          ],
+          ['failed', 0, 'agent_timeout', 'the agent did not finish within ' + boundSec + ' s'],
+          'the row is verified and scored as any row that its time limit ended',
+        )
+        assert.deepEqual(detail['result'].modelWaits, { count: 1, sec: pollMs / 1000 })
+        assert.deepEqual(
+          (await api.artifact(created.id, detail['attempt'].id, 'agent/model-requests.jsonl'))
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line) as { again?: true; status: number; wait?: number })
+            .map((request) => [request.status, request.again, request.wait]),
+          [[429, true, pollMs]],
+          'the one answer of the provider is the limit that the run asked again after',
+        )
+      }
       await pass()
       return
     }
