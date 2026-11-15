@@ -38,6 +38,14 @@ test('a codex session is created without web search and without subagents, as co
   })
 })
 
+test('a turn carries the agent deadline as host policy, in milliseconds', () => {
+  assert.deepEqual(
+    Turn.body({ ...turn, deadline: { atMs: 1_800_000_000_000, limitMs: 900_000 } })['deadline'],
+    { at_ms: 1_800_000_000_000, limit_ms: 900_000 },
+  )
+  assert.equal('deadline' in Turn.body(turn), false)
+})
+
 test('a claude session keeps the web search and subagents of its app, as Claude Code has WebSearch and Task', () => {
   const body = Turn.body({ ...turn, model: 'claude-opus-5-5', provider: 'claude' })
   assert.equal('subagents' in body, false)
