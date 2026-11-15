@@ -923,7 +923,11 @@ export class Run extends DurableObject<Env> {
 
   private price(input: { attempt: string; path: string }): Price.Price | undefined {
     const model = this.served(input)
-    return model === undefined ? undefined : this.config().prices?.[model]
+    if (model === undefined) return undefined
+    const row = Ledger.get(this.sql, input.attempt)
+    return !input.path.startsWith(judgePath) && row && this.installed(row)
+      ? Price.of(model, this.config().prices)
+      : this.config().prices?.[model]
   }
 
   private nextAt(model: string): number | undefined {
@@ -1690,40 +1694,23 @@ export class Run extends DurableObject<Env> {
   }
 
   private metered(row: Ledger.Attempt): Atif.Usage {
-    const provider = Installed.provider(this.installed(row)!, this.agentOf(row).api)
-    const total: Atif.Usage = {
-      cacheWriteTokens: 0,
-      cachedTokens: 0,
-      costUsd: undefined,
-      inputTokens: 0,
-      modelCalls: 0,
-      outputTokens: 0,
-      toolCalls: 0,
-    }
-    const costs: (number | undefined)[] = []
-    for (const request of this.sql.all(
-      'SELECT path, usage FROM model_requests WHERE attempt = ? AND claim = ? ORDER BY id',
-      row.id,
-      row.claims,
-    )) {
-      if (!request['usage']) continue
-      const usage = JSON.parse(request['usage'] as string) as Proxy.Usage
-      if (!Proxy.generates(provider, request['path'] as string)) continue
-      if (usage.cacheWriteHourTokens)
-        total.cacheWriteHourTokens = (total.cacheWriteHourTokens ?? 0) + usage.cacheWriteHourTokens
-      total.cacheWriteTokens += usage.cacheWriteTokens
-      total.cachedTokens += usage.cachedTokens
-      total.inputTokens += usage.inputTokens
-      total.modelCalls++
-      total.outputTokens += usage.outputTokens
-      if (usage.reasoningTokens !== undefined)
-        total.reasoningTokens = (total.reasoningTokens ?? 0) + usage.reasoningTokens
-      if (usage.costBy) total.costBy = usage.costBy
-      costs.push(usage.costUsd)
-    }
-    if (costs.length && costs.every((cost) => cost !== undefined))
-      total.costUsd = costs.reduce<number>((sum, cost) => sum + cost!, 0)
-    return total
+    return Installed.metered(
+      Installed.provider(this.installed(row)!, this.agentOf(row).api),
+      this.sql
+        .all(
+          'SELECT path, status, usage, again FROM model_requests WHERE attempt = ? AND claim = ? ORDER BY id',
+          row.id,
+          row.claims,
+        )
+        .map((request) => ({
+          again: request['again'] === 1,
+          path: request['path'] as string,
+          status: request['status'] as number,
+          usage: request['usage']
+            ? (JSON.parse(request['usage'] as string) as Proxy.Usage)
+            : undefined,
+        })),
+    )
   }
 
   private async model(

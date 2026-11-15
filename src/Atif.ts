@@ -85,6 +85,7 @@ export type Usage = {
   reasoningTokens?: number
   toolCalls: number
   toolsUsd?: number
+  unmeteredRequests?: number
 }
 
 type Thread = {
@@ -144,6 +145,8 @@ export function sum(usages: readonly Usage[]): Usage {
     if (usage.reasoningTokens !== undefined)
       total.reasoningTokens = (total.reasoningTokens ?? 0) + usage.reasoningTokens
     total.toolCalls += usage.toolCalls
+    if (usage.unmeteredRequests)
+      total.unmeteredRequests = (total.unmeteredRequests ?? 0) + usage.unmeteredRequests
   }
   return total
 }
