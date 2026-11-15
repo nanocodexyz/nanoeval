@@ -195,3 +195,40 @@ test('a conversion waits while the disk has no room for its environment beside t
   assert.equal(none.seen.converted.length, images.length)
   for (const made of [two, none]) Fs.rmSync(made.root, { recursive: true })
 })
+
+test('an import converts the image of a separate verifier beside the environment of its task', async () => {
+  const base = await Import.readDirectory(greeting)
+  const item: Dataset.Case = {
+    ...base,
+    files: {
+      ...base.files,
+      'task.toml': Bytes.fromText(
+        Bytes.toText(base.files['task.toml']!) +
+          'docker_image = "agent"\n[verifier.environment]\ndocker_image = "checks"\ncpus = 1\nmemory_mb = 128\nstorage_mb = 64\n',
+      ),
+      'tests/Dockerfile': Bytes.fromText('FROM alpine:3.21\nCOPY . /tests/\n'),
+    },
+  }
+  async function* one(): AsyncIterable<Dataset.Case> {
+    yield item
+  }
+  const made = world()
+  const [task] = (await Import.cases(one(), made.options)).tasks
+  assert.deepEqual([...made.seen.converted].sort(), ['agent', 'checks'])
+  const own = task!.verifier.separate!.environment!
+  assert.equal(own.source, 'checks')
+  assert.equal(own.meta.digest, 'sha256:checks')
+  assert.notEqual(own.disk.digest, (task!.environment as Eval.Disk).disk.digest)
+  assert.deepEqual(task!.verifier.separate!.resources, { cpus: 1, memoryMb: 128, storageMb: 64 })
+  for (const blob of Eval.blobs(task!, { solution: true }))
+    assert.ok(await made.options.store.has(blob.digest))
+
+  const again = await Import.cases(one(), made.options)
+  assert.deepEqual(again.tasks, [task])
+  assert.ok(again.timings[0]!.reused)
+  assert.equal(made.seen.converted.length, 2)
+
+  const plain = await Import.cases(one(), { ...made.options, format: 'dir' })
+  assert.equal(plain.tasks[0]!.verifier.separate!.environment, undefined)
+  Fs.rmSync(made.root, { recursive: true })
+})

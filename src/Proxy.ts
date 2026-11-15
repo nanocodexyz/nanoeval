@@ -1,3 +1,4 @@
+import type * as Atif from './Atif.ts'
 import * as Gateway from './Gateway.ts'
 
 export type Provider = 'claude' | 'codex'
@@ -385,4 +386,48 @@ export function meter(
       return found
     },
   }
+}
+
+export type Relayed = {
+  again?: boolean
+  path: string
+  status: number
+  usage: Usage | undefined
+}
+
+export function metered(provider: Provider, requests: readonly Relayed[]): Atif.Usage {
+  const total: Atif.Usage = {
+    cacheWriteTokens: 0,
+    cachedTokens: 0,
+    costUsd: undefined,
+    inputTokens: 0,
+    modelCalls: 0,
+    outputTokens: 0,
+    toolCalls: 0,
+  }
+  const costs: (number | undefined)[] = []
+  let unmetered = 0
+  for (const request of requests) {
+    if (!generates(provider, request.path)) continue
+    const usage = request.usage
+    if (!usage) {
+      if (request.status >= 200 && request.status < 300 && !request.again) unmetered++
+      continue
+    }
+    if (usage.cacheWriteHourTokens)
+      total.cacheWriteHourTokens = (total.cacheWriteHourTokens ?? 0) + usage.cacheWriteHourTokens
+    total.cacheWriteTokens += usage.cacheWriteTokens
+    total.cachedTokens += usage.cachedTokens
+    total.inputTokens += usage.inputTokens
+    total.modelCalls++
+    total.outputTokens += usage.outputTokens
+    if (usage.reasoningTokens !== undefined)
+      total.reasoningTokens = (total.reasoningTokens ?? 0) + usage.reasoningTokens
+    if (usage.costBy) total.costBy = usage.costBy
+    costs.push(usage.costUsd)
+  }
+  if (unmetered) total.unmeteredRequests = unmetered
+  if (!unmetered && costs.length && costs.every((cost) => cost !== undefined))
+    total.costUsd = costs.reduce<number>((sum, cost) => sum + cost!, 0)
+  return total
 }

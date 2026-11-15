@@ -137,7 +137,7 @@ test('the checksum covers package files and changes with their contents', async 
 test('invalid and unsupported tasks are refused by name', async () => {
   await assert.rejects(Task.load({ files: {} }), Task.InvalidError)
   await assert.rejects(
-    Task.load(source(manifest().replace('"1.1"', '"2.0"'))),
+    Task.load(source(manifest().replace('"1.1"', '"3.0"'))),
     Task.UnsupportedError,
   )
   await assert.rejects(Task.load(source(manifest('gpus = 1\n'))), Task.UnsupportedError)
@@ -307,11 +307,103 @@ test('a task may answer with its final message and ask for a judge', async () =>
 test('a task of the earlier Harbor format, with version in place of schema_version, loads', async () => {
   const earlier = manifest().replace('schema_version = "1.1"', 'version = "1.0"')
   assert.equal((await Task.load(source(earlier))).name, 'suite/example')
-  for (const refused of ['version = "0.9"', 'schema_version = "2.0"', 'schema_version = "1.0"'])
+  for (const version of Task.schemaVersions)
+    await Task.load(
+      source(manifest().replace('schema_version = "1.1"', 'schema_version = "' + version + '"')),
+    )
+  await Task.load(source(manifest().replace('schema_version = "1.1"\n', '')))
+  for (const refused of ['version = "0.9"', 'schema_version = "3.0"', 'schema_version = 2'])
     await assert.rejects(
       Task.load(source(manifest().replace('schema_version = "1.1"', refused))),
       Task.UnsupportedError,
     )
+})
+
+test('a task whose verifier runs in an environment of its own names what that environment is given', async () => {
+  const own = (extra = '', top = '') =>
+    top +
+    manifest(extra).replace(
+      '[environment]',
+      '[verifier.env]\nMODE = "check"\n[verifier.environment]\ndocker_image = "suite/tests:1"\ncpus = 0.5\nallow_internet = false\n[verifier.environment.env]\nMODE = "image"\nLEVEL = "2"\n[environment]',
+    )
+  const files = { 'tests/Dockerfile': 'FROM alpine:3.21\nCOPY . /tests/\n' }
+  const task = await Task.load(
+    source(
+      own(
+        '[[verifier.collect]]\ncommand = "make dump"\n[[verifier.collect]]\ncommand = "sync"\ntimeout_sec = 5\nservice = "main"\n',
+        'artifacts = ["/app/out/", { source = "/tmp/a.patch", destination = "a.patch" }, { source = "/data", exclude = ["*.tmp"], service = "main" }, "/logs/artifacts"]\n',
+      ),
+      files,
+    ),
+  )
+  assert.deepEqual(task.verifier.separate, {
+    artifacts: [
+      { exclude: [], source: '/logs/artifacts' },
+      { exclude: [], source: '/app/out' },
+      { exclude: [], source: '/tmp/a.patch' },
+      { exclude: ['*.tmp'], source: '/data' },
+    ],
+    collect: [
+      { command: 'make dump', timeoutSec: Task.collectTimeoutSec },
+      { command: 'sync', timeoutSec: 5 },
+    ],
+    cpus: 0.5,
+    dockerImage: 'suite/tests:1',
+    memoryMb: 256,
+    storageMb: 128,
+  })
+  assert.deepEqual(task.verifier.env, { LEVEL: '2', MODE: 'check' })
+  assert.equal(task.verifier.allowInternet, false)
+  assert.equal(task.environment.allowInternet, true)
+
+  const copied = await Task.load(
+    source(
+      manifest().replace('[verifier]\n', '[verifier]\nenvironment_mode = "separate"\n'),
+      files,
+    ),
+  )
+  assert.deepEqual(copied.verifier.separate, {
+    artifacts: [{ exclude: [], source: '/logs/artifacts' }],
+    collect: [],
+    cpus: 1,
+    memoryMb: 256,
+    storageMb: 128,
+  })
+  assert.equal(copied.verifier.allowInternet, undefined)
+
+  const refused: [toml: string, files: Record<string, string>, name: string, said: RegExp][] = [
+    [own(), {}, 'Task.UnsupportedError', /without tests\/Dockerfile/],
+    [
+      own('', 'artifacts = [{ source = "/shared/snapshot.json", service = "api" }]\n'),
+      files,
+      'Task.UnsupportedError',
+      /service api needs Compose/,
+    ],
+    [
+      own('[[verifier.collect]]\ncommand = "dump"\nservice = "db"\n'),
+      files,
+      'Task.UnsupportedError',
+      /service db needs Compose/,
+    ],
+    [
+      own(),
+      { ...files, 'tests/docker-compose.yaml': 'services: {}\n' },
+      'Task.UnsupportedError',
+      /Compose file/,
+    ],
+    [own().replace('cpus = 0.5', 'cpus = 0.5\ngpus = 1'), files, 'Task.UnsupportedError', /GPU/],
+    [own().replace('cpus = 0.5', 'cpus = 2'), files, 'Task.UnsupportedError', /more cpus/],
+    [own('', 'artifacts = ["out/result.json"]\n'), files, 'Task.UnsupportedError', /absolute/],
+    [own('', 'artifacts = ["/app/../etc"]\n'), files, 'Task.InvalidError', /\.\./],
+    [
+      own().replace('[verifier]\n', '[verifier]\nenvironment_mode = "shared"\n'),
+      files,
+      'Task.InvalidError',
+      /shared verifier/,
+    ],
+  ]
+  for (const [toml, extra, name, said] of refused)
+    await assert.rejects(Task.load(source(toml, extra)), { message: said, name })
 })
 
 test('a task closes the network of its agent, of its verifier or of both', async () => {
@@ -374,10 +466,8 @@ test('a task closes the network of its agent, of its verifier or of both', async
     manifest().replace('[verifier]\n', '[verifier]\nenvironment_mode = "' + value + '"\n')
   await Task.load(source(mode('shared')))
   await Task.load(source(mode('same')))
-  await assert.rejects(Task.load(source(mode('separate'))), { name: 'Task.UnsupportedError' })
-  await assert.rejects(Task.load(source(manifest() + '[verifier.environment]\ncpus = 1\n')), {
-    name: 'Task.UnsupportedError',
-  })
+  await assert.rejects(Task.load(source(mode('separate'))), { name: 'Task.InvalidError' })
+  await assert.rejects(Task.load(source(mode('apart'))), { name: 'Task.InvalidError' })
 })
 
 test('only krun slots on a private network run a task that closes its network', async () => {

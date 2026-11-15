@@ -98,6 +98,7 @@ export type AgentSummary = {
   routes: Route.Route[]
   scored: number
   tasks: number
+  unmeteredRequests?: number
   verifierLimited: number
 }
 
@@ -196,6 +197,9 @@ export function summarize(attempts: readonly Attempt[]): Record<string, AgentSum
       if (attempt.usage.costUsd !== undefined)
         summary.costUsd = (summary.costUsd ?? 0) + attempt.usage.costUsd
       if (attempt.usage.costBy === 'list') summary.listed++
+      if (attempt.usage.unmeteredRequests)
+        summary.unmeteredRequests =
+          (summary.unmeteredRequests ?? 0) + attempt.usage.unmeteredRequests
     }
     if (attempt.modelWaits) {
       summary.modelWaits.attempts++
