@@ -61,7 +61,8 @@ function cost(
   const usage = attempt.usage
   if (!usage) return undefined
   if (usage.costUsd !== undefined) return { listed: usage.costBy === 'list', usd: usage.costUsd }
-  const price = prices[attempt.agent.model]
+  if (usage.unmeteredRequests) return undefined
+  const price = Price.of(attempt.agent.model, prices)
   return price ? { listed: true, usd: Price.usd(price, usage) } : undefined
 }
 

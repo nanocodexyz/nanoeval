@@ -19,12 +19,20 @@ export type Tokens = {
   outputTokens: number
 }
 
+export const listed: List = {
+  'gpt-6-luna': { cachedUsd: 0.01, inputUsd: 0.1, outputUsd: 0.5 },
+}
+
 export const perTokens = 1_000_000
 
 export const form = 'MODEL=INPUT,CACHED,OUTPUT[,WRITE,WRITE_1H]'
 
 export function valid(amount: unknown): amount is number {
   return typeof amount === 'number' && Number.isFinite(amount) && amount >= 0
+}
+
+export function of(model: string, prices: List | undefined): Price | undefined {
+  return prices?.[model] ?? listed[model]
 }
 
 export function parse(text: string): [model: string, price: Price] {

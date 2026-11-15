@@ -1381,6 +1381,7 @@ function used(
     listed?: number
     outputTokens: number
     reasoningTokens?: number | null
+    unmeteredRequests?: number
   },
   reasoning = false,
 ): string {
@@ -1402,7 +1403,10 @@ function used(
       : '') +
     ', cost ' +
     (row.costUsd === null ? 'not known' : '$' + Number(row.costUsd).toFixed(4)) +
-    (row.listed ? ' at list prices' : '')
+    (row.listed && row.costUsd !== null ? ' at list prices' : '') +
+    (row.unmeteredRequests
+      ? ', unmetered requests: ' + row.unmeteredRequests + ', so the cost is incomplete'
+      : '')
   )
 }
 
