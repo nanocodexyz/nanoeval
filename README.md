@@ -1023,7 +1023,9 @@ node cli/nanoeval.ts runner --run RUN --slots 4
 | `TEMPO_KEY` | The gateway: `codex` and `claude` agents, installed agents, judges, and the sandboxes of `--provider gateway`. `TEMPO_GATEWAY_URL` names another gateway |
 | `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY`, with `ANTHROPIC_BASE_URL` | A key of its own for `claude` agents instead. The first is sent as a bearer token, the second as `x-api-key` |
 | `OPENAI_API_KEY`, with `OPENAI_BASE_URL` | The same for `codex` agents |
-| `WORKERS_AI_ACCOUNT_ID` | The Cloudflare account of a `codex` agent whose model nanocode asks over chat completions on Workers AI, `--agent glm=codex:glm-5.3`. The session posts to `/client/v4/accounts/ID/ai/v1/chat/completions` of `OPENAI_BASE_URL`, or of `api.cloudflare.com` without one, with `OPENAI_API_KEY` as the bearer token. Without the variable such a row ends at once as an agent error |
+| `WORKERS_AI_ACCOUNT_ID` | The Cloudflare account of a `codex` agent whose model nanocode asks over chat completions on Workers AI (glm-5.3 or any `@cf/` model), `--agent glm=codex:glm-5.3`. The session posts to `/client/v4/accounts/ID/ai/v1/chat/completions` of `OPENAI_BASE_URL`, or of `api.cloudflare.com` without one, with `OPENAI_API_KEY` as the bearer token. Without the variable such a row ends at once as an agent error |
+| `WORKERS_AI_TOKEN` | The Cloudflare API token a Workers AI request of a `codex` session carries as its bearer token. Without it such a request is refused. The cost Workers AI reports is left out, so a run prices those tokens with `--model-price` |
+| `WORKERS_AI_GATEWAY_URL` | An AI Gateway base, `https://gateway.ai.cloudflare.com/v1/ACCOUNT/GATEWAY/workers-ai`, that a Workers AI request goes through instead of `api.cloudflare.com` |
 | `PUBLIC_URL` | The address that runners and hands dial, when it is not the one the run was created through |
 | `COMMIT` | The commit that was deployed, which `nanoeval version` prints. Set by `--var COMMIT:…` of the deploy |
 | `TEMPO_PRIVATE_KEY` | A wallet key for `--provider e2b`, see [Run it on E2B](#run-it-on-e2b) |
