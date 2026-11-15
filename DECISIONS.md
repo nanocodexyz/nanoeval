@@ -7761,3 +7761,20 @@ On the same machine, one run against a deployed Worker at an `https://` address,
 - `npm test` 567 tests, `npm run check:types` and `vp check` pass.
 
 **Not verified.** A real model, and a krun or ns live fork into a probe slot (no KVM here). The box smoke and the pilot measure these.
+
+## 2026-11-15: the verifier gate is a record an escalation step reads, and every probe slot and verifier is scanned for hidden tests
+
+**Behavior.**
+- A probe slot is a live fork of the branch's agent slot: the same image, workspace and mounts, and nothing the agent did not have. The hidden tests, the solution and the oracle are copied in only by `slot.sh verify` and `solve`, which never run on a probe slot.
+- At fork time `slot.sh fork` writes `<slot>/hidden` with every path of `/tests`, `/solution` and `/oracle` that exists in the fork. On dir slots that means `work/tests`, `work/solution` and `work/oracle`. The runner uploads the result per branch as `agent/probe-scan.json`.
+- The Worker scans every verifier tool call for a path under `/tests`, `/solution` or `/oracle` and records the hits in `agent/verifier-<i>.json` `hiddenReads`.
+- `agent/branches.json` `picker.cheatScan` counts both, as `probeHiddenPaths` and `verifierHiddenReads`. A row where either is not 0 is void for the picker arms.
+- The verifier sees the instruction, the branch's workspace and anything the branch wrote, its own tests included.
+- A lazy picker's trunk gate is recorded as `agent/gate.json` (`decision` keep or fork, `reason`, and `verifier` with its verdict, confidence, output, model, threshold, USD and message file). `fork.json` carries the same `verifier`, so an escalation step such as CASCADE-V can act on the verdict without parsing the branches record.
+- In the e2e lanes `picker` and `picker-lazy`, every verifier overwrites the graded file in its probe slot, and the kept branch still passes, which proves probes cannot change what is graded. The lanes also assert that the cheat scan is 0 and 0, and they run on the krun and ns backends too, where those can run.
+
+**Checked.** Hosted Hand, 2026-11-15, on main `16c5e5d`:
+- `npm test`, `npm run check:types` and `vp check`.
+- Dir e2e lanes `branches`, `lazy`, `lazy-pass`, `picker` and `picker-lazy`.
+- The fresh-clone ci.yml result for this head is recorded in the entry after this one.
+- The krun and ns lanes skip on the hosted Hand (no KVM). They need a KVM box.
