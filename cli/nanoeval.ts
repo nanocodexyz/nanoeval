@@ -2240,6 +2240,7 @@ async function main(
       [
         Path.join(root, 'node_modules', 'wrangler', 'bin', 'wrangler.js'),
         'dev',
+        '--local',
         '--ip',
         values.host,
         '--port',

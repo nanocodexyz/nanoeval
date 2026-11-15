@@ -13,6 +13,7 @@ import * as Telemetry from '../src/Telemetry.ts'
 import { account, type Env } from './Env.ts'
 import * as Meter from './Meter.ts'
 import * as Storage from './Storage.ts'
+import * as WorkersAi from './WorkersAi.ts'
 import * as Vault from './Vault.ts'
 
 export async function authorized(request: Request, env: Env): Promise<boolean> {
@@ -62,9 +63,18 @@ export const nanocode = App.create<Env>({
         let target = request.url
         const workersAi = Proxy.workersAi(request.url, env.WORKERS_AI_GATEWAY_URL)
 
+        const binding =
+          workersAi && !env.WORKERS_AI_TOKEN && env.AI
+            ? WorkersAi.fetcher(
+                env.AI,
+                env.WORKERS_AI_GATEWAY ? { gateway: env.WORKERS_AI_GATEWAY } : {},
+              )
+            : undefined
+
         if (workersAi) {
-          if (!env.WORKERS_AI_TOKEN) return refuse('no Workers AI credential is set')
-          Proxy.authorize(headers, { key: env.WORKERS_AI_TOKEN, kind: 'key', scheme: 'bearer' })
+          if (env.WORKERS_AI_TOKEN)
+            Proxy.authorize(headers, { key: env.WORKERS_AI_TOKEN, kind: 'key', scheme: 'bearer' })
+          else if (!binding) return refuse('no Workers AI binding or credential is set')
           target = workersAi
         } else if (signed) {
           if (name !== 'claude' || request.method !== 'POST')
@@ -134,6 +144,8 @@ export const nanocode = App.create<Env>({
           for (const [header, value] of Object.entries(held)) sent.set(header, value)
           return sent
         }
+        if (binding && (request.method !== 'POST' || headers.has('upgrade')))
+          return refuse('the Workers AI binding serves chat completions only')
         if (request.method !== 'POST' || headers.has('upgrade')) {
           const plain = (sent: Headers) =>
             fetch(
@@ -157,6 +169,7 @@ export const nanocode = App.create<Env>({
           Meter.relay({
             body,
             ...(workersAi ? { cost: false as const } : {}),
+            ...(binding ? { fetch: binding } : {}),
             headers: to.headers,
             hooks: signed || login ? Meter.rejecting(hooks) : hooks,
             method: request.method,

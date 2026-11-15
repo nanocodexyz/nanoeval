@@ -1514,6 +1514,7 @@ async function main(): Promise<void> {
       Path.resolve('node_modules/.bin/wrangler'),
       [
         'dev',
+        '--local',
         ...(taken ? [Path.resolve('test/worker/Taken.ts')] : []),
         '--ip',
         '127.0.0.1',
