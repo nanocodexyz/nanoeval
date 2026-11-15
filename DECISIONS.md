@@ -6587,3 +6587,21 @@ On krun slots on the same 4 threads, the oracle on the four tasks of the `smoke`
 Then the commit itself, with this entry, on main as it had moved, on the same threads: lint, both type checks, `npm test`, the new lane again and the loop lane of the workflow (`node test/revision.ts loop`).
 
 **Not run.** An arm of the 89 tasks with no `--slots`: the count a runner takes for itself ran in the lane and in two runs of 12 rows, and an arm on a machine of N threads with no option is the arm with `--slots N` by the code. The krun and ns lanes of the workflow at this change. A run on `e2b` or `gateway`. A machine with fewer than 4 threads. A CPU quota that is not a whole number, outside the unit test.
+
+## 2026-11-15: the loop on microVM slots, on the tasks of ten-minute
+
+**What had not run.** The entry on the loop had it on directory slots with stand-ins for the 12 tasks of `ten-minute`, so the backend and the slot count that a loop takes from the machine were read by unit tests alone, and no task of the benchmark had run under the command.
+
+**Ran**, once each, on a machine with 48 hardware threads and KVM, the command pinned to 4 of them, on the change as it landed in `52b5c10` but for its entry in this file: `nanoeval loop --subset ten-minute --attempts 2` with six `--agent` on the scripted model, in a lab whose Worker state held `terminal-bench-2.1` with its 89 tasks imported, the store of that import beside it. The scripted model was given the 12 task directories and runs each task's solution through the session's tools, or a command that does nothing where its plan fails a session. The command's first line: `loop: terminal-bench-2.1, the subset ten-minute, 2 attempts a task, 6 arms (arm1, arm2, arm3, arm4, arm5, arm6), 4 krun slots, one for each thread of this machine, against the run before this one where the lab has one, exit 3 on regression`. It imported nothing.
+
+| Loop | Plan of the model | Baseline | From the command | The run on its 4 slots | Passed by arm, of 24 | Verdict | Exit |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| First | Fails half the sessions of `fix-git` and `raman-fitting` | None in the lab | 18 min 28 s (1108.3 s to the exit) | 18 min 19 s | 24, 20, 24, 20, 24, 20 | None, the run has no baseline | 0 |
+| Seeded regression | And every session of 6 more tasks | The run before, taken by itself | 9 min 50 s (590.5 s to the exit) | 9 min 43 s | 12, 8, 12, 8, 12, 9 | Regression in all six arms: 6 tasks down and 0 up of 12 in four, 7 down in one, 6 down and 1 up in one | 3 |
+
+- No infrastructure error and no agent error in the 288 rows. In the first loop every row that the plan did not fail passed, 132 of 144: the solutions of the 12 tasks ran in microVMs under six arms at once and their verifiers passed them. In the second 61 passed: the 60 that the plan did not fail, and one of `largest-eigenval` that it did. A command that does nothing leaves that task's own code in place, its verifier times that code against a reference, and the untouched code won once in 12 sessions. A task that can pass with nothing done is worth knowing of in a list for loops.
+- The two arms that differ from the other four differ by the plan, not by the command: the model fails sessions in the order they reach it, six arms on four slots do not start their sessions in one order, and two sessions of `raman-fitting` changed places between the fifth and the sixth arm.
+- The first run took 30.5 slot-seconds a row and the second, where 84 sessions ran no solution, 16.2, verifier included, on 4 threads of a machine that other work loaded. The command itself added 9 s to the first run and 7 s to the second: the Worker's start, the runner and the scorecard.
+- The times are those of solutions, not of a model: a loop of six real arms on these tasks was put at 10 to 16 minutes at three attempts on 36 slots by the slot model of the entry on the two lists, and that is still a model.
+
+**Not run.** A loop with a model. A loop on ns slots. The tasks of `hourly`. More than 4 slots, so one slot a thread was shown to hold for 4 threads of solutions and nothing more. The third loop of the entry on the loop, the first plan again set against the first run by its name, was still running on these slots when this was written.
