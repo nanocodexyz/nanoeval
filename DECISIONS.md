@@ -5897,3 +5897,23 @@ This is a smoke test, not a comparison: four easy tasks and one attempt say that
 - Cloudflare AI Gateway addressed directly: the rows above went through a forwarder that adds its token and, for a Workers AI model, the `cf-aig-gateway-id` header, which nothing here adds.
 - A nanocode session on a chat completions route. A `codex` session speaks Responses and a `claude` session Messages, so the open-model rows above have no nanocode arm beside them.
 - More than one attempt, the other 85 tasks, linux/arm64, and an x86_64 machine without AVX2.
+
+## 2026-11-14: the lane of a capped provider ends the sandbox that serves its row, and a lease that is lost still fails it
+
+**What was wrong.** The entry "a slot reads the metadata of a cached disk in one open" closes with this failure. The lane on directory slots of a provider that refuses sandboxes for a cap and ends one under its rows holds the first model request, waits until a row runs on the sandbox that is ready and three creates were refused, and then has the scripted gateway end a sandbox. It ended the first sandbox the gateway had opened, which is the one that serves only while no sandbox ended before it. In the first pass of the whole workflow on a machine with KVM (24 cores, kernel 7.0, beside its other jobs) the calls of the lane to its gateway took 0.35 to 1.15 s in its first seconds. The first renewal of the first sandbox was refused with `503`, as the gateway is scripted to, the next arrived after the 3 s lease had ended and was answered `404`, and the run opened another sandbox, which served the row. The lane ended the sandbox that had ended already, the row kept its held request until its agent timed out, and the lane failed after 315 s with `the capped happened during the run`: 1 of 17 runs of the lane on that base, on that machine and on one with 5 cores.
+
+**What changed.** The lane ends the sandbox that the status of the run shows as ready, by its handle, and asks of that sandbox what it asked of the second one of the run.
+
+**Checked.** On a machine with 5 cores, 14 GB and no KVM, shared with other jobs, one lane at a time. "By hand" is a change made in a copy of the tree that is in no commit: the scripted gateway answers the paid `exec` and `renew` of the first sandbox it opened 3.5 s late. That gives the sequence above: the first sandbox fails with `refused renew with 404` before its runner said hello, and the second serves the row.
+
+| Tree | Gateway | Result |
+| --- | --- | --- |
+| `3451d08` | late by hand | failed 1 of 1 after 353 s: `the capped happened during the run` |
+| `3451d08` with the change | late by hand | failed 3 of 3 after 65 to 68 s: `every sandbox was terminated, not left to lapse`, with `lapsed` for the first sandbox |
+| `3451d08` with the change | as it is | passed 5 of 5 in 51 to 55 s |
+
+In the three runs of the second row the lane's script did what it is for: the sandbox that served was ended, its row was claimed again, two more sandboxes opened once the cap allowed them, and the 12 rows ended. On that tree, once each: the lanes of two leased sandboxes of which one dies, of a sandbox that its provider ends sooner, of a gateway that sells no renewal and of a sandbox kept warm passed. With the change on main two commits later, at `4b8f4bf`, from a fresh clone: `npm run lint` and `npm run check:types` pass, `npm test` passes (396 tests, 391 passed, 5 skipped for KVM or root), and the lane passed 1 of 1.
+
+**What it leaves.** The change does not make the run that failed a pass. A lane with a scripted gateway asks at its end that no sandbox was left to lapse, and the first sandbox had lapsed: with the change that run fails in about a minute and names the sandbox, where it took five and named the lane's own script. The cause is the lease. This lane, the lane of two leased sandboxes and the lane of a sandbox ended sooner lease their sandbox for 3 s with a notice of 3 s, which the entry "a status line that counted a sandbox still asked for, and checks that read a clock where an order was meant" replaced for the lanes with tasks through the gateway and of a kept sandbox by a time measured on the machine. The same for this lane is not in this change: it asks that the pause its gateway names is longer than the notice of the run, and that a second refusal is asked again after the notice, so its script and its waits change with the notice. The lane of two leased sandboxes ends the first sandbox its gateway opened, as this one did, and is unchanged.
+
+**Not verified.** The failure under a load, which was not tried here: the late answers stand for it. Nothing ran with KVM or on ns slots.

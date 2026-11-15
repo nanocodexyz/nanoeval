@@ -2263,6 +2263,7 @@ async function main(): Promise<void> {
     let underAt: number | undefined
     let beside: { id: string } | undefined
     let cappedAt: number | undefined
+    let cappedEnded: number | undefined
     const cappedLines: string[] = []
     let cappedRefusals = 0
     let besideStatus: Record<string, any> | undefined
@@ -2397,9 +2398,9 @@ async function main(): Promise<void> {
         }
       }
       if (capped && !restarted) {
-        const serving = (status['sandboxes'] as { runner: number; state: string }[]).find(
-          (sandbox) => sandbox.state === 'ready',
-        )
+        const serving = (
+          status['sandboxes'] as { handle: string; id: number; runner: number; state: string }[]
+        ).find((sandbox) => sandbox.state === 'ready')
         const busy = (
           status['attempts'] as { id: string; phase: string; runner: number | null }[]
         ).find(
@@ -2426,7 +2427,8 @@ async function main(): Promise<void> {
           mock!.tell(true)
           mock!.crowd(2 * MockGateway.waitSec)
           cappedRefusals = mock!.capped.length
-          await mock!.die([...mock!.sandboxes.keys()][0]!)
+          cappedEnded = serving!.id
+          await mock!.die(serving!.handle)
         } else if (
           cappedAt !== undefined &&
           cappedLines.length === 1 &&
@@ -2963,8 +2965,9 @@ async function main(): Promise<void> {
       }[]
       assert.equal(status['counts'].errored, 0, 'no row ended as an error: ' + summary(status))
       assert.match(rows[0]!.error!, /the gateway refused create with 503: /)
-      assert.equal(rows[1]!.state, 'failed', 'the sandbox that its provider ended is failed')
-      assert.match(rows[1]!.error!, /the runner stopped answering|refused renew with 404: /)
+      const ended = rows.find((row) => row.id === cappedEnded)!
+      assert.equal(ended.state, 'failed', 'the sandbox that its provider ended is failed')
+      assert.match(ended.error!, /the runner stopped answering|refused renew with 404: /)
       const refusals = rows.filter((row) => /refused create with 429: /.test(row.error ?? ''))
       assert.ok(refusals.length >= 4, 'creates were refused for the cap before and after')
       const unpriced = rows.filter((row) =>
@@ -2990,7 +2993,7 @@ async function main(): Promise<void> {
         kept.length,
         'a create that the provider was paid for and then refused stays in the spend of the run',
       )
-      const opened = rows.filter((row) => row.id > rows[1]!.id && row.state === 'closed')
+      const opened = rows.filter((row) => row.id > ended.id && row.state === 'closed')
       assert.equal(opened.length, 2, 'two more sandboxes were opened once the cap allowed them')
       const openedAt = new Map(
         (await api.timeline(created.id)).marks
@@ -3010,7 +3013,7 @@ async function main(): Promise<void> {
         'a refusal that says when to ask again is asked again no sooner, with no sandbox left too',
       )
       assert.ok(
-        rows[1]!.expiresAt <= mock!.sandboxes.get(rows[1]!.handle)!.expiresAt,
+        ended.expiresAt <= mock!.sandboxes.get(ended.handle)!.expiresAt,
         'a sandbox ends no later than the gateway answered',
       )
       for (const row of opened) {
@@ -3046,7 +3049,7 @@ async function main(): Promise<void> {
         (attempt) => attempt.claims === 2,
       )
       assert.ok(again.length >= 1, 'the row of the sandbox that was ended was claimed again')
-      for (const attempt of again) assert.notEqual(attempt.runner, rows[1]!.runner)
+      for (const attempt of again) assert.notEqual(attempt.runner, ended.runner)
       const late = opened.at(-1)!
       assert.ok(
         !(status['attempts'] as { runner: number }[]).some(
