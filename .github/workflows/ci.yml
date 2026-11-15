@@ -600,6 +600,15 @@ jobs:
         env:
           NANOEVAL_E2E_MODEL: installed
           NANOEVAL_E2E_SCENARIO: closed
+      - name: End to end, krun slots, a closed agent whose Worker is at no loopback address, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: relayed
+      - name: End to end, krun slots, a closed installed agent whose Worker is at no loopback address, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_MODEL: installed
+          NANOEVAL_E2E_SCENARIO: relayed
       - name: End to end, krun slots, an agent that branches into three sessions on forked microVMs, skipped where krun cannot run
         run: npm run e2e
         env:

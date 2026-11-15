@@ -1391,7 +1391,9 @@ async function main(): Promise<void> {
       port +
       '\n',
   )
-  const forward = slotForward ?? (scenario === 'closed' ? new URL(beacon.url).host : undefined)
+  const forward =
+    slotForward ??
+    (scenario === 'closed' || scenario === 'relayed' ? new URL(beacon.url).host : undefined)
   if (installed) Object.assign(process.env, fakeClis(fakeCli))
   const guest = hosted
     ? await Guest.start({
@@ -1518,6 +1520,7 @@ async function main(): Promise<void> {
     ...relay?.vars,
     ...(planned ? { CLAUDE_PLAN_URL: upstream.url!, PLAN_SECRET: planSecret } : {}),
     ...(loginLane ? { CLAUDE_PLAN_URL: upstream.url! } : {}),
+    ...(scenario === 'relayed' ? { PUBLIC_URL: 'http://localhost:' + port } : {}),
   }
   Fs.writeFileSync(Path.join(secrets, 'vars.env'), Plan.envFile(vars), { mode: 0o600 })
   const log = Fs.createWriteStream(Path.join(out, 'wrangler.log'))
@@ -1756,7 +1759,8 @@ async function main(): Promise<void> {
 
     const failures = scenario === 'failures'
     const cached = scenario === 'cache'
-    const closed = scenario === 'closed'
+    const relayed = scenario === 'relayed'
+    const closed = scenario === 'closed' || relayed
     const isolated = scenario === 'network'
     const judged = scenario === 'judge'
     const unsound = scenario === 'unsound'
@@ -1778,6 +1782,7 @@ async function main(): Promise<void> {
           'outlasted',
           'pace',
           'refused',
+          'relayed',
           'resume',
           'runners',
           'unreached',
@@ -1845,18 +1850,25 @@ async function main(): Promise<void> {
                 ]
               : isolated
                 ? [Network.fixture]
-                : closed
-                  ? ['closed-agent', 'closed-network', 'closed-verifier'].map((name) =>
-                      Path.join('test/fixtures', name),
-                    )
-                  : cached
-                    ? [Path.join('test/fixtures', 'cached-verifier')]
-                    : slotGone
-                      ? [Path.join('test/fixtures', underAgent ? 'slow-solution' : 'slow-verifier')]
-                      : [
-                          ...taskNames.map((name) => Path.join('tasks', name)),
-                          ...(unsound ? [Path.join('test/fixtures', 'stale-solution')] : []),
-                        ]
+                : relayed
+                  ? [Path.join('test/fixtures', 'relayed-agent')]
+                  : closed
+                    ? ['closed-agent', 'closed-network', 'closed-verifier'].map((name) =>
+                        Path.join('test/fixtures', name),
+                      )
+                    : cached
+                      ? [Path.join('test/fixtures', 'cached-verifier')]
+                      : slotGone
+                        ? [
+                            Path.join(
+                              'test/fixtures',
+                              underAgent ? 'slow-solution' : 'slow-verifier',
+                            ),
+                          ]
+                        : [
+                            ...taskNames.map((name) => Path.join('tasks', name)),
+                            ...(unsound ? [Path.join('test/fixtures', 'stale-solution')] : []),
+                          ]
     const agents: Config.Agent[] =
       model === 'oracle'
         ? [oracle]

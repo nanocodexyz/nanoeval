@@ -24,6 +24,7 @@ import * as Converter from './Converter.ts'
 import * as Cpus from './Cpus.ts'
 import * as Disks from './Disks.ts'
 import * as Host from './Host.ts'
+import * as Loopback from './Loopback.ts'
 import * as Memory from './Memory.ts'
 import * as Peers from './Peers.ts'
 import * as Store from './Store.ts'
@@ -73,6 +74,7 @@ type Shared = {
   entering: { enter(): void; serving: Serving }[]
   inside?: Serving
   ready?: Ready
+  relay: Loopback.Relay
   serving: Set<Serving>
   stopping: boolean
   stops: Set<() => void>
@@ -411,9 +413,19 @@ async function leave(standing: Standing): Promise<boolean> {
 }
 
 export async function run(options: Options): Promise<void> {
+  const relay = Loopback.create()
+  try {
+    await runs(options, relay)
+  } finally {
+    relay.close()
+  }
+}
+
+async function runs(options: Options, relay: Loopback.Relay): Promise<void> {
   const log = options.log ?? ((line: string) => console.log(new Date().toISOString() + ' ' + line))
   const shared: Shared = {
     entering: [],
+    relay,
     serving: new Set(),
     stopping: false,
     stops: new Set(),
@@ -999,23 +1011,26 @@ async function attend(
       'utf8',
     ))
 
+  const reached = async (item: Work, url: string) =>
+    Eval.offline(item.row.task).includes('agent') && !Loopback.direct(url)
+      ? shared.relay.url(url)
+      : url
+
   const startCli = async (item: Work, cli: Installed.Agent) => {
     const instruction = await instruct(item)
     const endpoint = await rowCall<Protocol.Endpoint>(item, 'endpoint')
+    const url = await reached(item, endpoint.url)
     const state = await rowCall<Protocol.Agent>(item, 'agent', { instruction })
     if (state.state !== 'attached')
       throw new Error('the run answered ' + state.state + ' for an installed agent')
     const file = slots.agentFile(item.row.slot, 'token')
     await Fs.mkdir(Path.dirname(file), { recursive: true })
     await Fs.writeFile(slots.agentFile(item.row.slot, 'instruction.md'), instruction)
-    await Fs.writeFile(
-      slots.agentFile(item.row.slot, 'run.sh'),
-      Installed.script(cli, { url: endpoint.url }),
-    )
+    await Fs.writeFile(slots.agentFile(item.row.slot, 'run.sh'), Installed.script(cli, { url }))
     await Fs.writeFile(file, endpoint.token + '\n', { mode: 0o600 })
     try {
       await shell(
-        slots.agent(item.row.slot, { timeoutSec: state.timeoutSec, url: endpoint.url }) +
+        slots.agent(item.row.slot, { timeoutSec: state.timeoutSec, url }) +
           ' < ' +
           Sandbox.quote(file),
       )
@@ -1104,12 +1119,9 @@ async function attend(
     const file = Path.join(home, 'slots', slot, 'token')
     await Fs.writeFile(file, input.session.token + '\n', { mode: 0o600 })
     try {
+      const url = await reached(item, input.session.url)
       await timed(item, 'attempt.hand', () =>
-        shell(
-          slots.hand(slot, { name: input.session.name, url: input.session.url }) +
-            ' < ' +
-            Sandbox.quote(file),
-        ),
+        shell(slots.hand(slot, { name: input.session.name, url }) + ' < ' + Sandbox.quote(file)),
       )
     } finally {
       await Fs.rm(file, { force: true })
