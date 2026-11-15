@@ -315,10 +315,15 @@ const usage = `nanoeval <command>
             tool calls in a row or at N tokens of context, and one that ends in
             :tool_result_tokens=N has the result of a code cell bounded at N tokens
             (nano-st-trunc=claude:claude-opus-5-5:medium:cell_yield_ms=120000:
-            brief_finish=on:fold_finish=on:tool_result_tokens=2000). The options come in
+            brief_finish=on:fold_finish=on:tool_result_tokens=2000). A claude or codex session
+            agent that ends in :persist_finish=on has every turn of its sessions send
+            persist_finish, the finish check of nanocode that goes on with a requirement the
+            final message names as unmet (nano-plain-persist=claude:claude-opus-5-5:medium:
+            persist_finish=on). The options come in
             this order where several are named: branches, refusal_fallback, cell_yield_ms,
             brief_finish, fold_finish, low_effort_rounds, brief_final, lean_cells,
-            escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens.
+            escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens,
+            persist_finish.
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
@@ -808,6 +813,12 @@ const agentOptions: readonly AgentOption[] = [
     name: 'tool_result_tokens',
     read: (text) => ({ toolResultTokens: Number(text) }),
     write: (agent) => agent.toolResultTokens,
+  },
+  {
+    ...on,
+    name: 'persist_finish',
+    read: () => ({ persistFinish: true }),
+    write: (agent) => (agent.persistFinish ? on.value : undefined),
   },
 ]
 

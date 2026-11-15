@@ -34,6 +34,7 @@ export type Agent = {
   lowEffortRounds?: true
   model: string
   orchestration?: Orchestration
+  persistFinish?: true
   preflight?: true
   provider: 'claude' | 'codex' | 'oracle' | Installed.Kind
   refusalFallback?: RefusalFallback
@@ -321,6 +322,11 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude')
         fail(agent.id + ' has a ' + lever + ', which only a claude session takes')
     }
+    if (agent.persistFinish !== undefined) {
+      if (agent.persistFinish !== true) fail(agent.id + ' has a persistFinish that is not true')
+      if (provider !== 'claude' && provider !== 'codex')
+        fail(agent.id + ' has a persistFinish, which only a claude or codex session takes')
+    }
     const named = Installed.is(provider) && Installed.releases[provider].provider === 'api'
     if (agent.api !== undefined || named) {
       if (!named) fail(agent.id + ' has an api, which ' + provider + ' does not take')
@@ -346,6 +352,7 @@ export function parse(value: unknown): Config {
       ...(agent.lowEffortRounds ? { lowEffortRounds: true as const } : {}),
       model: agent.model,
       ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
+      ...(agent.persistFinish ? { persistFinish: true as const } : {}),
       ...(agent.preflight ? { preflight: true as const } : {}),
       provider,
       ...(agent.refusalFallback ? { refusalFallback: agent.refusalFallback } : {}),

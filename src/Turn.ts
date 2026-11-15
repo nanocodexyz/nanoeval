@@ -15,6 +15,7 @@ export type Turn = {
   model: string
   orchestration?: 'direct' | 'jobs'
   payer?: Config.Payer
+  persistFinish?: true
   prompt: string
   provider: 'claude' | 'codex'
   refusalFallback?: Config.RefusalFallback
@@ -32,6 +33,7 @@ function levers(turn: Turn): Record<string, true> {
     ...(turn.foldFinish ? { fold_finish: true as const } : {}),
     ...(turn.leanCells ? { lean_cells: true as const } : {}),
     ...(turn.lowEffortRounds ? { low_effort_rounds: true as const } : {}),
+    ...(turn.persistFinish ? { persist_finish: true as const } : {}),
   }
 }
 

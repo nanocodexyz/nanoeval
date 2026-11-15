@@ -3342,6 +3342,7 @@ export class Run extends DurableObject<Env> {
       model: agent.model,
       ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
       payer: this.payer(agent.provider),
+      ...(agent.persistFinish ? { persistFinish: true } : {}),
       prompt: input.prompt,
       provider: agent.provider,
       ...(agent.refusalFallback ? { refusalFallback: agent.refusalFallback } : {}),
