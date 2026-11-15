@@ -2,15 +2,18 @@ import type * as Atif from './Atif.ts'
 import * as CodexFallback from './CodexFallback.ts'
 import * as Slot from './Slot.ts'
 
+export type Api = 'chat' | 'messages' | 'responses'
+
 export type Kind =
   | 'claude-code'
   | 'codex-cli'
+  | 'fx'
   | 'nanocode-claude'
   | 'nanocode-codex'
   | 'stock-claude'
   | 'stock-codex'
 
-export type Agent = { kind: Kind; model: string; thinking?: string }
+export type Agent = { api?: Api; kind: Kind; model: string; thinking?: string }
 
 export type Binary = {
   arch: 'aarch64' | 'x86_64'
@@ -24,15 +27,22 @@ export type Release =
       binaries: readonly Binary[]
       entry: string
       format: 'file' | 'tar.gz'
-      provider: 'claude' | 'codex'
+      provider: 'api' | 'claude' | 'codex'
       source: 'release'
       version: string
     }
   | { provider: 'claude' | 'codex'; source: 'runtime'; version: string }
 
+export const apis: Record<Api, 'claude' | 'codex'> = {
+  chat: 'codex',
+  messages: 'claude',
+  responses: 'codex',
+}
+
 export const kinds: readonly Kind[] = [
   'claude-code',
   'codex-cli',
+  'fx',
   'nanocode-claude',
   'nanocode-codex',
   'stock-claude',
@@ -46,6 +56,7 @@ export const tokenVariable = 'NANOEVAL_AGENT_TOKEN'
 const claude =
   'https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.318'
 const codex = 'https://github.com/openai/codex/releases/download/rust-v0.166.0'
+const fx = 'https://github.com/vercel-labs/fx/releases/download/v0.0.17'
 const leaderboardClaude =
   'https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.300'
 const leaderboardCodex = 'https://github.com/openai/codex/releases/download/rust-v0.162.1'
@@ -106,6 +117,27 @@ export const releases: Record<Kind, Release> = {
     provider: 'codex',
     source: 'release',
     version: '0.166.0',
+  },
+  fx: {
+    binaries: [
+      {
+        arch: 'aarch64',
+        libc: 'any',
+        sha256: 'b4633b8987ec43f1b9454e4629f3b5a4f1e086aae36b84ae4fefeacd6a53761f',
+        url: fx + '/fx-linux-aarch64.tar.gz',
+      },
+      {
+        arch: 'x86_64',
+        libc: 'any',
+        sha256: '78c155d59fa59e42fd56d93037fd75041868c9c67865e8c7f0ca6dcdfac23e75',
+        url: fx + '/fx-linux-x86_64.tar.gz',
+      },
+    ],
+    entry: 'fx',
+    format: 'tar.gz',
+    provider: 'api',
+    source: 'release',
+    version: '0.0.17',
   },
   'nanocode-claude': {
     provider: 'claude',
@@ -184,6 +216,31 @@ export function is(provider: string): provider is Kind {
   return (kinds as readonly string[]).includes(provider)
 }
 
+export function provider(kind: Kind, api?: Api): 'claude' | 'codex' {
+  const fixed = releases[kind].provider
+  if (fixed !== 'api') return fixed
+  if (!api) throw new Error(kind + ' names no API for its model')
+  return apis[api]
+}
+
+export const harnesses: readonly string[] = kinds.flatMap((kind) =>
+  releases[kind].provider === 'api' ? Object.keys(apis).map((api) => kind + '-' + api) : [kind],
+)
+
+export function harness(name: string): { api?: Api; kind: Kind } | undefined {
+  if (is(name)) return releases[name].provider === 'api' ? undefined : { kind: name }
+  const cut = name.lastIndexOf('-')
+  const kind = name.slice(0, cut)
+  const api = name.slice(cut + 1)
+  return is(kind) && releases[kind].provider === 'api' && Object.hasOwn(apis, api)
+    ? { api: api as Api, kind }
+    : undefined
+}
+
+export function name(agent: { api?: Api; provider: string }): string {
+  return agent.provider + (agent.api ? '-' + agent.api : '')
+}
+
 function quote(value: string): string {
   return "'" + value.replaceAll("'", "'\\''") + "'"
 }
@@ -191,6 +248,67 @@ function quote(value: string): string {
 const preamble = ['set -eu', 'mkdir -p "$NANOEVAL_AGENT_HOME"']
 
 const prompt = ['prompt=$(cat; printf x)', 'prompt=${prompt%x}']
+
+const fxApis: Record<Api, { base: string; effort: (level: string) => unknown; protocol: string }> =
+  {
+    chat: {
+      base: '',
+      effort: (level) => ({ reasoning_effort: level }),
+      protocol: 'openai-chat-completions',
+    },
+    messages: {
+      base: '/v1',
+      effort: (level) => ({ output_config: { effort: level }, thinking: { type: 'adaptive' } }),
+      protocol: 'anthropic-messages',
+    },
+    responses: {
+      base: '',
+      effort: (level) => ({ reasoning: { effort: level } }),
+      protocol: 'openai-responses',
+    },
+  }
+
+function fxAsk(agent: Agent, url: string): string {
+  if (!agent.api) throw new Error('fx names no API for its model')
+  const api = fxApis[agent.api]
+  const settings = {
+    models: { nanoeval: agent.model },
+    provider: 'nanoeval',
+    providers: {
+      nanoeval: {
+        auth: { env: tokenVariable, type: 'bearer' },
+        base_url: url + api.base,
+        ...(agent.thinking
+          ? {
+              model_metadata: {
+                [agent.model]: {
+                  reasoning_efforts: { [agent.thinking]: api.effort(agent.thinking) },
+                },
+              },
+            }
+          : {}),
+        protocol: api.protocol,
+      },
+    },
+  }
+  return (
+    [
+      ...preamble,
+      'export FX_HOME="$NANOEVAL_AGENT_HOME/fx" FX_AUTO_UPGRADE=0',
+      'mkdir -p "$FX_HOME"',
+      'cat >"$FX_HOME/settings.json" <<\'NANOEVAL_FX_SETTINGS\'',
+      JSON.stringify(settings, null, 2),
+      'NANOEVAL_FX_SETTINGS',
+      [
+        'exec "$NANOEVAL_AGENT_RT"/agents/fx/any/fx ask',
+        '--json',
+        '--full-access',
+        '--model ' + quote(agent.model),
+        ...(agent.thinking ? ['--effort ' + quote(agent.thinking)] : []),
+      ].join(' '),
+    ].join('\n') + '\n'
+  )
+}
 
 function stockCodex(agent: Agent, url: string): string {
   const root = '"$NANOEVAL_AGENT_RT"/agents/stock-codex/any'
@@ -338,6 +456,7 @@ export function script(agent: Agent, options: { url: string }): string {
       ].join('\n') + '\n'
     )
   }
+  if (agent.kind === 'fx') return fxAsk(agent, options.url)
   if (agent.kind === 'stock-codex') return stockCodex(agent, options.url)
   if (agent.kind === 'stock-claude') return stockClaude(agent, options.url)
   if (agent.kind === 'codex-cli') {
@@ -440,6 +559,12 @@ export function summarize(kind: Kind, stream: string): Summary {
     return summary
   }
   for (const line of lines(stream)) {
+    if (kind === 'fx') {
+      summary.message = text(line['final_output'] || line['output'])
+      summary.toolCalls = Array.isArray(line['tool_calls']) ? line['tool_calls'].length : 0
+      summary.error = line['error'] === undefined ? undefined : text(line['error'])
+      continue
+    }
     if (codexEvents(kind)) {
       const item = line['item']
       if (line['type'] === 'item.completed' && item?.type === 'agent_message')
@@ -490,6 +615,38 @@ export function trajectory(
   if (runtime && input.stream.trim()) step('agent', input.stream.trim()).model_name = model
 
   for (const line of runtime ? [] : lines(input.stream)) {
+    if (kind === 'fx') {
+      session = text(line['session_id']) || session
+      const made = (Array.isArray(line['tool_calls']) ? line['tool_calls'] : []) as Line[]
+      const target = made.length ? step('agent', '') : undefined
+      made.forEach((tool, index) => {
+        const { name, status, ...rest } = tool
+        const result = (rest['command_result'] ?? {}) as Line
+        call(
+          target!,
+          {
+            tool_call_id: String(index + 1),
+            function_name: text(name),
+            arguments: typeof result['command'] === 'string' ? { command: result['command'] } : {},
+          },
+          {
+            source_call_id: String(index + 1),
+            content: text(rest),
+            extra: {
+              duration_ns: null,
+              ...(typeof result['exit_code'] === 'number'
+                ? { exit_code: result['exit_code'] }
+                : {}),
+              status: text(status),
+            },
+          },
+        )
+      })
+      if (target) target.model_name = model
+      if (line['error'] !== undefined) step('system', 'error: ' + text(line['error']))
+      else step('agent', text(line['final_output'] || line['output'])).model_name = model
+      continue
+    }
     if (codexEvents(kind)) {
       const item = line['item'] as Line | undefined
       if (line['type'] === 'thread.started') session = text(line['thread_id']) || session

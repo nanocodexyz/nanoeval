@@ -17,6 +17,7 @@ export class UnsupportedError extends Error {
 export type Backend = Slot.Backend | 'auto'
 
 export type Agent = {
+  api?: Installed.Api
   branches?: number
   id: string
   model: string
@@ -215,7 +216,13 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude' && provider !== 'codex')
         fail(agent.id + ' branches, and only a claude or codex session can')
     }
+    const named = Installed.is(provider) && Installed.releases[provider].provider === 'api'
+    if (agent.api !== undefined || named) {
+      if (!named) fail(agent.id + ' has an api, which ' + provider + ' does not take')
+      choice(agent.api, agent.id + ': the api of ' + provider, Object.keys(Installed.apis))
+    }
     return {
+      ...(agent.api ? { api: agent.api } : {}),
       ...(agent.branches === undefined ? {} : { branches: agent.branches }),
       id: agent.id,
       model: agent.model,
@@ -246,9 +253,10 @@ export function parse(value: unknown): Config {
     config.payer === undefined ? 'deployment' : choice<Payer>(config.payer, 'payer', payers)
   const unpaid =
     payer === 'plan'
-      ? [...agents, ...(judge ? [{ id: 'the judge', provider: judge.provider }] : [])].find(
-          (agent) => agent.provider !== 'claude' && agent.provider !== 'oracle',
-        )
+      ? [
+          ...agents,
+          ...(judge ? [{ id: 'the judge', provider: judge.provider as string }] : []),
+        ].find((agent) => agent.provider !== 'claude' && agent.provider !== 'oracle')
       : undefined
   if (unpaid)
     fail(

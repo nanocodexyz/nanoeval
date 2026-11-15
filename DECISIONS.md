@@ -5757,3 +5757,29 @@ The endpoint that a run gives its installed agents forwarded the Responses route
 This is groundwork: no agent of this commit sends such a request, and a `codex-cli` agent, which could, does not. A ChatGPT plan login does not serve the route, the request is forwarded to the plan's Responses address and answered there with an error.
 
 Ran, hosted Linux x86_64, Node 24: `node --test test/Installed.test.ts` with two new cases (a stream whose last chunk carries the usage, a whole answer with a cost), 21 of 21. Not run: a provider's chat completions endpoint.
+
+## 2026-11-15: fx as an installed agent, and agents that name their API
+
+A run compared nanocode with Codex CLI and Claude Code. fx 0.0.17, the coding agent of `vercel-labs/fx`, is a third stock harness: one static binary for Linux x86_64 and aarch64 in the GitHub release `v0.0.17`, pinned by the SHA-256 of both archives. [DESIGN.md](DESIGN.md#installed-agents) has the table.
+
+### What was established
+
+- **fx speaks three model APIs through one setting.** `fx ask --help` and the project's page on custom model connections: a connection in `settings.json` has a `protocol` of `openai-chat-completions`, `openai-responses` or `anthropic-messages`, a `base_url` to which fx appends `/chat/completions`, `/responses` or `/messages`, and a bearer key read from a variable it names. So the token of the attempt reaches fx in the one variable every installed agent gets, and no file holds it. Against a scripted endpoint the binary sent `POST <base_url>/...` with `Authorization: Bearer <token>` for each of the three and ran the tool call it was answered.
+- **So the agent names the API.** Codex CLI has one API and Claude Code one, and the kind of an agent said which credential the run adds. fx has three, and nothing in a model's name says which serves it: `claude-opus-5-5` is asked over Messages at Anthropic and over chat completions at a gateway that names it `anthropic/claude-opus-5-5`. The harness of such an agent is therefore `fx-chat`, `fx-messages` or `fx-responses`, parsed as `codex-direct` is, into the kind and an `api` that the configuration, the result and the comparison keep. `fx` alone is refused, and so is an API on a kind that has one.
+- **fx skips settings it does not own.** Its home is made private at startup, and settings in a directory another user owns are skipped. The agent's state directory is made by root with the sticky bit, so `FX_HOME` is a directory the command makes under it.
+- **fx takes http only at loopback.** `http://127.0.0.2:PORT` is refused before a request (`InsecureBaseUrl`, exit 1): a local Worker is reached at `127.0.0.1`, which is where a slot relays it, and a deployed one over https.
+- **fx waits for an endpoint without end.** With nothing listening it printed "Offline, retrying" 26 times in 100 s and went on. The agent's timeout ends it, as an `agent_timeout`.
+- **Its shell tool needs Bash or zsh.** In the Alpine fixtures, which have neither, the tool call failed (`termination_indeterminate`, "the login shell exited before reporting its state") and the row failed its verifier: fx ran, reached its model and could not run a command. With `bash` added to the image the same row passed.
+- **What its output gives.** `fx ask --json` prints one object when it ends. The final message, the number of tool calls and their status are read from it, and the trajectory is one step with those calls and one with the message. Tokens come from the endpoint, as for every installed agent, and there is no cost unless the endpoint reports one.
+
+### What ran
+
+Before this commit, on its tree. Hosted Linux x86_64 without KVM, Node 24: `npm run lint`, `npm run check:types`, `node --test test/Installed.test.ts` (23 of 23), and the new lane on directory slots, 1 of 1. On a 48-thread Linux machine with KVM, four of its threads: the new lane on krun, directory and ns slots, 1 of 1 each, and the lane of the two older commands on krun slots with its failure kinds, 1 of 1 each.
+
+The pinned binary, fetched by the runner, in krun slots against a scripted endpoint behind a local Worker with `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` set, the endpoint refusing any request without that key: three agents (`fx-chat`, `fx-messages`, `fx-responses`) on a Debian 12 image and on Alpine 3.21 with `bash`, 6 of 6 rows passed, two model requests each, 2,400 input tokens (400 cached) and 68 output tokens a row as the endpoint scripted them, and 6 reasoning tokens a row on the two OpenAI APIs. On the repository's two Alpine fixtures, 0 of 6: the shell tool, above.
+
+### Not verified
+
+- A real model on any API (the entry that closes this series has the first rows), a ChatGPT plan, an OpenAI key, Cloudflare AI Gateway or another OpenAI-compatible provider.
+- A thinking level against a provider. The fields are what the three APIs document, and on Messages what opencode 1.19.5 sends for `claude-opus-5-5`.
+- linux/arm64: the archive is pinned by the digest its release lists and was not run.

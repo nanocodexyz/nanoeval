@@ -784,11 +784,17 @@ export class Run extends DurableObject<Env> {
     if (!this.env.TEMPO_KEY) return false
     if (config.sandbox.provider === 'gateway' && config.sandbox.max > 0) return true
     if (config.payer === 'plan') return false
-    return [...config.agents, ...(config.judge ? [config.judge] : [])].some((agent) => {
+    const users: readonly Pick<Config.Agent, 'api' | 'provider'>[] = [
+      ...config.agents,
+      ...(config.judge ? [config.judge] : []),
+    ]
+    return users.some((agent) => {
       if (agent.provider === 'oracle') return false
       const held = Model.credential(
         this.env,
-        Installed.is(agent.provider) ? Installed.releases[agent.provider].provider : agent.provider,
+        Installed.is(agent.provider)
+          ? Installed.provider(agent.provider, agent.api)
+          : agent.provider,
       )
       return held?.kind === 'key' && held.key === this.env.TEMPO_KEY
     })
@@ -1470,7 +1476,7 @@ export class Run extends DurableObject<Env> {
       ...Model.paid(this.env, {
         plan: this.config().payer === 'plan',
         provider: Installed.is(agent.provider)
-          ? Installed.releases[agent.provider].provider
+          ? Installed.provider(agent.provider, agent.api)
           : agent.provider,
       }),
       ...reported,
@@ -1499,8 +1505,7 @@ export class Run extends DurableObject<Env> {
   }
 
   private metered(row: Ledger.Attempt): Atif.Usage {
-    const kind = this.installed(row)!
-    const provider = Installed.releases[kind].provider
+    const provider = Installed.provider(this.installed(row)!, this.agentOf(row).api)
     const total: Atif.Usage = {
       cacheWriteTokens: 0,
       cachedTokens: 0,
@@ -1555,7 +1560,7 @@ export class Run extends DurableObject<Env> {
         message: 'no agent of this run is running with this token',
         status: 401,
       })
-    const provider = Installed.releases[kind].provider
+    const provider = Installed.provider(kind, this.agentOf(row).api)
     if (
       Installed.releases[kind].source === 'runtime' &&
       request.method === 'GET' &&
@@ -2828,6 +2833,7 @@ export class Run extends DurableObject<Env> {
       ...(Installed.is(agent.provider)
         ? {
             cli: {
+              ...(agent.api ? { api: agent.api } : {}),
               kind: agent.provider,
               model: agent.model,
               ...(agent.thinking ? { thinking: agent.thinking } : {}),

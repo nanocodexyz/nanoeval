@@ -22,6 +22,7 @@ export type Phase = { finishedAt: number; startedAt: number }
 
 export type Attempt = {
   agent: {
+    api?: Installed.Api
     id: string
     model: string
     orchestration?: 'direct' | 'jobs'

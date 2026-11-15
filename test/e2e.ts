@@ -170,6 +170,12 @@ const stood = shared || standing || stopped || taken
 const warm = scenario === 'warm'
 const installed = model === 'installed'
 const fakeCli = Path.resolve('test/fixtures/fake-cli.sh')
+const installedKind = process.env['NANOEVAL_E2E_AGENT'] as 'fx' | undefined
+const fakeClis = (file: string) => ({
+  NANOEVAL_AGENT_CLAUDE_CODE: file,
+  NANOEVAL_AGENT_CODEX_CLI: file,
+  NANOEVAL_AGENT_FX: file,
+})
 const fakeUsage = {
   'claude-code': {
     cacheWriteTokens: 5,
@@ -263,6 +269,7 @@ function fake(
   body: { model?: string; prompt_base64?: string },
   cost?: number,
 ): string {
+  const chat = path === '/v1/chat/completions'
   const codex = path === '/v1/responses'
   const charged = cost === undefined ? {} : { cost }
   const prompt = Buffer.from(body.prompt_base64 ?? '', 'base64').toString()
@@ -276,43 +283,61 @@ function fake(
     command +
     '\n\n' +
     sse(
-      codex
+      chat
         ? [
             [
-              'response.completed',
+              'chunk',
               {
-                response: {
-                  model: body.model,
-                  usage: {
-                    ...charged,
-                    input_tokens: 100,
-                    input_tokens_details: { cached_tokens: 40 },
-                    output_tokens: 7,
-                    output_tokens_details: { reasoning_tokens: 3 },
-                  },
+                choices: [],
+                model: body.model,
+                object: 'chat.completion.chunk',
+                usage: {
+                  ...charged,
+                  completion_tokens: 7,
+                  completion_tokens_details: { reasoning_tokens: 3 },
+                  prompt_tokens: 100,
+                  prompt_tokens_details: { cached_tokens: 40 },
                 },
-                type: 'response.completed',
               },
             ],
           ]
-        : [
-            [
-              'message_start',
-              {
-                message: {
-                  model: body.model,
-                  usage: {
-                    cache_creation_input_tokens: 5,
-                    cache_read_input_tokens: 40,
-                    input_tokens: 20,
-                    output_tokens: 0,
+        : codex
+          ? [
+              [
+                'response.completed',
+                {
+                  response: {
+                    model: body.model,
+                    usage: {
+                      ...charged,
+                      input_tokens: 100,
+                      input_tokens_details: { cached_tokens: 40 },
+                      output_tokens: 7,
+                      output_tokens_details: { reasoning_tokens: 3 },
+                    },
                   },
+                  type: 'response.completed',
                 },
-                type: 'message_start',
-              },
+              ],
+            ]
+          : [
+              [
+                'message_start',
+                {
+                  message: {
+                    model: body.model,
+                    usage: {
+                      cache_creation_input_tokens: 5,
+                      cache_read_input_tokens: 40,
+                      input_tokens: 20,
+                      output_tokens: 0,
+                    },
+                  },
+                  type: 'message_start',
+                },
+              ],
+              ['message_delta', { type: 'message_delta', usage: { ...charged, output_tokens: 7 } }],
             ],
-            ['message_delta', { type: 'message_delta', usage: { ...charged, output_tokens: 7 } }],
-          ],
     )
   )
 }
@@ -1108,7 +1133,8 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
           )
           return
         }
-        const codex = request.url === '/v1/responses' || request.url === codexPlanPath
+        const chat = request.url === '/v1/chat/completions'
+        const codex = chat || request.url === '/v1/responses' || request.url === codexPlanPath
         const credential =
           !body.fake_cli || loginLane
             ? true
@@ -1126,7 +1152,7 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
           await new Promise((resolve) => setTimeout(resolve, 1000)).finally(() => budgetFlying--)
         }
         const reply = body.fake_cli
-          ? fake(codex ? '/v1/responses' : request.url!, body)
+          ? fake(codex && !chat ? '/v1/responses' : request.url!, body)
           : budgeted || searching
             ? metered(body)
             : codex && midturnPair
@@ -1243,11 +1269,7 @@ async function main(): Promise<void> {
       '\n',
   )
   const forward = slotForward ?? (scenario === 'closed' ? new URL(beacon.url).host : undefined)
-  if (installed)
-    Object.assign(process.env, {
-      NANOEVAL_AGENT_CLAUDE_CODE: fakeCli,
-      NANOEVAL_AGENT_CODEX_CLI: fakeCli,
-    })
+  if (installed) Object.assign(process.env, fakeClis(fakeCli))
   const guest = hosted
     ? await Guest.start({
         cpus: guestCpus,
@@ -1260,9 +1282,7 @@ async function main(): Promise<void> {
   const seen = (file: string) => (guest ? Guest.inside(file) : file)
   if (caBundle && guest) Fs.copyFileSync(caBundle, Path.join(out, 'ca.pem'))
   const hostPolicy = {
-    ...(installed
-      ? { NANOEVAL_AGENT_CLAUDE_CODE: seen(fakeCli), NANOEVAL_AGENT_CODEX_CLI: seen(fakeCli) }
-      : {}),
+    ...(installed ? fakeClis(seen(fakeCli)) : {}),
     NANOEVAL_SLOT_ENV: seen(Path.join(out, 'slot.env')),
     ...(caBundle
       ? { NANOEVAL_CA_BUNDLE: guest ? seen(Path.join(out, 'ca.pem')) : Path.resolve(caBundle) }
@@ -1696,14 +1716,17 @@ async function main(): Promise<void> {
         ? [oracle]
         : installed
           ? [
-              { id: 'right', model: 'gpt-right', provider: 'codex-cli' as const },
+              installedKind
+                ? { api: 'chat' as const, id: 'right', model: 'gpt-right', provider: installedKind }
+                : { id: 'right', model: 'gpt-right', provider: 'codex-cli' as const },
               ...(closed || failures || slotGone
                 ? []
                 : [
                     {
+                      ...(installedKind ? { api: 'messages' as const } : {}),
                       id: 'wrong',
                       model: 'claude-sonnet-wrong',
-                      provider: 'claude-code' as const,
+                      provider: installedKind ?? ('claude-code' as const),
                       thinking: 'high',
                     },
                   ]),
@@ -4198,7 +4221,11 @@ async function main(): Promise<void> {
       if (scriptedModel)
         assert.equal(
           row.reasoningTokens,
-          agent.provider === 'codex' || agent.provider === 'codex-cli' ? 3 * calls : null,
+          (Installed.is(agent.provider)
+            ? Installed.provider(agent.provider, agent.api)
+            : agent.provider) === 'codex'
+            ? 3 * calls
+            : null,
           'the reasoning tokens of ' + agent.id + ' are those its model calls reported',
         )
     }
@@ -4570,16 +4597,20 @@ async function main(): Promise<void> {
         assert.ok(trajectory.steps.length >= 2)
         assert.ok(trajectory.final_metrics.extra.tool_calls >= 1)
         if (installed) {
-          const kind = detail['result'].agent.provider as keyof typeof fakeUsage
+          const asked = detail['result'].agent as Config.Agent & { provider: Installed.Kind }
+          const kind = asked.provider
+          const codex = Installed.provider(kind, asked.api) === 'codex'
+          const { costUsd, ...tokens } = fakeUsage['claude-code']
+          const used = codex
+            ? fakeUsage['codex-cli']
+            : kind === 'claude-code'
+              ? { ...tokens, costUsd }
+              : tokens
           assert.deepEqual(
             detail['result'].usage,
             gateway
-              ? {
-                  ...fakeUsage[kind],
-                  costUsd:
-                    MockGateway.modelUsd[kind === 'codex-cli' ? '/v1/responses' : '/v1/messages'],
-                }
-              : fakeUsage[kind],
+              ? { ...used, costUsd: MockGateway.modelUsd[codex ? '/v1/responses' : '/v1/messages'] }
+              : used,
           )
           assert.equal(trajectory.agent.name, kind)
           assert.equal(trajectory.steps[0].source, 'user')
@@ -4595,7 +4626,12 @@ async function main(): Promise<void> {
             requests
               .filter((entry) => entry.claim === detail['attempt'].claims && !entry.refusal)
               .map((entry) => [entry.path, entry.status]),
-            [[kind === 'codex-cli' ? 'responses' : 'v1/messages', 200]],
+            [
+              [
+                asked.api === 'chat' ? 'chat/completions' : codex ? 'responses' : 'v1/messages',
+                200,
+              ],
+            ],
           )
           assert.equal(detail['result'].session.startsWith(created.id), true)
         }
@@ -4624,7 +4660,8 @@ async function main(): Promise<void> {
         assert.ok(
           Math.abs(
             status['spend'].modelUsd -
-              fakeUsage['claude-code'].costUsd * (closed || slotGone ? 0 : total / 2),
+              fakeUsage['claude-code'].costUsd *
+                (closed || installedKind || slotGone ? 0 : total / 2),
           ) < 1e-9,
           'the cost an installed agent reports counts against the model budget',
         )

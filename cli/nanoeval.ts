@@ -219,6 +219,9 @@ const usage = `nanoeval <command>
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
             puts what it printed before the instruction, in an <environment_facts> block.
+            fx is named with the API its model is asked over, fx-chat (chat completions),
+            fx-messages (Anthropic Messages) or fx-responses (OpenAI Responses), since its
+            command line speaks all three and the run adds the credential of that provider.
             With --payer plan, the Claude plan signed in on the Worker (nanoeval plans) pays
             for the sessions of the run, its judge included, in place of the Worker's own
             credential: its agents and its judge are claude sessions, nothing is charged per
@@ -499,18 +502,20 @@ const orchestrations: Record<string, Config.Orchestration> = {
 export function parseAgent(text: string): Config.Agent {
   const match = new RegExp(
     '^([^=]+)=(' +
-      ['claude', 'codex-direct', 'codex-jobs', 'codex', ...Installed.kinds].join('|') +
+      ['claude', 'codex-direct', 'codex-jobs', 'codex', ...Installed.harnesses].join('|') +
       ')(\\+preflight)?:([^:]+)(?::([a-z]+))?(?::branches=([0-9]+))?$',
   ).exec(text)
   if (!match) throw new Error('an agent is ID=HARNESS:MODEL[:THINKING][:branches=N], not ' + text)
   const orchestration = orchestrations[match[2]!]
+  const installed = Installed.harness(match[2]!)
   return {
+    ...(installed?.api ? { api: installed.api } : {}),
     ...(match[6] ? { branches: Number(match[6]) } : {}),
     id: match[1]!,
     model: match[4]!,
     ...(orchestration ? { orchestration } : {}),
     ...(match[3] ? { preflight: true as const } : {}),
-    provider: orchestration ? 'codex' : (match[2] as Config.Agent['provider']),
+    provider: orchestration ? 'codex' : (installed?.kind ?? (match[2] as 'claude' | 'codex')),
     ...(match[5] ? { thinking: match[5] } : {}),
   }
 }
@@ -684,7 +689,7 @@ export function agentText(agent: Config.Agent): string {
   return (
     agent.id +
     '=' +
-    (agent.orchestration ? agent.provider + '-' + agent.orchestration : agent.provider) +
+    (agent.orchestration ? agent.provider + '-' + agent.orchestration : Installed.name(agent)) +
     (agent.preflight ? '+preflight' : '') +
     ':' +
     agent.model +
@@ -2761,7 +2766,7 @@ async function main(
                 {
                   name: 'the agent ' + agent.id,
                   provider: Installed.is(agent.provider)
-                    ? Installed.releases[agent.provider].provider
+                    ? Installed.provider(agent.provider, agent.api)
                     : agent.provider,
                 },
               ],
@@ -2776,7 +2781,7 @@ async function main(
           const paid = Route.planned(deployment, {
             plan: config.payer === 'plan',
             provider: Installed.is(agent.provider)
-              ? Installed.releases[agent.provider].provider
+              ? Installed.provider(agent.provider, agent.api)
               : agent.provider,
           })
           return paid ? [paid] : []

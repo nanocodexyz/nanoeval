@@ -112,14 +112,14 @@ export type Typical = { agentSec: number | null; modelCalls: number | null }
 export function harness(agent: Result.Attempt['agent'], nanocode?: Pins.Pins): string {
   if (agent.provider === 'oracle') return 'oracle'
   if (Installed.is(agent.provider))
-    return agent.provider + ' ' + Installed.releases[agent.provider].version
+    return Installed.name(agent) + ' ' + Installed.releases[agent.provider].version
   return nanocode ? Pins.text(nanocode) : 'nanocode'
 }
 
 export function model(agent: Result.Attempt['agent']): string {
   if (agent.provider === 'oracle') return 'the task solution'
   const provider = Installed.is(agent.provider)
-    ? Installed.releases[agent.provider].provider
+    ? Installed.provider(agent.provider, agent.api)
     : kind(agent)
   return provider + ':' + agent.model + (agent.thinking ? ':' + agent.thinking : '')
 }
@@ -413,7 +413,7 @@ function side(given: Side): Run[] {
 
 function typed(agent: Result.Attempt['agent']): string {
   return [
-    agent.provider,
+    Installed.name(agent),
     agent.orchestration ?? '',
     agent.preflight ? 'preflight' : '',
     agent.model,
@@ -423,7 +423,7 @@ function typed(agent: Result.Attempt['agent']): string {
 
 function kind(agent: Result.Attempt['agent']): string {
   return (
-    agent.provider +
+    Installed.name(agent) +
     (agent.orchestration ? '-' + agent.orchestration : '') +
     (agent.preflight ? '+preflight' : '')
   )

@@ -259,7 +259,7 @@ export function missing(
 }
 
 export function credentials(input: {
-  agents: readonly Pick<Config.Agent, 'id' | 'provider'>[]
+  agents: readonly Pick<Config.Agent, 'api' | 'id' | 'provider'>[]
   judge?: Pick<Config.Judge, 'provider'>
   logins: { claude?: string; codex?: string }
   variables: Record<string, string | undefined>
@@ -268,7 +268,7 @@ export function credentials(input: {
   for (const agent of input.agents) {
     if (agent.provider === 'oracle') continue
     const provider = Installed.is(agent.provider)
-      ? Installed.releases[agent.provider].provider
+      ? Installed.provider(agent.provider, agent.api)
       : agent.provider
     wanted.set(provider, [...(wanted.get(provider) ?? []), 'the agent ' + agent.id])
   }

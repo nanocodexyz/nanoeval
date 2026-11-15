@@ -638,6 +638,22 @@ An agent of a run is one of two kinds. A session agent (`claude`, `codex`) is th
 | Started as | `codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -m MODEL -c model_reasoning_effort="THINKING" -` | `claude -p --output-format stream-json --verbose --dangerously-skip-permissions --model MODEL --effort THINKING`, with `IS_SANDBOX=1` so that it accepts root |
 | Its own state | `CODEX_HOME` | `CLAUDE_CONFIG_DIR` |
 
+**Agents that name their API.** fx speaks three model APIs, so its agent names the one its model is asked over, in its harness: `fx-chat` for chat completions, `fx-messages` for Anthropic Messages, `fx-responses` for OpenAI Responses (`Installed.harness`, kept as the `api` of the agent). The name decides the configuration the command gets and the credential the run adds: the one of `claude` for Messages and the one of `codex` for the other two (`Installed.provider`). Which endpoint answers is the deployment's choice, as for a session: the provider's own, a plan where one serves the request, or any endpoint of that shape behind `OPENAI_BASE_URL` or `ANTHROPIC_BASE_URL`. Cloudflare AI Gateway is such an endpoint: `https://api.cloudflare.com/client/v4/accounts/ACCOUNT/ai` serves `/v1/chat/completions`, `/v1/responses` and `/v1/messages` with a bearer token and models named `author/model`. Its Workers AI models (`@cf/...`) also want a `cf-aig-gateway-id` header, which nothing here adds.
+
+| | fx |
+| --- | --- |
+| Agent | `ID=fx-chat:MODEL[:THINKING]`, `ID=fx-messages:...`, `ID=fx-responses:...` |
+| Pinned release | 0.0.17: `fx-linux-<arch>.tar.gz` of the GitHub release `v0.0.17` |
+| Runs in | Any image: one static binary, 10 MB of memory for a small exchange. Its `shell` tool starts Bash or zsh, so in an image with neither, such as plain Alpine, its commands fail and it is left with its file tools |
+| Pointed at the run by | `$FX_HOME/settings.json`: a connection with `protocol`, `base_url` and `auth: {type: bearer, env: NANOEVAL_AGENT_TOKEN}` |
+| Started as | `fx ask --json --full-access --model MODEL --effort THINKING` |
+| A thinking level | The settings declare the request fields of that one level: `reasoning_effort` (chat), `reasoning.effort` (Responses), `thinking.type: adaptive` with `output_config.effort` (Messages) |
+| Its own state | `FX_HOME`, a directory of its own under the agent's state directory: fx skips the settings of a directory it does not own |
+| Its stream | One JSON object when it ends: the final message and the tool calls with their status. No step in between, no time, no cost |
+| A ChatGPT plan | Its Responses request has the fields Codex CLI sends (`instructions`, `store: false`, `stream: true`, no `max_output_tokens`), so the plan route of the run can carry it. Not run against chatgpt.com. fx's own `fx login codex` posts to a fixed address and would put the login in the slot |
+| A Claude plan | No. fx has no Claude sign-in, and Anthropic serves a plan token only to requests that carry Claude Code's own system prompt, which fx's do not |
+| Limits | A base URL over http only at `127.0.0.1` or `localhost`. An endpoint it cannot reach is asked again until the agent's timeout |
+
 **The release.** Nothing is installed into a task image, at import or at run time. `slot.sh agents` downloads the release of the machine's architecture into `<cache>/agents` under a lock, refuses it when its SHA-256 is not the pinned one, and links it into the directory that slots already mount read-only for the hand. A second sandbox of the machine takes it from the cache. `NANOEVAL_AGENT_CODEX_CLI` and `NANOEVAL_AGENT_CLAUDE_CODE` name a file to run instead, which is how the end-to-end lanes run a scripted command.
 
 **ns slots and remote sandboxes.** An ns slot runs the command as a krun slot does: `slot.sh agent` takes the same path for both, through the agent of the slot and its relay. [The runtime archive](#a-runner-without-a-checkout) of a remote sandbox carries no release: `slot.sh agents` fetches it there with `curl` when the first row asks for one, and needs `sha256sum` and `tar` beside it.

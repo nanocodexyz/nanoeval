@@ -3,6 +3,7 @@ set -eu
 
 kind=claude-code
 if [ "${1:-}" = exec ]; then kind=codex-cli; fi
+if [ "${1:-}" = ask ]; then kind=fx; fi
 model=
 provider=
 previous=
@@ -23,6 +24,17 @@ if [ "$kind" = codex-cli ]; then
   variable=$(printf '%s' "$provider" | sed 's/.*env_key="\([^"]*\)".*/\1/')
   eval "token=\$$variable"
   url=$base/responses
+elif [ "$kind" = fx ]; then
+  [ -f "$FX_HOME/settings.json" ] || exit 64
+  base=$(sed -n 's/.*"base_url": "\([^"]*\)".*/\1/p' "$FX_HOME/settings.json")
+  variable=$(sed -n 's/.*"env": "\([^"]*\)".*/\1/p' "$FX_HOME/settings.json")
+  eval "token=\$$variable"
+  case $(sed -n 's/.*"protocol": "\([^"]*\)".*/\1/p' "$FX_HOME/settings.json") in
+    anthropic-messages) url=$base/messages ;;
+    openai-chat-completions) url=$base/chat/completions ;;
+    openai-responses) url=$base/responses ;;
+    *) exit 64 ;;
+  esac
 else
   [ -d "$CLAUDE_CONFIG_DIR" ] || exit 64
   token=$ANTHROPIC_AUTH_TOKEN
@@ -45,6 +57,10 @@ if [ "$kind" = codex-cli ]; then
   printf '{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"sh -c scripted","aggregated_output":"","exit_code":%s,"status":"completed"}}\n' "$code"
   printf '%s\n' '{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"The task is complete."}}'
   printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":7}}'
+elif [ "$kind" = fx ]; then
+  status=success
+  sh -c "$command" >/dev/null 2>&1 || status=error
+  printf '{"output":"The task is complete.","final_output":"The task is complete.","exit_code":0,"model":"%s","session_id":"fake-session","steps":1,"tool_calls":[{"name":"shell","status":"%s"}],"usage":{"input_tokens":100,"output_tokens":7}}\n' "$model" "$status"
 else
   printf '{"type":"system","subtype":"init","session_id":"fake-session","model":"%s","tools":["Bash"]}\n' "$model"
   printf '{"type":"assistant","message":{"id":"msg_1","model":"%s","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"scripted"}}],"usage":{"input_tokens":20,"cache_read_input_tokens":40,"cache_creation_input_tokens":5,"output_tokens":7}}}\n' "$model"

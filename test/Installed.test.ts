@@ -56,6 +56,32 @@ test('an agent names a session harness or an installed command', () => {
     'nanoxj=codex-jobs:gpt-6-luna:high',
   )
   assert.throws(() => parseAgent('other=cursor:some-model'), /ID=HARNESS:MODEL/)
+  assert.deepEqual(parseAgent('open=fx-chat:@cf/vendor/open-model:high'), {
+    api: 'chat',
+    id: 'open',
+    model: '@cf/vendor/open-model',
+    provider: 'fx',
+    thinking: 'high',
+  })
+  assert.deepEqual(parseAgent('fx=fx-messages:claude-haiku-5-5'), {
+    api: 'messages',
+    id: 'fx',
+    model: 'claude-haiku-5-5',
+    provider: 'fx',
+  })
+  assert.equal(parseAgent('fx=fx-responses:gpt-6-luna').api, 'responses')
+  assert.equal(
+    agentText(parseAgent('fx=fx-responses:gpt-6-luna:low')),
+    'fx=fx-responses:gpt-6-luna:low',
+  )
+  assert.throws(() => parseAgent('fx=fx:gpt-6-luna'), /ID=HARNESS:MODEL/)
+  assert.throws(() => parseAgent('fx=fx-embeddings:gpt-6-luna'), /ID=HARNESS:MODEL/)
+  assert.throws(() => parseAgent('cli=codex-cli-chat:gpt-6-luna'), /ID=HARNESS:MODEL/)
+  assert.equal(Installed.provider('fx', 'chat'), 'codex')
+  assert.equal(Installed.provider('fx', 'responses'), 'codex')
+  assert.equal(Installed.provider('fx', 'messages'), 'claude')
+  assert.equal(Installed.provider('codex-cli'), 'codex')
+  assert.throws(() => Installed.provider('fx'), /fx names no API for its model/)
   assert.throws(() => parseAgent('codex-cli:gpt-6.1-sol'), /ID=HARNESS:MODEL/)
 
   assert.equal(Config.harness({ provider: 'codex-cli' }), 'installed')
@@ -85,11 +111,27 @@ test('an agent names a session harness or an installed command', () => {
   )
   assert.throws(
     () => Config.parse({ ...config, agents: [{ id: 'x', model: 'm', provider: 'cursor' }] }),
-    /provider must be one of claude, codex, oracle, claude-code, codex-cli, nanocode-claude, nanocode-codex/,
+    /provider must be one of claude, codex, oracle, claude-code, codex-cli, fx, nanocode-claude, nanocode-codex/,
   )
   assert.throws(
     () => Config.parse({ ...config, judge: { model: 'gpt-6.1-sol', provider: 'codex-cli' } }),
     /judge.provider must be one of claude, codex/,
+  )
+  assert.deepEqual(
+    Config.parse({ ...config, agents: [parseAgent('fx=fx-chat:open-model')] }).agents,
+    [{ api: 'chat', id: 'fx', model: 'open-model', provider: 'fx' }],
+  )
+  assert.throws(
+    () => Config.parse({ ...config, agents: [{ id: 'x', model: 'm', provider: 'fx' }] }),
+    /x: the api of fx must be one of chat, messages, responses/,
+  )
+  assert.throws(
+    () =>
+      Config.parse({
+        ...config,
+        agents: [{ api: 'chat', id: 'x', model: 'm', provider: 'codex-cli' }],
+      }),
+    /x has an api, which codex-cli does not take/,
   )
   const arms = Config.parse({
     ...config,
@@ -143,7 +185,7 @@ test('every pinned release names a checksum for each build it fetches', () => {
   }
 })
 
-function install(kind: 'claude-code' | 'codex-cli', libc: string): string {
+function install(kind: 'claude-code' | 'codex-cli' | 'fx', libc: string): string {
   const rt = Path.join(root, 'rt-' + kind + '-' + libc)
   const release = Installed.releases[kind]
   assert.equal(release.source, 'release')
@@ -155,7 +197,7 @@ function install(kind: 'claude-code' | 'codex-cli', libc: string): string {
       '#!/bin/sh',
       'printf "argument:%s\\n" "$@"',
       'printf "input:%s\\n" "$(cat)"',
-      'env | grep -E "^(ANTHROPIC|CLAUDE|CODEX|DISABLE|IS_SANDBOX|NANOEVAL_AGENT)" | sort',
+      'env | grep -E "^(ANTHROPIC|CLAUDE|CODEX|DISABLE|FX|IS_SANDBOX|NANOEVAL_AGENT)" | sort',
       '',
     ].join('\n'),
     { mode: 0o755 },
@@ -254,6 +296,112 @@ test('the command of Claude Code is the build of the image and reads the endpoin
     () => Installed.script({ kind: 'codex-cli', model: 'm' }, { url: 'http://host/a"b' }),
     /not a plain http or https address/,
   )
+})
+
+test('the command of fx names the endpoint of the attempt in its settings and no credential', () => {
+  const url = 'http://127.0.0.1:8787/v1/runs/r/model/a00001'
+  const expected: [Installed.Api, string, string, unknown][] = [
+    ['chat', url, 'openai-chat-completions', { reasoning_effort: 'high' }],
+    ['responses', url, 'openai-responses', { reasoning: { effort: 'high' } }],
+    [
+      'messages',
+      url + '/v1',
+      'anthropic-messages',
+      { output_config: { effort: 'high' }, thinking: { type: 'adaptive' } },
+    ],
+  ]
+  for (const [api, base, protocol, effort] of expected) {
+    const out = run(
+      { api, kind: 'fx', model: "open/model'x", thinking: 'high' },
+      install('fx', 'any'),
+    )
+    assert.deepEqual(
+      out
+        .split('\n')
+        .filter((line) => line.startsWith('argument:'))
+        .map((line) => line.slice('argument:'.length)),
+      ['ask', '--json', '--full-access', '--model', "open/model'x", '--effort', 'high'],
+    )
+    assert.match(out, /^input:Write it's done\.$/m)
+    assert.match(out, /^FX_HOME=.*home-fx\/fx$/m)
+    assert.match(out, /^FX_AUTO_UPGRADE=0$/m)
+    assert.deepEqual(
+      JSON.parse(Fs.readFileSync(Path.join(root, 'home-fx', 'fx', 'settings.json'), 'utf8')),
+      {
+        models: { nanoeval: "open/model'x" },
+        provider: 'nanoeval',
+        providers: {
+          nanoeval: {
+            auth: { env: 'NANOEVAL_AGENT_TOKEN', type: 'bearer' },
+            base_url: base,
+            model_metadata: { "open/model'x": { reasoning_efforts: { high: effort } } },
+            protocol,
+          },
+        },
+      },
+    )
+    assert.equal(
+      out.split(attemptToken).length,
+      2,
+      'the token reaches the command in one variable, in no argument and in no file',
+    )
+  }
+  const plain = run({ api: 'chat', kind: 'fx', model: 'open-model' }, install('fx', 'any'))
+  assert.doesNotMatch(plain, /^argument:--effort$/m)
+  assert.equal(
+    JSON.parse(Fs.readFileSync(Path.join(root, 'home-fx', 'fx', 'settings.json'), 'utf8')).providers
+      .nanoeval.model_metadata,
+    undefined,
+  )
+  assert.throws(
+    () => Installed.script({ kind: 'fx', model: 'm' }, { url }),
+    /fx names no API for its model/,
+  )
+})
+
+const fxOutput =
+  '{"output":"I ran it.\\n\\nDone.","final_output":"Done.","exit_code":0,"model":"open-model","resolved_provider":null,"session_id":"session-fx","steps":2,"tool_calls":[{"name":"shell","status":"success","command_result":{"kind":"command","command":"echo hi > a.txt","exit_code":0}},{"name":"read_file","status":"error","error":{"category":"rejected","code":"rejected"}}],"usage":{"input_tokens":300,"output_tokens":20,"cache_read_tokens":100}}\n'
+
+test('the output of fx gives the final message, the tool calls and an ATIF trajectory', () => {
+  assert.deepEqual(Installed.summarize('fx', 'Running echo hi\n' + fxOutput), {
+    costUsd: undefined,
+    error: undefined,
+    message: 'Done.',
+    toolCalls: 2,
+  })
+  assert.deepEqual(
+    Installed.summarize(
+      'fx',
+      '{"output":"","final_output":"","exit_code":1,"session_id":"","steps":0,"tool_calls":[],"usage":{"input_tokens":null,"output_tokens":null},"error":"InsecureBaseUrl"}\n',
+    ),
+    { costUsd: undefined, error: 'InsecureBaseUrl', message: '', toolCalls: 0 },
+  )
+  const trajectory = Installed.trajectory(
+    'fx',
+    { instruction: 'Write the file.', stream: fxOutput, usage },
+    { model: 'open-model', name: 'fx', session: 'fallback', version: '0.0.17' },
+  )
+  assert.equal(trajectory.session_id, 'session-fx')
+  assert.deepEqual(
+    trajectory.steps.map((step) => [step.step_id, step.source, step.message]),
+    [
+      [1, 'user', 'Write the file.'],
+      [2, 'agent', ''],
+      [3, 'agent', 'Done.'],
+    ],
+  )
+  assert.deepEqual(trajectory.steps[1]!.tool_calls, [
+    { tool_call_id: '1', function_name: 'shell', arguments: { command: 'echo hi > a.txt' } },
+    { tool_call_id: '2', function_name: 'read_file', arguments: {} },
+  ])
+  assert.deepEqual(
+    trajectory.steps[1]!.observation!.results.map((result) => result.extra),
+    [
+      { duration_ns: null, exit_code: 0, status: 'success' },
+      { duration_ns: null, status: 'error' },
+    ],
+  )
+  assert.equal(trajectory.final_metrics!.total_prompt_tokens, 300)
 })
 
 function runtime(withLoader: boolean): string {
