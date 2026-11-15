@@ -73,6 +73,10 @@ export function misfit(candidate: Candidate, wanted: Wanted): string | undefined
     [...new Set(members.flatMap((member) => member.limits))].sort().join(' ')
   if (limits(candidate.members) !== limits(wanted.members))
     return "under another limit on the agent's time"
+  const verifierLimits = (members: readonly Compare.Member[]) =>
+    [...new Set(members.flatMap((member) => member.verifierLimits))].sort().join(' ')
+  if (verifierLimits(candidate.members) !== verifierLimits(wanted.members))
+    return "under another limit on the verifier's time"
   const pairs = Compare.pairs(candidate.members, wanted.members)
   if (pairs.some((pair) => pair.by !== 'kind')) return 'without these agents'
   if (pairs.some((pair) => pair.differs.length)) return 'on another model route'

@@ -30,6 +30,18 @@ export type Verifier = {
   reward: number | null
 }
 
+export const limitPrefix = 'the limit of the run ended the verifier'
+
+export function bounded(failure: Result.Failure, ownSec: number | undefined): Result.Failure {
+  return ownSec === undefined || failure.kind !== 'verifier_timeout'
+    ? failure
+    : {
+        at: failure.at,
+        kind: 'verifier_limit',
+        message: limitPrefix + ', which its task allows ' + ownSec + ' s: ' + failure.message,
+      }
+}
+
 export function verifier(input: verifier.Input): {
   failure?: Result.Failure
   reward: number | null
@@ -42,7 +54,7 @@ export function verifier(input: verifier.Input): {
     facts.memoryMb < input.memoryMb &&
     Boolean(facts.oom) &&
     facts.reward !== 1
-  const failure: Result.Failure | undefined = short
+  const found: Result.Failure | undefined = short
     ? {
         at: now,
         kind: 'environment',
@@ -92,6 +104,7 @@ export function verifier(input: verifier.Input): {
               }),
             }
           : input.earlier
+  const failure = found && bounded(found, input.ownSec)
   return {
     ...(failure ? { failure } : {}),
     reward: failure && failure.kind !== 'agent_timeout' ? null : facts.reward,
@@ -128,6 +141,7 @@ export declare namespace verifier {
     log: string
     memoryMb?: number
     now: number
+    ownSec?: number
     timeoutSec: number
   }
 }

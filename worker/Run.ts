@@ -641,11 +641,15 @@ export class Run extends DurableObject<Env> {
   private task(name: string): Eval.Task {
     let spec = this.specs.get(name)
     if (!spec) {
-      const row = this.sql.all('SELECT body FROM tasks WHERE name = ?', name)[0]!
-      spec = Config.bounded(this.config().limits, JSON.parse(row['body'] as string) as Eval.Task)
+      spec = Config.bounded(this.config().limits, this.imported(name))
       this.specs.set(name, spec)
     }
     return spec
+  }
+
+  private imported(name: string): Eval.Task {
+    const row = this.sql.all('SELECT body FROM tasks WHERE name = ?', name)[0]!
+    return JSON.parse(row['body'] as string) as Eval.Task
   }
 
   private tasks(): Eval.Task[] {
@@ -3510,6 +3514,8 @@ export class Run extends DurableObject<Env> {
   private async finish(row: Ledger.Attempt, body: Protocol.Finish): Promise<Protocol.Finished> {
     const config = this.config()
     const task = this.task(row.task)
+    const own = this.imported(row.task)
+    const ownSec = Config.cuts(config.limits, own) ? own.verifier.timeoutSec : undefined
     const now = Date.now()
     let end: {
       failure?: Result.Failure
@@ -3539,6 +3545,7 @@ export class Run extends DurableObject<Env> {
           log: this.textArtifact(row.id, verifierLog) ?? '',
           memoryMb: task.resources.memoryMb,
           now,
+          ...(ownSec === undefined ? {} : { ownSec }),
           timeoutSec: task.verifier.timeoutSec,
         }),
         ...(body.verifier.memoryMb === undefined ? {} : { memoryMb: body.verifier.memoryMb }),
@@ -3560,8 +3567,7 @@ export class Run extends DurableObject<Env> {
     } else if (body.failure) {
       const unpaid = refusals.has('plan') ? this.meta()!.refused : undefined
       const failure: Result.Failure = {
-        at: now,
-        ...body.failure,
+        ...Verdict.bounded({ at: now, ...body.failure }, ownSec),
         ...(body.failure.kind === 'agent' && refusals.has('spent')
           ? { kind: 'budget' as const }
           : {}),
@@ -3817,6 +3823,9 @@ export class Run extends DurableObject<Env> {
       task: { checksum: task.checksum, name: task.name },
       timing: JSON.parse(Ledger.get(this.sql, row.id)!.timing),
       usage,
+      ...(config.limits.verifierMaxSec === undefined
+        ? {}
+        : { verifierMaxSec: config.limits.verifierMaxSec }),
     }
     Ledger.finish(this.sql, {
       ...(end.ending ? { ending: end.ending } : {}),

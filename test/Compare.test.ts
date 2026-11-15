@@ -1015,3 +1015,44 @@ test('sides under different limits on the time of the agent are named, and refus
     'the solutions under a limit are not the solutions without one',
   )
 })
+
+test('sides under different limits on the time of the verifier are named, and refused unless asked for', () => {
+  const luna = { id: 'luna', model: 'gpt-6-luna', provider: 'codex' as const }
+  const outcomes = ['passed', 'failed'] as const
+  const bounded = (id: string, verifierMaxSec: number): Compare.Run => {
+    const run = arm(id, luna, { outcomes, route: gateway })
+    return { ...run, attempts: run.attempts.map((attempt) => ({ ...attempt, verifierMaxSec })) }
+  }
+  const plain = arm('run-plain', luna, { outcomes, route: gateway })
+  const [change] = Compare.changes(plain, bounded('run-240', 240))
+  assert.deepEqual(change!.pair.differs, [
+    "verifier time limit the task's own in the baseline and 240 s in the run",
+  ])
+  assert.match(
+    Compare.unlike([change!.pair])!,
+    /^luna differs from the baseline: verifier time limit the task's own in the baseline and 240 s in the run\. /,
+  )
+  assert.deepEqual(
+    Compare.changes(bounded('run-300', 300), bounded('run-240', 240))[0]!.pair.differs,
+    ['verifier time limit 300 s in the baseline and 240 s in the run'],
+  )
+  assert.deepEqual(
+    Compare.changes(bounded('run-a', 240), bounded('run-b', 240))[0]!.pair.differs,
+    [],
+  )
+  assert.deepEqual(
+    Compare.pairs(
+      Compare.members([bounded('run-240', 240)]),
+      Compare.planned([luna], { routes: () => [gateway] }),
+    ).map((pair) => pair.differs),
+    [["verifier time limit 240 s in the baseline and the task's own in the run"]],
+    'a run that is not made yet is known by the limit it asks for',
+  )
+  assert.deepEqual(
+    Compare.pairs(
+      Compare.members([bounded('run-240', 240)]),
+      Compare.planned([luna], { routes: () => [gateway], verifierMaxSec: 240 }),
+    ).map((pair) => pair.differs),
+    [[]],
+  )
+})

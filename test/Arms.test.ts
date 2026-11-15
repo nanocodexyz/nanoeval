@@ -92,6 +92,7 @@ test('an arm is its passes, its two pass rates, its cost, its tokens, its time a
       agent: { agent: 1, budget: 1 },
       cancelled: { cancelled: 1 },
       infrastructure: { unrecorded: 1, verifier: 1, verifier_timeout: 1 },
+      limit: {},
       task: {},
     },
     failed: 2,
@@ -111,6 +112,7 @@ test('an arm is its passes, its two pass rates, its cost, its tokens, its time a
     scored: 6,
     tasks: 3,
     usdPerPass: arm!.costUsd! / 4,
+    verifierLimits: ["the task's own"],
     waitSec: 0,
     waits: 0,
     wallSec: 125,
@@ -301,6 +303,7 @@ test('an error of a task whose dependency is gone is counted apart, when its ver
     agent: { agent: 1 },
     cancelled: {},
     infrastructure: { verifier: 2 },
+    limit: {},
     task: { 'qemu-alpine-ssh': 2, 'qemu-startup': 3 },
   })
   assert.equal(arm!.errored, 8)
@@ -330,4 +333,48 @@ test('an error of a task whose dependency is gone is counted apart, when its ver
   )
   assert.match(second!, / \| 0 \| 0 \| 0 \| 0 \|$/)
   assert.doesNotMatch(armsText([real, sound], { json: false, prices: [] }), /Task dependency gone/)
+})
+
+test('rows whose verifier the limit of the run ended are counted apart from both classes of errors', () => {
+  const bounded = run('bounded', [
+    { ...row('a', 1, { outcome: 'passed' }), verifierMaxSec: 240 },
+    { ...row('a', 2, { kind: 'verifier_limit', outcome: 'errored' }), verifierMaxSec: 240 },
+    { ...row('b', 1, { kind: 'verifier_timeout', outcome: 'errored' }), verifierMaxSec: 240 },
+    { ...row('b', 2, { outcome: 'failed' }), verifierMaxSec: 240 },
+  ])
+  const [arm] = Arms.arms([bounded])
+  const [plain] = Arms.arms([open])
+  assert.deepEqual(arm!.verifierLimits, ['240 s'])
+  assert.deepEqual(arm!.errors, {
+    agent: {},
+    cancelled: {},
+    infrastructure: { verifier_timeout: 1 },
+    limit: { verifier_limit: 1 },
+    task: {},
+  })
+  assert.deepEqual([arm!.passed, arm!.failed, arm!.errored, arm!.scored], [1, 1, 2, 2])
+  assert.equal(arm!.passMicro, 0.5, 'a row the limit ended is a trial of neither')
+  assert.match(
+    Arms.line(arm!),
+    /, wall time 1 s, verifier time limit 240 s, errors: infrastructure 1 or 25\.0% of its rows \(verifier_timeout 1\), agent or model 0, verifier ended by the run's limit 1 or 25\.0% of its rows$/,
+  )
+  assert.doesNotMatch(Arms.line(plain!), /verifier time limit|ended by the run's limit/)
+  assert.doesNotMatch(Arms.table([plain!]), /Verifier/)
+  const table = Arms.table([arm!, plain!]).split('\n')
+  assert.match(table[0]!, / \| Wall time \| Verifier time limit \| Model waits \| /)
+  assert.match(
+    table[0]!,
+    / \| Agent or model errors \| Verifier ended by the run's limit \| Cancelled \|$/,
+  )
+  assert.match(
+    table[2]!,
+    / \| 1 s \| 240 s \| 0 \| 1 or 25\.0% of its rows \(verifier_timeout 1\) \| 0 \| 1 or 25\.0% of its rows \| 0 \|$/,
+  )
+  assert.match(table[3]!, / \| 2 min 5 s \| the task's own \| 0 \| .* \| 0 \| 1 \|$/)
+  const none = run('none', [{ ...row('a', 1, { outcome: 'passed' }), verifierMaxSec: 240 }])
+  assert.match(
+    Arms.line(Arms.arms([none])[0]!),
+    /, verifier time limit 240 s, errors: infrastructure 0, agent or model 0, verifier ended by the run's limit 0$/,
+    'an arm under the limit says so when the limit ended nothing',
+  )
 })

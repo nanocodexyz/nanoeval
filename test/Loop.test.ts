@@ -208,6 +208,7 @@ test('the scorecard holds every arm with pass@k and its verdict, and the rows, t
     runSec: 60,
     slots: 5,
     taskErrors: 0,
+    verifierLimited: 0,
     wallSec: 125,
   })
   assert.deepEqual(card.baseline, { names: ['main'], runs: [main.id] })
@@ -381,6 +382,7 @@ test('the scorecard counts the errors of a task whose dependency is gone apart f
     agent: {},
     cancelled: {},
     infrastructure: { environment: 1, verifier: 1 },
+    limit: {},
     task: { t7: 2 },
   })
   assert.deepEqual(
@@ -410,4 +412,57 @@ test('the scorecard counts the errors of a task whose dependency is gone apart f
   })
   assert.deepEqual([unread.loop.infrastructureErrors, unread.loop.taskErrors], [4, 0])
   assert.doesNotMatch(Loop.text(unread), /ask dependency gone/)
+})
+
+test('the scorecard of a loop under a limit on the time of its verifiers counts the rows the limit ended apart', () => {
+  const bounded = run('f0000000-0000-4000-8000-000000000000', 'bounded', [
+    ...twice('a', () => 'passed').map((attempt, at) => ({
+      ...attempt,
+      ...(at === 0
+        ? {
+            failure: { at: 1, kind: 'verifier_limit' as const, message: 'ended' },
+            outcome: 'errored' as const,
+            reward: null,
+          }
+        : {}),
+      verifierMaxSec: 240,
+    })),
+    ...steady,
+  ])
+  const card = Loop.scorecard(bounded, {
+    baseline: [],
+    prices: {},
+    slots: 5,
+    unsound: {},
+    wallSec: 125,
+  })
+  assert.deepEqual(
+    card.arms.map((arm) => [arm.agent, arm.verifierLimits, arm.errors.limit]),
+    [
+      ['a', ['240 s'], { verifier_limit: 1 }],
+      ['b', ["the task's own"], {}],
+    ],
+  )
+  assert.deepEqual(
+    [card.loop.verifierLimited, card.loop.infrastructureErrors, card.loop.agentErrors],
+    [1, 0, 0],
+  )
+  const [header, , a, b, loop] = Loop.text(card).split('\n')
+  assert.match(header!, / \| Wall time \| Verifier time limit \| Infrastructure errors \| /)
+  assert.match(
+    header!,
+    / \| Agent or model errors \| Verifier ended by the run's limit \| Cancelled \| /,
+  )
+  assert.match(a!, / \| 240 s \| 0 \| 0 \| 1 or [0-9.]+% of its rows \| 0 \| /)
+  assert.match(b!, / \| the task's own \| 0 \| 0 \| 0 \| 0 \| /)
+  assert.match(
+    loop!,
+    /, infrastructure errors 0 or 0\.0% of the rows, agent or model errors 0, verifier ended by the run's limit 1$/,
+  )
+  assert.doesNotMatch(
+    Loop.text(
+      Loop.scorecard(main, { baseline: [], prices: {}, slots: 5, unsound: {}, wallSec: 125 }),
+    ),
+    /Verifier|verifier ended/,
+  )
 })

@@ -282,3 +282,26 @@ test('a run under another limit on the time of its agents, or under none, is no 
   )
   assert.equal(Baseline.misfit(candidate('a', { members: bounded(600) }), asked), undefined)
 })
+
+test('a run under another limit on the time of its verifiers, or under none, is no baseline by rule', () => {
+  const bounded = (verifierMaxSec?: number) =>
+    Compare.planned([luna], { routes: () => [], run: 'a', verifierMaxSec })
+  const asked = {
+    ...wanted,
+    members: Compare.planned([luna], { routes: () => [], verifierMaxSec: 240 }),
+  }
+  assert.equal(
+    Baseline.misfit(candidate('a', { members: bounded() }), asked),
+    "under another limit on the verifier's time",
+  )
+  assert.equal(
+    Baseline.misfit(candidate('a', { members: bounded(300) }), asked),
+    "under another limit on the verifier's time",
+  )
+  assert.equal(
+    Baseline.misfit(candidate('a', { members: bounded(240) }), wanted),
+    "under another limit on the verifier's time",
+    'a bounded run is no baseline of a run that bounds nothing',
+  )
+  assert.equal(Baseline.misfit(candidate('a', { members: bounded(240) }), asked), undefined)
+})

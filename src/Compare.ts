@@ -46,6 +46,7 @@ export type Member = {
   limits: string[]
   routes: Route.Route[]
   runs: string[]
+  verifierLimits: string[]
 }
 
 export type Recorded = 'effort' | Route.Aspect
@@ -462,6 +463,7 @@ export function members(runs: readonly Run[]): Member[] {
           limits: [],
           routes: [],
           runs: [],
+          verifierLimits: [],
         }
         found.push(member)
       }
@@ -471,6 +473,7 @@ export function members(runs: readonly Run[]): Member[] {
   for (const member of found) {
     member.limits = Result.limits(member.attempts)
     member.routes = Route.distinct(member.attempts.map((attempt) => attempt.route))
+    member.verifierLimits = Result.verifierLimits(member.attempts)
   }
   return found
 }
@@ -481,6 +484,7 @@ export function planned(
     agentMaxSec?: number | undefined
     routes: (agent: Result.Attempt['agent']) => readonly Route.Route[]
     run?: string
+    verifierMaxSec?: number | undefined
   },
 ): Member[] {
   return agents.map((agent) => ({
@@ -490,6 +494,7 @@ export function planned(
     limits: [Result.limit(input.agentMaxSec)],
     routes: Route.distinct(input.routes(agent)),
     runs: input.run === undefined ? [] : [input.run],
+    verifierLimits: [Result.limit(input.verifierMaxSec)],
   }))
 }
 
@@ -560,6 +565,9 @@ function match(member: Member, sides: Sides): { found: Member[]; pair: Pair } {
     const before = unique(found.flatMap((each) => each.limits))
     if (before.join(' ') !== member.limits.join(' '))
       differs.push(said('agent time limit', { after: member.limits, before }))
+    const earlier = unique(found.flatMap((each) => each.verifierLimits))
+    if (earlier.join(' ') !== member.verifierLimits.join(' '))
+      differs.push(said('verifier time limit', { after: member.verifierLimits, before: earlier }))
   }
   if (found.length && member.agent.provider !== 'oracle') {
     const kinds = unique(found.map((each) => kind(each.agent)))

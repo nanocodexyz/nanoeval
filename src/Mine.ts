@@ -201,7 +201,11 @@ export function classify(entry: Case): Verdict {
     'finished and the verifier said no' +
       (failed.verifierTail ? ': ' + lastLine(failed.verifierTail) : ''),
   )
-  if (failure?.kind === 'agent_timeout' || failure?.kind === 'verifier_timeout') {
+  if (
+    failure?.kind === 'agent_timeout' ||
+    failure?.kind === 'verifier_limit' ||
+    failure?.kind === 'verifier_timeout'
+  ) {
     scores.timeout += weights.outcome
     reasons.timeout.push(failure.kind + ': ' + failure.message)
   } else if (failure?.kind === 'environment') {

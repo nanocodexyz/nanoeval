@@ -110,3 +110,45 @@ test('a run may bound the time of the agent in every row: the smaller of the tas
     'the lifetime of a sandbox of the run is counted with the bounded rows',
   )
 })
+
+test('a run may bound the time of the verifier of every row, and says which tasks its limit cuts', () => {
+  const config = (limits: Record<string, unknown>) => ({
+    agents,
+    attempts: 1,
+    budget: { sandboxUsd: 0 },
+    eval: { name: 'samples' },
+    limits: { attachSec: 60, claims: 3, leaseSec: 60, setupSec: 600, stepRetries: 3, ...limits },
+    name: 'bounded',
+    sandbox: {
+      backend: 'krun',
+      disks: 'keep',
+      max: 0,
+      network: 'private',
+      pollMs: 250,
+      provider: 'local',
+    },
+  })
+  assert.equal('verifierMaxSec' in Config.parse(config({})).limits, false)
+  assert.equal(Config.parse(config({ verifierMaxSec: 240 })).limits.verifierMaxSec, 240)
+  for (const verifierMaxSec of [0, -1, 1.5, '240', null])
+    assert.throws(() => Config.parse(config({ verifierMaxSec })), /limits.verifierMaxSec/)
+
+  const task = { agent: { timeoutSec: 1800 }, verifier: { env: {}, timeoutSec: 900 } }
+  const short = { agent: { timeoutSec: 1800 }, verifier: { env: {}, timeoutSec: 120 } }
+  assert.equal(Config.cuts({}, task), false)
+  assert.equal(Config.cuts({ verifierMaxSec: 240 }, task), true)
+  assert.equal(Config.cuts({ verifierMaxSec: 240 }, short), false)
+  assert.equal(Config.cuts({ verifierMaxSec: 120 }, short), false)
+  assert.equal(Config.bounded({ verifierMaxSec: 240 }, short), short)
+  assert.deepEqual(Config.bounded({ verifierMaxSec: 240 }, task), {
+    agent: { timeoutSec: 1800 },
+    verifier: { env: {}, timeoutSec: 240 },
+  })
+  assert.deepEqual(Config.bounded({ agentMaxSec: 600, verifierMaxSec: 240 }, task), {
+    agent: { timeoutSec: 600 },
+    verifier: { env: {}, timeoutSec: 240 },
+  })
+  assert.equal(task.verifier.timeoutSec, 900, 'the task is not changed')
+  const both = { agentMaxSec: 600, setupSec: 600, verifierMaxSec: 240 }
+  assert.equal(Config.rowSec(both, Config.bounded(both, task)), 600 + 600 + 240)
+})

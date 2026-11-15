@@ -60,6 +60,7 @@ export type Config = {
     leaseSec: number
     setupSec: number
     stepRetries: number
+    verifierMaxSec?: number
   }
   name: string
   only?: readonly string[]
@@ -132,13 +133,24 @@ export function harness(agent: Pick<Agent, 'provider'>): Harness {
   return Installed.is(agent.provider) ? 'installed' : 'session'
 }
 
-export function bounded<Task extends Pick<Eval.Task, 'agent'>>(
-  limits: Pick<Config['limits'], 'agentMaxSec'>,
+export function bounded<Task extends Pick<Eval.Task, 'agent' | 'verifier'>>(
+  limits: Pick<Config['limits'], 'agentMaxSec' | 'verifierMaxSec'>,
   task: Task,
 ): Task {
-  return limits.agentMaxSec === undefined || task.agent.timeoutSec <= limits.agentMaxSec
-    ? task
-    : { ...task, agent: { ...task.agent, timeoutSec: limits.agentMaxSec } }
+  const agent =
+    limits.agentMaxSec === undefined || task.agent.timeoutSec <= limits.agentMaxSec
+      ? task
+      : { ...task, agent: { ...task.agent, timeoutSec: limits.agentMaxSec } }
+  return cuts(limits, task)
+    ? { ...agent, verifier: { ...task.verifier, timeoutSec: limits.verifierMaxSec } }
+    : agent
+}
+
+export function cuts(
+  limits: Pick<Config['limits'], 'verifierMaxSec'>,
+  task: Pick<Eval.Task, 'verifier'>,
+): boolean {
+  return limits.verifierMaxSec !== undefined && task.verifier.timeoutSec > limits.verifierMaxSec
 }
 
 export function lifetimeSec(
@@ -343,6 +355,9 @@ export function parse(value: unknown): Config {
       leaseSec: integer(limits.leaseSec, 'limits.leaseSec', 1),
       setupSec: integer(limits.setupSec, 'limits.setupSec', 1),
       stepRetries: integer(limits.stepRetries, 'limits.stepRetries', 0),
+      ...(limits.verifierMaxSec === undefined
+        ? {}
+        : { verifierMaxSec: integer(limits.verifierMaxSec, 'limits.verifierMaxSec', 1) }),
     },
     name: config.name,
     ...(config.only?.length ? { only: [...config.only] } : {}),

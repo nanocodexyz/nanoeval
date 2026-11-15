@@ -164,6 +164,7 @@ const usage = `nanoeval <command>
             [--sandbox-budget-usd 0] [--model-budget-usd N] [--setup-sec 600] [--attach-sec 60]
             [--model-price MODEL=INPUT,CACHED,OUTPUT]...
             [--model-requests-per-min [MODEL=]REQUESTS]... [--agent-max-sec N]
+            [--verifier-max-sec N]
             [--lease-sec 60] [--claims 3] [--step-retries 3] [--poll-ms 250]
             [--disks keep|remove] [--free-disk-mb N] [--verifier-cache] [--name NAME] [--wait]
             [--key-deposit N] [--key-top-up N]
@@ -232,6 +233,15 @@ const usage = `nanoeval <command>
             carries agentMaxSec, arms and the scorecard of a loop print the limit, and a
             baseline under another limit, or under none, is not the baseline of the run:
             a rule passes it over and one named by its id is refused until --unlike.
+            --verifier-max-sec bounds the time of the verifier in every row of the run: the
+            verifier of a row has the smaller of its task's own verifier timeout and this
+            many seconds. A verifier the limit ends has given no verdict: the row has no
+            reward, is neither a pass nor a fail nor an infrastructure error, and status,
+            arms and the scorecard of a loop count it apart as a verifier ended by the
+            run's limit. The limit can never make a row pass, and a task whose own
+            solution needs longer to verify can not pass under it. No task and no verifier
+            changes. Every attempt of such a run carries verifierMaxSec, and a baseline
+            under another limit is passed over and refused as for --agent-max-sec.
             --model-requests-per-min gives the requests a minute the endpoint answers for a
             model, or for each model of the run where none is named: the run then sends
             the requests for that model, of every agent and the judge on it, one such
@@ -450,7 +460,9 @@ const usage = `nanoeval <command>
             /v1/runs/RUN/results, and needs no Worker. An attempt whose usage names no cost
             is priced from its tokens with --model-price, as run --model-price does when
             the run is made, and the line says which costs are at list prices. An arm of a
-            run made with --agent-max-sec says its agent time limit.
+            run made with --agent-max-sec says its agent time limit, and one made with
+            --verifier-max-sec its verifier time limit and the rows whose verifier that
+            limit ended, which are in neither class of errors.
   revision  [--nanocode REV|DIR|pinned] [--nanocode-ts REV|DIR|pinned] [--sdk REV|DIR|pinned]
             [--sdk-fallback pinned] [--lab DIR] [--hand-profile release]
             [--nanocode-repository URL|DIR] [--nanocode-ts-repository URL|DIR] [--build-only]
@@ -702,6 +714,7 @@ async function candidate(api: Api, id: string): Promise<Baseline.Candidate> {
       agentMaxSec: config.limits.agentMaxSec,
       routes: (agent) => (status['agents']?.[agent.id]?.routes ?? []) as Route.Route[],
       run: id,
+      verifierMaxSec: config.limits.verifierMaxSec,
     }),
     nanocode: status['nanocode'] ?? { hands: [], harness: null },
     rerun: Boolean(config.rerun),
@@ -1297,6 +1310,7 @@ export function summary(
         row.attempts +
         ', errored ' +
         row.errored +
+        (row.verifierLimited ? ', ' + Result.verifierLimited + ' ' + row.verifierLimited : '') +
         (row.meanReward === null || row.meanReward === undefined
           ? ''
           : ', mean reward ' +
@@ -1549,6 +1563,11 @@ export function rerunConfig(
   const modelUsd = from('model-budget-usd', own.budget.modelUsd, parent.budget.modelUsd)
   const agentMaxSec = from('agent-max-sec', own.limits.agentMaxSec, parent.limits.agentMaxSec)
   const paces = from('model-requests-per-min', own.paces, parent.paces)
+  const verifierMaxSec = from(
+    'verifier-max-sec',
+    own.limits.verifierMaxSec,
+    parent.limits.verifierMaxSec,
+  )
   const prices = from('model-price', own.prices, parent.prices)
   const freeDiskMb = from('free-disk-mb', own.sandbox.freeDiskMb, parent.sandbox.freeDiskMb)
   const leaseSec = from('sandbox-lease-sec', own.sandbox.leaseSec, parent.sandbox.leaseSec)
@@ -1569,6 +1588,7 @@ export function rerunConfig(
       leaseSec: from('lease-sec', own.limits.leaseSec, parent.limits.leaseSec),
       setupSec: from('setup-sec', own.limits.setupSec, parent.limits.setupSec),
       stepRetries: from('step-retries', own.limits.stepRetries, parent.limits.stepRetries),
+      ...(verifierMaxSec === undefined ? {} : { verifierMaxSec }),
     },
     ...(paces === undefined ? {} : { paces }),
     ...(prices === undefined ? {} : { prices }),
@@ -1830,6 +1850,7 @@ async function main(
       unsound: { type: 'string' },
       url: { default: process.env['NANOEVAL_URL'], type: 'string' },
       'verifier-cache': { default: false, type: 'boolean' },
+      'verifier-max-sec': { type: 'string' },
       wait: { default: false, type: 'boolean' },
       'warm-budget-usd': { default: '0', type: 'string' },
       'warm-sec': { type: 'string' },
@@ -2947,6 +2968,9 @@ async function main(
         leaseSec: Number(values['lease-sec']),
         setupSec: Number(values['setup-sec']),
         stepRetries: Number(values['step-retries']),
+        ...(values['verifier-max-sec']
+          ? { verifierMaxSec: Number(values['verifier-max-sec']) }
+          : {}),
       },
       name:
         values.name ?? 'nanoeval-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-'),
@@ -3017,6 +3041,7 @@ async function main(
     const asked = () =>
       Compare.planned(config.agents, {
         agentMaxSec: config.limits.agentMaxSec,
+        verifierMaxSec: config.limits.verifierMaxSec,
         routes: (agent) => {
           const paid = Route.planned(deployment, {
             plan: config.payer === 'plan',
@@ -3065,17 +3090,23 @@ async function main(
       if (refusal) throw new Error(refusal)
     }
     const created = await api.create(config, values.location ? { location: values.location } : {})
-    if (
-      config.limits.agentMaxSec !== undefined &&
-      (await api.config(created.id)).limits.agentMaxSec !== config.limits.agentMaxSec
-    ) {
-      await api.cancel(created.id)
-      throw new Error(
-        'the Worker made run ' +
-          created.id +
-          ' without the limit of --agent-max-sec, which a Worker of an earlier nanoeval does not know: the run was cancelled. Start the Worker of this checkout',
-      )
-    }
+    for (const [flag, limit] of [
+      ['--agent-max-sec', 'agentMaxSec'],
+      ['--verifier-max-sec', 'verifierMaxSec'],
+    ] as const)
+      if (
+        config.limits[limit] !== undefined &&
+        (await api.config(created.id)).limits[limit] !== config.limits[limit]
+      ) {
+        await api.cancel(created.id)
+        throw new Error(
+          'the Worker made run ' +
+            created.id +
+            ' without the limit of ' +
+            flag +
+            ', which a Worker of an earlier nanoeval does not know: the run was cancelled. Start the Worker of this checkout',
+        )
+      }
     console.log(
       'run ' +
         created.id +

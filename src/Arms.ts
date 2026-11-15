@@ -3,7 +3,7 @@ import * as Price from './Price.ts'
 import * as Result from './Result.ts'
 import * as Unsound from './Unsound.ts'
 
-export type Class = 'agent' | 'cancelled' | 'infrastructure' | 'task'
+export type Class = 'agent' | 'cancelled' | 'infrastructure' | 'limit' | 'task'
 
 export const classes: Record<Result.FailureKind, Class> = {
   agent: 'agent',
@@ -13,6 +13,7 @@ export const classes: Record<Result.FailureKind, Class> = {
   environment: 'infrastructure',
   internal: 'infrastructure',
   verifier: 'infrastructure',
+  verifier_limit: 'limit',
   verifier_timeout: 'infrastructure',
 }
 
@@ -42,6 +43,7 @@ export type Arm = {
   scored: number
   tasks: number
   usdPerPass: number | null
+  verifierLimits: string[]
   waitSec: number
   waits: number
   wallSec: number
@@ -75,7 +77,7 @@ export function arms(
         cachedTokens: 0,
         costUsd: null,
         errored: 0,
-        errors: { agent: {}, cancelled: {}, infrastructure: {}, task: {} },
+        errors: { agent: {}, cancelled: {}, infrastructure: {}, limit: {}, task: {} },
         failed: 0,
         harness: Compare.harness(attempts[0]!.agent, run.nanocode),
         inputTokens: 0,
@@ -97,6 +99,7 @@ export function arms(
         scored: 0,
         tasks: 0,
         usdPerPass: null,
+        verifierLimits: Result.verifierLimits(attempts),
         waitSec: 0,
         waits: 0,
         wallSec:
@@ -162,6 +165,10 @@ function usd(value: number): string {
   return '$' + value.toFixed(4)
 }
 
+export function capital(text: string): string {
+  return text.slice(0, 1).toUpperCase() + text.slice(1)
+}
+
 function count(kinds: Record<string, number>): number {
   return Object.values(kinds).reduce((sum, n) => sum + n, 0)
 }
@@ -224,6 +231,19 @@ export function bounded(found: readonly Arm[]): boolean {
   return found.some((arm) => limited(arm) !== Result.ownLimit)
 }
 
+export function verifierLimit(arm: Arm): string {
+  return arm.verifierLimits.join(' and ')
+}
+
+export function verifierBounded(found: readonly Arm[]): boolean {
+  return found.some((arm) => verifierLimit(arm) !== Result.ownLimit || count(arm.errors.limit) > 0)
+}
+
+export function verifierLimited(arm: Arm): string {
+  const n = count(arm.errors.limit)
+  return n + (n ? ' or ' + percent(n / arm.rows) + ' of its rows' : '')
+}
+
 function waited(arm: Arm): string {
   return arm.waits + ' (' + Math.round(arm.waitSec) + ' s)'
 }
@@ -270,12 +290,14 @@ export function line(arm: Arm): string {
     ', wall time ' +
     Compare.duration(arm.wallSec) +
     (bounded([arm]) ? ', agent time limit ' + limited(arm) : '') +
+    (verifierBounded([arm]) ? ', verifier time limit ' + verifierLimit(arm) : '') +
     (arm.waits ? ', model waits ' + waited(arm) : '') +
     ', errors: infrastructure ' +
     infrastructure(arm) +
     (apart([arm]) ? ', task dependency gone ' + task(arm) : '') +
     ', agent or model ' +
     agent(arm) +
+    (verifierBounded([arm]) ? ', ' + Result.verifierLimited + ' ' + verifierLimited(arm) : '') +
     (cancelled ? ', cancelled ' + cancelled : '')
   )
 }
@@ -297,10 +319,12 @@ export function table(found: readonly Arm[]): string {
         'Output tokens',
         'Wall time',
         ...(bounded(found) ? ['Agent time limit'] : []),
+        ...(verifierBounded(found) ? ['Verifier time limit'] : []),
         'Model waits',
         'Infrastructure errors',
         ...(apart(found) ? ['Task dependency gone'] : []),
         'Agent or model errors',
+        ...(verifierBounded(found) ? [capital(Result.verifierLimited)] : []),
         'Cancelled',
       ],
       ...found.map((arm) => [
@@ -319,10 +343,12 @@ export function table(found: readonly Arm[]): string {
         arm.metered ? number(arm.outputTokens) : 'not recorded',
         Compare.duration(arm.wallSec),
         ...(bounded(found) ? [limited(arm)] : []),
+        ...(verifierBounded(found) ? [verifierLimit(arm)] : []),
         arm.waits ? waited(arm) : '0',
         infrastructure(arm),
         ...(apart(found) ? [task(arm)] : []),
         agent(arm),
+        ...(verifierBounded(found) ? [verifierLimited(arm)] : []),
         String(count(arm.errors.cancelled)),
       ]),
     ]) + '\n'

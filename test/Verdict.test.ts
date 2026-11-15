@@ -114,3 +114,64 @@ test('a verifier whose tests ran is scored whatever its log or the disk says', (
     { reward: 0 },
   )
 })
+
+test('a verifier that the limit of the run ended is not a verifier timeout, and never has a reward', () => {
+  for (const code of Verdict.timeoutCodes) {
+    const own = Verdict.verifier({
+      ...base,
+      facts: { code, files: ['reward.txt', 'ctrf.json'], reward: 1 },
+      log: '',
+    })
+    assert.deepEqual(
+      [own.reward, own.failure!.kind, own.failure!.message],
+      [null, 'verifier_timeout', 'the verifier did not finish within 900 s'],
+    )
+    const cut = Verdict.verifier({
+      ...base,
+      facts: { code, files: ['reward.txt', 'ctrf.json'], reward: 1 },
+      log: '',
+      ownSec: 900,
+      timeoutSec: 240,
+    })
+    assert.deepEqual(
+      [cut.reward, cut.failure!.kind, cut.failure!.message],
+      [
+        null,
+        'verifier_limit',
+        'the limit of the run ended the verifier, which its task allows 900 s: the verifier did not finish within 240 s',
+      ],
+      'a reward that a verifier wrote before the limit ended it does not count',
+    )
+    assert.equal(Retry.infrastructure({ failure: cut.failure!, statuses: [] }), undefined)
+  }
+  const done = { code: 0, files: ['reward.txt', 'ctrf.json'], reward: 1 }
+  assert.deepEqual(
+    Verdict.verifier({ ...base, facts: done, log: '', ownSec: 900, timeoutSec: 240 }),
+    { reward: 1 },
+    'a verifier that ended in time is scored as without the limit',
+  )
+  assert.deepEqual(
+    Verdict.verifier({
+      ...base,
+      facts: { ...done, reward: 0 },
+      log: '',
+      ownSec: 900,
+      timeoutSec: 240,
+    }),
+    { reward: 0 },
+  )
+  const late = { at: 1, kind: 'agent_timeout' as const, message: 'late' }
+  assert.deepEqual(
+    Verdict.verifier({ ...base, earlier: late, facts: done, log: '', ownSec: 900 }).failure,
+    late,
+  )
+  const slow = { at: 1, kind: 'verifier_timeout' as const, message: 'no report' }
+  assert.equal(Verdict.bounded(slow, undefined), slow)
+  assert.deepEqual(Verdict.bounded(slow, 900), {
+    at: 1,
+    kind: 'verifier_limit',
+    message: 'the limit of the run ended the verifier, which its task allows 900 s: no report',
+  })
+  const other = { at: 1, kind: 'verifier' as const, message: 'no reward' }
+  assert.equal(Verdict.bounded(other, 900), other)
+})

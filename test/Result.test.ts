@@ -653,3 +653,29 @@ test('a budget refuses the charge that would pass its limit', () => {
   assert.equal(budget.spentUsd, 0.008821)
   assert.throws(() => Budget.create({ limitUsd: -1 }))
 })
+
+test('a summary counts the rows whose verifier the limit of the run ended, which are errors without a reward', () => {
+  const ended = { at: 1, kind: 'verifier_limit' as const, message: 'ended' }
+  assert.equal(Result.outcome(null, ended), 'errored')
+  assert.equal(Result.outcome(1, ended), 'errored', 'the limit never leaves a pass')
+  const row = (id: string, failure?: Result.Failure) =>
+    attempt({
+      ...(failure ? { failure } : {}),
+      id,
+      outcome: failure ? 'errored' : 'passed',
+      reward: failure ? null : 1,
+    })
+  const summary = Result.summarize([
+    row('a1'),
+    row('a2', ended),
+    row('a3', { ...ended, kind: 'verifier_timeout' }),
+  ])['haiku']!
+  assert.deepEqual(
+    [summary.passed, summary.failed, summary.errored, summary.verifierLimited, summary.scored],
+    [1, 0, 2, 1, 1],
+  )
+  assert.deepEqual(Result.verifierLimits([{ verifierMaxSec: 240 }, {}, { verifierMaxSec: 240 }]), [
+    '240 s',
+    "the task's own",
+  ])
+})

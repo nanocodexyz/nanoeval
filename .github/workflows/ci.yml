@@ -233,7 +233,7 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: dir
           NANOEVAL_E2E_SCENARIO: threads
-      - name: End to end, directory slots, a run that allows every agent less time than its tasks do
+      - name: End to end, directory slots, a run that allows every agent and every verifier less time than its tasks do
         run: npm run e2e
         env:
           NANOEVAL_E2E_BACKEND: dir

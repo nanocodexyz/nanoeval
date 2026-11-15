@@ -1772,7 +1772,10 @@ async function main(): Promise<void> {
               Path.join('tasks', name),
             )
           : bounded
-            ? [Path.join('test/fixtures', 'long-agent'), Path.join('tasks', 'write-greeting')]
+            ? [
+                ...['long-agent', 'long-verifier'].map((name) => Path.join('test/fixtures', name)),
+                Path.join('tasks', 'write-greeting'),
+              ]
             : failures
               ? [
                   ...[
@@ -2098,6 +2101,7 @@ async function main(): Promise<void> {
                   ? 3 * leaseSec
                   : 600,
         stepRetries: failures ? 1 : 3,
+        ...(bounded ? { verifierMaxSec: boundSec } : {}),
       },
       name: 'e2e-' + label,
       sandbox: {
@@ -4093,12 +4097,45 @@ async function main(): Promise<void> {
         own['fixtures/long-agent']! > 3 * boundSec && own['nanoeval/write-greeting']! > boundSec,
         'both tasks allow their agent more than the run does',
       )
-      assert.equal((await api.config(created.id)).limits.agentMaxSec, boundSec)
-      assert.deepEqual(
-        details.map((detail) => detail['result'].agentMaxSec),
-        [boundSec, boundSec],
-        'every attempt of the run carries the limit of the run',
+      const ownVerifier = Object.fromEntries(
+        imported.tasks.map((task) => [task.name, task.verifier.timeoutSec]),
       )
+      const cut = byTask['fixtures/long-verifier']!
+      assert.ok(
+        Object.values(ownVerifier).every((seconds) => seconds > boundSec),
+        'every task allows its verifier more than the run does',
+      )
+      const { agentMaxSec, verifierMaxSec } = (await api.config(created.id)).limits
+      assert.deepEqual([agentMaxSec, verifierMaxSec], [boundSec, boundSec])
+      assert.deepEqual(
+        details.map((detail) => [detail['result'].agentMaxSec, detail['result'].verifierMaxSec]),
+        details.map(() => [boundSec, boundSec]),
+        'every attempt of the run carries the limits of the run',
+      )
+      assert.deepEqual(
+        [cut['result'].outcome, cut['result'].reward, cut['result'].failure.kind],
+        ['errored', null, 'verifier_limit'],
+        'a verifier that the limit of the run ended gave no verdict, whatever reward it had written',
+      )
+      assert.equal(
+        cut['result'].failure.message,
+        'the limit of the run ended the verifier, which its task allows ' +
+          ownVerifier['fixtures/long-verifier'] +
+          ' s: the verifier did not finish within ' +
+          boundSec +
+          ' s',
+      )
+      assert.equal(cut['result'].claims, undefined, 'such a row is not run again')
+      const verifierSec =
+        (cut['result'].timing.verifier.finishedAt - cut['result'].timing.verifier.startedAt) / 1000
+      assert.ok(
+        verifierSec >= boundSec && verifierSec < 3 * boundSec,
+        'the verifier was ended at the limit of the run, not at the ' +
+          ownVerifier['fixtures/long-verifier'] +
+          ' s of its task: ' +
+          verifierSec,
+      )
+      assert.equal((await api.status(created.id))['agents']['right'].verifierLimited, 1)
       assert.equal(long['result'].outcome, 'failed')
       assert.equal(long['result'].reward, 0, 'a row that the limit ended is verified and scored')
       assert.deepEqual(
@@ -4120,7 +4157,24 @@ async function main(): Promise<void> {
       assert.equal(short['result'].outcome, 'passed', JSON.stringify(short['result'].failure))
       const [arm] = Arms.arms([await api.results(created.id)])
       assert.deepEqual(arm!.agentLimits, [boundSec + ' s'])
-      assert.match(Arms.line(arm!), new RegExp(', agent time limit ' + boundSec + ' s, errors: '))
+      assert.deepEqual(arm!.verifierLimits, [boundSec + ' s'])
+      assert.deepEqual(arm!.errors, {
+        agent: {},
+        cancelled: {},
+        infrastructure: {},
+        limit: { verifier_limit: 1 },
+        task: {},
+      })
+      assert.match(
+        Arms.line(arm!),
+        new RegExp(
+          ', agent time limit ' +
+            boundSec +
+            ' s, verifier time limit ' +
+            boundSec +
+            " s, errors: infrastructure 0, agent or model 0, verifier ended by the run's limit 1 or 33\\.3% of its rows$",
+        ),
+      )
       console.log(
         'bounded: a run that allows every agent ' +
           boundSec +
@@ -4128,7 +4182,11 @@ async function main(): Promise<void> {
           own['fixtures/long-agent'] +
           ' s after ' +
           agentSec.toFixed(1) +
-          ' s as an agent timeout, verified it, and passed the row that was done in time',
+          ' s as an agent timeout, verified it, passed the row that was done in time, and ended a verifier that its task allows ' +
+          ownVerifier['fixtures/long-verifier'] +
+          ' s after ' +
+          verifierSec.toFixed(1) +
+          ' s as neither a fail nor an infrastructure error',
       )
       await pass()
       return

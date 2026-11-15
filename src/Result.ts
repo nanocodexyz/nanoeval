@@ -10,6 +10,7 @@ export type FailureKind =
   | 'environment'
   | 'internal'
   | 'verifier'
+  | 'verifier_limit'
   | 'verifier_timeout'
 
 export type Failure = {
@@ -67,6 +68,7 @@ export type Attempt = {
     verifier?: Phase
   }
   usage: Atif.Usage | null
+  verifierMaxSec?: number
 }
 
 export type AgentSummary = {
@@ -94,6 +96,7 @@ export type AgentSummary = {
   routes: Route.Route[]
   scored: number
   tasks: number
+  verifierLimited: number
 }
 
 export function outcome(reward: number | null, failure: Failure | undefined): Attempt['outcome'] {
@@ -119,12 +122,18 @@ export const afterTimeout = 'after the agent timeout'
 
 export const ownLimit = "the task's own"
 
-export function limit(agentMaxSec: number | undefined): string {
-  return agentMaxSec === undefined ? ownLimit : agentMaxSec + ' s'
+export const verifierLimited = "verifier ended by the run's limit"
+
+export function limit(maxSec: number | undefined): string {
+  return maxSec === undefined ? ownLimit : maxSec + ' s'
 }
 
 export function limits(attempts: readonly Pick<Attempt, 'agentMaxSec'>[]): string[] {
   return [...new Set(attempts.map((attempt) => limit(attempt.agentMaxSec)))].sort()
+}
+
+export function verifierLimits(attempts: readonly Pick<Attempt, 'verifierMaxSec'>[]): string[] {
+  return [...new Set(attempts.map((attempt) => limit(attempt.verifierMaxSec)))].sort()
 }
 
 export function late(state: string, failure: Failure): string {
@@ -161,9 +170,11 @@ export function summarize(attempts: readonly Attempt[]): Record<string, AgentSum
       routes: [],
       scored: 0,
       tasks: 0,
+      verifierLimited: 0,
     })
     summary.attempts++
     summary[attempt.outcome]++
+    if (error(attempt)?.kind === 'verifier_limit') summary.verifierLimited++
     if (attempt.usage) {
       summary.inputTokens += attempt.usage.inputTokens
       summary.cachedTokens += attempt.usage.cachedTokens

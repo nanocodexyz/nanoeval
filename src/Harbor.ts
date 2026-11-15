@@ -17,6 +17,7 @@ const exceptions: Record<Result.FailureKind, string> = {
   environment: 'EnvironmentError',
   internal: 'InternalError',
   verifier: 'VerifierError',
+  verifier_limit: 'VerifierTimeoutError',
   verifier_timeout: 'VerifierTimeoutError',
 }
 

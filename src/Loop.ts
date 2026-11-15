@@ -134,6 +134,7 @@ export type Scorecard = {
     runSec: number
     slots: number
     taskErrors: number
+    verifierLimited: number
     wallSec: number
   }
   name: string
@@ -211,6 +212,7 @@ export function scorecard(
         : 0,
       slots: input.slots,
       taskErrors: arms.reduce((sum, arm) => sum + count(arm.errors.task), 0),
+      verifierLimited: arms.reduce((sum, arm) => sum + count(arm.errors.limit), 0),
       wallSec: input.wallSec,
     },
     name: run.name,
@@ -286,9 +288,11 @@ export function text(card: Scorecard): string {
         'Output tokens',
         'Wall time',
         ...(Arms.bounded(card.arms) ? ['Agent time limit'] : []),
+        ...(Arms.verifierBounded(card.arms) ? ['Verifier time limit'] : []),
         'Infrastructure errors',
         ...(Arms.apart(card.arms) ? ['Task dependency gone'] : []),
         'Agent or model errors',
+        ...(Arms.verifierBounded(card.arms) ? [Arms.capital(Result.verifierLimited)] : []),
         'Cancelled',
         'Against the baseline',
       ],
@@ -308,9 +312,11 @@ export function text(card: Scorecard): string {
         arm.metered ? number(arm.outputTokens) : 'not recorded',
         Compare.duration(arm.wallSec),
         ...(Arms.bounded(card.arms) ? [Arms.limited(arm)] : []),
+        ...(Arms.verifierBounded(card.arms) ? [Arms.verifierLimit(arm)] : []),
         Arms.infrastructure(arm),
         ...(Arms.apart(card.arms) ? [Arms.task(arm)] : []),
         Arms.agent(arm),
+        ...(Arms.verifierBounded(card.arms) ? [Arms.verifierLimited(arm)] : []),
         String(count(arm.errors.cancelled)),
         against(arm, card.baseline),
       ]),
@@ -334,6 +340,9 @@ export function text(card: Scorecard): string {
     (loop.taskErrors ? ', task dependency gone ' + loop.taskErrors : '') +
     ', agent or model errors ' +
     loop.agentErrors +
+    (Arms.verifierBounded(card.arms)
+      ? ', ' + Result.verifierLimited + ' ' + loop.verifierLimited
+      : '') +
     (loop.cancelled ? ', cancelled ' + loop.cancelled : '') +
     '\nverdict: ' +
     (card.baseline && card.verdict
