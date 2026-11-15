@@ -1,5 +1,6 @@
 import type * as Config from './Config.ts'
 import type * as Pins from './Pins.ts'
+import * as Price from './Price.ts'
 import * as Result from './Result.ts'
 
 export class InvalidError extends Error {
@@ -21,7 +22,12 @@ export type Run = {
   state: 'finished' | 'running'
 }
 
-export type Exclusion = { digest: string; file: string; names: readonly string[] }
+export type Exclusion = {
+  digest: string
+  file: string
+  names: readonly string[]
+  reason?: string | undefined
+}
 
 export type Estimate = { high: number | null; low: number | null; value: number | null }
 
@@ -33,11 +39,13 @@ export type Arm = {
   failed: number
   id: string
   label: string
+  listed: number
   matched: number
   modelCallsPerAttempt: number | null
   outputTokensPerAttempt: number
   passed: number
   passRate: Estimate
+  recorded: number
   run: string
   spec: Config.Agent
   uncosted: number
@@ -53,9 +61,15 @@ export type Card = {
   commit: string | null
   draws: number
   eval: { name: string; version: string }
-  excluded: { digest: string; file: string; tasks: { name: string; rows: number }[] } | null
+  excluded: {
+    digest: string
+    file: string
+    reason?: string
+    tasks: { name: string; rows: number }[]
+  } | null
   level: number
   matched: { attempts: number; tasks: number }
+  prices: Price.List | null
   reference: string
   runs: {
     arms: string[]
@@ -141,9 +155,18 @@ function estimate(value: number, drawn: readonly number[]): Estimate {
   return { ...interval(drawn), value: Number.isFinite(value) ? value : null }
 }
 
-function cost(attempt: Result.Attempt): number | undefined {
-  if (!attempt.usage) return 0
-  return attempt.usage.costUsd ?? (attempt.usage.modelCalls > 0 ? undefined : 0)
+export type Cost = { basis: 'list' | 'none' | 'recorded'; usd: number }
+
+export function cost(attempt: Result.Attempt, prices: Price.List = {}): Cost | undefined {
+  const usage = attempt.usage
+  if (!usage)
+    return attempt.timing.agentExecution && attempt.agent.provider !== 'oracle'
+      ? undefined
+      : { basis: 'none', usd: 0 }
+  if (usage.costUsd !== undefined) return { basis: 'recorded', usd: usage.costUsd }
+  if (!(usage.modelCalls > 0)) return { basis: 'none', usd: 0 }
+  const price = prices[attempt.agent.model]
+  return price ? { basis: 'list', usd: Price.usd(price, usage) } : undefined
 }
 
 export function build(runs: readonly Run[], options: build.Options): Card {
@@ -240,12 +263,19 @@ export function build(runs: readonly Run[], options: build.Options): Card {
         .sort((one, two) => one.index - two.index),
     ),
   )
-  const uncosted = matched.map(
-    (arm) => arm.flat().filter((attempt) => cost(attempt) === undefined).length,
+  const prices = options.prices ?? {}
+  const costs = matched.map((arm) =>
+    arm.map((task) => task.map((attempt) => cost(attempt, prices))),
   )
-  const cells = matched.map((arm) =>
-    arm.map((task) =>
-      task.map((attempt) => ({ passed: attempt.outcome === 'passed', usd: cost(attempt) ?? 0 })),
+  const based = (at: number, basis: Cost['basis'] | undefined) =>
+    costs[at]!.flat().filter((found) => found?.basis === basis).length
+  const uncosted = matched.map((_, at) => based(at, undefined))
+  const cells = matched.map((arm, at) =>
+    arm.map((task, index) =>
+      task.map((attempt, row) => ({
+        passed: attempt.outcome === 'passed',
+        usd: costs[at]![index]![row]?.usd ?? 0,
+      })),
     ),
   )
   const point = cells.map((arm) => rate(arm.flat()))
@@ -282,6 +312,7 @@ export function build(runs: readonly Run[], options: build.Options): Card {
         failed: count('failed'),
         id: member.agent.id,
         label: member.label,
+        listed: based(at, 'list'),
         matched: rows.length,
         modelCallsPerAttempt: calls
           ? used.reduce((sum, usage) => sum + usage.modelCalls, 0) / rows.length
@@ -293,6 +324,7 @@ export function build(runs: readonly Run[], options: build.Options): Card {
           point[at]!.passRate,
           drawn.map((draw) => draw[at]!.passRate),
         ),
+        recorded: based(at, 'recorded'),
         run: member.run,
         spec: member.agent,
         uncosted: uncosted[at]!,
@@ -317,6 +349,7 @@ export function build(runs: readonly Run[], options: build.Options): Card {
       ? {
           digest: options.exclude.digest,
           file: options.exclude.file,
+          ...(options.exclude.reason === undefined ? {} : { reason: options.exclude.reason }),
           tasks: options.exclude.names.map((name) => ({
             name,
             rows: runs
@@ -328,6 +361,7 @@ export function build(runs: readonly Run[], options: build.Options): Card {
       : null,
     level,
     matched: { attempts: keys.length, tasks: tasks.length },
+    prices: options.prices && Object.keys(options.prices).length ? options.prices : null,
     reference: options.reference,
     runs: runs.map((run) => ({
       arms: members.filter((member) => member.run === run.id).map((member) => member.label),
@@ -355,12 +389,13 @@ export declare namespace build {
     commit?: string | undefined
     draws: number
     exclude?: Exclusion | undefined
+    prices?: Price.List | undefined
     reference: string
     seed: number
   }
 }
 
-function escape(text: string): string {
+export function escape(text: string): string {
   return text
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
@@ -377,22 +412,77 @@ function figure(found: Estimate, format: (value: number) => string): string {
   return found.value === null ? 'no pass' : format(found.value)
 }
 
-function shown(found: Estimate | null, format: (value: number) => string): string {
-  if (!found) return 'no cost'
+export function shown(found: Estimate | null, format: (value: number) => string): string {
+  if (!found) return 'not recorded'
   return figure(found, format) + ' <span class="ci">' + range(found, format) + '</span>'
 }
 
 function plain(found: Estimate | null, format: (value: number) => string): string {
-  return found ? figure(found, format) + ' ' + range(found, format) : 'no cost'
+  return found ? figure(found, format) + ' ' + range(found, format) : 'not recorded'
 }
 
-const percent = (value: number) => (100 * value).toFixed(1)
+export const percent = (value: number) => (100 * value).toFixed(1)
 
-const usd = (value: number) => '$' + value.toFixed(3)
+export const usd = (value: number) => '$' + value.toFixed(3)
 
-const points = (value: number) => (value > 0 ? '+' : '') + (100 * value).toFixed(1)
+export const points = (value: number) => (value > 0 ? '+' : '') + (100 * value).toFixed(1)
 
-const times = (value: number) => value.toFixed(2)
+export const times = (value: number) => value.toFixed(2)
+
+export function basis(arm: Arm): string {
+  if (arm.uncosted) return 'not recorded'
+  if (!arm.listed) return 'recorded by the run'
+  return arm.recorded
+    ? 'recorded by the run and list price from recorded tokens'
+    : 'list price from recorded tokens'
+}
+
+export function costs(card: Card): string {
+  const listed = [
+    ...new Set(card.arms.filter((arm) => arm.listed).map((arm) => arm.spec.model)),
+  ].sort(ordered)
+  return [
+    'Cost basis, in matched rows.',
+    ...card.arms.map(
+      (arm) =>
+        arm.label +
+        ': ' +
+        basis(arm) +
+        ' (' +
+        arm.recorded +
+        ' recorded by the run, ' +
+        arm.listed +
+        ' at the list price from recorded tokens, ' +
+        (arm.matched - arm.recorded - arm.listed - arm.uncosted) +
+        ' without a model call at USD 0, ' +
+        arm.uncosted +
+        ' not recorded).',
+    ),
+    ...listed.map((model) => {
+      const price = card.prices![model]!
+      return (
+        'List price of ' +
+        model +
+        ', USD a million tokens: input ' +
+        price.inputUsd +
+        ', cached input ' +
+        price.cachedUsd +
+        ', output ' +
+        price.outputUsd +
+        (price.writeUsd
+          ? ', cache write for 5 minutes ' +
+            price.writeUsd.fiveMinutes +
+            ', for 1 hour ' +
+            price.writeUsd.oneHour
+          : '') +
+        '.'
+      )
+    }),
+    ...(card.arms.some((arm) => arm.uncosted)
+      ? ['An arm with a row whose cost is not recorded shows no USD figure, never 0.']
+      : []),
+  ].join(' ')
+}
 
 export function text(card: Card): string {
   return (
@@ -435,7 +525,7 @@ export function text(card: Card): string {
   )
 }
 
-function table(head: readonly string[], rows: readonly (readonly string[])[]): string {
+export function table(head: readonly string[], rows: readonly (readonly string[])[]): string {
   return (
     '<table><thead><tr>' +
     head.map((cell) => '<th>' + cell + '</th>').join('') +
@@ -489,7 +579,7 @@ export function html(card: Card): string {
       String(arm.errored),
       shown(arm.passRate, percent),
       arm.against ? shown(arm.against.passRateDifference, points) : 'reference',
-      arm.usdPerAttempt === null ? 'no cost' : usd(arm.usdPerAttempt),
+      arm.usdPerAttempt === null ? 'not recorded' : usd(arm.usdPerAttempt),
       shown(arm.usdPerPass, usd),
       arm.against ? shown(arm.against.usdPerPassRatio, times) : 'reference',
       arm.outputTokensPerAttempt.toFixed(0),
@@ -557,7 +647,9 @@ export function html(card: Card): string {
       card.excluded.digest +
       '</code>) names ' +
       card.excluded.tasks.length +
-      ' tasks. Their rows are in no count above.</p>' +
+      ' tasks. Their rows are in no count above.' +
+      (card.excluded.reason === undefined ? '' : ' Reason: ' + escape(card.excluded.reason)) +
+      '</p>' +
       table(
         ['Task', 'Rows left out'],
         card.excluded.tasks.map((task) => [escape(task.name), String(task.rows)]),
@@ -590,6 +682,9 @@ export function html(card: Card): string {
       : '') +
     '<h2>Arms on the matched set</h2>\n' +
     results +
+    '\n<p>' +
+    escape(costs(card)) +
+    '</p>' +
     '\n<h2>Rows apart from the matched set</h2>\n' +
     apart +
     '\n<h2>Arm specs</h2>\n' +
@@ -600,7 +695,7 @@ export function html(card: Card): string {
     tasks +
     '\n<h2>Excluded tasks</h2>\n' +
     excluded +
-    '\n<h2>Method</h2>\n<p>A row with the outcome passed, failed or errored has a verdict. A cancelled row and a row that no runner took, which ends as unscheduled, are not attempts, and each is counted apart. The matched set holds every task#attempt with a verdict in every arm, and every figure of an arm is over its rows of that set. USD is the cost that the Worker recorded for the row. A row without a model call costs nothing, and an arm with a row whose model calls have no cost shows no cost.</p>\n<p>Each interval is the ' +
+    '\n<h2>Method</h2>\n<p>A row with the outcome passed, failed or errored has a verdict. A cancelled row and a row that no runner took, which ends as unscheduled, are not attempts, and each is counted apart. The matched set holds every task#attempt with a verdict in every arm, and every figure of an arm is over its rows of that set. USD is the cost that the run recorded for the row. A row whose model calls carry no cost is priced from its recorded tokens when the command was given a list price of its model, and the line under the table of arms counts such rows. A row without a model call costs nothing, and an arm with a row whose cost is not recorded shows no USD figure.</p>\n<p>Each interval is the ' +
     percentLevel +
     ' % percentile interval of ' +
     card.draws +
