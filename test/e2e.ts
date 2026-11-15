@@ -4714,7 +4714,7 @@ async function main(): Promise<void> {
       } else
         assert.deepEqual(
           [trajectory, child].map((part) => part.steps.map((step) => step.source).join(' ')),
-          ['user agent agent agent agent', 'user agent agent agent'],
+          ['user agent agent agent agent agent', 'user agent agent agent'],
         )
       await pass()
       return
