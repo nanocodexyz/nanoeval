@@ -2453,8 +2453,32 @@ async function main(): Promise<void> {
       assert.equal(detail['result'], null)
       assert.deepEqual(
         detail['artifacts'],
-        ['agent/events.jsonl', 'agent/model-requests.jsonl', 'agent/trajectory.json'],
+        [
+          'agent/events.jsonl',
+          'agent/model-requests.jsonl',
+          'agent/trajectory.json',
+          'agent/turns.jsonl',
+        ],
         'a row that runs lists what can be read of it',
+      )
+      const turns = (await api.artifact(run, id!, 'agent/turns.jsonl'))
+        .trim()
+        .split('\n')
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              at_ms: number
+              deadline: { at_ms: number; limit_ms: number } | null
+              request_id: string
+            },
+        )
+      assert.equal(turns.length, 1, 'a row that runs has the record of the one turn it was sent')
+      const limitMs =
+        imported.tasks.find((task) => task.name === detail['attempt'].task)!.agent.timeoutSec * 1000
+      assert.deepEqual(
+        turns[0]!.deadline,
+        { at_ms: turns[0]!.at_ms + limitMs, limit_ms: limitMs },
+        'the record of the turn names the deadline that was sent with it',
       )
       const trajectory = JSON.parse(await api.artifact(run, id!, 'agent/trajectory.json'))
       assert.equal(trajectory.schema_version, 'ATIF-v1.7')
@@ -2472,7 +2496,7 @@ async function main(): Promise<void> {
       assert.equal(absent.code, 1)
       assert.match(
         absent.text,
-        /^nanoeval: the attempt is in the run phase and has no verifier\/reward\.txt yet: it has agent\/events\.jsonl, agent\/model-requests\.jsonl, agent\/trajectory\.json so far \(\S+ answered 404\)\n$/,
+        /^nanoeval: the attempt is in the run phase and has no verifier\/reward\.txt yet: it has agent\/events\.jsonl, agent\/model-requests\.jsonl, agent\/trajectory\.json, agent\/turns\.jsonl so far \(\S+ answered 404\)\n$/,
         'what a row that runs does not have yet is refused in one line',
       )
       const unknown = Crypto.randomUUID()
@@ -4412,6 +4436,20 @@ async function main(): Promise<void> {
         branch.state === 'completed' ? branch.verdict : branch.state,
       )
       assert.equal(verdicts.filter((verdict) => verdict === 'pass').length, 1, verdicts.join(' '))
+      const turns = (await read('agent/turns.jsonl'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { deadline: unknown; session: string })
+      assert.equal(
+        turns.length,
+        6,
+        'each of 3 branches was sent a turn to work and a turn to check',
+      )
+      assert.equal(new Set(turns.map((turn) => turn.session)).size, 3)
+      assert.ok(
+        turns.every((turn) => turn.deadline !== null),
+        'every turn of a branch was sent a deadline',
+      )
       if (backend === 'dir') assert.deepEqual(verdicts, ['fail', 'fail', 'pass'])
       assert.equal(
         record.chosen,

@@ -3260,22 +3260,31 @@ export class Run extends DurableObject<Env> {
     const agent = this.agentOf(row)
     if (agent.provider !== 'claude' && agent.provider !== 'codex')
       throw new Refusal(409, 'the agent of the attempt is not a session')
+    const now = Date.now()
     const deadline = Turn.deadline(this.config().limits, {
       limitMs: this.task(row.task).agent.timeoutSec * 1000,
-      now: Date.now(),
+      now,
     })
+    const turn: Turn.Turn = {
+      ...(deadline ? { deadline } : {}),
+      hand: Protocol.handName,
+      model: agent.model,
+      ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
+      payer: this.payer(agent.provider),
+      prompt: input.prompt,
+      provider: agent.provider,
+      requestId: input.requestId,
+      ...(agent.thinking ? { thinking: agent.thinking } : {}),
+    }
     try {
-      return await Harness.submit(this.env, input.session, {
-        ...(deadline ? { deadline } : {}),
-        hand: Protocol.handName,
-        model: agent.model,
-        ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
-        payer: this.payer(agent.provider),
-        prompt: input.prompt,
-        provider: agent.provider,
-        requestId: input.requestId,
-        ...(agent.thinking ? { thinking: agent.thinking } : {}),
-      })
+      const report = await Harness.submit(this.env, input.session, turn)
+      this.putArtifact(
+        row.id,
+        Turn.record,
+        (this.textArtifact(row.id, Turn.record) ?? '') +
+          Turn.sent(turn, { at: now, session: input.session }),
+      )
+      return report
     } catch (error) {
       throw await this.unpaid(row, error)
     }

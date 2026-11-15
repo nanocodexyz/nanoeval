@@ -52,6 +52,25 @@ test('a run sends the deadline of the agent unless its limits say it sends none'
   assert.equal(Turn.deadline({ noDeadline: true }, input), undefined)
 })
 
+test('the record of a turn that was sent names its deadline, or says that it had none', () => {
+  const input = { at: 1_800_000_000_000, session: 'run-a00001' }
+  assert.deepEqual(
+    JSON.parse(
+      Turn.sent({ ...turn, deadline: { atMs: 1_800_000_900_000, limitMs: 900_000 } }, input),
+    ),
+    {
+      at_ms: 1_800_000_000_000,
+      deadline: { at_ms: 1_800_000_900_000, limit_ms: 900_000 },
+      request_id: 'turn-1',
+      session: 'run-a00001',
+    },
+  )
+  const none = Turn.sent(turn, input)
+  assert.equal(JSON.parse(none).deadline, null)
+  assert.equal(none.endsWith('\n') && none.indexOf('\n') === none.length - 1, true)
+  assert.equal(none.includes(turn.prompt), false)
+})
+
 test('a claude-direct session asks for the claude orchestration and no codex one', () => {
   const body = Turn.body({
     ...turn,
