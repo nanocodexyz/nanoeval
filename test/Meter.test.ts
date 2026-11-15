@@ -57,10 +57,10 @@ test('a limited answer is asked again after the pause the provider names or the 
         asked.push(limited)
         return Retry.pause({
           deadlineAt: started + 60_000,
-          leaseSec: 60,
           now: Date.now(),
           pollMs: 10,
           ...(limited.retryAfterMs === undefined ? {} : { retryAfterMs: limited.retryAfterMs }),
+          stepRetries: 3,
           tries: limited.tries,
         })
       },
@@ -97,10 +97,10 @@ test('a limited answer reaches the agent as the provider sent it when the attemp
       limited: (limited) =>
         Retry.pause({
           deadlineAt: 5_000,
-          leaseSec: 60,
           now: 1_000,
           pollMs: 10,
           ...(limited.retryAfterMs === undefined ? {} : { retryAfterMs: limited.retryAfterMs }),
+          stepRetries: 3,
           tries: limited.tries,
         }),
       settle: (outcome) => void settled.push(outcome),

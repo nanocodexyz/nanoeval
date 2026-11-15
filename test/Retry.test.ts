@@ -283,16 +283,18 @@ test('a verifier that leaves reward.txt without a reward is retried as an enviro
   )
 })
 
-test('a limited answer waits longer each time, at least as long as its provider names, and never past the deadline of the attempt', () => {
-  const input = { deadlineAt: 2_000_000, leaseSec: 60, now: 1_000_000, pollMs: 250 }
+test('a limited answer waits twice as long for each of the step retries of the run, at least as long as its provider names, and never past the deadline of the attempt', () => {
+  const input = { deadlineAt: 2_000_000, now: 1_000_000, pollMs: 250, stepRetries: 3 }
   assert.equal(Retry.pause({ ...input, tries: 0 }), 250)
-  assert.equal(Retry.pause({ ...input, tries: 4 }), 4000)
-  assert.equal(Retry.pause({ ...input, tries: 20 }), 60_000)
+  assert.equal(Retry.pause({ ...input, tries: 2 }), 1000)
+  assert.equal(Retry.pause({ ...input, tries: 3 }), 2000)
+  assert.equal(Retry.pause({ ...input, tries: 20 }), 2000)
+  assert.equal(Retry.pause({ ...input, stepRetries: 0, tries: 20 }), 250)
   assert.equal(Retry.pause({ ...input, retryAfterMs: 7000, tries: 0 }), 7000)
-  assert.equal(Retry.pause({ ...input, retryAfterMs: 7000, tries: 6 }), 16_000)
+  assert.equal(Retry.pause({ ...input, retryAfterMs: 1000, tries: 6 }), 2000)
   assert.equal(Retry.pause({ ...input, retryAfterMs: 90_000, tries: 20 }), 90_000)
-  assert.equal(Retry.pause({ ...input, now: 1_939_999, tries: 20 }), 60_000)
-  assert.equal(Retry.pause({ ...input, now: 1_940_000, tries: 20 }), undefined)
+  assert.equal(Retry.pause({ ...input, now: 1_997_999, tries: 20 }), 2000)
+  assert.equal(Retry.pause({ ...input, now: 1_998_000, tries: 20 }), undefined)
   assert.equal(Retry.pause({ ...input, now: 1_999_000, tries: 0 }), 250)
   assert.equal(Retry.pause({ ...input, now: 1_999_000, retryAfterMs: 1000, tries: 0 }), undefined)
   assert.equal(Retry.pause({ ...input, now: 2_000_001, tries: 0 }), undefined)

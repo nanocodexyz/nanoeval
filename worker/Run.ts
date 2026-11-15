@@ -944,10 +944,10 @@ export class Run extends DurableObject<Env> {
     const { retryAfterMs, tries } = input.limited
     return Retry.pause({
       deadlineAt: row.deadline_at ?? 0,
-      leaseSec: config.limits.leaseSec,
       now: Date.now(),
       pollMs: config.sandbox.pollMs,
       ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+      stepRetries: config.limits.stepRetries,
       tries,
     })
   }

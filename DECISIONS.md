@@ -6266,3 +6266,31 @@ The rows of the 89 were compared with the rows of the import made one at a time 
 **What it recorded.** Both rows passed. `status` printed `spend: model $0.0064 of a budget of $0.25, 8 responses priced at the list prices of the run` and, for the agent, `cost $0.0064 at list prices`. `arms` printed `passed 2/2 rows, pass micro 100.0% of 2 scored, pass macro 100.0% over 2 tasks, $0.0032 a pass ($0.0064 at list prices), input tokens 39,868 (36,352 cached), output tokens 785, wall time 1 min 7 s, errors: infrastructure 0, agent or model 0`, the same line from the Worker and from the stored results of the run. By hand, 39,868 input tokens at $0.15 and 785 output tokens at $0.50 a million are $0.0063727, which is the cost of the arm in its JSON, and each of the 8 answered requests carries `costBy: "list"` and its share in the request log of its attempt. The forwarder keeps a ledger of its own at the same prices: 8 answered requests, 39,868 input and 785 output tokens, $0.006373. The endpoint answered `429` to 22 more requests of the two rows, which the run waited out, `model_waits=15 (38 s)` and `model_waits=7 (3 s)`: they carry no usage and have no price.
 
 **Not verified.** What the provider charged: its bill was not read, and the ledger is the forwarder's own count at list prices. A budget that a real run reaches: this one spent 2.5% of its budget. Cached tokens at a price of their own: the list gave them the input price, as the rows of the entry above were priced. krun and ns slots.
+
+## 2026-11-15: the pause before a limited model request is asked again stops doubling after the step retries of the run
+
+**What was wrong.** The entry above made the pause `--poll-ms` doubled with every answer up to `--lease-sec`: 0.25 s to 60 s with the defaults. The limit of the route its rows are from was then measured by its own requests, 398 of them: a model answers 20 requests in any 60 s for all callers together, so once the window is full a place comes free every 3.0 s; its `429` names no `Retry-After`, comes back in 0.16 s and does not count against the limit. A caller that waits a minute between two asks, beside callers that ask every few seconds, finds a free place rarely: the callers beside it take each place within seconds.
+
+**Simulated**, not measured: a provider that hands out 20 places and one more every 3 s, 4 rows of 20 requests each with 2.5 to 7.5 s between an answer and the next request, beside 0 to 16 other callers that ask again every 3 s, 20 seeds each.
+
+| Other callers | Pause up to `--lease-sec`: a row ends after, mean and worst | Pause that stops doubling at 2 s: mean and worst |
+| ---: | --- | --- |
+| 0 | 157 s, 234 s | 160 s, 199 s |
+| 4 | 411 s, 3,956 s | 213 s, 279 s |
+| 8 | 470 s, 6,342 s | 226 s, 308 s |
+| 16 | 554 s, not within 7,200 s | 246 s, 362 s |
+
+**What changed.** The pause is `--poll-ms` doubled with each of the first `--step-retries` answers and then stays: 0.25, 0.5, 1 and 2 s with the defaults, then 2 s for as long as the attempt has agent time left (`Retry.pause`). A `Retry-After` that names more is still kept, and `--lease-sec` no longer bounds the pause. Both options existed and no constant is new. `--step-retries 0` asks every `--poll-ms`.
+
+**Checked**, on a machine with 5 cores and no KVM, by a user who is not root: the unit test of the pauses asks the new ones, the two tests of the relay pass with them, and the lane of a provider that answers `429` twice passes unchanged, since its second pause is the first doubling. `npm run lint` and `npm run check:types` pass.
+
+**Rejected.**
+
+- Asking every `--poll-ms` without doubling. With 28 slots waiting that is 112 requests a second to a provider that is already refusing.
+- A pause read from the route. The provider names none, and the run does not know the rule of a route it is given.
+- A limit of the run on its own requests a minute. It would keep the run under a rate it is told, and is a change of its own: this entry is about what the run does once it is refused.
+
+**Not verified.**
+
+- A real route: the table is a simulation, and its other callers do not back off, which is what was seen of two installed agents on that route and not of every caller.
+- A provider that counts refused requests against its limit. For such a one a pause of 2 s is too eager, and a `Retry-After` is what tells the run.
