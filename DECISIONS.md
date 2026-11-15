@@ -7345,3 +7345,65 @@ The 73 tasks that are kept had a verifier in 2,131 rows of those nine arms and t
 **Checked.** On the pins alone, a tree that differs from this commit in `test/e2e.ts` and DECISIONS.md, each job from a fresh clone on a machine with 5 cores and no KVM: the check job passed 5 of 5, `npm test` 533 tests (528 pass, 5 skipped for KVM or root, 0 fail), and the e2e-dir job was stopped at its red lane, when 13 of its 65 lanes had ended: 12 passed, among them `branches` with the counts of the entry above, and the lane `midturn` with a pair of cells failed on the comparison above. With the changed expectation in that clone, `npm run lint` passed.
 
 **Not verified.** When this was written: the e2e-dir job on this commit, which starts again from its first lane with the changed expectation, and the jobs on krun and ns slots (e2e-krun, e2e-ns, krun, e2e-revision). A deployed Worker, and a model on the new hand and package. No lane ends a Codex turn empty, admits incomplete work in a final message or comes near a deadline, so the finish check before the error, the four new admissions and the events of the nudge, the reprompt and the reminders were seen at work by nothing here.
+
+## 2026-11-15: a cost model of the wave 7f pair: what a nanocode pass costs against a Claude Code pass, by token kind and by kind of model call, and what 0.6 times would need
+
+**Why.** The wave 7f pair ended with nanocode ahead of Claude Code in passes and behind it in dollars a pass. The target is a nanocode pass at 0.6 times the cost of a Claude Code pass. This entry records what an attempt of each arm costs by kind of token, where the dollars of nanocode go by kind of model call, and how much of the fall each known lever gives at most. It changes no code and no default.
+
+**The runs.** Run b7d70ffb, on this day: Terminal-Bench 2.1, 89 tasks three times, 267 rows an arm, 534 rows. Two arms on the plan route and the same model: `nano` is nanocode as `claude:claude-opus-5-5:high`, and `cc` is claude-code on claude-opus-5-5. A deployed Worker of nanoeval `15d2cfb` with nanocode-ts `build-b9cf33f` and the hand `nanocode-cli-76a67d2`, krun slots, one bare-metal machine with KVM (24 cores, 48 hardware threads) that ran nothing else. The run ended by itself in 78.0 min with 0 rows cancelled and 0 lost claims. As run: nano 259 passed, 5 failed, 3 errored, and cc 253, 13, 1. The 4 errored rows are verifier timeouts of torch-tensor-parallelism, an unsound task.
+
+Run 6294482a is its rerun, on the same machine, started while the last rows of the first run still ran: the 31 tasks of the rows that the first run claimed or ran under more than 25 % of CPU pressure, three times an arm, 186 rows, every row under 10 % of pressure. The Worker had been deployed again between the two: the rerun ran nanoeval `f722246` with nanocode-ts `build-8543136` and the hand `nanocode-cli-1a946f3`. The merge replaces the 45 task attempts an arm that were under pressure with the rows of the rerun, in order of attempt. Merged: nano 257 passed, 7 failed, 3 errored of 267, and cc 251, 15, 1. A sound task is one of the 82 that `unsound.json` does not list, 246 rows an arm: nano 241 passed and 5 failed, cc 233 and 13. Of the 246 sound rows of each arm, 39 come from the rerun.
+
+**Prices.** List prices for a million tokens. claude-opus-5-5: $4 input, $0.20 cache read, $5 cache write for 5 minutes, $8 for 1 hour, $20 output. claude-opus-5 and claude-opus-4-8, which answer after a refused request: $5, $0.50, $6.25, $10 and $25. A cache write is priced by the lifetime that was billed. A request line names no lifetime, so the tokens written for 1 hour are the cost the run recorded for the request, less its cost at the 5 minute price, over the $3 between the two prices. The run itself costs a request of a fallback model at the claude-opus-5-5 price, so its own figure is lower on the rows with such a request. Both figures are in the table.
+
+**What an attempt costs.** Merged rows. Each cell holds the tokens of an attempt and their USD. The last column of each group is the ratio of the USD, or the difference where cc has next to none.
+
+| an attempt | sound 82 tasks: nano (246 rows, 241 passed) | cc (246 rows, 233 passed) | nano / cc | sound, no fallback row: nano (233 rows, 228 passed) | cc (234 rows, 224 passed) | nano / cc | all 89 tasks: nano (267 rows, 257 passed) | cc (267 rows, 251 passed) | nano / cc |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| model calls | 13.72 | 11.22 | 1.22x | 13.50 | 11.02 | 1.23x | 13.97 | 11.52 | 1.21x |
+| input, uncached | 36, $0.0001 | 27, $0.0001 | +0.0000 | 34, $0.0001 | 23, $0.0001 | +0.0000 | 39, $0.0002 | 28, $0.0001 | +0.0000 |
+| cache read | 427.5k, $0.0921 | 373.1k, $0.0801 | 1.15x | 425.1k, $0.0850 | 371.2k, $0.0742 | 1.15x | 423.5k, $0.0948 | 373.7k, $0.0841 | 1.13x |
+| cache write, 5 min | 23.0k, $0.1171 | 23.7k, $0.1203 | 0.97x | 22.5k, $0.1125 | 23.1k, $0.1155 | 0.97x | 22.9k, $0.1176 | 23.4k, $0.1195 | 0.98x |
+| cache write, 1 h | 412, $0.0035 | 0, $0.0000 | +0.0035 | 115, $0.0009 | 0, $0.0000 | +0.0009 | 542, $0.0048 | 0, $0.0000 | +0.0048 |
+| output | 12.3k, $0.2511 | 9.5k, $0.1937 | 1.30x | 11.7k, $0.2347 | 9.2k, $0.1835 | 1.28x | 12.1k, $0.2482 | 9.4k, $0.1929 | 1.29x |
+| **USD an attempt** | **$0.4640** | **$0.3942** | **1.177x** | **$0.4333** | **$0.3733** | **1.161x** | **$0.4657** | **$0.3966** | **1.174x** |
+| **USD a pass** | **$0.4736** | **$0.4162** | **1.138x** | **$0.4428** | **$0.3900** | **1.135x** | **$0.4838** | **$0.4219** | **1.147x** |
+| USD a pass, the Worker's own costUsd | $0.4590 | $0.4045 | 1.135x | $0.4428 | $0.3900 | 1.135x | $0.4623 | $0.4034 | 1.146x |
+
+On sound tasks a nanocode attempt costs 1.177 times a Claude Code attempt, and a pass 1.138 times: $0.4736 against $0.4162. Of the $0.0698 an attempt between the arms, output tokens are $0.0574 (82 %), cache reads $0.0120 and cache writes $0.0003. nanocode makes 1.22 times the model calls and writes 1.29 times the output tokens. 1.8 % of its written tokens were billed for 1 hour. Over all 89 tasks a pass costs 1.147 times, and 1.136 times without the 3 rows an arm of torch-tensor-parallelism ($0.481 against $0.424 over 264 rows). As run, without the rerun, a sound pass costs $0.457 against $0.420, 1.086 times, with 243 and 235 passes.
+
+**Where the dollars of nanocode go.** The 3,375 model calls of the 246 sound rows of nanocode, in three classes. A wait round is a call whose only tool call is `wait` on a Code Mode cell that still runs: the cell yielded after its 10 s, and the model spent a request to keep waiting. The finish tail is every call after the finish reminder, the `user` step that tells the model to check its work before it ends, until the end of the attempt. A wait round inside the tail counts as a wait round. The rest is the work. The columns are for an attempt.
+
+| class of nano model call | calls an attempt | USD an attempt | of it cache read / cache write / output | share of nano USD a pass | rows with one | an earlier replay |
+| --- | --- | --- | --- | --- | --- | --- |
+| (a) wait rounds: the only action is `wait` on a cell that still runs | 1.24 | $0.0202 | 0.0084 / 0.0071 / 0.0048 | 4.4 % | 115 | $0.025-0.029 |
+| (b) finish tail: every call after the finish reminder (its 0.11 wait rounds are in (a)) | 2.42 | $0.0580 | 0.0186 / 0.0113 / 0.0280 | 12.5 % | 245 | $0.041-0.054 |
+| (c) the rest | 10.06 | $0.3858 | 0.0651 / 0.1023 / 0.2183 | 83.1 % | 246 |  |
+| all | 13.72 | $0.4640 | | 100 % | 246 | |
+
+115 of the 246 rows have a wait round, and 98 % of the rounds are the first wait after a cell yielded. 245 rows have a finish tail, 2.55 calls each with its wait rounds: 0.99 calls an attempt are the last message, written a second time ($0.0221, 594 output tokens), and 1.37 carry tool calls ($0.0348). The tail of a row costs $0.043 at the median, $0.088 at the 90th percentile and $0.85 at the most. The 10 rows with the dearest tails hold $3.48 of the $14.73. On the 233 rows with no request of a fallback model the tail costs $0.0477 an attempt. The 13 rows with one have tails of $0.24 each.
+
+**One task.** winning-avg-corewars is 11.3 % of the sound spend of nanocode in 3 attempts: $12.94 of $114.14 ($5.33 in 93 calls, $5.75 in 102 calls, $1.86 in 38 calls). Claude Code paid $4.94 for its 3, 5.1 % of its spend. Without the task a nanocode pass costs 1.063 times a Claude Code pass.
+
+**Output tokens.** On the 74 sound tasks that both arms passed 3 of 3, 222 attempts an arm, nanocode writes 11,121 output tokens an attempt and Claude Code 8,519, 1.31 times, worth $0.0524 an attempt. Without winning-avg-corewars: 9,676 against 8,023, 1.21 times, $0.0335. Of the 11,121 of nanocode, 236 are in wait rounds, 1,206 in the finish tail and 9,680 in the rest. The rest alone is 1,160 tokens over all of Claude Code, and 207 without winning-avg-corewars. So the output gap is the finish tail, the wait rounds and one task, and little else.
+
+**What 0.6 times needs.** A Claude Code pass costs $0.4162, so the target is $0.2497. A nanocode pass costs $0.4736: it has to fall by $0.2239, 47.3 %. Each line below takes one lever to its end, which no change will reach: a wait round also carries the output of its cell, and the finish tail is where the checks of the reminder run. USD a pass is the total over the 241 passes of nanocode, which are held fixed.
+
+| what each lever gives at most (USD a pass = total / 241 passes) | USD a pass | nano after it, cumulative | against cc $0.4162 |
+| --- | --- | --- | --- |
+| as measured | | $0.4736 | 1.138x |
+| (a) no wait round | -$0.0207 | $0.4530 | 1.088x |
+| (b) no finish tail | -$0.0592 | $0.3938 | 0.946x |
+| winning-avg-corewars: class (c) of its 3 attempts ($12.61) down to all cc paid for the task ($4.94) | -$0.0318 | $0.3620 | 0.870x |
+| output gap: class (c) output of the other 81 tasks ($46.77) down to cc's whole output there ($44.97) | -$0.0075 | $0.3545 | 0.852x |
+| **what 0.6x needs**: cc $0.4162 x 0.6 | **-$0.2239 (47.3 %)** | **$0.2497** | 0.600x |
+
+The four levers give at most $0.1191 a pass, 53 % of the fall, and leave nanocode at 0.852 times. The other $0.1048 a pass is in the rest, the work that Claude Code also does: an attempt of it costs $0.102 of cache writes, $0.218 of output and $0.065 of cache reads. The target is not reached by removing overhead around the work. It needs the work itself to take fewer or shorter calls than the work of Claude Code.
+
+**The 5 minute lifetime.** nanocode wrote 23,044 tokens an attempt for 5 minutes and 412 for 1 hour. At the 1 hour price the 5 minute tokens would cost $0.0703 an attempt more. The short lifetime cost almost nothing back: 5 calls of nanocode came after a gap of more than 300 s and found their cache gone, 31,941 tokens written again, $0.15 in all. Claude Code lost its cache on 35 calls, 667,828 tokens, $3.21.
+
+**Against an earlier replay.** A replay of rows of this pair, made before this entry, put the finish tail at $0.041 to $0.054 an attempt, the wait rounds at $0.025 to $0.029, and the saving of the 5 minute lifetime at $0.042. Measured over all sound rows: the finish tail is $0.0580, above the range, and $0.0477 on the rows without a fallback model, inside it. The wait rounds are $0.0202, and $0.0214 as run without the rerun, below the range. The saving of the lifetime is $0.0703, above it.
+
+**How it was made.** No run was started for this entry. For each of the 360 nanocode rows of the two runs, the artifacts `agent/model-requests.jsonl` and `agent/trajectory.json`, and the request lines of the 360 claude-code rows, each read from the Worker by the route that `nanoeval attempt RUN ATTEMPT ARTIFACT` reads. A request line holds the tokens, the model and the cost of one request. A step of the trajectory holds the tokens of its call, its tool calls and its time. A call is matched to its step by its input, cached and output tokens in order, and a call belongs to the tail when it starts after the time of the reminder. The requests of every one of the 267 merged nanocode rows sum to the usage record of the row: calls, output, cache read and cache write. 5 claude-code rows have one request more than their record counts, with the same tokens. The scripts that read the rows are not in this repository.
+
+**Not measured.** Thinking against visible output: a request has one output figure. The calls of Claude Code by class: its trajectories were not read, so its own last messages and waits stay inside its totals. Whether nanocode keeps its passes without the finish tail: every lever is arithmetic on rows that ran with it. 0.32 requests an attempt of nanocode ($0.0092) have no step in the trajectory, 0.24 of them with no output token, and they count in the tail or the rest by their time. One row has no reminder. This is one run and its rerun on one machine, the rerun on a later build of the harness, and no second run says how far the figures move.
