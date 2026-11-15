@@ -313,10 +313,21 @@ const usage = `nanoeval <command>
             tool calls in a row or at N tokens of context, and one that ends in
             :tool_result_tokens=N has the result of a code cell bounded at N tokens
             (nano-st-trunc=claude:claude-opus-5-5:medium:cell_yield_ms=120000:
-            brief_finish=on:fold_finish=on:tool_result_tokens=2000). The options come in
+            brief_finish=on:fold_finish=on:tool_result_tokens=2000). A claude or claude-direct
+            agent may also name :skip_finish_check=on (a turn ends at its first final message,
+            with no finish check), :late_finish_check_ms=N (the finish check runs past the last
+            deadline reminder while N ms are left; never with skip_finish_check),
+            :result_effort=low|medium|high|xhigh|max (the effort of a request that brings only
+            tool results), :stop_at_target=on (a target the task sets ends it once met),
+            :yield_floor_ms=N (an exec or wait yields after N ms at the soonest) and
+            :yield_share=N (an exec or wait yields after N percent of the time left at most)
+            (nano-w7n=claude:claude-opus-5-5:medium:skip_finish_check=on:result_effort=low:
+            stop_at_target=on:yield_floor_ms=30000). The options come in
             this order where several are named: branches, refusal_fallback, cell_yield_ms,
             brief_finish, fold_finish, low_effort_rounds, brief_final, lean_cells,
-            escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens.
+            escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens,
+            skip_finish_check, late_finish_check_ms, result_effort, stop_at_target,
+            yield_floor_ms, yield_share.
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
@@ -709,6 +720,8 @@ const on = { pattern: 'on', value: 'on' }
 
 const scopes = { pattern: 'return_once|session', value: 'return_once|session' }
 
+const efforts = { pattern: Config.efforts.join('|'), value: Config.efforts.join('|') }
+
 const agentOptions: readonly AgentOption[] = [
   {
     ...count,
@@ -781,6 +794,42 @@ const agentOptions: readonly AgentOption[] = [
     name: 'tool_result_tokens',
     read: (text) => ({ toolResultTokens: Number(text) }),
     write: (agent) => agent.toolResultTokens,
+  },
+  {
+    ...on,
+    name: 'skip_finish_check',
+    read: () => ({ skipFinishCheck: true }),
+    write: (agent) => (agent.skipFinishCheck ? on.value : undefined),
+  },
+  {
+    ...count,
+    name: 'late_finish_check_ms',
+    read: (text) => ({ lateFinishCheckMs: Number(text) }),
+    write: (agent) => agent.lateFinishCheckMs,
+  },
+  {
+    ...efforts,
+    name: 'result_effort',
+    read: (text) => ({ resultEffort: text as Config.Effort }),
+    write: (agent) => agent.resultEffort,
+  },
+  {
+    ...on,
+    name: 'stop_at_target',
+    read: () => ({ stopAtTarget: true }),
+    write: (agent) => (agent.stopAtTarget ? on.value : undefined),
+  },
+  {
+    ...count,
+    name: 'yield_floor_ms',
+    read: (text) => ({ yieldFloorMs: Number(text) }),
+    write: (agent) => agent.yieldFloorMs,
+  },
+  {
+    ...count,
+    name: 'yield_share',
+    read: (text) => ({ yieldShare: Number(text) }),
+    write: (agent) => agent.yieldShare,
   },
 ]
 

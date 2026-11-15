@@ -3312,6 +3312,9 @@ export class Run extends DurableObject<Env> {
         : { escalateToolErrors: agent.escalateToolErrors }),
       ...(agent.foldFinish ? { foldFinish: true } : {}),
       hand: Protocol.handName,
+      ...(agent.lateFinishCheckMs === undefined
+        ? {}
+        : { lateFinishCheckMs: agent.lateFinishCheckMs }),
       ...(agent.leanCells ? { leanCells: true } : {}),
       ...(agent.lowEffortRounds ? { lowEffortRounds: true } : {}),
       model: agent.model,
@@ -3321,8 +3324,13 @@ export class Run extends DurableObject<Env> {
       provider: agent.provider,
       ...(agent.refusalFallback ? { refusalFallback: agent.refusalFallback } : {}),
       requestId: input.requestId,
+      ...(agent.resultEffort ? { resultEffort: agent.resultEffort } : {}),
+      ...(agent.skipFinishCheck ? { skipFinishCheck: true } : {}),
+      ...(agent.stopAtTarget ? { stopAtTarget: true } : {}),
       ...(agent.thinking ? { thinking: agent.thinking } : {}),
       ...(agent.toolResultTokens === undefined ? {} : { toolResultTokens: agent.toolResultTokens }),
+      ...(agent.yieldFloorMs === undefined ? {} : { yieldFloorMs: agent.yieldFloorMs }),
+      ...(agent.yieldShare === undefined ? {} : { yieldShare: agent.yieldShare }),
     }
     try {
       const report = await Harness.submit(this.env, input.session, turn)

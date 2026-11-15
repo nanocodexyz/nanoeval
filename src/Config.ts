@@ -29,6 +29,7 @@ export type Agent = {
   escalateToolErrors?: number
   foldFinish?: true
   id: string
+  lateFinishCheckMs?: number
   leanCells?: true
   lowEffortRounds?: true
   model: string
@@ -36,8 +37,13 @@ export type Agent = {
   preflight?: true
   provider: 'claude' | 'codex' | 'oracle' | Installed.Kind
   refusalFallback?: RefusalFallback
+  resultEffort?: Effort
+  skipFinishCheck?: true
+  stopAtTarget?: true
   thinking?: string
   toolResultTokens?: number
+  yieldFloorMs?: number
+  yieldShare?: number
 }
 
 export type Harness = 'installed' | 'oracle' | 'session'
@@ -56,12 +62,18 @@ export const payers: readonly Payer[] = ['deployment', 'plan']
 
 export type RefusalFallback = 'return_once' | 'session'
 
+export type Effort = 'high' | 'low' | 'max' | 'medium' | 'xhigh'
+
+export const efforts: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
+
 export const finishLevers = [
   'briefFinal',
   'briefFinish',
   'foldFinish',
   'leanCells',
   'lowEffortRounds',
+  'skipFinishCheck',
+  'stopAtTarget',
 ] as const
 
 export const planSignIn = 'nanoeval plans sign-in claude'
@@ -309,6 +321,35 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude')
         fail(agent.id + ' has a toolResultTokens, which only a claude session takes')
     }
+    if (agent.lateFinishCheckMs !== undefined) {
+      integer(agent.lateFinishCheckMs, agent.id + ': lateFinishCheckMs', 1)
+      if (provider !== 'claude')
+        fail(agent.id + ' has a lateFinishCheckMs, which only a claude session takes')
+      if (agent.skipFinishCheck !== undefined)
+        fail(agent.id + ' has a skipFinishCheck and a lateFinishCheckMs, which never go in one arm')
+    }
+    if (agent.resultEffort !== undefined) {
+      choice(agent.resultEffort, agent.id + ': resultEffort', efforts)
+      if (provider !== 'claude')
+        fail(agent.id + ' has a resultEffort, which only a claude session takes')
+    }
+    if (agent.yieldFloorMs !== undefined) {
+      integer(agent.yieldFloorMs, agent.id + ': yieldFloorMs', 1)
+      if (provider !== 'claude')
+        fail(agent.id + ' has a yieldFloorMs, which only a claude session takes')
+    }
+    if (agent.yieldShare !== undefined) {
+      if (
+        !(
+          Number.isSafeInteger(agent.yieldShare) &&
+          agent.yieldShare >= 1 &&
+          agent.yieldShare <= 100
+        )
+      )
+        fail(agent.id + ': yieldShare must be a whole percent from 1 to 100')
+      if (provider !== 'claude')
+        fail(agent.id + ' has a yieldShare, which only a claude session takes')
+    }
     for (const lever of finishLevers) {
       if (agent[lever] === undefined) continue
       if (agent[lever] !== true) fail(agent.id + ' has a ' + lever + ' that is not true')
@@ -335,6 +376,9 @@ export function parse(value: unknown): Config {
         : { escalateToolErrors: agent.escalateToolErrors }),
       ...(agent.foldFinish ? { foldFinish: true as const } : {}),
       id: agent.id,
+      ...(agent.lateFinishCheckMs === undefined
+        ? {}
+        : { lateFinishCheckMs: agent.lateFinishCheckMs }),
       ...(agent.leanCells ? { leanCells: true as const } : {}),
       ...(agent.lowEffortRounds ? { lowEffortRounds: true as const } : {}),
       model: agent.model,
@@ -342,8 +386,13 @@ export function parse(value: unknown): Config {
       ...(agent.preflight ? { preflight: true as const } : {}),
       provider,
       ...(agent.refusalFallback ? { refusalFallback: agent.refusalFallback } : {}),
+      ...(agent.resultEffort ? { resultEffort: agent.resultEffort } : {}),
+      ...(agent.skipFinishCheck ? { skipFinishCheck: true as const } : {}),
+      ...(agent.stopAtTarget ? { stopAtTarget: true as const } : {}),
       ...(agent.thinking ? { thinking: agent.thinking } : {}),
       ...(agent.toolResultTokens === undefined ? {} : { toolResultTokens: agent.toolResultTokens }),
+      ...(agent.yieldFloorMs === undefined ? {} : { yieldFloorMs: agent.yieldFloorMs }),
+      ...(agent.yieldShare === undefined ? {} : { yieldShare: agent.yieldShare }),
     }
   })
   if (new Set(agents.map((agent) => agent.id)).size !== agents.length)
