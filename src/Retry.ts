@@ -2,6 +2,10 @@ import type * as Proxy from './Proxy.ts'
 import type * as Result from './Result.ts'
 import * as Verdict from './Verdict.ts'
 
+export const limited: readonly number[] = [429, 503, 529]
+
+export const limitedPrefix = 'the model provider limited the agent'
+
 export const queued = 'the turn never started'
 
 export const refusedPrefix = 'the run ended the turn'
@@ -13,6 +17,58 @@ export const stalledPrefix = 'the agent never reached its model'
 export const unansweredPrefix = 'the model endpoint never answered the agent'
 
 export const unreached: readonly number[] = [502, 530]
+
+export function after(header: string | null, now: number): number | undefined {
+  if (header === null || header.trim() === '') return undefined
+  const seconds = Number(header)
+  const ms = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - now
+  return ms > 0 ? ms : undefined
+}
+
+export function pause(input: pause.Input): number | undefined {
+  const ms = Math.max(
+    Math.min(input.pollMs * 2 ** input.tries, input.leaseSec * 1000),
+    input.retryAfterMs ?? 0,
+  )
+  return input.now + ms < input.deadlineAt ? ms : undefined
+}
+
+export declare namespace pause {
+  type Input = {
+    deadlineAt: number
+    leaseSec: number
+    now: number
+    pollMs: number
+    retryAfterMs?: number
+    tries: number
+  }
+}
+
+export function throttled(input: {
+  failure?: Result.Failure
+  requests: readonly { status: number; waitMs?: number }[]
+}): Result.Failure | undefined {
+  const { failure, requests } = input
+  if (failure?.kind !== 'agent' && failure?.kind !== 'agent_timeout') return undefined
+  const tail = requests.slice(
+    requests.findLastIndex((request) => !limited.includes(request.status)) + 1,
+  )
+  if (!tail.length) return undefined
+  return {
+    at: failure.at,
+    kind: 'environment',
+    message:
+      limitedPrefix +
+      ': its last ' +
+      tail.length +
+      ' model requests were answered ' +
+      [...new Set(tail.map((request) => request.status))].join(', ') +
+      ', and the run waited ' +
+      Math.round(tail.reduce((sum, request) => sum + (request.waitMs ?? 0), 0) / 1000) +
+      ' s before it asked again: ' +
+      failure.message,
+  }
+}
 
 export function refused(input: {
   now: number
@@ -120,6 +176,8 @@ export function infrastructure(input: {
     return 'the verifier left an empty reward'
   if (failure.kind === 'environment' && failure.message.startsWith(unansweredPrefix))
     return 'the model endpoint was not reached'
+  if (failure.kind === 'environment' && failure.message.startsWith(limitedPrefix))
+    return 'the model provider limited its requests'
   if (
     failure.kind === 'agent' &&
     (/\berror code: (502|530|1016)\b/.test(failure.message) ||

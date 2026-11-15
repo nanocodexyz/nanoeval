@@ -1261,6 +1261,13 @@ export function summary(
           '#' + attempt['n'],
           late ? Result.late(state, late) : state,
           attempt['oomKills'] ? 'oom_kills=' + attempt['oomKills'] : '',
+          attempt['modelWaits']
+            ? 'model_waits=' +
+              attempt['modelWaits'].count +
+              ' (' +
+              Math.round(attempt['modelWaits'].sec) +
+              ' s)'
+            : '',
           attempt['claims'] > 1 ? 'claims=' + attempt['claims'] : '',
           attempt['retries'] ? 'retries=' + attempt['retries'] : '',
           attempt['retryOf']

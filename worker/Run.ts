@@ -168,7 +168,8 @@ const tables = [
     refusal TEXT,
     searches INTEGER,
     tools_usd REAL,
-    unpriced INTEGER
+    unpriced INTEGER,
+    wait INTEGER
   )`,
   `CREATE TABLE IF NOT EXISTS model_flights (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -256,6 +257,7 @@ export class Run extends DurableObject<Env> {
       ['model_requests', 'searches', 'INTEGER'],
       ['model_requests', 'tools_usd', 'REAL'],
       ['model_requests', 'unpriced', 'INTEGER'],
+      ['model_requests', 'wait', 'INTEGER'],
       ['runners', 'drained', 'TEXT'],
       ['runners', 'ends_at', 'INTEGER'],
     ]
@@ -859,7 +861,7 @@ export class Run extends DurableObject<Env> {
     if (outcome.flight !== undefined)
       this.sql.run('DELETE FROM model_flights WHERE id = ?', outcome.flight)
     this.sql.run(
-      'INSERT INTO model_requests (attempt, claim, at, path, ms, status, usage, cost, refusal, searches, tools_usd, unpriced) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO model_requests (attempt, claim, at, path, ms, status, usage, cost, refusal, searches, tools_usd, unpriced, wait) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       input.attempt,
       input.claim,
       outcome.at,
@@ -872,6 +874,7 @@ export class Run extends DurableObject<Env> {
       tools ? tools.calls : null,
       tools?.usd ?? null,
       tools ? tools.unpriced : null,
+      outcome.waitMs ?? null,
     )
     const { refused, ...rest } = this.meta()!
     if (refused && outcome.status < 400) {
@@ -906,6 +909,25 @@ export class Run extends DurableObject<Env> {
       stepRetries: config.limits.stepRetries,
       tries: refused.tries,
       waitSec: config.limits.setupSec,
+    })
+  }
+
+  private limited(input: {
+    attempt: string
+    claim: number
+    limited: Meter.Limited
+  }): number | undefined {
+    const row = Ledger.get(this.sql, input.attempt)
+    if (!row || row.claims !== input.claim || row.phase !== 'run') return undefined
+    const config = this.config()
+    const { retryAfterMs, tries } = input.limited
+    return Retry.pause({
+      deadlineAt: row.deadline_at ?? 0,
+      leaseSec: config.limits.leaseSec,
+      now: Date.now(),
+      pollMs: config.sandbox.pollMs,
+      ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+      tries,
     })
   }
 
@@ -1134,16 +1156,17 @@ export class Run extends DurableObject<Env> {
 
   private requestLog(attempt: string): string | undefined {
     const requests = this.sql.all(
-      'SELECT claim, at, path, ms, status, usage, refusal FROM model_requests WHERE attempt = ? ORDER BY id',
+      'SELECT claim, at, path, ms, status, usage, refusal, wait FROM model_requests WHERE attempt = ? ORDER BY id',
       attempt,
     )
     return requests.length
       ? requests
           .map(
-            ({ refusal, ...request }) =>
+            ({ refusal, wait, ...request }) =>
               JSON.stringify({
                 ...request,
                 ...(refusal === null ? {} : { refusal }),
+                ...(wait === null ? {} : { wait }),
                 usage: request['usage'] ? JSON.parse(request['usage'] as string) : null,
               }) + '\n',
           )
@@ -1219,6 +1242,7 @@ export class Run extends DurableObject<Env> {
       claims: row.claims,
       failure: result?.failure ?? (row.failure ? JSON.parse(row.failure) : undefined),
       id: row.id,
+      modelWaits: result?.modelWaits,
       n: row.n,
       oomKills: result?.oomKills,
       outcome: result?.outcome,
@@ -1611,6 +1635,7 @@ export class Run extends DurableObject<Env> {
     return Model.forward(this.env, {
       hooks: {
         admit: async (waitedMs) => this.admit({ attempt: row.id, claim: row.claims, waitedMs }),
+        limited: (limited) => this.limited({ attempt: row.id, claim: row.claims, limited }),
         refused: async (refused) => this.refuse(refused),
         release: (flight) => void this.sql.run('DELETE FROM model_flights WHERE id = ?', flight),
         settle: (outcome) =>
@@ -3410,7 +3435,22 @@ export class Run extends DurableObject<Env> {
             ...(end.oomKills === undefined ? {} : { oomKills: end.oomKills }),
           })
         : undefined) ??
-      Retry.unanswered({ at: now, statuses, ...(end.failure ? { failure: end.failure } : {}) })
+      Retry.unanswered({ at: now, statuses, ...(end.failure ? { failure: end.failure } : {}) }) ??
+      (end.failure && Result.outcome(end.reward, end.failure) !== 'passed'
+        ? Retry.throttled({
+            failure: end.failure,
+            requests: this.sql
+              .all(
+                "SELECT status, wait FROM model_requests WHERE attempt = ? AND claim = ? AND status IS NOT NULL AND path NOT LIKE 'judge/%' ORDER BY id",
+                row.id,
+                row.claims,
+              )
+              .map((request) => ({
+                status: request['status'] as number,
+                ...(request['wait'] === null ? {} : { waitMs: request['wait'] as number }),
+              })),
+          })
+        : undefined)
     if (stall) end = { ...end, failure: stall, reward: null }
     const cause =
       end.failure && end.reward === null
@@ -3561,6 +3601,11 @@ export class Run extends DurableObject<Env> {
     }
 
     const route = this.route(row, reported)
+    const waits = this.sql.all(
+      'SELECT COUNT(*) AS count, COALESCE(SUM(wait), 0) AS ms FROM model_requests WHERE attempt = ? AND claim = ? AND wait IS NOT NULL',
+      row.id,
+      row.claims,
+    )[0]!
     const result: Result.Attempt = {
       agent,
       ...(row.claims > 1 ? { claims: row.claims } : {}),
@@ -3574,6 +3619,14 @@ export class Run extends DurableObject<Env> {
               ...config.judge,
               requests: judges.length,
               usage: judgeUsage.length === judges.length ? Atif.sum(judgeUsage) : null,
+            },
+          }
+        : {}),
+      ...(waits['count']
+        ? {
+            modelWaits: {
+              count: waits['count'] as number,
+              sec: (waits['ms'] as number) / 1000,
             },
           }
         : {}),

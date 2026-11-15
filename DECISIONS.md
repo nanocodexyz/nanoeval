@@ -6024,3 +6024,46 @@ The run ended 197 s sooner, 8.2 % of the run before. The rows whose outcome diff
 **Losses.** A run that ends early, by its model budget or by a cancel, has no longer given every task one attempt before any task its second: the tasks with the longest timeouts have all their attempts and the shortest may have none. The three attempts of a task now run at the same time, on one machine when one runner has the slots: their disk is unpacked once as before, and what they build or download they build or download three times at once (the three attempts of the longest build took 1,497, 1,483, 1,451 s side by side, against 1,556, 1,447, 1,422 s when they ran apart). The first verdicts come later, since the rows with the longest timeouts go first in all three attempts: after one minute the run before had ended 19 rows and after five minutes 98, the run after 12 and 56.
 
 **Checked.** The unit test of the queue order. On the machine of the measurement, from a fresh clone of the change: the directory lanes with one runner, two attached runners, the free disk floor, memory packing, a standing runner with the rows of two runs, and the two model budget lanes, and the krun lanes with a model, the oracle, the free disk floor, memory packing and two attached runners, 12 of 12 passed. `npm test`: 423 tests, 418 passed, 5 skipped. Not run: the other lanes of the workflow at this change, and a run with a model.
+
+## 2026-11-15: the run asks a model provider again when it limits an installed agent, and an attempt that ends on its limit is an error of the provider
+
+**Found** in the first rows of `pi` on real models, in the entry above on fx, opencode and pi. The provider of an open-model route answers `429`, "inference request per min rate reached", once all the users of the route together pass its rate. pi 1.5.2 asks four times in about 15 s and ends its turn, where fx and opencode keep asking. Of the 8 rows of pi on two models, 4 passed, and the other 4 were agent errors that this answer caused: 1 of 4 on one model and 3 of 4 on the other. A comparison of harnesses on such a route measures how patient the retry loop of each vendor is.
+
+**What the run did before.** The model endpoint of an installed agent passed every answer of the provider on to the agent, with two exceptions. A `402` of a payment layer is asked again or ends the row, as the entries on refused payments say. An attempt with an answer of `502` or `530` is retried once, as an error of the way to the model. A `429` reached the agent, and what the agent made of it was scored as the agent's.
+
+**What changed.**
+
+- **The run waits and asks again.** An answer of `429`, `503` or `529` to a model request of an installed agent is not passed on (`Retry.limited`, the loop of `worker/Meter.ts` that already asks again after a refused payment). The run waits and sends the same request again. The pause is `--poll-ms` doubled with every answer, up to `--lease-sec`, and never shorter than a `Retry-After` of the answer, which is read in seconds or as a date (`Retry.pause`, `Retry.after`). It asks for as long as the attempt has agent time left: when the next pause would pass the deadline of the attempt, the answer of the provider goes to the agent as it was sent, with its headers and its body. No option and no constant is new. With the defaults the pauses are 0.25, 0.5, 1, 2, 4, 8, 16, 32 and then 60 s.
+- **Every wait is on the row.** Each limited answer is a line of `agent/model-requests.jsonl` with its status and `wait`, the ms the run then waited (a column `wait` of `model_requests`). The result of the row has `modelWaits: { count, sec }` for its last claim, `status` prints `model_waits=N (S s)` on the row, and the summary of each agent has `modelWaits: { attempts, count, sec }`: the rows that waited, their waits and the seconds.
+- **An attempt that still ends on the limit is an error of the provider.** An attempt that ends as an `agent` error, or at its agent timeout without a pass, and whose last model answers were all limited, is an `environment` error (`Retry.throttled`): `the model provider limited the agent: its last 3 model requests were answered 429, and the run waited 2 s before it asked again: …`. It is one of the causes of the one automatic retry (`Retry.infrastructure`: `the model provider limited its requests`). The answers of a judge are not counted. This reads the requests of the attempt, so it holds for a session too.
+- **The budget.** A request that waits keeps its admission, so `--model-budget-usd` still counts it as a request in flight.
+
+**Sessions are not waited for.** Their requests go through the same relay, and the run gives it no hook for them. The client of nanocode keeps a window after a `429` or a `529` and waits out a `Retry-After` for every request of the session, as the entry on that build says, and a run that held those answers back would hide what the window is built on. A session that ends on limited answers is the error above. Not measured: how long that client keeps asking.
+
+**Checked**, on a machine with 5 cores and no KVM, by a user who is not root, the change on main at `ace6b12`.
+
+- `npm run lint`, `npm run check:types` and `npm run dry-run` pass. `npm test`: 427 tests, 422 passed, 5 skipped for KVM or root, 0 failed. Four tests are new. Two in `test/Retry.test.ts`: the pauses, `Retry-After` in both forms, the deadline, and the error with its cause. Two in `test/Meter.test.ts`, the relay against a scripted provider on a socket: `429` with `Retry-After: 1`, `429` without, `503`, then a reply, which is asked four times and settled as three waits of 1,000, 20 and 40 ms and one response with its tokens; and an attempt with no time left, or a relay that is given no hook, which gets the `429` with its `Retry-After` and its body.
+- A lane, "installed agents whose model provider answers 429 twice, once with Retry-After", a step of the job `e2e-dir`: 3 tasks, 2 installed agents, 6 rows. The scripted provider answers the one request of each row `429` with `Retry-After: 1`, then `429` without it, then the reply. The lane asks that no row errored, that no row was claimed again, that the provider was asked three times for each row, that each row has `modelWaits` of 2 waits and 1.5 s (the second named by the provider, then twice `--poll-ms`) in `status` and in its result, that its request log has `429` with a wait of 1,000, `429` with 500 and `200`, that the summary of each agent sums them, and that `status` prints them. 5 of 5 runs passed, in 24 to 32 s.
+
+**What the lane catches**, one run each:
+
+| Broken by hand | Result |
+| --- | --- |
+| the model endpoint gives the relay no hook, as before this change | failed after 23 s: `a model request that the provider limited is asked again by the run, not by the agent`. All 6 rows had ended `errored` after 2 claims with `environment: the model provider limited the agent: its last 1 model requests were answered 429, and the run waited 0 s before it asked again: codex-cli exited with 22`, which is the error and the retry above, end to end |
+| the relay does not read `Retry-After` | failed after 20 s: `the row has the pause the provider named and the pause of the run`, 0.75 s where the lane asks 1.5 |
+
+**Rejected.**
+
+- A number of tries or of seconds of its own for the wait. It would be a constant that a busier route outruns, as the four tries of pi are. The agent time of the attempt is the bound a row already has.
+- `--step-retries` as the bound. It counts the tries of a payment refusal that passes within milliseconds, 3 by default, and a rate window is a minute.
+- `--setup-sec`, the wait of a refused payment. A payment that stays refused will not come back by itself, and a rate window always does.
+- Passing the `429` on after a while. What the agent then does with it is the patience this change takes out of the comparison.
+- The same wait for `502` and `530`. They say the provider was not reached, and the row is started again in a new slot.
+
+**Not verified.**
+
+- A real route: these counts are of scripted providers. The rows of `pi` on the limited route are not run again here.
+- The lane does not itself end a row on the limit: only the broken run above did. A row that waits until its deadline needs a task with a short agent time, and whether its first request comes before that time depends on the machine.
+- A limit that a provider sends as an error event inside a `200` stream. It reaches the agent as before.
+- An agent whose client gives up on a request that waits long and asks again. The run then waits for both, and the admission of the first is held until the row ends.
+- krun and ns slots: the lane is a step of the directory job only. A deployed Worker. The workflow on GitHub: Actions is disabled for the repository.

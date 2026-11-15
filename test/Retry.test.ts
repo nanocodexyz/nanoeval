@@ -282,3 +282,57 @@ test('a verifier that leaves reward.txt without a reward is retried as an enviro
     'verifier_timeout',
   )
 })
+
+test('a limited answer waits longer each time, at least as long as its provider names, and never past the deadline of the attempt', () => {
+  const input = { deadlineAt: 2_000_000, leaseSec: 60, now: 1_000_000, pollMs: 250 }
+  assert.equal(Retry.pause({ ...input, tries: 0 }), 250)
+  assert.equal(Retry.pause({ ...input, tries: 4 }), 4000)
+  assert.equal(Retry.pause({ ...input, tries: 20 }), 60_000)
+  assert.equal(Retry.pause({ ...input, retryAfterMs: 7000, tries: 0 }), 7000)
+  assert.equal(Retry.pause({ ...input, retryAfterMs: 7000, tries: 6 }), 16_000)
+  assert.equal(Retry.pause({ ...input, retryAfterMs: 90_000, tries: 20 }), 90_000)
+  assert.equal(Retry.pause({ ...input, now: 1_939_999, tries: 20 }), 60_000)
+  assert.equal(Retry.pause({ ...input, now: 1_940_000, tries: 20 }), undefined)
+  assert.equal(Retry.pause({ ...input, now: 1_999_000, tries: 0 }), 250)
+  assert.equal(Retry.pause({ ...input, now: 1_999_000, retryAfterMs: 1000, tries: 0 }), undefined)
+  assert.equal(Retry.pause({ ...input, now: 2_000_001, tries: 0 }), undefined)
+  assert.equal(Retry.after('3', 0), 3000)
+  assert.equal(Retry.after('0.5', 0), 500)
+  assert.equal(Retry.after('Sun, 15 Nov 2026 00:00:30 GMT', Date.UTC(2026, 10, 15)), 30_000)
+  for (const header of [null, '', ' ', '0', '-1', 'soon', 'Sun, 15 Nov 2026 00:00:00 GMT'])
+    assert.equal(Retry.after(header, Date.UTC(2026, 10, 15, 0, 1)), undefined, String(header))
+})
+
+test('an attempt that ends on limited answers is an error of the model provider and is retried', () => {
+  const gaveUp = { at: 5, kind: 'agent' as const, message: 'pi exited with 0: 429 rate reached' }
+  const requests = [
+    { status: 200 },
+    { status: 429, waitMs: 1000 },
+    { status: 503, waitMs: 500 },
+    { status: 429 },
+  ]
+  const limited = Retry.throttled({ failure: gaveUp, requests })
+  assert.deepEqual(limited, {
+    at: 5,
+    kind: 'environment',
+    message:
+      'the model provider limited the agent: its last 3 model requests were answered 429, 503, and the run waited 2 s before it asked again: pi exited with 0: 429 rate reached',
+  })
+  assert.equal(
+    Retry.infrastructure({ failure: limited!, statuses: [200, 429, 503, 429] }),
+    'the model provider limited its requests',
+  )
+  assert.equal(
+    Retry.throttled({ failure: { ...gaveUp, kind: 'agent_timeout' }, requests })?.kind,
+    'environment',
+  )
+  assert.equal(
+    Retry.throttled({ failure: gaveUp, requests: [...requests, { status: 200 }] }),
+    undefined,
+  )
+  assert.equal(Retry.throttled({ failure: gaveUp, requests: [{ status: 500 }] }), undefined)
+  assert.equal(Retry.throttled({ failure: gaveUp, requests: [] }), undefined)
+  assert.equal(Retry.throttled({ requests }), undefined)
+  for (const kind of ['budget', 'cancelled', 'environment', 'verifier'] as const)
+    assert.equal(Retry.throttled({ failure: { ...gaveUp, kind }, requests }), undefined)
+})

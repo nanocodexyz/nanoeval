@@ -1,4 +1,5 @@
 import * as Proxy from '../src/Proxy.ts'
+import * as Retry from '../src/Retry.ts'
 
 export type Outcome = {
   at: number
@@ -7,7 +8,10 @@ export type Outcome = {
   refusal?: Proxy.Refusal
   status: number
   usage?: Proxy.Usage
+  waitMs?: number
 }
+
+export type Limited = { retryAfterMs?: number; status: number; tries: number }
 
 export type Refused = { kind: Exclude<Proxy.Refusal, 'budget'>; text: string; tries: number }
 
@@ -15,6 +19,7 @@ export type Admission = { flight?: number; pauseMs?: number; refused?: string }
 
 export type Hooks = {
   admit?(waitedMs: number): Promise<Admission>
+  limited?(limited: Limited): number | undefined | Promise<number | undefined>
   refused?(refusal: Refused): Promise<number | undefined>
   release?(flight: number): void | Promise<void>
   settle(outcome: Outcome): void | Promise<void>
@@ -98,6 +103,20 @@ async function forwarded(
       }
       await new Promise((resolve) => setTimeout(resolve, pauseMs))
       continue
+    }
+    if (hooks.limited && Retry.limited.includes(upstream.status)) {
+      const retryAfterMs = Retry.after(upstream.headers.get('retry-after'), Date.now())
+      const pauseMs = await hooks.limited({
+        ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+        status: upstream.status,
+        tries,
+      })
+      if (pauseMs !== undefined) {
+        await upstream.body?.cancel()
+        await hooks.settle({ at, ms: Date.now() - at, status: upstream.status, waitMs: pauseMs })
+        await new Promise((resolve) => setTimeout(resolve, pauseMs))
+        continue
+      }
     }
     if (!upstream.body) {
       await hooks.settle({

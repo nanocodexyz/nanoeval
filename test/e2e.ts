@@ -100,6 +100,9 @@ const budgetSteps = 5
 const webUsd = 0.012
 const unreached = scenario === 'unreached'
 const unreachedSeen = new Set<string>()
+const rateLimited = scenario === 'limited'
+const limitedAsked = new Map<string, number>()
+const limitMessage = 'inference request per min rate reached'
 const fleet = scenario === 'fleet'
 const turnLost = scenario === 'forgotten'
 const lapse = scenario === 'lapse'
@@ -1189,6 +1192,20 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
             return
           }
         }
+        if (rateLimited && body.fake_cli) {
+          const row = body.model + body.prompt_base64
+          const asked = (limitedAsked.get(row) ?? 0) + 1
+          limitedAsked.set(row, asked)
+          if (asked < 3) {
+            response
+              .writeHead(429, {
+                'content-type': 'application/json',
+                ...(asked === 1 ? { 'retry-after': '1' } : {}),
+              })
+              .end(JSON.stringify({ error: { message: limitMessage, type: 'rate_limit_error' } }))
+            return
+          }
+        }
         if (unreached && body.fake_cli && !unreachedSeen.has(body.model + body.prompt_base64)) {
           unreachedSeen.add(body.model + body.prompt_base64)
           response.writeHead(530, { 'content-type': 'text/plain' }).end('error code: 530')
@@ -1650,6 +1667,7 @@ async function main(): Promise<void> {
         [
           'closed',
           'failures',
+          'limited',
           'login',
           'lost',
           'refused',
@@ -3558,6 +3576,56 @@ async function main(): Promise<void> {
       for (const row of rows) assert.equal(row['claims'], 2, 'each row was retried once')
       assert.equal(status['lostClaims'], 0)
       assert.equal(unreachedSeen.size, rows.length)
+      await pass()
+      return
+    }
+
+    if (rateLimited) {
+      const rows = status['attempts'] as Record<string, any>[]
+      const waitMs = Math.max(1000, pollMs) + 2 * pollMs
+      assert.equal(
+        status['counts'].errored,
+        0,
+        'a model request that the provider limited is asked again by the run, not by the agent',
+      )
+      assert.equal(status['lostClaims'], 0)
+      assert.equal(limitedAsked.size, rows.length)
+      for (const asked of limitedAsked.values())
+        assert.equal(asked, 3, 'the provider was asked three times for the one request of a row')
+      for (const row of rows) {
+        assert.equal(row['claims'], 1, 'no row was claimed again')
+        assert.deepEqual(
+          row['modelWaits'],
+          { count: 2, sec: waitMs / 1000 },
+          'the row has the pause the provider named and the pause of the run',
+        )
+      }
+      for (const [agent, summary] of Object.entries(
+        status['agents'] as Record<string, Result.AgentSummary>,
+      )) {
+        const own = rows.filter((row) => row['agent'] === agent).length
+        assert.deepEqual(summary.modelWaits, {
+          attempts: own,
+          count: 2 * own,
+          sec: (own * waitMs) / 1000,
+        })
+      }
+      for (const detail of details) {
+        assert.deepEqual(detail['result'].modelWaits, { count: 2, sec: waitMs / 1000 })
+        assert.deepEqual(
+          (await api.artifact(created.id, detail['attempt'].id, 'agent/model-requests.jsonl'))
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line) as { status: number; wait?: number })
+            .map((request) => [request.status, request.wait]),
+          [
+            [429, Math.max(1000, pollMs)],
+            [429, 2 * pollMs],
+            [200, undefined],
+          ],
+        )
+      }
+      assert.match(summary(status), / model_waits=2 \(\d+ s\)/)
       await pass()
       return
     }

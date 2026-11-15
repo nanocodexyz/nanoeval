@@ -42,6 +42,7 @@ export type Attempt = {
     thinking?: string
     usage: Atif.Usage | null
   }
+  modelWaits?: { count: number; sec: number }
   oomKills?: number
   outcome: 'errored' | 'failed' | 'passed'
   retryOf?: { attempt: string; run: string }
@@ -82,6 +83,7 @@ export type AgentSummary = {
     outputTokens: number
   }
   meanReward: number | null
+  modelWaits: { attempts: number; count: number; sec: number }
   outputTokens: number
   passAtK: Record<string, number>
   passed: number
@@ -137,6 +139,7 @@ export function summarize(attempts: readonly Attempt[]): Record<string, AgentSum
       cachedTokens: 0,
       judge: { attempts: 0, cachedTokens: 0, costUsd: null, inputTokens: 0, outputTokens: 0 },
       meanReward: null,
+      modelWaits: { attempts: 0, count: 0, sec: 0 },
       outputTokens: 0,
       passAtK: {},
       passed: 0,
@@ -156,6 +159,11 @@ export function summarize(attempts: readonly Attempt[]): Record<string, AgentSum
         summary.reasoningTokens = (summary.reasoningTokens ?? 0) + attempt.usage.reasoningTokens
       if (attempt.usage.costUsd !== undefined)
         summary.costUsd = (summary.costUsd ?? 0) + attempt.usage.costUsd
+    }
+    if (attempt.modelWaits) {
+      summary.modelWaits.attempts++
+      summary.modelWaits.count += attempt.modelWaits.count
+      summary.modelWaits.sec += attempt.modelWaits.sec
     }
     if (attempt.judge) {
       summary.judge.attempts++

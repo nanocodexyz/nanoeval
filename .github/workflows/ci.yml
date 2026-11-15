@@ -439,6 +439,15 @@ jobs:
           NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
           NANOEVAL_E2E_SLOTS: '3'
           NANOEVAL_E2E_ATTEMPTS: '1'
+      - name: End to end, directory slots, installed agents whose model provider answers 429 twice, once with Retry-After
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_MODEL: installed
+          NANOEVAL_E2E_SCENARIO: limited
+          NANOEVAL_E2E_TASKS: extract-todos,uppercase-message,write-greeting
+          NANOEVAL_E2E_SLOTS: '3'
+          NANOEVAL_E2E_ATTEMPTS: '1'
       - name: Keep the logs of a failed run
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
