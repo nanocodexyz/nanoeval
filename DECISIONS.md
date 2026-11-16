@@ -7862,3 +7862,16 @@ A directory slot has no image. Its verifier root is an empty directory, an artif
 
 **Not verified.** When this was written: ci.yml from a fresh clone, and a session through the deployed binding. The 429s of that row (66 of code 3021, the requests-a-minute limit of the model on the account, and 3 of code 3040) are not changed here. A run paces them with --model-requests-per-min.
 
+
+## 2026-11-15: fresh-clone ci.yml on the verifier picker merged with main 3c0ed22
+
+Actions is disabled on this repository, so every `run` step of `.github/workflows/ci.yml` ran from a fresh clone of `5a36d52` (`583b4f8` plus main `3c0ed22`) on a hosted Hand (Linux x86_64, Node 24.22.3, no KVM), one process per job:
+- check 5 of 5
+- e2e-dir 70 of 70, including `picker` and `picker-lazy`
+- e2e-revision 4 of 4
+- krun 3 of 3 (cargo fmt, clippy, test)
+- e2e-krun 40 of 40 and e2e-ns 16 of 16, where the krun and ns steps skip on a Hand without KVM
+
+On `583b4f8`, the nanoeval lane's KVM box passed e2e-krun, e2e-ns and krun at 59 of 59 steps, including `picker` and `picker-lazy` on both guest backends. Its KVM run on `5a36d52` is recorded in the next entry when it reports.
+
+On `5a36d52`, the nanoeval lane ran fresh clones on its KVM box (2026-11-16 01:16 UTC): all 138 of 138 steps passed. The KVM lanes passed 59 of 59 on the first try: e2e-krun 40, e2e-ns 16, krun 3. Two e2e-dir steps failed once while that box's disk was saturated, then passed alone on a retry.
