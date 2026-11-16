@@ -28,6 +28,7 @@ export type Agent = {
   briefFinish?: true
   cellYieldMs?: number
   clearingCacheFloors?: true
+  codesign?: false
   contextWindow?: number
   escalateContextTokens?: number
   escalateModel?: string
@@ -78,6 +79,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'briefFinish',
   'cellYieldMs',
   'clearingCacheFloors',
+  'codesign',
   'contextWindow',
   'escalateContextTokens',
   'escalateModel',
@@ -497,6 +499,11 @@ export function parseAgents(value: unknown): Agent[] {
       if (provider !== 'claude')
         fail(agent.id + ' has a subagents, which only a claude session takes')
     }
+    if (agent.codesign !== undefined) {
+      if (agent.codesign !== false) fail(agent.id + ' has a codesign that is not false')
+      if (provider !== 'claude')
+        fail(agent.id + ' has a codesign, which only a claude session takes')
+    }
     if (agent.lateFinishCheckMs !== undefined) {
       integer(agent.lateFinishCheckMs, agent.id + ': lateFinishCheckMs', 1)
       if (provider !== 'claude')
@@ -571,6 +578,7 @@ export function parseAgents(value: unknown): Agent[] {
       ...(agent.briefFinish ? { briefFinish: true as const } : {}),
       ...(agent.cellYieldMs === undefined ? {} : { cellYieldMs: agent.cellYieldMs }),
       ...(agent.clearingCacheFloors ? { clearingCacheFloors: true as const } : {}),
+      ...(agent.codesign === false ? { codesign: false as const } : {}),
       ...(agent.contextWindow === undefined ? {} : { contextWindow: agent.contextWindow }),
       ...(agent.escalateContextTokens === undefined
         ? {}

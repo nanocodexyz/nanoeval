@@ -8377,3 +8377,25 @@ The pass counts of `1fbd4a11` are the ones counted by hand for that run: 239 and
 **Tests.** `node --test test/Promote.test.ts`: win, loss, cheaper tie and none on one run; missing for another run, one attempt and a cancelled row; the refusals; the front and survivors of stage A; the promotions of stage B.
 
 **Not verified.** No run was made for this change, and no command calls the module yet.
+
+## 2026-11-16: an agent may turn the model-specific behavior of its claude session off
+
+**Why.** nanocode's claude backend keys some prompt text and defaults on the model ID: for `claude-opus-5-5` (and `claude-fable-5-1` for bash-first) it adds the Opus 5.5 paragraph, the bypass note and bash-first steer, drops the dedicated-tools line, adds the total-tokens reminder, and skips the finish check by default. No agent of this repository could name a session of such a model without them, so no run could measure what they add beside a session with them.
+
+**What.** One more entry of the table of options in `cli/nanoeval.ts`, after `:context_window=N` and last in the one order:
+
+| Option | Run configuration | What every turn of the session sends | Who takes it |
+| --- | --- | --- | --- |
+| `:codesign=off` | `"codesign": false` | `codesign: false` | `claude`, `claude-direct` among them |
+
+An example is `nano-high-nocd=claude:claude-opus-5-5:high:codesign=off`. `agent/turns.jsonl` names the field. It is on by default: an agent without it sends nothing new, and its turn body and its line of `agent/turns.jsonl` are the same bytes as before.
+
+**The field name.** `codesign: false` is the session field agreed with the nanocode-ts change that binds it at the first accepted turn, as `subagents` is bound, and passes it to `ClaudeBuilder::codesign(false)` in nanocode. With it the backend treats the model as one it has no model-specific prompts or defaults for. The finish check then follows the default of such a model, unless `:finish_check=on` or `:skip_finish_check=on` names it.
+
+**How it is taken.** The only value is `off`. The configuration refuses another value with "has a codesign that is not false", and a `codex` agent, an installed agent and the oracle with "has a codesign, which only a claude session takes". It goes with every other option.
+
+**The pin.** `package.json` stays at nanocode-ts `build-acdb751`. That build does not know the field and ignores it, so an arm with `:codesign=off` on a Worker of this pin is the arm without it. The arm is valid only once the pin moves to a build that takes `codesign`.
+
+**Checked.** `test/CodesignOff.test.ts` (new, 3 tests: the spec, its place last in the order and its text read back for `claude` and `claude-direct`; an empty value, another value, a second occurrence and another place refused; the configuration takes it and refuses malformed values and other providers; a turn sends the field only when named, a turn without it is the same bytes, and the body and the line of a plain turn with it are written out). The usage line in the test files that spell it names the option, and the name of one test of `test/ClearingCacheFloors.test.ts` no longer says that `clearing_cache_floors` is last. `npm run lint`, `npm run check:types` and `npm run dry-run` pass.
+
+**Not verified.** A Worker on a build that takes the field, a model, and a session whose requests lack the model-specific text. No end-to-end lane names the option.

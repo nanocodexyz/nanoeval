@@ -3598,6 +3598,7 @@ export class Run extends DurableObject<Env> {
       ...(agent.briefFinish ? { briefFinish: true } : {}),
       ...(agent.cellYieldMs === undefined ? {} : { cellYieldMs: agent.cellYieldMs }),
       ...(agent.clearingCacheFloors ? { clearingCacheFloors: true } : {}),
+      ...(agent.codesign === false ? { codesign: false } : {}),
       ...(agent.contextWindow === undefined ? {} : { contextWindow: agent.contextWindow }),
       ...(deadline ? { deadline } : {}),
       ...(agent.escalateContextTokens === undefined

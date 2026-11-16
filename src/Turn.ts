@@ -6,6 +6,7 @@ export type Turn = {
   briefFinish?: true
   cellYieldMs?: number
   clearingCacheFloors?: true
+  codesign?: false
   contextWindow?: number
   deadline?: { atMs: number; limitMs: number }
   escalateContextTokens?: number
@@ -113,6 +114,7 @@ export function sent(turn: Turn, input: { at: number; session: string }): string
       at_ms: input.at,
       ...levers(turn),
       ...(turn.cellYieldMs === undefined ? {} : { cell_yield_ms: turn.cellYieldMs }),
+      ...(turn.codesign === false ? { codesign: false } : {}),
       deadline: turn.deadline
         ? { at_ms: turn.deadline.atMs, limit_ms: turn.deadline.limitMs }
         : null,
@@ -136,6 +138,7 @@ export function body(turn: Turn): Record<string, unknown> {
     ...(turn.orchestration && turn.provider === 'claude'
       ? { claude_orchestration: turn.orchestration }
       : {}),
+    ...(turn.codesign === false ? { codesign: false } : {}),
     ...(turn.orchestration && turn.provider === 'codex'
       ? { codex_orchestration: turn.orchestration }
       : {}),

@@ -365,7 +365,9 @@ const usage = `nanoeval <command>
             outside the built-in Codex models stops at N tokens) and :context_window=N (the
             session compacts its history at nine tenths of N tokens) (nanox-dsk=codex:
             deepseek-v4-pro:high:lenient_patches=on:min_wait_ms=2000:max_output_tokens=32000:
-            context_window=128000). The options come in
+            context_window=128000). A claude agent may end in :codesign=off (the session treats
+            its model as one nanocode has no model-specific prompts or defaults for)
+            (nano-high-nocd=claude:claude-opus-5-5:high:codesign=off). The options come in
             this order where several are named: branches, refusal_fallback, cell_yield_ms,
             brief_finish, fold_finish, low_effort_rounds, brief_final, lean_cells,
             escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens,
@@ -374,7 +376,7 @@ const usage = `nanoeval <command>
             finish_ambiguity, tool_result_clearing, subagents, clearing_cache_floors,
             lenient_patches, min_wait_ms, max_output_tokens, context_window, fix_provider,
             fix_model, fix_thinking, verifier_provider, verifier_thinking, executor_share,
-            verifier_share, fork_on.
+            verifier_share, fork_on, codesign.
             An agent with :branches=2:picker=verify_lazy that names :fix_provider=claude|codex
             and :fix_model=MODEL runs a cascade: its own model works first, until
             :executor_share=N percent of the agent time (50); the verifier, on
@@ -1086,6 +1088,13 @@ const agentOptions: readonly AgentOption[] = [
     read: (text) => ({ forkOn: text as Picker.ForkOn }),
     value: Picker.forkOns.join('|'),
     write: (agent) => agent.forkOn,
+  },
+  {
+    name: 'codesign',
+    pattern: 'off',
+    read: () => ({ codesign: false }),
+    value: 'off',
+    write: (agent) => (agent.codesign === false ? 'off' : undefined),
   },
 ]
 
