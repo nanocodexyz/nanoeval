@@ -83,6 +83,39 @@ export const adapters: readonly Dataset.Adapter[] = [
     tasks: '79d1d2942d10ec41d1b9ee4e4a22db1a2f7b5d20798a804213bdb11ff90677a5',
     version: 'ebe7444e313a0d8db94fa541139826eaebe2b0abcd4900c6f73e750494910dca',
   }),
+  HarborHub.create({
+    description:
+      'Long-tail SWE, 202 tasks from 2026 pull requests in 13 less common languages, as published to the Harbor registry',
+    name: 'longtail-swe',
+    package: 'longtail-swe/longtail-swe',
+    proof:
+      'task directories written with --out and checked against their digests (1 sampled). Not yet run as an eval with its own solutions',
+    state: 'unverified',
+    tasks: '27d622ee801065c72b217268b579d11812a6b6846ad866e14959a134ced5d909',
+    version: 'ae541b836c71a9140dc904ffa5fb0404698c5d39b703d3f77f62e37b1ec72a41',
+  }),
+  HarborHub.create({
+    description:
+      'SWE-rebench July 2026, 111 issues from July 2026 in five languages, as published to the Harbor registry',
+    name: 'swe-rebench-07-2026',
+    package: 'ibragim-badertdinov/swe-rebench-07-2026',
+    proof:
+      'task directories written with --out and checked against their digests (1 sampled). Not yet run as an eval with its own solutions',
+    state: 'unverified',
+    tasks: '6e8f6f3701101b55a52c5b2c11b0cf258df3e5f667c576bb3cc18efb94c6d955',
+    version: '727f5d0a77a15bb4dc30b9919ff47ec0a99a932aab297bea0727537953554d6d',
+  }),
+  HarborHub.create({
+    description:
+      'Terminal-Bench 4.0 without the GPU tasks, 63 tasks, as published to the Harbor registry',
+    name: 'terminal-bench-4.0-cpu',
+    package: 'terminal-bench/terminal-bench-cpu-only',
+    proof:
+      'task directories written with --out and checked against their digests (1 sampled). Not yet run as an eval with its own solutions',
+    state: 'unverified',
+    tasks: '71513d7c0e8dd3b3cc3023c50acc8eeaed1950e3969be0b5d03c979c2ea0ec58',
+    version: 'ff571d9450cd190a7c4b3b5e0d53cb287943c3de493a3c443efceeaf2c7a7a73',
+  }),
 ]
 
 export function find(name: string): Dataset.Adapter | undefined {
