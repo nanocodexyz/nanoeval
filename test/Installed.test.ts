@@ -670,10 +670,14 @@ test('the command of goose is the build of the image and names the endpoint in i
         out,
         new RegExp('^XDG_' + name + '_HOME=.*home-goose/' + name.toLowerCase() + '$', 'm'),
       )
-    assert.equal(
-      out.split(attemptToken).length,
-      2,
-      'the token reaches the command in one variable and in no argument',
+    assert.deepEqual(
+      out
+        .split('\n')
+        .filter((line) => line.includes(attemptToken))
+        .map((line) => line.split('=')[0])
+        .sort(),
+      ['NANOEVAL_AGENT_TOKEN', variables.at(-1)!.split('=')[0]].sort(),
+      'the token reaches the command in its own variable and the provider key, and in no argument',
     )
   }
   const glibc =
