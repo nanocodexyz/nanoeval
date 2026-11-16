@@ -895,7 +895,10 @@ export class Run extends DurableObject<Env> {
     const tools = reported
       ? Proxy.tools(input.provider, reported, { listed: input.listed })
       : undefined
-    const price = reported && reported.costUsd === undefined ? this.price(input) : undefined
+    const price =
+      reported && reported.costUsd === undefined
+        ? this.price({ ...input, reported: reported.model })
+        : undefined
     const usage: Proxy.Usage | undefined =
       reported && price
         ? { ...reported, costBy: 'list', costUsd: Price.usd(price, reported) + (tools?.usd ?? 0) }
@@ -936,9 +939,19 @@ export class Run extends DurableObject<Env> {
     return row && this.agentOf(row).model
   }
 
-  private price(input: { attempt: string; path: string }): Price.Price | undefined {
-    const model = this.served(input)
-    if (model === undefined) return undefined
+  private price(input: {
+    attempt: string
+    path: string
+    provider: Proxy.Provider
+    reported?: string | undefined
+  }): Price.Price | undefined {
+    const configured = this.served(input)
+    if (configured === undefined) return undefined
+    const model = Fallback.billed({
+      model: configured,
+      provider: input.provider,
+      reported: input.reported,
+    })
     const row = Ledger.get(this.sql, input.attempt)
     return !input.path.startsWith(judgePath) && row && this.installed(row)
       ? Price.of(model, this.config().prices)
@@ -4415,7 +4428,7 @@ export class Run extends DurableObject<Env> {
 
     if (end.collect !== false) {
       const requests = this.sql.all(
-        'SELECT claim, cost, listed, path, tools_usd FROM model_requests WHERE attempt = ? ORDER BY id',
+        'SELECT claim, cost, listed, path, tools_usd, usage FROM model_requests WHERE attempt = ? ORDER BY id',
         row.id,
       )
       const priced = requests.filter(
@@ -4433,7 +4446,18 @@ export class Run extends DurableObject<Env> {
             !(request['path'] as string).startsWith(judgePath),
         )
         .reduce((sum, request) => sum + (request['tools_usd'] as number), 0)
-      if (usage && !kind && priced.length)
+      const unpriced = requests.some(
+        (request) =>
+          request['claim'] === row.claims &&
+          request['cost'] === null &&
+          request['usage'] !== null &&
+          !(request['path'] as string).startsWith(judgePath),
+      )
+      if (usage && !kind && priced.length && unpriced) {
+        usage = { ...usage }
+        delete usage.costUsd
+        delete usage.costBy
+      } else if (usage && !kind && priced.length)
         usage = {
           ...usage,
           ...(priced.some((request) => request['listed']) ? { costBy: 'list' as const } : {}),
