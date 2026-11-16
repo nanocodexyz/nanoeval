@@ -37,6 +37,7 @@ import * as Route from '../src/Route.ts'
 import type * as Runs from '../src/Runs.ts'
 import * as Sandbox from '../src/Sandbox.ts'
 import * as SqlSetup from '../src/Sql.ts'
+import { Tally } from '../src/Tally.ts'
 import * as Timeline from '../src/Timeline.ts'
 import * as Turn from '../src/Turn.ts'
 import * as Verdict from '../src/Verdict.ts'
@@ -184,6 +185,7 @@ const tables = [
     again INTEGER,
     route TEXT
   )`,
+  'CREATE INDEX IF NOT EXISTS model_requests_attempt ON model_requests (attempt, claim)',
   `CREATE TABLE IF NOT EXISTS model_flights (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     attempt TEXT NOT NULL,
@@ -257,6 +259,7 @@ export class Run extends DurableObject<Env> {
   private readonly instance = secret()
   private readonly specs = new Map<string, Eval.Task>()
   private readonly sql: SqlSetup.Sql
+  private readonly tally: Tally
   private ticking: Promise<void> | undefined
   private readonly wallet: Payment.Wallet
 
@@ -264,6 +267,7 @@ export class Run extends DurableObject<Env> {
     super(ctx, env)
     this.sql = Storage.sql(ctx)
     SqlSetup.setup(this.sql, tables)
+    this.tally = new Tally(this.sql)
     this.wallet = Payment.wallet(Payment.stored(this.sql))
     const columns = this.sql.all('PRAGMA table_info(sandboxes)')
     if (!columns.some((column) => column['name'] === 'paid_until'))
@@ -709,24 +713,19 @@ export class Run extends DurableObject<Env> {
   }
 
   private modelSpent(): number {
-    const priced = new Set<string>()
-    let total = 0
+    const tally = this.tally.read()
+    let total = tally.usd
     for (const row of this.sql.all(
-      'SELECT attempt, SUM(COALESCE(cost, tools_usd, 0)) AS usd, COUNT(cost) AS priced FROM model_requests GROUP BY attempt',
-    )) {
-      if (row['priced']) priced.add(row['attempt'] as string)
-      total += row['usd'] as number
-    }
-    for (const row of this.rows())
-      if (row.result && !priced.has(row.id)) {
-        const result = JSON.parse(row.result) as Result.Attempt
+      "SELECT id, json_extract(result, '$.usage.costUsd') AS cost, json_extract(result, '$.usage.toolsUsd') AS tools, json_extract(result, '$.judge.usage.costUsd') AS judge FROM attempts WHERE result IS NOT NULL",
+    ))
+      if (!tally.priced(row['id'] as string))
         total +=
-          (result.usage?.costUsd ?? 0) -
-          (result.usage?.toolsUsd ?? 0) +
-          (result.judge?.usage?.costUsd ?? 0)
-      }
+          ((row['cost'] as number | null) ?? 0) -
+          ((row['tools'] as number | null) ?? 0) +
+          ((row['judge'] as number | null) ?? 0)
     for (const lost of Ledger.lostUsage(this.sql))
-      if (!priced.has(lost.attempt)) total += (JSON.parse(lost.usage) as Atif.Usage).costUsd ?? 0
+      if (!tally.priced(lost.attempt))
+        total += (JSON.parse(lost.usage) as Atif.Usage).costUsd ?? 0
     return total
   }
 
@@ -746,10 +745,7 @@ export class Run extends DurableObject<Env> {
   }
 
   private largest(): number | undefined {
-    const seen = this.sql.all(
-      'SELECT COUNT(*) AS responses, MAX(COALESCE(cost, tools_usd, 0)) AS usd FROM model_requests WHERE usage IS NOT NULL',
-    )[0]!
-    return seen['responses'] ? (seen['usd'] as number) : undefined
+    return this.tally.read().largestUsd
   }
 
   private held(): boolean {
