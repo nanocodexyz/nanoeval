@@ -7875,3 +7875,23 @@ Actions is disabled on this repository, so every `run` step of `.github/workflow
 On `583b4f8`, the nanoeval lane's KVM box passed e2e-krun, e2e-ns and krun at 59 of 59 steps, including `picker` and `picker-lazy` on both guest backends. Its KVM run on `5a36d52` is recorded in the next entry when it reports.
 
 On `5a36d52`, the nanoeval lane ran fresh clones on its KVM box (2026-11-16 01:16 UTC): all 138 of 138 steps passed. The KVM lanes passed 59 of 59 on the first try: e2e-krun 40, e2e-ns 16, krun 3. Two e2e-dir steps failed once while that box's disk was saturated, then passed alone on a retry.
+
+## 2026-11-16: fork_on names the verdicts that fork a verify_lazy trunk
+
+**Problem.** A `picker=verify_lazy` trunk forks on anything but a PASS with a confidence of at least 70: a FAIL, an UNSURE and a PASS below the threshold. An arm that spends its second branch, or the fix of a cascade, only where the verifier found the work wrong could not be named.
+
+**Behavior.** One opt-in agent key, `:fork_on=verifier_fail|verifier_fail_or_unsure` (`forkOn` in a run configuration), last in the order, after `:verifier_share`.
+- `Picker.forkReason` takes `forkOn` in its options. With `verifier_fail`, a trunk that completed and has a verification forks only when its verdict is `fail`, at any confidence, with the reason `verifier_fail`. A PASS of any confidence and an UNSURE keep the trunk.
+- A verifier that names no verdict, and one that timed out, failed or did not start, is recorded as UNSURE with confidence 0 (and its `error`), as before. So it forks with `verifier_unsure` by default and keeps the trunk under `verifier_fail`.
+- The two lines before the verdict are unchanged under both values: a trunk past its deadline is kept, and a trunk that did not complete, or has no verification, forks as `unverified`.
+- `verifier_fail_or_unsure` and no key take the same path as before. An agent without the key parses to the same agent and prints the same text, and `worker/Run.ts` changes in one place: it passes `agent.forkOn` to `Picker.forkReason`.
+- `forkOn` is in `Config.agentKeys`, so a Worker without this change refuses it as a key it does not know. Another value is refused (`a: forkOn must be one of verifier_fail, verifier_fail_or_unsure`), and so is a `forkOn` on an agent whose picker is not `verify_lazy`.
+- The gate record, the fork record, the handoff, the pick and the usage record are unchanged. A kept trunk writes `agent/gate.json` with `decision: "keep"` and the verifier's verdict, as a confident PASS does.
+
+**Checked.** Hosted Linux machine without KVM, 2026-11-16, on the parent `58a0e71` plus this change:
+- `node --test test/Picker.test.ts`: 15 of 15, four of them new (`forkReason` under `verifier_fail`; `verifier_fail_or_unsure` against no key over 88 inputs; the syntax and its round trip; the refusals).
+- `npm run lint`, `npm run check:types` and `npm run dry-run`: exit 0. `npm test`: 613 tests, 608 pass, 0 fail, 5 skipped (the parent: 609 tests).
+- `NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=picker-lazy npm run e2e`, and the same with `cascade` and `lazy-pass`: passed, on directory slots with the scripted model. No scenario names the key, so these show only that an agent without it runs as before.
+- The parent and this change, imported side by side: `parseAgent`, `agentText` and `Config.parse` over the 220 agent texts of the tests and the documents (139 parse, 81 are refused) give the same agents, texts and refusals apart from the usage line, and `Picker.forkReason` without the key, with `forkOn: undefined` and with `verifier_fail_or_unsure` gives the parent's reason on 2,432 of 2,432 inputs (4 trunk states, no verification and 3 verdicts at confidence 0 to 100, before and at the deadline).
+
+**Not verified.** An end-to-end lane with the key, the krun and ns lanes (no KVM here), a real model, and a deployed Worker.

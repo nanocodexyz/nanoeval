@@ -70,7 +70,7 @@ test('an agent names the ways its sessions end a turn at less cost', () => {
   ])
     assert.throws(
       () => parseAgent(text),
-      /\[:cell_yield_ms=N\]\[:brief_finish=on\]\[:fold_finish=on\]\[:low_effort_rounds=on\]\[:brief_final=on\]\[:lean_cells=on\]\[:escalate_model=MODEL\]\[:escalate_tool_errors=N\]\[:escalate_context_tokens=N\]\[:tool_result_tokens=N\]\[:persist_finish=on\]\[:skip_finish_check=on\]\[:late_finish_check_ms=N\]\[:result_effort=low\|medium\|high\|xhigh\|max\]\[:stop_at_target=on\]\[:yield_floor_ms=N\]\[:yield_share=N\]\[:fix_provider=claude\|codex\]\[:fix_model=MODEL\]\[:fix_thinking=EFFORT\]\[:verifier_provider=claude\|codex\]\[:verifier_thinking=EFFORT\]\[:executor_share=1\.\.100\]\[:verifier_share=1\.\.100\], not x=/,
+      /\[:cell_yield_ms=N\]\[:brief_finish=on\]\[:fold_finish=on\]\[:low_effort_rounds=on\]\[:brief_final=on\]\[:lean_cells=on\]\[:escalate_model=MODEL\]\[:escalate_tool_errors=N\]\[:escalate_context_tokens=N\]\[:tool_result_tokens=N\]\[:persist_finish=on\]\[:skip_finish_check=on\]\[:late_finish_check_ms=N\]\[:result_effort=low\|medium\|high\|xhigh\|max\]\[:stop_at_target=on\]\[:yield_floor_ms=N\]\[:yield_share=N\]\[:fix_provider=claude\|codex\]\[:fix_model=MODEL\]\[:fix_thinking=EFFORT\]\[:verifier_provider=claude\|codex\]\[:verifier_thinking=EFFORT\]\[:executor_share=1\.\.100\]\[:verifier_share=1\.\.100\]\[:fork_on=verifier_fail\|verifier_fail_or_unsure\], not x=/,
     )
   assert.deepEqual(
     Config.parse({
@@ -191,7 +191,7 @@ test('an agent names a final message of three lines at most', () => {
   ])
     assert.throws(
       () => parseAgent(text),
-      /\[:low_effort_rounds=on\]\[:brief_final=on\]\[:lean_cells=on\]\[:escalate_model=MODEL\]\[:escalate_tool_errors=N\]\[:escalate_context_tokens=N\]\[:tool_result_tokens=N\]\[:persist_finish=on\]\[:skip_finish_check=on\]\[:late_finish_check_ms=N\]\[:result_effort=low\|medium\|high\|xhigh\|max\]\[:stop_at_target=on\]\[:yield_floor_ms=N\]\[:yield_share=N\]\[:fix_provider=claude\|codex\]\[:fix_model=MODEL\]\[:fix_thinking=EFFORT\]\[:verifier_provider=claude\|codex\]\[:verifier_thinking=EFFORT\]\[:executor_share=1\.\.100\]\[:verifier_share=1\.\.100\], not x=/,
+      /\[:low_effort_rounds=on\]\[:brief_final=on\]\[:lean_cells=on\]\[:escalate_model=MODEL\]\[:escalate_tool_errors=N\]\[:escalate_context_tokens=N\]\[:tool_result_tokens=N\]\[:persist_finish=on\]\[:skip_finish_check=on\]\[:late_finish_check_ms=N\]\[:result_effort=low\|medium\|high\|xhigh\|max\]\[:stop_at_target=on\]\[:yield_floor_ms=N\]\[:yield_share=N\]\[:fix_provider=claude\|codex\]\[:fix_model=MODEL\]\[:fix_thinking=EFFORT\]\[:verifier_provider=claude\|codex\]\[:verifier_thinking=EFFORT\]\[:executor_share=1\.\.100\]\[:verifier_share=1\.\.100\]\[:fork_on=verifier_fail\|verifier_fail_or_unsure\], not x=/,
     )
   assert.deepEqual(
     Config.parse({
@@ -291,7 +291,7 @@ test('an agent names lean code cells', () => {
   ])
     assert.throws(
       () => parseAgent(text),
-      /\[:brief_final=on\]\[:lean_cells=on\]\[:escalate_model=MODEL\]\[:escalate_tool_errors=N\]\[:escalate_context_tokens=N\]\[:tool_result_tokens=N\]\[:persist_finish=on\]\[:skip_finish_check=on\]\[:late_finish_check_ms=N\]\[:result_effort=low\|medium\|high\|xhigh\|max\]\[:stop_at_target=on\]\[:yield_floor_ms=N\]\[:yield_share=N\]\[:fix_provider=claude\|codex\]\[:fix_model=MODEL\]\[:fix_thinking=EFFORT\]\[:verifier_provider=claude\|codex\]\[:verifier_thinking=EFFORT\]\[:executor_share=1\.\.100\]\[:verifier_share=1\.\.100\], not x=/,
+      /\[:brief_final=on\]\[:lean_cells=on\]\[:escalate_model=MODEL\]\[:escalate_tool_errors=N\]\[:escalate_context_tokens=N\]\[:tool_result_tokens=N\]\[:persist_finish=on\]\[:skip_finish_check=on\]\[:late_finish_check_ms=N\]\[:result_effort=low\|medium\|high\|xhigh\|max\]\[:stop_at_target=on\]\[:yield_floor_ms=N\]\[:yield_share=N\]\[:fix_provider=claude\|codex\]\[:fix_model=MODEL\]\[:fix_thinking=EFFORT\]\[:verifier_provider=claude\|codex\]\[:verifier_thinking=EFFORT\]\[:executor_share=1\.\.100\]\[:verifier_share=1\.\.100\]\[:fork_on=verifier_fail\|verifier_fail_or_unsure\], not x=/,
     )
   assert.deepEqual(
     Config.parse({

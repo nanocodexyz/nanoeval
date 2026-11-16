@@ -5,6 +5,10 @@ export type Kind = 'verify' | 'verify_lazy'
 
 export const kinds: readonly Kind[] = ['verify', 'verify_lazy']
 
+export type ForkOn = 'verifier_fail' | 'verifier_fail_or_unsure'
+
+export const forkOns: readonly ForkOn[] = ['verifier_fail', 'verifier_fail_or_unsure']
+
 export const defaultModel = 'claude-opus-5-5'
 
 export const requestId = 'verify'
@@ -271,10 +275,12 @@ export function log(events: readonly Atif.SessionEvent[], options: { requestId: 
 export function forkReason(
   trunk: Branch.Outcome,
   verification: Verification | undefined,
-  options: { deadlineAt: number; now: number },
+  options: { deadlineAt: number; forkOn?: ForkOn | undefined; now: number },
 ): Branch.Reason | undefined {
   if (options.now >= options.deadlineAt) return undefined
   if (trunk.state !== 'completed' || !verification) return 'unverified'
+  if (options.forkOn === 'verifier_fail')
+    return verification.verdict === 'fail' ? 'verifier_fail' : undefined
   if (verification.verdict === 'pass' && verification.confidence >= passConfidence) return undefined
   return verification.verdict === 'fail' ? 'verifier_fail' : 'verifier_unsure'
 }

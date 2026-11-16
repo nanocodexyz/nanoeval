@@ -3786,6 +3786,7 @@ export class Run extends DurableObject<Env> {
                 ? undefined
                 : Picker.forkReason(trunk, verifications[0], {
                     deadlineAt: current.deadline_at!,
+                    forkOn: agent.forkOn,
                     now,
                   })
             : Branch.forkReason(trunk, {

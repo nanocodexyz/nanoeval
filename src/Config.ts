@@ -34,6 +34,7 @@ export type Agent = {
   fixProvider?: 'claude' | 'codex'
   fixThinking?: string
   foldFinish?: true
+  forkOn?: Picker.ForkOn
   id: string
   lateFinishCheckMs?: number
   lazy?: true
@@ -73,6 +74,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'fixProvider',
   'fixThinking',
   'foldFinish',
+  'forkOn',
   'id',
   'lateFinishCheckMs',
   'lazy',
@@ -359,6 +361,11 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude' && provider !== 'codex')
         fail(agent.id + ' picks a branch, which only a claude or codex session can')
     }
+    if (agent.forkOn !== undefined) {
+      choice(agent.forkOn, agent.id + ': forkOn', Picker.forkOns)
+      if (agent.picker !== 'verify_lazy')
+        fail(agent.id + ' has a forkOn, which only an agent with verify_lazy takes')
+    }
     if (agent.verifierModel !== undefined) {
       if (typeof agent.verifierModel !== 'string' || !agent.verifierModel)
         fail(agent.id + ' has an empty verifierModel')
@@ -513,6 +520,7 @@ export function parse(value: unknown): Config {
       ...(agent.fixProvider ? { fixProvider: agent.fixProvider } : {}),
       ...(agent.fixThinking ? { fixThinking: agent.fixThinking } : {}),
       ...(agent.foldFinish ? { foldFinish: true as const } : {}),
+      ...(agent.forkOn ? { forkOn: agent.forkOn } : {}),
       id: agent.id,
       ...(agent.lateFinishCheckMs === undefined
         ? {}
