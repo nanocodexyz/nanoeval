@@ -28,6 +28,7 @@ export type Turn = {
   payer?: Config.Payer
   persistFinish?: true
   prompt: string
+  promptVariant?: Config.PromptVariant
   provider: 'claude' | 'codex'
   refusalFallback?: Config.RefusalFallback
   requestId: string
@@ -36,6 +37,7 @@ export type Turn = {
   stopAtTarget?: true
   subagents?: false
   thinking?: string
+  toolProfile?: Config.ToolProfile
   toolResultClearing?: Config.ToolResultClearing
   toolResultTokens?: number
   verificationRequested?: true
@@ -61,6 +63,14 @@ function levers(turn: Turn): Record<string, true> {
     ...(turn.skipFinishCheck ? { skip_finish_check: true as const } : {}),
     ...(turn.stopAtTarget ? { stop_at_target: true as const } : {}),
     ...(turn.verificationRequested ? { verification_requested: true as const } : {}),
+  }
+}
+
+function profiles(turn: Turn): Record<string, true> {
+  if (turn.provider !== 'codex') return {}
+  return {
+    ...(turn.promptVariant === 'compact' ? { compact_instructions: true as const } : {}),
+    ...(turn.toolProfile === 'lean' ? { lean_tool_arguments: true as const } : {}),
   }
 }
 
@@ -115,6 +125,7 @@ export function sent(turn: Turn, input: { at: number; session: string }): string
     JSON.stringify({
       at_ms: input.at,
       ...levers(turn),
+      ...profiles(turn),
       ...(turn.cellYieldMs === undefined ? {} : { cell_yield_ms: turn.cellYieldMs }),
       ...(turn.codesign === false ? { codesign: false } : {}),
       deadline: turn.deadline
@@ -136,6 +147,7 @@ export function sent(turn: Turn, input: { at: number; session: string }): string
 export function body(turn: Turn): Record<string, unknown> {
   return {
     ...levers(turn),
+    ...profiles(turn),
     ...(turn.hand ? { hand: turn.hand } : {}),
     ...(turn.orchestration && turn.provider === 'claude'
       ? { claude_orchestration: turn.orchestration }

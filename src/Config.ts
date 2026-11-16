@@ -55,6 +55,7 @@ export type Agent = {
   persistFinish?: true
   picker?: Picker.Kind
   preflight?: true
+  promptVariant?: PromptVariant
   provider: 'claude' | 'codex' | 'oracle' | Installed.Kind
   refusalFallback?: RefusalFallback
   resultEffort?: Effort
@@ -62,6 +63,7 @@ export type Agent = {
   stopAtTarget?: true
   subagents?: false
   thinking?: string
+  toolProfile?: ToolProfile
   toolResultClearing?: ToolResultClearing
   toolResultTokens?: number
   verificationRequested?: true
@@ -107,6 +109,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'persistFinish',
   'picker',
   'preflight',
+  'promptVariant',
   'provider',
   'refusalFallback',
   'resultEffort',
@@ -114,6 +117,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'stopAtTarget',
   'subagents',
   'thinking',
+  'toolProfile',
   'toolResultClearing',
   'toolResultTokens',
   'verificationRequested',
@@ -140,6 +144,14 @@ export type Payer = 'deployment' | 'plan'
 export const payers: readonly Payer[] = ['deployment', 'plan']
 
 export type RefusalFallback = 'return_once' | 'session'
+
+export type PromptVariant = 'compact'
+
+export const promptVariants: readonly PromptVariant[] = ['compact']
+
+export type ToolProfile = 'lean'
+
+export const toolProfiles: readonly ToolProfile[] = ['lean']
 
 export type ToolResultClearing = { atLeastTokens: number; keep: number }
 
@@ -576,6 +588,16 @@ export function parseAgents(value: unknown): Agent[] {
       if (provider !== 'claude' && provider !== 'codex')
         fail(agent.id + ' has a persistFinish, which only a claude or codex session takes')
     }
+    if (agent.promptVariant !== undefined) {
+      choice(agent.promptVariant, agent.id + ': promptVariant', promptVariants)
+      if (provider !== 'codex')
+        fail(agent.id + ' has a promptVariant, which only a codex session takes')
+    }
+    if (agent.toolProfile !== undefined) {
+      choice(agent.toolProfile, agent.id + ': toolProfile', toolProfiles)
+      if (provider !== 'codex')
+        fail(agent.id + ' has a toolProfile, which only a codex session takes')
+    }
     const named = Installed.is(provider) && Installed.releases[provider].provider === 'api'
     if (agent.api !== undefined || named) {
       if (!named) fail(agent.id + ' has an api, which ' + provider + ' does not take')
@@ -621,6 +643,7 @@ export function parseAgents(value: unknown): Agent[] {
       ...(agent.persistFinish ? { persistFinish: true as const } : {}),
       ...(agent.picker ? { picker: agent.picker } : {}),
       ...(agent.preflight ? { preflight: true as const } : {}),
+      ...(agent.promptVariant ? { promptVariant: agent.promptVariant } : {}),
       provider,
       ...(agent.refusalFallback ? { refusalFallback: agent.refusalFallback } : {}),
       ...(agent.resultEffort ? { resultEffort: agent.resultEffort } : {}),
@@ -628,6 +651,7 @@ export function parseAgents(value: unknown): Agent[] {
       ...(agent.stopAtTarget ? { stopAtTarget: true as const } : {}),
       ...(agent.subagents === false ? { subagents: false as const } : {}),
       ...(agent.thinking ? { thinking: agent.thinking } : {}),
+      ...(agent.toolProfile ? { toolProfile: agent.toolProfile } : {}),
       ...(agent.toolResultClearing === undefined
         ? {}
         : {

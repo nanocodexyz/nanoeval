@@ -374,7 +374,13 @@ const usage = `nanoeval <command>
             or codex-jobs agent that ends in :verification_requested=on has its sessions ask
             the model to run the task's checks and its own tests before it finishes, which the
             upstream Codex instructions forbid unless asked (nanox-v=codex:gpt-6-luna:high:
-            verification_requested=on). The options come in
+            verification_requested=on).
+            A codex, codex-code-mode or codex-jobs agent may also name :prompt_variant=compact
+            (the session sends the compact system prompt of nanocode instead of its native one)
+            and :tool_profile=lean (the session declares exec_command and write_stdin without
+            their optional arguments) (nano-gc=codex:MODEL:high:prompt_variant=compact:
+            tool_profile=lean); nanocode applies both to a model it has no native prompt for
+            and ignores them for one it has. The options come in
             this order where several are named: branches, refusal_fallback, cell_yield_ms,
             brief_finish, fold_finish, low_effort_rounds, brief_final, lean_cells,
             escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens,
@@ -383,7 +389,8 @@ const usage = `nanoeval <command>
             finish_ambiguity, tool_result_clearing, subagents, clearing_cache_floors,
             lenient_patches, min_wait_ms, max_output_tokens, context_window, fix_provider,
             fix_model, fix_thinking, verifier_provider, verifier_thinking, executor_share,
-            verifier_share, fork_on, codesign, verification_requested.
+            verifier_share, fork_on, codesign, verification_requested, prompt_variant,
+            tool_profile.
             An agent with :branches=2:picker=verify_lazy that names :fix_provider=claude|codex
             and :fix_model=MODEL runs a cascade: its own model works first, until
             :executor_share=N percent of the agent time (50); the verifier, on
@@ -1108,6 +1115,20 @@ const agentOptions: readonly AgentOption[] = [
     name: 'verification_requested',
     read: () => ({ verificationRequested: true }),
     write: (agent) => (agent.verificationRequested ? on.value : undefined),
+  },
+  {
+    name: 'prompt_variant',
+    pattern: Config.promptVariants.join('|'),
+    read: (text) => ({ promptVariant: text as Config.PromptVariant }),
+    value: Config.promptVariants.join('|'),
+    write: (agent) => agent.promptVariant,
+  },
+  {
+    name: 'tool_profile',
+    pattern: Config.toolProfiles.join('|'),
+    read: (text) => ({ toolProfile: text as Config.ToolProfile }),
+    value: Config.toolProfiles.join('|'),
+    write: (agent) => agent.toolProfile,
   },
 ]
 
