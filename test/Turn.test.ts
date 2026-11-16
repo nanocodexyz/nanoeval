@@ -38,6 +38,17 @@ test('a codex session is created without web search and without subagents, as co
   })
 })
 
+test('a codex agent that names subagents=on sends subagents as true under every orchestration', () => {
+  for (const orchestration of [undefined, 'direct', 'jobs'] as const) {
+    const plain: Turn.Turn = { ...turn, ...(orchestration ? { orchestration } : {}) }
+    assert.deepEqual(Turn.body({ ...plain, subagents: true }), {
+      ...Turn.body(plain),
+      subagents: true,
+    })
+    assert.equal(Turn.body(plain)['subagents'], false)
+  }
+})
+
 test('a turn carries the agent deadline as host policy, in milliseconds', () => {
   assert.deepEqual(
     Turn.body({ ...turn, deadline: { atMs: 1_800_000_000_000, limitMs: 900_000 } })['deadline'],

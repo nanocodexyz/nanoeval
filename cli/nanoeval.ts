@@ -356,9 +356,10 @@ const usage = `nanoeval <command>
             ways; never with skip_finish_check) and :tool_result_clearing=KEEP/TOKENS (the
             history keeps the last KEEP tool results whole and clears older ones in batches
             of TOKENS tokens at least) (nano-med-clear=claude:claude-opus-5-5:medium:
-            finish_ambiguity=on:tool_result_clearing=2/10000), :subagents=off (the session
-            has no tools that start or steer another agent) (nano-med-nosub=
-            claude:claude-opus-5-5:medium:subagents=off), and
+            finish_ambiguity=on:tool_result_clearing=2/10000), :subagents=off|on (off: a
+            claude session has no tools that start or steer another agent; on: a codex
+            session has them) (nano-med-nosub=claude:claude-opus-5-5:medium:subagents=off,
+            luna-opuscfg=codex-code-mode:gpt-6-luna:high:subagents=on), and
             :clearing_cache_floors=on (a request keeps two cache breakpoints at the places
             where the history was last cleared) (nano-med-floors=claude:claude-opus-5-5:
             medium:clearing_cache_floors=on). A codex, codex-code-mode or codex-jobs agent

@@ -170,9 +170,11 @@ export function body(turn: Turn): Record<string, unknown> {
     provider: turn.provider,
     ...(turn.refusalFallback ? { refusal_fallback: turn.refusalFallback } : {}),
     request_id: turn.requestId,
-    ...((turn.provider === 'codex' && turn.subagents !== true) || turn.subagents === false
-      ? { subagents: false }
-      : {}),
+    ...(turn.subagents !== undefined
+      ? { subagents: turn.subagents }
+      : turn.provider === 'codex'
+        ? { subagents: false }
+        : {}),
     ...(turn.thinking ? { thinking: turn.thinking } : {}),
     ...clearing(turn),
     ...(turn.toolResultTokens === undefined ? {} : { tool_result_tokens: turn.toolResultTokens }),
