@@ -1,0 +1,94 @@
+name: Fleet
+
+# Runners for one run of a deployed Worker, on GitHub-hosted machines with KVM.
+# Nothing starts this but a dispatch: create the run with `--sandboxes 0` first,
+# then dispatch with its id. Each job attaches one `nanoeval runner` with krun
+# slots to the run and leaves when the run is finished or before its job would end.
+#
+# In the environment `fleet` (a required reviewer on it gates each dispatch):
+#   NANOEVAL_URL    variable  the deployed Worker, https://nanoeval.ACCOUNT.workers.dev
+#   NANOEVAL_TOKEN  secret    its ACCESS_TOKEN, which `runner` uses to enrol in the run
+
+on:
+  workflow_dispatch:
+    inputs:
+      run:
+        description: Run id, start of its id or --name
+        required: true
+      jobs:
+        description: Runners to start, one per hosted machine, 1 to 256
+        default: '20'
+      slots:
+        description: Slots per runner
+        default: '8'
+      cpus-per-thread:
+        description: Declared vCPUs admitted per hardware thread
+        default: '2'
+      runner-args:
+        description: More arguments for nanoeval runner
+        default: '--memory-overcommit'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fleet-${{ inputs.run }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      runners: ${{ steps.plan.outputs.runners }}
+    steps:
+      - id: plan
+        run: '[[ "$JOBS" =~ ^[1-9][0-9]*$ ]] && [ "$JOBS" -le 256 ] && echo "runners=[$(seq -s , 1 "$JOBS")]" >> "$GITHUB_OUTPUT"'
+        env:
+          JOBS: ${{ inputs.jobs }}
+
+  runner:
+    needs: plan
+    runs-on: ubuntu-24.04
+    environment: fleet
+    # A hosted job ends at 6 h: the runner takes no row that would end after 5 h 45 min.
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(needs.plan.outputs.runners) }}
+    steps:
+      - run: echo "STARTED=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Free the disk of toolchains a runner does not use
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL && df -h / /mnt && nproc && free -m
+      - uses: ./.github/actions/machine
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            krun/target
+          key: launcher-fleet-${{ hashFiles('krun/Cargo.lock', 'krun/rust-toolchain.toml') }}
+      - run: npm ci
+      - name: Check the machine and the Worker
+        continue-on-error: true
+        run: node cli/nanoeval.ts doctor --backend krun
+        env:
+          NANOEVAL_URL: ${{ vars.NANOEVAL_URL }}
+          NANOEVAL_TOKEN: ${{ secrets.NANOEVAL_TOKEN }}
+      - name: Runner ${{ matrix.runner }}
+        run: node cli/nanoeval.ts runner --run "$RUN" --backend krun --slots "$SLOTS" --cpus-per-thread "$CPUS_PER_THREAD" --ends-in-sec $((20700 - $(date +%s) + STARTED)) --home "$HOME/nanoeval-home" --cache "$HOME/nanoeval-cache" $RUNNER_ARGS
+        env:
+          NANOEVAL_URL: ${{ vars.NANOEVAL_URL }}
+          NANOEVAL_TOKEN: ${{ secrets.NANOEVAL_TOKEN }}
+          RUN: ${{ inputs.run }}
+          SLOTS: ${{ inputs.slots }}
+          CPUS_PER_THREAD: ${{ inputs.cpus-per-thread }}
+          RUNNER_ARGS: ${{ inputs.runner-args }}
