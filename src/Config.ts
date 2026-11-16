@@ -30,6 +30,7 @@ export type Agent = {
   escalateModel?: string
   escalateToolErrors?: number
   executorShare?: number
+  fixHandoff?: 'draft'
   fixModel?: string
   fixProvider?: 'claude' | 'codex'
   fixThinking?: string
@@ -69,6 +70,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'escalateModel',
   'escalateToolErrors',
   'executorShare',
+  'fixHandoff',
   'fixModel',
   'fixProvider',
   'fixThinking',
@@ -399,6 +401,11 @@ export function parse(value: unknown): Config {
       if (agent.fixModel === undefined)
         fail(agent.id + ' has a fixThinking, which only an agent with a fixModel takes')
     }
+    if (agent.fixHandoff !== undefined) {
+      choice(agent.fixHandoff, agent.id + ': fixHandoff', ['draft'])
+      if (agent.fixModel === undefined)
+        fail(agent.id + ' has a fixHandoff, which only an agent with a fixModel takes')
+    }
     for (const share of ['executorShare', 'verifierShare'] as const) {
       if (agent[share] === undefined) continue
       if (!(Number.isSafeInteger(agent[share]) && agent[share] >= 1 && agent[share] <= 100))
@@ -509,6 +516,7 @@ export function parse(value: unknown): Config {
         ? {}
         : { escalateToolErrors: agent.escalateToolErrors }),
       ...(agent.executorShare === undefined ? {} : { executorShare: agent.executorShare }),
+      ...(agent.fixHandoff ? { fixHandoff: agent.fixHandoff } : {}),
       ...(agent.fixModel ? { fixModel: agent.fixModel } : {}),
       ...(agent.fixProvider ? { fixProvider: agent.fixProvider } : {}),
       ...(agent.fixThinking ? { fixThinking: agent.fixThinking } : {}),

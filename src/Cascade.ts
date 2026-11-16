@@ -19,6 +19,8 @@ type Bare = {
   refusalFallback?: unknown
 }
 
+export type Handoff = 'continue' | 'draft'
+
 export type Stage = { model: string; provider: 'claude' | 'codex'; thinking?: string }
 
 export type Usage = {
@@ -26,7 +28,7 @@ export type Usage = {
   execUsd: number
   executorTimedOut: boolean
   fixUsd: number
-  handoff: 'continue'
+  handoff: Handoff
   reason: Branch.Reason | null
   verifierUsd: number
 }
@@ -98,14 +100,23 @@ export function stage(agent: Agent, branch: number): Stage {
   }
 }
 
-export function handoff(input: { instruction: string; verifier?: Verifier | undefined }): string {
+export function handoff(input: {
+  instruction: string
+  kind?: Handoff | undefined
+  verifier?: Verifier | undefined
+}): string {
+  const draft = input.kind === 'draft'
   const lines = [
     input.instruction,
     '---',
     'Another agent already worked on this task in this sandbox, and its work is not done. ' +
-      (input.verifier
-        ? 'An independent check of the sandbox found it unfinished.'
-        : 'It ran out of its time or stopped before it finished, so nothing checked its work.'),
+      (() => {
+        if (!input.verifier)
+          return 'It ran out of its time or stopped before it finished, so nothing checked its work.'
+        if (draft && input.verifier.verdict === 'unsure')
+          return 'An independent check could not confirm the work is correct.'
+        return 'An independent check of the sandbox found it unfinished.'
+      })(),
   ]
   if (input.verifier) {
     lines.push(
@@ -119,7 +130,13 @@ export function handoff(input: { instruction: string; verifier?: Verifier | unde
     if (message) lines.push('What the check reported:\n' + tail(message, messageBytes))
   }
   lines.push(
-    'The files and processes it left are still in this sandbox. Finish the task in place: start from the current state, fix what is wrong or missing, and verify the result yourself before you finish.',
+    draft
+      ? 'The files and processes it left are still in this sandbox. Finish the task in place. Treat the previous work as a draft. Before you build on it, judge whether its approach can meet the task on every input the task describes, not only the example it was tried on. ' +
+          (input.verifier
+            ? "If the check's doubts point at the method rather than a detail, replace the method. "
+            : '') +
+          'Verify on inputs that differ from the ones the previous agent used. Verify the result yourself before you finish.'
+      : 'The files and processes it left are still in this sandbox. Finish the task in place: start from the current state, fix what is wrong or missing, and verify the result yourself before you finish.',
   )
   return lines.join('\n\n')
 }
@@ -139,6 +156,7 @@ export function usage(input: {
   executorTimedOut: boolean
   fixUsd: number
   fork: Branch.Fork | undefined
+  handoff?: Handoff | undefined
   verifierUsd: number
 }): Usage {
   return {
@@ -146,7 +164,7 @@ export function usage(input: {
     execUsd: input.branchUsd - input.fixUsd,
     executorTimedOut: input.executorTimedOut,
     fixUsd: input.fixUsd,
-    handoff: 'continue',
+    handoff: input.handoff ?? 'continue',
     reason: input.fork?.reason ?? null,
     verifierUsd: input.verifierUsd,
   }

@@ -335,7 +335,7 @@ const usage = `nanoeval <command>
             escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens,
             persist_finish, skip_finish_check, late_finish_check_ms, result_effort,
             stop_at_target, yield_floor_ms, yield_share, fix_provider, fix_model, fix_thinking,
-            verifier_provider, verifier_thinking, executor_share, verifier_share.
+            verifier_provider, verifier_thinking, executor_share, verifier_share, fix_handoff.
             An agent with :branches=2:picker=verify_lazy that names :fix_provider=claude|codex
             and :fix_model=MODEL runs a cascade: its own model works first, until
             :executor_share=N percent of the agent time (50); the verifier, on
@@ -344,6 +344,8 @@ const usage = `nanoeval <command>
             :fix_thinking) go on in a live fork of the same sandbox, from a short handoff, and
             that fork is graded (nano-cv=codex:MODEL:low:branches=2:picker=verify_lazy:
             verifier_model=claude-haiku-5-5:fix_provider=claude:fix_model=claude-opus-5-5).
+            With :fix_handoff=draft the handoff names the executor's work a draft, whose
+            method MODEL judges before it builds on it.
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
@@ -941,6 +943,13 @@ const agentOptions: readonly AgentOption[] = [
     name: 'verifier_share',
     read: (text) => ({ verifierShare: Number(text) }),
     write: (agent) => agent.verifierShare,
+  },
+  {
+    name: 'fix_handoff',
+    pattern: 'draft',
+    read: () => ({ fixHandoff: 'draft' }),
+    value: 'draft',
+    write: (agent) => agent.fixHandoff,
   },
 ]
 

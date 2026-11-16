@@ -3656,7 +3656,11 @@ export class Run extends DurableObject<Env> {
                 branch,
                 deadlineAt: current.deadline_at!,
                 prompt: cascade
-                  ? Cascade.handoff({ instruction: prompt, verifier: this.handedOver(current) })
+                  ? Cascade.handoff({
+                      instruction: prompt,
+                      kind: agent.fixHandoff,
+                      verifier: this.handedOver(current),
+                    })
                   : prompt,
                 requestId,
                 session: name,
@@ -4369,6 +4373,7 @@ export class Run extends DurableObject<Env> {
                         ? pricedFix.reduce((sum, request) => sum + (request['cost'] as number), 0)
                         : fixUsage.reduce((sum, used) => sum + (used.costUsd ?? 0), 0),
                       fork: this.forkRecord(row),
+                      handoff: agent.fixHandoff,
                       verifierUsd,
                     }),
                   }

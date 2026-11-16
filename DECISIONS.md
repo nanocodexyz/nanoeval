@@ -7875,3 +7875,22 @@ Actions is disabled on this repository, so every `run` step of `.github/workflow
 On `583b4f8`, the nanoeval lane's KVM box passed e2e-krun, e2e-ns and krun at 59 of 59 steps, including `picker` and `picker-lazy` on both guest backends. Its KVM run on `5a36d52` is recorded in the next entry when it reports.
 
 On `5a36d52`, the nanoeval lane ran fresh clones on its KVM box (2026-11-16 01:16 UTC): all 138 of 138 steps passed. The KVM lanes passed 59 of 59 on the first try: e2e-krun 40, e2e-ns 16, krun 3. Two e2e-dir steps failed once while that box's disk was saturated, then passed alone on a retry.
+
+## 2026-11-16: a cascade may hand the executor's work to the fix as a draft
+
+**Problem.** The handoff of a cascade ends with "start from the current state, fix what is wrong or missing". That wording asks the fix to keep the executor's method, also where the method cannot meet the task on inputs other than the one the executor tried. It also says "An independent check of the sandbox found it unfinished" after a verdict of UNSURE, which the check did not find. An arm that tests another wording needs it as an option, with the arms that exist left as they are.
+
+**Behavior.** One opt-in agent key, `:fix_handoff=draft` (`fixHandoff: "draft"` in a run configuration), after `:verifier_share=1..100`, the last of the one order. Example: `cv-son-opus-draft=claude:claude-sonnet-5-5:medium:branches=2:picker=verify_lazy:verifier_model=claude-haiku-5-5:fix_provider=claude:fix_model=claude-opus-5-5:fix_thinking=medium:verifier_thinking=medium:fix_handoff=draft`.
+- `Cascade.handoff` takes `kind`, `continue` (the default) or `draft`. The draft text differs from the default in two places and nowhere else:
+  - After a verdict of UNSURE the second sentence is "An independent check could not confirm the work is correct." A FAIL, and a PASS below the confidence threshold, keep "An independent check of the sandbox found it unfinished."
+  - The last paragraph is: "The files and processes it left are still in this sandbox. Finish the task in place. Treat the previous work as a draft. Before you build on it, judge whether its approach can meet the task on every input the task describes, not only the example it was tried on. If the check's doubts point at the method rather than a detail, replace the method. Verify on inputs that differ from the ones the previous agent used. Verify the result yourself before you finish." Where no check ran (the executor timed out or failed), the sentence about the check's doubts is left out.
+- The opening sentence ("... and its work is not done."), the verdict line and the verifier's message are the same in both texts.
+- `agent/picker-usage.json` records `cascade.handoff: "draft"` for such an agent, and `"continue"` as before for every other.
+- The only value is `draft`: an agent without the key is the arm that exists, so one arm has one text. A `fixHandoff` without a `fixModel` is refused by the configuration, and a Worker without this change refuses the key as one it does not know.
+- An agent without the key sends the same bytes as before. `test/Cascade.test.ts` holds four handoffs (FAIL, PASS below the threshold, UNSURE, no check) against the earlier text written out in full, and the SHA-256 of 96 handoffs (4 verdict states, 3 confidences, 4 messages, 2 instructions) against the digest the code before this change gives for them, `401c82d4…cdb9`, with no `kind` and with `continue`.
+
+**Checked.** Linux x86_64 without KVM, Node 24.22.1, 2026-11-16, on `58a0e71` plus this change:
+- The digest above was computed with `src/Cascade.ts` of `58a0e71` and with the new file: equal without `kind` and with `continue`, different with `draft`.
+- `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test` (612 tests, 607 pass, 5 skipped, 0 fail) from a fresh clone.
+
+**Not verified.** A session that gets the draft text, on any backend; the end-to-end lanes; whether the wording changes what a fix model does. No model was asked.

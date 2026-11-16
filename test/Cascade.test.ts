@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import * as Crypto from 'node:crypto'
 import { test } from 'node:test'
 import { agentText, parseAgent } from '../cli/nanoeval.ts'
 import * as Cascade from '../src/Cascade.ts'
@@ -156,6 +157,158 @@ test('the handoff carries the task and the verdict, never a transcript', () => {
   const timedOut = Cascade.handoff({ instruction: 'Do it.', verifier: undefined })
   assert.match(timedOut, /ran out of its time or stopped before it finished/)
   assert.ok(!timedOut.includes('Verdict'))
+})
+
+const draftSpec =
+  'cv-son-opus-draft=claude:claude-sonnet-5-5:medium:branches=2:picker=verify_lazy:verifier_model=claude-haiku-5-5:fix_provider=claude:fix_model=claude-opus-5-5:fix_thinking=medium:verifier_thinking=medium:fix_handoff=draft'
+
+const draftEnd =
+  "\n\nThe files and processes it left are still in this sandbox. Finish the task in place. Treat the previous work as a draft. Before you build on it, judge whether its approach can meet the task on every input the task describes, not only the example it was tried on. If the check's doubts point at the method rather than a detail, replace the method. Verify on inputs that differ from the ones the previous agent used. Verify the result yourself before you finish."
+
+const sweep = (kind?: Cascade.Handoff) => {
+  const hash = Crypto.createHash('sha256')
+  for (const verdict of ['fail', 'pass', 'unsure', undefined] as const)
+    for (const confidence of [0, 69, 100])
+      for (const message of [
+        '',
+        ' two\nlines \n',
+        'x'.repeat(Cascade.messageBytes),
+        'y'.repeat(Cascade.messageBytes + 1) + 'the last line',
+      ])
+        for (const instruction of ['Do it.', 'Line one.\n\nLine two.\n'])
+          hash.update(
+            Cascade.handoff({
+              instruction,
+              kind,
+              verifier: verdict ? { confidence, message, verdict } : undefined,
+            }) + '\u0000',
+          )
+  return hash.digest('hex')
+}
+
+test('a cascade names the draft handoff last, and nothing but a cascade takes it', () => {
+  const agent = parseAgent(draftSpec)
+  assert.equal(agent.fixHandoff, 'draft')
+  assert.equal(agentText(agent), draftSpec)
+  assert.deepEqual(parseAgent(agentText(agent)), agent)
+  assert.equal(Config.parse(config(agent)).agents[0]?.fixHandoff, 'draft')
+  const plain = parseAgent(draftSpec.replace(':fix_handoff=draft', ''))
+  assert.ok(!('fixHandoff' in plain))
+  assert.ok(!('fixHandoff' in Config.parse(config(plain)).agents[0]!))
+  const refuses = (agent: { [key: string]: unknown }, pattern: RegExp) =>
+    assert.throws(() => Config.parse(config(agent)), pattern)
+  refuses({ fixHandoff: 'draft' }, /a fixHandoff, which only an agent with a fixModel/)
+  refuses(
+    { branches: undefined, fixHandoff: 'draft', picker: undefined },
+    /a fixHandoff, which only an agent with a fixModel/,
+  )
+  refuses({ fixHandoff: 'continue', fixModel: 'f', fixProvider: 'claude' }, /fixHandoff/)
+  assert.throws(() => parseAgent('a=codex:m:fix_handoff=other'), /fix_handoff=draft/)
+  assert.throws(
+    () => parseAgent('a=codex:m:fix_handoff=draft:verifier_share=5'),
+    /\[:verifier_share=1\.\.100\]\[:fix_handoff=draft\], not a=/,
+  )
+})
+
+test('a cascade without the draft handoff sends the text it sent before', () => {
+  const instruction = 'Write hello to greeting.txt.'
+  const start =
+    instruction +
+    '\n\n---\n\nAnother agent already worked on this task in this sandbox, and its work is not done. '
+  const found = 'An independent check of the sandbox found it unfinished.'
+  const end =
+    '\n\nThe files and processes it left are still in this sandbox. Finish the task in place: start from the current state, fix what is wrong or missing, and verify the result yourself before you finish.'
+  const sent: readonly (readonly [Cascade.Verifier | undefined, string])[] = [
+    [
+      { confidence: 80, message: 'greeting.txt is empty\n', verdict: 'fail' },
+      start +
+        found +
+        '\n\nVerdict of the check: FAIL, confidence 80.\n\nWhat the check reported:\ngreeting.txt is empty' +
+        end,
+    ],
+    [
+      { confidence: 40, message: '', verdict: 'pass' },
+      start + found + '\n\nVerdict of the check: PASS, confidence 40.' + end,
+    ],
+    [
+      { confidence: 0, message: 'no verdict line', verdict: 'unsure' },
+      start +
+        found +
+        '\n\nVerdict of the check: UNSURE, confidence 0.\n\nWhat the check reported:\nno verdict line' +
+        end,
+    ],
+    [
+      undefined,
+      start +
+        'It ran out of its time or stopped before it finished, so nothing checked its work.' +
+        end,
+    ],
+  ]
+  for (const [verifier, text] of sent) {
+    assert.equal(Cascade.handoff({ instruction, verifier }), text)
+    assert.equal(Cascade.handoff({ instruction, kind: 'continue', verifier }), text)
+  }
+  const before = '401c82d4c6285d1455d3e8f0374dbe06578982f011b7d8d555510a098b50cdb9'
+  assert.equal(
+    sweep(),
+    before,
+    'the digest of 96 handoffs, as the code before the option wrote them',
+  )
+  assert.equal(sweep('continue'), before)
+  assert.notEqual(sweep('draft'), before)
+})
+
+test('the draft handoff has the fix judge the method before it builds on the work', () => {
+  const instruction = 'Write hello to greeting.txt.'
+  const start =
+    instruction +
+    '\n\n---\n\nAnother agent already worked on this task in this sandbox, and its work is not done. '
+  assert.equal(
+    Cascade.handoff({
+      instruction,
+      kind: 'draft',
+      verifier: { confidence: 0, message: 'no verdict line', verdict: 'unsure' },
+    }),
+    start +
+      'An independent check could not confirm the work is correct.' +
+      '\n\nVerdict of the check: UNSURE, confidence 0.\n\nWhat the check reported:\nno verdict line' +
+      draftEnd,
+  )
+  for (const verdict of ['fail', 'pass'] as const)
+    assert.equal(
+      Cascade.handoff({
+        instruction,
+        kind: 'draft',
+        verifier: { confidence: 40, message: '', verdict },
+      }),
+      start +
+        'An independent check of the sandbox found it unfinished.' +
+        '\n\nVerdict of the check: ' +
+        verdict.toUpperCase() +
+        ', confidence 40.' +
+        draftEnd,
+    )
+  assert.equal(
+    Cascade.handoff({ instruction, kind: 'draft', verifier: undefined }),
+    start +
+      'It ran out of its time or stopped before it finished, so nothing checked its work.' +
+      draftEnd.replace(
+        " If the check's doubts point at the method rather than a detail, replace the method.",
+        '',
+      ),
+    'no check ran, so the text names no doubts of a check',
+  )
+  assert.equal(
+    Cascade.usage({
+      branchUsd: 1,
+      executorTimedOut: false,
+      fixUsd: 0.5,
+      fork: { at: 1, reason: 'verifier_unsure', state: 'fork' } as never,
+      handoff: 'draft',
+      verifierUsd: 0,
+    }).handoff,
+    'draft',
+  )
 })
 
 test('after a fork the fix is graded when it finished or timed out with work, else the executor', () => {
