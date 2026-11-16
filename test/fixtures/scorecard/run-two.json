@@ -1,0 +1,273 @@
+{
+  "eval": { "name": "toy", "version": "digest-1" },
+  "id": "run-two",
+  "name": "toy two",
+  "nanocode": { "hands": ["hand-1"], "harness": "harness-1" },
+  "state": "finished",
+  "attempts": [
+    {
+      "agent": { "id": "late", "model": "model-a", "provider": "claude", "thinking": "medium" },
+      "finishedAt": 2,
+      "id": "late-t1-1",
+      "index": 1,
+      "outcome": "passed",
+      "reward": 1,
+      "sandbox": null,
+      "session": "late-t1-1",
+      "startedAt": 1,
+      "task": { "checksum": "sha256:t1", "name": "toy/t1" },
+      "timing": { "agentExecution": { "finishedAt": 2, "startedAt": 1 } },
+      "usage": {
+        "cacheWriteTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 0.25,
+        "inputTokens": 1000,
+        "modelCalls": 2,
+        "outputTokens": 100,
+        "toolCalls": 1
+      }
+    },
+    {
+      "agent": { "id": "other", "model": "model-a", "provider": "claude" },
+      "finishedAt": 2,
+      "id": "other-t1-1",
+      "index": 1,
+      "outcome": "failed",
+      "reward": 0,
+      "sandbox": null,
+      "session": "other-t1-1",
+      "startedAt": 1,
+      "task": { "checksum": "sha256:t1", "name": "toy/t1" },
+      "timing": { "agentExecution": { "finishedAt": 2, "startedAt": 1 } },
+      "usage": {
+        "cacheWriteTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 1,
+        "inputTokens": 1000,
+        "modelCalls": 2,
+        "outputTokens": 100,
+        "toolCalls": 1
+      }
+    },
+    {
+      "agent": { "id": "late", "model": "model-a", "provider": "claude", "thinking": "medium" },
+      "finishedAt": 2,
+      "id": "late-t1-2",
+      "index": 2,
+      "outcome": "passed",
+      "reward": 1,
+      "sandbox": null,
+      "session": "late-t1-2",
+      "startedAt": 1,
+      "task": { "checksum": "sha256:t1", "name": "toy/t1" },
+      "timing": { "agentExecution": { "finishedAt": 2, "startedAt": 1 } },
+      "usage": {
+        "cacheWriteTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 0.25,
+        "inputTokens": 1000,
+        "modelCalls": 2,
+        "outputTokens": 100,
+        "toolCalls": 1
+      }
+    },
+    {
+      "agent": { "id": "other", "model": "model-a", "provider": "claude" },
+      "finishedAt": 2,
+      "id": "other-t1-2",
+      "index": 2,
+      "outcome": "failed",
+      "reward": 0,
+      "sandbox": null,
+      "session": "other-t1-2",
+      "startedAt": 1,
+      "task": { "checksum": "sha256:t1", "name": "toy/t1" },
+      "timing": { "agentExecution": { "finishedAt": 2, "startedAt": 1 } },
+      "usage": {
+        "cacheWriteTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 1,
+        "inputTokens": 1000,
+        "modelCalls": 2,
+        "outputTokens": 100,
+        "toolCalls": 1
+      }
+    },
+    {
+      "agent": { "id": "late", "model": "model-a", "provider": "claude", "thinking": "medium" },
+      "finishedAt": 2,
+      "id": "late-t2-1",
+      "index": 1,
+      "outcome": "passed",
+      "reward": 1,
+      "sandbox": null,
+      "session": "late-t2-1",
+      "startedAt": 1,
+      "task": { "checksum": "sha256:t2", "name": "toy/t2" },
+      "timing": { "agentExecution": { "finishedAt": 2, "startedAt": 1 } },
+      "usage": {
+        "cacheWriteTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 0.25,
+        "inputTokens": 1000,
+        "modelCalls": 2,
+        "outputTokens": 100,
+        "toolCalls": 1
+      }
+    },
+    {
+      "agent": { "id": "other", "model": "model-a", "provider": "claude" },
+      "finishedAt": 2,
+      "id": "other-t2-1",
+      "index": 1,
+      "outcome": "failed",
+      "reward": 0,
+      "sandbox": null,
+      "session": "other-t2-1",
+      "startedAt": 1,
+      "task": { "checksum": "sha256:t2", "name": "toy/t2" },
+      "timing": { "agentExecution": { "finishedAt": 2, "startedAt": 1 } },
+      "usage": {
+        "cacheWriteTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 1,
+        "inputTokens": 1000,
+        "modelCalls": 2,
+        "outputTokens": 100,
+        "toolCalls": 1
+      }
+    },
+    {
+      "agent": { "id": "late", "model": "model-a", "provider": "claude", "thinking": "medium" },
+      "finishedAt": 2,
+      "id": "late-t2-2",
+      "index": 2,
+      "outcome": "passed",
+      "reward": 1,
+      "sandbox": null,
+      "session": "late-t2-2",
+      "startedAt": 1,
+      "task": { "checksum": "sha256:t2", "name": "toy/t2" },
+      "timing": { "agentExecution": { "finishedAt": 2, "startedAt": 1 } },
+      "usage": {
+        "cacheWriteTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 0.25,
+        "inputTokens": 1000,
+        "modelCalls": 2,
+        "outputTokens": 100,
+        "toolCalls": 1
+      }
+    },
+    {
+      "agent": { "id": "other", "model": "model-a", "provider": "claude" },
+      "finishedAt": 2,
+      "id": "other-t2-2",
+      "index": 2,
+      "outcome": "failed",
+      "reward": 0,
+      "sandbox": null,
+      "session": "other-t2-2",
+      "startedAt": 1,
+      "task": { "checksum": "sha256:t2", "name": "toy/t2" },
+      "timing": { "agentExecution": { "finishedAt": 2, "startedAt": 1 } },
+      "usage": {
+        "cacheWriteTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 1,
+        "inputTokens": 1000,
+        "modelCalls": 2,
+        "outputTokens": 100,
+        "toolCalls": 1
+      }
+    },
+    {
+      "agent": { "id": "late", "model": "model-a", "provider": "claude", "thinking": "medium" },
+      "finishedAt": 2,
+      "id": "late-t3-1",
+      "index": 1,
+      "outcome": "passed",
+      "reward": 1,
+      "sandbox": null,
+      "session": "late-t3-1",
+      "startedAt": 1,
+      "task": { "checksum": "sha256:t3", "name": "toy/t3" },
+      "timing": { "agentExecution": { "finishedAt": 2, "startedAt": 1 } },
+      "usage": {
+        "cacheWriteTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 0.25,
+        "inputTokens": 1000,
+        "modelCalls": 2,
+        "outputTokens": 100,
+        "toolCalls": 1
+      }
+    },
+    {
+      "agent": { "id": "other", "model": "model-a", "provider": "claude" },
+      "finishedAt": 2,
+      "id": "other-t3-1",
+      "index": 1,
+      "outcome": "failed",
+      "reward": 0,
+      "sandbox": null,
+      "session": "other-t3-1",
+      "startedAt": 1,
+      "task": { "checksum": "sha256:t3", "name": "toy/t3" },
+      "timing": { "agentExecution": { "finishedAt": 2, "startedAt": 1 } },
+      "usage": {
+        "cacheWriteTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 1,
+        "inputTokens": 1000,
+        "modelCalls": 2,
+        "outputTokens": 100,
+        "toolCalls": 1
+      }
+    },
+    {
+      "agent": { "id": "late", "model": "model-a", "provider": "claude", "thinking": "medium" },
+      "finishedAt": 2,
+      "id": "late-t3-2",
+      "index": 2,
+      "outcome": "passed",
+      "reward": 1,
+      "sandbox": null,
+      "session": "late-t3-2",
+      "startedAt": 1,
+      "task": { "checksum": "sha256:t3", "name": "toy/t3" },
+      "timing": { "agentExecution": { "finishedAt": 2, "startedAt": 1 } },
+      "usage": {
+        "cacheWriteTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 0.25,
+        "inputTokens": 1000,
+        "modelCalls": 2,
+        "outputTokens": 100,
+        "toolCalls": 1
+      }
+    },
+    {
+      "agent": { "id": "other", "model": "model-a", "provider": "claude" },
+      "finishedAt": 2,
+      "id": "other-t3-2",
+      "index": 2,
+      "outcome": "failed",
+      "reward": 0,
+      "sandbox": null,
+      "session": "other-t3-2",
+      "startedAt": 1,
+      "task": { "checksum": "sha256:t3", "name": "toy/t3" },
+      "timing": { "agentExecution": { "finishedAt": 2, "startedAt": 1 } },
+      "usage": {
+        "cacheWriteTokens": 0,
+        "cachedTokens": 0,
+        "costUsd": 1,
+        "inputTokens": 1000,
+        "modelCalls": 2,
+        "outputTokens": 100,
+        "toolCalls": 1
+      }
+    }
+  ]
+}
