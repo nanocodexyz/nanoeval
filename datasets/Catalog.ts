@@ -45,7 +45,7 @@ export const adapters: readonly Dataset.Adapter[] = [
     name: 'aider-polyglot',
     package: 'aider/aider-polyglot',
     proof:
-      'task directories written with --out and checked against their digests (2 of 225 sampled). Not yet run as an eval with its own solutions',
+      'all 225 task directories written with --out and checked against their digests. Not a claim as published: every image holds the reference solution in /app/.oracle/solution.enc, encrypted with the password its solve.sh names, and tasks keep the network. Strip .oracle and close the network before scoring',
     state: 'unverified',
     tasks: '01e28d85e46beae5b7e29a29f57cb49d882b5486583d52cec4ee5bf3540a1c84',
     version: '01e28d85e46beae5b7e29a29f57cb49d882b5486583d52cec4ee5bf3540a1c84',
