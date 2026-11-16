@@ -45,6 +45,7 @@ export type Turn = {
   webSearch?: false
   yieldFloorMs?: number
   yieldShare?: number
+  stallNudgeMs?: number
 }
 
 export const record = 'agent/turns.jsonl'
@@ -88,6 +89,7 @@ function losses(turn: Turn): Record<string, number | string> {
     ...(turn.resultEffort ? { result_effort: turn.resultEffort } : {}),
     ...(turn.yieldFloorMs === undefined ? {} : { yield_floor_ms: turn.yieldFloorMs }),
     ...(turn.yieldShare === undefined ? {} : { yield_share: turn.yieldShare }),
+    ...(turn.stallNudgeMs === undefined ? {} : { stall_nudge_ms: turn.stallNudgeMs }),
   }
 }
 

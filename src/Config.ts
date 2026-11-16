@@ -70,6 +70,7 @@ export type Agent = {
   verificationRequested?: true
   yieldFloorMs?: number
   yieldShare?: number
+  stallNudgeMs?: number
   verifierModel?: string
   verifierProvider?: 'claude' | 'codex'
   verifierShare?: number
@@ -116,6 +117,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'refusalFallback',
   'resultEffort',
   'skipFinishCheck',
+  'stallNudgeMs',
   'stopAtTarget',
   'subagents',
   'thinking',
@@ -543,6 +545,11 @@ export function parseAgents(value: unknown): Agent[] {
       if (provider !== 'claude')
         fail(agent.id + ' has a yieldFloorMs, which only a claude session takes')
     }
+    if (agent.stallNudgeMs !== undefined) {
+      integer(agent.stallNudgeMs, agent.id + ': stallNudgeMs', 1)
+      if (provider !== 'claude')
+        fail(agent.id + ' has a stallNudgeMs, which only a claude session takes')
+    }
     if (agent.yieldShare !== undefined) {
       if (
         !(
@@ -671,6 +678,7 @@ export function parseAgents(value: unknown): Agent[] {
       ...(agent.yieldFloorMs === undefined ? {} : { yieldFloorMs: agent.yieldFloorMs }),
       ...(agent.verificationRequested ? { verificationRequested: true as const } : {}),
       ...(agent.yieldShare === undefined ? {} : { yieldShare: agent.yieldShare }),
+      ...(agent.stallNudgeMs === undefined ? {} : { stallNudgeMs: agent.stallNudgeMs }),
       ...(agent.verifierModel ? { verifierModel: agent.verifierModel } : {}),
       ...(agent.verifierProvider ? { verifierProvider: agent.verifierProvider } : {}),
       ...(agent.verifierShare === undefined ? {} : { verifierShare: agent.verifierShare }),
