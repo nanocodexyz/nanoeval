@@ -3545,8 +3545,14 @@ export class Run extends DurableObject<Env> {
       ...(agent.escalateToolErrors === undefined
         ? {}
         : { escalateToolErrors: agent.escalateToolErrors }),
+      ...(agent.compactInstructions ? { compactInstructions: true } : {}),
+      ...(agent.contextWindow === undefined ? {} : { contextWindow: agent.contextWindow }),
       ...(agent.foldFinish ? { foldFinish: true } : {}),
       hand: Protocol.handName,
+      ...(agent.leanToolArguments ? { leanToolArguments: true } : {}),
+      ...(agent.lenientPatches ? { lenientPatches: true } : {}),
+      ...(agent.maxOutputTokens === undefined ? {} : { maxOutputTokens: agent.maxOutputTokens }),
+      ...(agent.minWaitMs === undefined ? {} : { minWaitMs: agent.minWaitMs }),
       ...(agent.lateFinishCheckMs === undefined
         ? {}
         : { lateFinishCheckMs: agent.lateFinishCheckMs }),

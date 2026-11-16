@@ -335,7 +335,14 @@ const usage = `nanoeval <command>
             escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens,
             persist_finish, skip_finish_check, late_finish_check_ms, result_effort,
             stop_at_target, yield_floor_ms, yield_share, fix_provider, fix_model, fix_thinking,
-            verifier_provider, verifier_thinking, executor_share, verifier_share.
+            verifier_provider, verifier_thinking, executor_share, verifier_share,
+            lean_tool_arguments, compact_instructions, lenient_patches, min_wait_ms,
+            context_window, max_output_tokens. A codex agent may name :lean_tool_arguments=on,
+            :compact_instructions=on, :lenient_patches=on, :min_wait_ms=N, :context_window=N
+            (the session's compaction window in tokens) and :max_output_tokens=N (the cap a
+            request asks for) (nano-ds-lean=codex:@cf/deepseek-ai/deepseek-v4.1-flash-1017:low:
+            lean_tool_arguments=on:compact_instructions=on:lenient_patches=on:min_wait_ms=120000:
+            context_window=1048576:max_output_tokens=65536).
             An agent with :branches=2:picker=verify_lazy that names :fix_provider=claude|codex
             and :fix_model=MODEL runs a cascade: its own model works first, until
             :executor_share=N percent of the agent time (50); the verifier, on
@@ -941,6 +948,42 @@ const agentOptions: readonly AgentOption[] = [
     name: 'verifier_share',
     read: (text) => ({ verifierShare: Number(text) }),
     write: (agent) => agent.verifierShare,
+  },
+  {
+    ...on,
+    name: 'lean_tool_arguments',
+    read: () => ({ leanToolArguments: true }),
+    write: (agent) => (agent.leanToolArguments ? on.value : undefined),
+  },
+  {
+    ...on,
+    name: 'compact_instructions',
+    read: () => ({ compactInstructions: true }),
+    write: (agent) => (agent.compactInstructions ? on.value : undefined),
+  },
+  {
+    ...on,
+    name: 'lenient_patches',
+    read: () => ({ lenientPatches: true }),
+    write: (agent) => (agent.lenientPatches ? on.value : undefined),
+  },
+  {
+    ...count,
+    name: 'min_wait_ms',
+    read: (text) => ({ minWaitMs: Number(text) }),
+    write: (agent) => agent.minWaitMs,
+  },
+  {
+    ...count,
+    name: 'context_window',
+    read: (text) => ({ contextWindow: Number(text) }),
+    write: (agent) => agent.contextWindow,
+  },
+  {
+    ...count,
+    name: 'max_output_tokens',
+    read: (text) => ({ maxOutputTokens: Number(text) }),
+    write: (agent) => agent.maxOutputTokens,
   },
 ]
 

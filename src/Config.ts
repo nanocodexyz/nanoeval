@@ -26,6 +26,8 @@ export type Agent = {
   briefFinal?: true
   briefFinish?: true
   cellYieldMs?: number
+  compactInstructions?: true
+  contextWindow?: number
   escalateContextTokens?: number
   escalateModel?: string
   escalateToolErrors?: number
@@ -38,7 +40,11 @@ export type Agent = {
   lateFinishCheckMs?: number
   lazy?: true
   leanCells?: true
+  leanToolArguments?: true
+  lenientPatches?: true
   lowEffortRounds?: true
+  maxOutputTokens?: number
+  minWaitMs?: number
   model: string
   orchestration?: Orchestration
   persistFinish?: true
@@ -65,6 +71,8 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'briefFinal',
   'briefFinish',
   'cellYieldMs',
+  'compactInstructions',
+  'contextWindow',
   'escalateContextTokens',
   'escalateModel',
   'escalateToolErrors',
@@ -77,7 +85,11 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'lateFinishCheckMs',
   'lazy',
   'leanCells',
+  'leanToolArguments',
+  'lenientPatches',
   'lowEffortRounds',
+  'maxOutputTokens',
+  'minWaitMs',
   'model',
   'orchestration',
   'persistFinish',
@@ -117,6 +129,10 @@ export type RefusalFallback = 'return_once' | 'session'
 export type Effort = 'high' | 'low' | 'max' | 'medium' | 'xhigh'
 
 export const efforts: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
+
+export const codexSwitches = ['compactInstructions', 'leanToolArguments', 'lenientPatches'] as const
+
+export const codexLimits = ['minWaitMs', 'contextWindow', 'maxOutputTokens'] as const
 
 export const finishLevers = [
   'briefFinal',
@@ -479,6 +495,18 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude')
         fail(agent.id + ' has a yieldShare, which only a claude session takes')
     }
+    for (const name of codexSwitches) {
+      if (agent[name] === undefined) continue
+      if (agent[name] !== true) fail(agent.id + ' has a ' + name + ' that is not true')
+      if (provider !== 'codex')
+        fail(agent.id + ' has a ' + name + ', which only a codex session takes')
+    }
+    for (const name of codexLimits) {
+      if (agent[name] === undefined) continue
+      integer(agent[name], agent.id + ': ' + name, 1)
+      if (provider !== 'codex')
+        fail(agent.id + ' has a ' + name + ', which only a codex session takes')
+    }
     for (const lever of finishLevers) {
       if (agent[lever] === undefined) continue
       if (agent[lever] !== true) fail(agent.id + ' has a ' + lever + ' that is not true')
@@ -501,6 +529,8 @@ export function parse(value: unknown): Config {
       ...(agent.briefFinal ? { briefFinal: true as const } : {}),
       ...(agent.briefFinish ? { briefFinish: true as const } : {}),
       ...(agent.cellYieldMs === undefined ? {} : { cellYieldMs: agent.cellYieldMs }),
+      ...(agent.compactInstructions ? { compactInstructions: true as const } : {}),
+      ...(agent.contextWindow === undefined ? {} : { contextWindow: agent.contextWindow }),
       ...(agent.escalateContextTokens === undefined
         ? {}
         : { escalateContextTokens: agent.escalateContextTokens }),
@@ -519,7 +549,11 @@ export function parse(value: unknown): Config {
         : { lateFinishCheckMs: agent.lateFinishCheckMs }),
       ...(agent.lazy || Picker.lazy(agent.picker) ? { lazy: true as const } : {}),
       ...(agent.leanCells ? { leanCells: true as const } : {}),
+      ...(agent.leanToolArguments ? { leanToolArguments: true as const } : {}),
+      ...(agent.lenientPatches ? { lenientPatches: true as const } : {}),
       ...(agent.lowEffortRounds ? { lowEffortRounds: true as const } : {}),
+      ...(agent.maxOutputTokens === undefined ? {} : { maxOutputTokens: agent.maxOutputTokens }),
+      ...(agent.minWaitMs === undefined ? {} : { minWaitMs: agent.minWaitMs }),
       model: agent.model,
       ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
       ...(agent.persistFinish ? { persistFinish: true as const } : {}),

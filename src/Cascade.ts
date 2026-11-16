@@ -13,6 +13,12 @@ export type Agent = {
 }
 
 type Bare = {
+  compactInstructions?: unknown
+  contextWindow?: unknown
+  leanToolArguments?: unknown
+  lenientPatches?: unknown
+  maxOutputTokens?: unknown
+  minWaitMs?: unknown
   escalateContextTokens?: unknown
   escalateModel?: unknown
   escalateToolErrors?: unknown
@@ -75,6 +81,12 @@ export function fixing(agent: Pick<Agent, 'fixModel'>, branch: number): boolean 
 
 export function bare<T extends Bare>(turn: T): Omit<T, keyof Bare> {
   const {
+    compactInstructions: _compact,
+    contextWindow: _window,
+    leanToolArguments: _lean,
+    lenientPatches: _lenient,
+    maxOutputTokens: _output,
+    minWaitMs: _wait,
     escalateContextTokens: _context,
     escalateModel: _model,
     escalateToolErrors: _errors,

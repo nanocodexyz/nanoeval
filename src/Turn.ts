@@ -4,6 +4,8 @@ export type Turn = {
   briefFinal?: true
   briefFinish?: true
   cellYieldMs?: number
+  compactInstructions?: true
+  contextWindow?: number
   deadline?: { atMs: number; limitMs: number }
   escalateContextTokens?: number
   escalateModel?: string
@@ -12,7 +14,11 @@ export type Turn = {
   hand?: string
   lateFinishCheckMs?: number
   leanCells?: true
+  leanToolArguments?: true
+  lenientPatches?: true
   lowEffortRounds?: true
+  maxOutputTokens?: number
+  minWaitMs?: number
   model: string
   orchestration?: 'direct' | 'jobs'
   payer?: Config.Payer
@@ -56,6 +62,18 @@ function losses(turn: Turn): Record<string, number | string> {
   }
 }
 
+export function codexOptions(turn: Turn): Record<string, number | true> {
+  if (turn.provider !== 'codex') return {}
+  return {
+    ...(turn.compactInstructions ? { compact_instructions: true as const } : {}),
+    ...(turn.contextWindow === undefined ? {} : { context_window: turn.contextWindow }),
+    ...(turn.leanToolArguments ? { lean_tool_arguments: true as const } : {}),
+    ...(turn.lenientPatches ? { lenient_patches: true as const } : {}),
+    ...(turn.maxOutputTokens === undefined ? {} : { max_output_tokens: turn.maxOutputTokens }),
+    ...(turn.minWaitMs === undefined ? {} : { min_wait_ms: turn.minWaitMs }),
+  }
+}
+
 function escalate(turn: Turn): { escalate?: Record<string, number | string> } {
   const named = {
     ...(turn.escalateContextTokens === undefined
@@ -80,6 +98,7 @@ export function sent(turn: Turn, input: { at: number; session: string }): string
       at_ms: input.at,
       ...levers(turn),
       ...(turn.cellYieldMs === undefined ? {} : { cell_yield_ms: turn.cellYieldMs }),
+      ...codexOptions(turn),
       deadline: turn.deadline
         ? { at_ms: turn.deadline.atMs, limit_ms: turn.deadline.limitMs }
         : null,
@@ -96,6 +115,7 @@ export function sent(turn: Turn, input: { at: number; session: string }): string
 export function body(turn: Turn): Record<string, unknown> {
   return {
     ...levers(turn),
+    ...codexOptions(turn),
     ...(turn.hand ? { hand: turn.hand } : {}),
     ...(turn.orchestration && turn.provider === 'claude'
       ? { claude_orchestration: turn.orchestration }
