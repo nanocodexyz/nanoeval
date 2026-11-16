@@ -1,4 +1,6 @@
+import * as Blocklist from './Blocklist.ts'
 import * as Branch from './Branch.ts'
+import * as Cascade from './Cascade.ts'
 import * as Eval from './Eval.ts'
 import * as Installed from './Installed.ts'
 import type * as Ledger from './Ledger.ts'
@@ -26,6 +28,7 @@ export type Agent = {
   briefFinish?: true
   cellYieldMs?: number
   clearingCacheFloors?: true
+  codesign?: false
   contextWindow?: number
   escalateContextTokens?: number
   escalateModel?: string
@@ -33,7 +36,12 @@ export type Agent = {
   finishAmbiguity?: true
   finishCheck?: true
   finishRetries?: number
+  executorShare?: number
+  fixModel?: string
+  fixProvider?: 'claude' | 'codex'
+  fixThinking?: string
   foldFinish?: true
+  forkOn?: Picker.ForkOn
   id: string
   lateFinishCheckMs?: number
   lazy?: true
@@ -47,18 +55,24 @@ export type Agent = {
   persistFinish?: true
   picker?: Picker.Kind
   preflight?: true
+  promptVariant?: PromptVariant
   provider: 'claude' | 'codex' | 'oracle' | Installed.Kind
   refusalFallback?: RefusalFallback
   resultEffort?: Effort
   skipFinishCheck?: true
   stopAtTarget?: true
-  subagents?: false
+  subagents?: boolean
   thinking?: string
+  toolProfile?: ToolProfile
   toolResultClearing?: ToolResultClearing
   toolResultTokens?: number
+  verificationRequested?: true
   yieldFloorMs?: number
   yieldShare?: number
   verifierModel?: string
+  verifierProvider?: 'claude' | 'codex'
+  verifierShare?: number
+  verifierThinking?: string
 }
 
 export const agentKeys: readonly (keyof Agent)[] = [
@@ -68,6 +82,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'briefFinish',
   'cellYieldMs',
   'clearingCacheFloors',
+  'codesign',
   'contextWindow',
   'escalateContextTokens',
   'escalateModel',
@@ -75,7 +90,12 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'finishAmbiguity',
   'finishCheck',
   'finishRetries',
+  'executorShare',
+  'fixModel',
+  'fixProvider',
+  'fixThinking',
   'foldFinish',
+  'forkOn',
   'id',
   'lateFinishCheckMs',
   'lazy',
@@ -89,6 +109,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'persistFinish',
   'picker',
   'preflight',
+  'promptVariant',
   'provider',
   'refusalFallback',
   'resultEffort',
@@ -96,9 +117,14 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'stopAtTarget',
   'subagents',
   'thinking',
+  'toolProfile',
   'toolResultClearing',
   'toolResultTokens',
+  'verificationRequested',
   'verifierModel',
+  'verifierProvider',
+  'verifierShare',
+  'verifierThinking',
   'yieldFloorMs',
   'yieldShare',
 ]
@@ -118,6 +144,14 @@ export type Payer = 'deployment' | 'plan'
 export const payers: readonly Payer[] = ['deployment', 'plan']
 
 export type RefusalFallback = 'return_once' | 'session'
+
+export type PromptVariant = 'compact'
+
+export const promptVariants: readonly PromptVariant[] = ['compact']
+
+export type ToolProfile = 'lean'
+
+export const toolProfiles: readonly ToolProfile[] = ['lean']
 
 export type ToolResultClearing = { atLeastTokens: number; keep: number }
 
@@ -173,6 +207,7 @@ export type Config = {
     max: number
     memoryMb?: number
     network: Slot.Network
+    packageArchive?: true
     pollMs: number
     provider: 'e2b' | 'gateway' | 'local'
     runtime?: Eval.Blob
@@ -182,6 +217,7 @@ export type Config = {
     verifierCache?: true
     warm?: { idleSec: number; usd: number }
   }
+  webBlocklist?: Blocklist.List
 }
 
 export type Runner = {
@@ -197,6 +233,7 @@ export type Runner = {
   memoryOvercommit?: true
   network: Slot.Network
   oracle: boolean
+  packageArchive?: true
   pollMs: number
   pool?: Protocol.Standing
   protocol?: number
@@ -294,28 +331,23 @@ export function rerunAgents(parent: readonly Agent[], ids: readonly string[]): A
   return parent.filter((agent) => ids.includes(agent.id))
 }
 
-export function parse(value: unknown): Config {
-  const config = value as Config
-  const fail = (message: string): never => {
-    throw new InvalidError(message)
-  }
-  const integer = (candidate: unknown, name: string, minimum: number) =>
-    Number.isSafeInteger(candidate) && (candidate as number) >= minimum
-      ? (candidate as number)
-      : fail(name + ' must be an integer of at least ' + minimum)
-  const amount = (candidate: unknown, name: string) =>
-    typeof candidate === 'number' && Number.isFinite(candidate) && candidate >= 0
-      ? candidate
-      : fail(name + ' must be a non-negative number')
-  const choice = <T extends string>(candidate: unknown, name: string, choices: readonly T[]): T =>
-    choices.includes(candidate as T)
-      ? (candidate as T)
-      : fail(name + ' must be one of ' + choices.join(', '))
+const fail = (message: string): never => {
+  throw new InvalidError(message)
+}
 
-  if (typeof config !== 'object' || config === null) fail('the run configuration is not an object')
-  if (typeof config.name !== 'string' || !config.name) fail('name is required')
-  if (!Array.isArray(config.agents) || !config.agents.length) fail('at least one agent is required')
-  const agents = config.agents.map((agent: Agent) => {
+const integer = (candidate: unknown, name: string, minimum: number) =>
+  Number.isSafeInteger(candidate) && (candidate as number) >= minimum
+    ? (candidate as number)
+    : fail(name + ' must be an integer of at least ' + minimum)
+
+const choice = <T extends string>(candidate: unknown, name: string, choices: readonly T[]): T =>
+  choices.includes(candidate as T)
+    ? (candidate as T)
+    : fail(name + ' must be one of ' + choices.join(', '))
+
+export function parseAgents(value: unknown): Agent[] {
+  if (!Array.isArray(value) || !value.length) fail('at least one agent is required')
+  const agents = (value as Agent[]).map((agent: Agent) => {
     if (typeof agent?.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(agent.id))
       fail('an agent id is letters, digits, dots, dashes and underscores')
     if (typeof agent.model !== 'string' || !agent.model) fail(agent.id + ' names no model')
@@ -369,12 +401,68 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude' && provider !== 'codex')
         fail(agent.id + ' picks a branch, which only a claude or codex session can')
     }
+    if (agent.forkOn !== undefined) {
+      choice(agent.forkOn, agent.id + ': forkOn', Picker.forkOns)
+      if (agent.picker !== 'verify_lazy')
+        fail(agent.id + ' has a forkOn, which only an agent with verify_lazy takes')
+    }
     if (agent.verifierModel !== undefined) {
       if (typeof agent.verifierModel !== 'string' || !agent.verifierModel)
         fail(agent.id + ' has an empty verifierModel')
       if (agent.picker === undefined)
         fail(agent.id + ' has a verifierModel, which only an agent with a picker takes')
     }
+    if (agent.verifierProvider !== undefined) {
+      choice(agent.verifierProvider, agent.id + ': verifierProvider', ['claude', 'codex'])
+      if (agent.picker === undefined)
+        fail(agent.id + ' has a verifierProvider, which only an agent with a picker takes')
+      if (agent.verifierProvider !== provider && agent.verifierModel === undefined)
+        fail(
+          agent.id +
+            ' verifies with another provider than its own, and names no verifierModel for it',
+        )
+    }
+    if (agent.verifierThinking !== undefined) {
+      choice(agent.verifierThinking, agent.id + ': verifierThinking', thinking)
+      if (agent.picker === undefined)
+        fail(agent.id + ' has a verifierThinking, which only an agent with a picker takes')
+    }
+    if (agent.fixModel !== undefined) {
+      if (typeof agent.fixModel !== 'string' || !agent.fixModel)
+        fail(agent.id + ' has an empty fixModel')
+      if (agent.picker !== 'verify_lazy' || agent.branches !== 2)
+        fail(
+          agent.id + ' has a fixModel, which only an agent with verify_lazy and two branches takes',
+        )
+      if (agent.fixProvider === undefined) fail(agent.id + ' has a fixModel and no fixProvider')
+    }
+    if (agent.fixProvider !== undefined) {
+      choice(agent.fixProvider, agent.id + ': fixProvider', ['claude', 'codex'])
+      if (agent.fixModel === undefined)
+        fail(agent.id + ' has a fixProvider, which only an agent with a fixModel takes')
+    }
+    if (agent.fixThinking !== undefined) {
+      choice(agent.fixThinking, agent.id + ': fixThinking', thinking)
+      if (agent.fixModel === undefined)
+        fail(agent.id + ' has a fixThinking, which only an agent with a fixModel takes')
+    }
+    for (const share of ['executorShare', 'verifierShare'] as const) {
+      if (agent[share] === undefined) continue
+      if (!(Number.isSafeInteger(agent[share]) && agent[share] >= 1 && agent[share] <= 100))
+        fail(agent.id + ': ' + share + ' must be a whole percent from 1 to 100')
+      if (agent.fixModel === undefined)
+        fail(
+          agent.id +
+            (share === 'executorShare' ? ' has an ' : ' has a ') +
+            share +
+            ', which only an agent with a fixModel takes',
+        )
+    }
+    if (
+      agent.fixModel !== undefined &&
+      Cascade.executorShare(agent) + Cascade.verifierShare(agent) >= 100
+    )
+      fail(agent.id + ': executorShare and verifierShare leave the fix no time')
     if (agent.refusalFallback !== undefined) {
       choice(agent.refusalFallback, 'refusalFallback', ['return_once', 'session'])
       if (provider !== 'claude')
@@ -423,9 +511,17 @@ export function parse(value: unknown): Config {
         fail(agent.id + ' has a toolResultClearing, which only a claude session takes')
     }
     if (agent.subagents !== undefined) {
-      if (agent.subagents !== false) fail(agent.id + ' has a subagents that is not false')
+      if (agent.subagents === false && provider !== 'claude')
+        fail(agent.id + ' has a subagents that is false, which only a claude session takes')
+      if (agent.subagents === true && provider !== 'codex')
+        fail(agent.id + ' has a subagents that is true, which only a codex session takes')
+      if (agent.subagents !== false && agent.subagents !== true)
+        fail(agent.id + ' has a subagents that is not a boolean')
+    }
+    if (agent.codesign !== undefined) {
+      if (agent.codesign !== false) fail(agent.id + ' has a codesign that is not false')
       if (provider !== 'claude')
-        fail(agent.id + ' has a subagents, which only a claude session takes')
+        fail(agent.id + ' has a codesign, which only a claude session takes')
     }
     if (agent.lateFinishCheckMs !== undefined) {
       integer(agent.lateFinishCheckMs, agent.id + ': lateFinishCheckMs', 1)
@@ -484,10 +580,26 @@ export function parse(value: unknown): Config {
       if (provider !== 'codex')
         fail(agent.id + ' has a ' + limit + ', which only a codex session takes')
     }
+    if (agent.verificationRequested !== undefined) {
+      if (agent.verificationRequested !== true)
+        fail(agent.id + ' has a verificationRequested that is not true')
+      if (provider !== 'codex')
+        fail(agent.id + ' has a verificationRequested, which only a codex session takes')
+    }
     if (agent.persistFinish !== undefined) {
       if (agent.persistFinish !== true) fail(agent.id + ' has a persistFinish that is not true')
       if (provider !== 'claude' && provider !== 'codex')
         fail(agent.id + ' has a persistFinish, which only a claude or codex session takes')
+    }
+    if (agent.promptVariant !== undefined) {
+      choice(agent.promptVariant, agent.id + ': promptVariant', promptVariants)
+      if (provider !== 'codex')
+        fail(agent.id + ' has a promptVariant, which only a codex session takes')
+    }
+    if (agent.toolProfile !== undefined) {
+      choice(agent.toolProfile, agent.id + ': toolProfile', toolProfiles)
+      if (provider !== 'codex')
+        fail(agent.id + ' has a toolProfile, which only a codex session takes')
     }
     const named = Installed.is(provider) && Installed.releases[provider].provider === 'api'
     if (agent.api !== undefined || named) {
@@ -501,6 +613,7 @@ export function parse(value: unknown): Config {
       ...(agent.briefFinish ? { briefFinish: true as const } : {}),
       ...(agent.cellYieldMs === undefined ? {} : { cellYieldMs: agent.cellYieldMs }),
       ...(agent.clearingCacheFloors ? { clearingCacheFloors: true as const } : {}),
+      ...(agent.codesign === false ? { codesign: false as const } : {}),
       ...(agent.contextWindow === undefined ? {} : { contextWindow: agent.contextWindow }),
       ...(agent.escalateContextTokens === undefined
         ? {}
@@ -512,7 +625,12 @@ export function parse(value: unknown): Config {
       ...(agent.finishAmbiguity ? { finishAmbiguity: true as const } : {}),
       ...(agent.finishCheck ? { finishCheck: true as const } : {}),
       ...(agent.finishRetries === undefined ? {} : { finishRetries: agent.finishRetries }),
+      ...(agent.executorShare === undefined ? {} : { executorShare: agent.executorShare }),
+      ...(agent.fixModel ? { fixModel: agent.fixModel } : {}),
+      ...(agent.fixProvider ? { fixProvider: agent.fixProvider } : {}),
+      ...(agent.fixThinking ? { fixThinking: agent.fixThinking } : {}),
       ...(agent.foldFinish ? { foldFinish: true as const } : {}),
+      ...(agent.forkOn ? { forkOn: agent.forkOn } : {}),
       id: agent.id,
       ...(agent.lateFinishCheckMs === undefined
         ? {}
@@ -528,13 +646,15 @@ export function parse(value: unknown): Config {
       ...(agent.persistFinish ? { persistFinish: true as const } : {}),
       ...(agent.picker ? { picker: agent.picker } : {}),
       ...(agent.preflight ? { preflight: true as const } : {}),
+      ...(agent.promptVariant ? { promptVariant: agent.promptVariant } : {}),
       provider,
       ...(agent.refusalFallback ? { refusalFallback: agent.refusalFallback } : {}),
       ...(agent.resultEffort ? { resultEffort: agent.resultEffort } : {}),
       ...(agent.skipFinishCheck ? { skipFinishCheck: true as const } : {}),
       ...(agent.stopAtTarget ? { stopAtTarget: true as const } : {}),
-      ...(agent.subagents === false ? { subagents: false as const } : {}),
+      ...(agent.subagents === undefined ? {} : { subagents: agent.subagents }),
       ...(agent.thinking ? { thinking: agent.thinking } : {}),
+      ...(agent.toolProfile ? { toolProfile: agent.toolProfile } : {}),
       ...(agent.toolResultClearing === undefined
         ? {}
         : {
@@ -545,14 +665,31 @@ export function parse(value: unknown): Config {
           }),
       ...(agent.toolResultTokens === undefined ? {} : { toolResultTokens: agent.toolResultTokens }),
       ...(agent.yieldFloorMs === undefined ? {} : { yieldFloorMs: agent.yieldFloorMs }),
+      ...(agent.verificationRequested ? { verificationRequested: true as const } : {}),
       ...(agent.yieldShare === undefined ? {} : { yieldShare: agent.yieldShare }),
       ...(agent.verifierModel ? { verifierModel: agent.verifierModel } : {}),
+      ...(agent.verifierProvider ? { verifierProvider: agent.verifierProvider } : {}),
+      ...(agent.verifierShare === undefined ? {} : { verifierShare: agent.verifierShare }),
+      ...(agent.verifierThinking ? { verifierThinking: agent.verifierThinking } : {}),
     }
   })
   if (new Set(agents.map((agent) => agent.id)).size !== agents.length)
     fail('agent ids must be unique')
   if (agents.some((agent) => agent.provider === 'oracle') && agents.length > 1)
     fail('an oracle run has the oracle as its only agent')
+  return agents
+}
+
+export function parse(value: unknown): Config {
+  const config = value as Config
+  const amount = (candidate: unknown, name: string) =>
+    typeof candidate === 'number' && Number.isFinite(candidate) && candidate >= 0
+      ? candidate
+      : fail(name + ' must be a non-negative number')
+
+  if (typeof config !== 'object' || config === null) fail('the run configuration is not an object')
+  if (typeof config.name !== 'string' || !config.name) fail('name is required')
+  const agents = parseAgents(config.agents)
 
   let judge: Judge | undefined
   if (config.judge !== undefined) {
@@ -583,6 +720,24 @@ export function parse(value: unknown): Config {
         unpaid.provider,
     )
 
+  let webBlocklist: Blocklist.List | undefined
+  if (config.webBlocklist !== undefined) {
+    try {
+      webBlocklist = [...Blocklist.valid(config.webBlocklist)]
+    } catch (error) {
+      fail((error as Error).message)
+    }
+    const open = agents.find((agent) => !Blocklist.enforced.includes(agent.provider))
+    if (open)
+      fail(
+        open.id +
+          ' is ' +
+          open.provider +
+          ', and a run with a web blocklist takes only agents that enforce it: ' +
+          Blocklist.enforced.join(', '),
+      )
+  }
+
   if (typeof config.eval?.name !== 'string') fail('eval names the imported eval to run')
   const reference = Eval.reference(
     config.eval.name + (config.eval.version ? '@' + config.eval.version : ''),
@@ -598,6 +753,10 @@ export function parse(value: unknown): Config {
   const networks = Slot.networks[backend === 'auto' ? 'krun' : backend]
   if (!networks.includes(sandbox.network))
     fail('sandbox.network of the ' + backend + ' backend is ' + networks.join(' or '))
+  if (sandbox.packageArchive !== undefined && typeof sandbox.packageArchive !== 'boolean')
+    fail('sandbox.packageArchive is true or false')
+  if (sandbox.packageArchive && backend === 'dir')
+    fail('sandbox.packageArchive needs the krun or the ns backend')
   if (sandbox.verifierCache !== undefined && typeof sandbox.verifierCache !== 'boolean')
     fail('sandbox.verifierCache is true or false')
   if (sandbox.verifierCache && backend === 'dir')
@@ -655,6 +814,7 @@ export function parse(value: unknown): Config {
     },
     name: config.name,
     ...(config.only?.length ? { only: [...config.only] } : {}),
+    ...(webBlocklist ? { webBlocklist } : {}),
     ...(config.paces === undefined
       ? {}
       : {
@@ -742,6 +902,7 @@ export function parse(value: unknown): Config {
         ? {}
         : { memoryMb: integer(sandbox.memoryMb, 'sandbox.memoryMb', 1) }),
       network: sandbox.network,
+      ...(sandbox.packageArchive ? { packageArchive: true as const } : {}),
       pollMs: integer(sandbox.pollMs, 'sandbox.pollMs', 1),
       provider: choice(sandbox.provider, 'sandbox.provider', ['e2b', 'gateway', 'local']),
       ...(sandbox.runtime === undefined

@@ -1,4 +1,5 @@
 import type * as Atif from './Atif.ts'
+import * as Blocklist from './Blocklist.ts'
 import * as CodexFallback from './CodexFallback.ts'
 import * as Slot from './Slot.ts'
 
@@ -68,6 +69,23 @@ const leaderboardClaude =
 const leaderboardCodex = 'https://github.com/openai/codex/releases/download/rust-v0.162.1'
 
 export const leaderboard = { contextWindow: 1_048_576, replyLimit: 65_536 } as const
+
+// The window Workers AI serves each model with, which every agent of the model is told alike: a
+// harness told the leaderboard default for a 262K model never compacts before the endpoint refuses
+// the request, and the nanocode session would otherwise assume 272K for a model it does not know.
+// Each value is the max_model_len the endpoint reports when asked for more output than it holds.
+export const contextWindows: Readonly<Record<string, number>> = {
+  '@cf/deepseek-ai/deepseek-v4.1-flash-1017': 1_048_576,
+  '@cf/google/gemma-4-26b-a4b-it': 256_000,
+  '@cf/moonshotai/kimi-k2.6': 262_144,
+  '@cf/moonshotai/kimi-k2.7-code': 262_144,
+  '@cf/qwen/qwen3.8-27b': 262_144,
+  '@cf/zai-org/glm-5.3-flash': 1_048_576,
+}
+
+export function contextWindow(model: string): number | undefined {
+  return contextWindows[model]
+}
 
 export const releases: Record<Kind, Release> = {
   'claude-code': {
@@ -311,9 +329,31 @@ const prompt = ['prompt=$(cat; printf x)', 'prompt=${prompt%x}']
 
 const claudeWebTools = ['WebFetch', 'WebSearch']
 
-function claudeClosed(options: { closed?: boolean }): string[] {
-  return options.closed ? ['--disallowedTools ' + claudeWebTools.join(' ')] : []
+function claudeClosed(options: Options): string[] {
+  return [
+    ...(options.closed ? ['--disallowedTools ' + claudeWebTools.join(' ')] : []),
+    ...(options.blocklist ? ['--settings "$NANOEVAL_AGENT_HOME/web-blocklist.json"'] : []),
+  ]
 }
+
+const hookEnd = 'NANOEVAL_WEB_BLOCKLIST'
+
+function claudeBlocklist(options: Options): string[] {
+  if (!options.blocklist) return []
+  const hook = Blocklist.hook(options.blocklist)
+  if (hook.split('\n').includes(hookEnd))
+    throw new Error('the web blocklist hook ends its own here-document')
+  return [
+    'cat > "$NANOEVAL_AGENT_HOME/web-blocklist.sh" <<\'' + hookEnd + "'",
+    ...hook.trimEnd().split('\n'),
+    hookEnd,
+    'cat > "$NANOEVAL_AGENT_HOME/web-blocklist.json" <<' + hookEnd,
+    '{"hooks":{"PreToolUse":[{"matcher":"WebFetch","hooks":[{"type":"command","command":"sh $NANOEVAL_AGENT_HOME/web-blocklist.sh"}]}]}}',
+    hookEnd,
+  ]
+}
+
+export type Options = { blocklist?: Blocklist.List; closed?: boolean; url: string }
 
 const fxApis: Record<Api, { base: string; effort: (level: string) => unknown; protocol: string }> =
   {
@@ -420,6 +460,11 @@ const opencodeApis: Record<Api, { base: string; npm: string }> = {
   responses: { base: '', npm: '@ai-sdk/openai' },
 }
 
+function opencodeLimit(model: string): { limit?: { context: number; output: number } } {
+  const context = contextWindow(model)
+  return context ? { limit: { context, output: leaderboard.replyLimit } } : {}
+}
+
 function opencodeRun(agent: Agent, url: string): string {
   if (!agent.api) throw new Error('opencode names no API for its model')
   const api = opencodeApis[agent.api]
@@ -430,14 +475,17 @@ function opencodeRun(agent: Agent, url: string): string {
       nanoeval: {
         models: {
           // opencode has no variants for a model it does not know, so --variant alone sends no effort.
-          [agent.model]: agent.thinking
-            ? {
-                reasoning: true,
-                ...(agent.api === 'chat'
-                  ? { variants: { [agent.thinking]: { reasoningEffort: agent.thinking } } }
-                  : {}),
-              }
-            : {},
+          [agent.model]: {
+            ...(agent.thinking
+              ? {
+                  reasoning: true,
+                  ...(agent.api === 'chat'
+                    ? { variants: { [agent.thinking]: { reasoningEffort: agent.thinking } } }
+                    : {}),
+                }
+              : {}),
+            ...opencodeLimit(agent.model),
+          },
         },
         npm: api.npm,
         options: { apiKey: '{env:' + tokenVariable + '}', baseURL: url + api.base },
@@ -483,6 +531,7 @@ function piPrint(agent: Agent, url: string): string {
         models: [
           {
             id: agent.model,
+            ...(contextWindow(agent.model) ? { contextWindow: contextWindow(agent.model) } : {}),
             maxTokens: leaderboard.replyLimit,
             ...(agent.thinking ? { ...api.thinking, reasoning: true } : {}),
           },
@@ -519,13 +568,13 @@ function stockCodex(agent: Agent, url: string): string {
     input_modalities: ['text', 'image'],
     slug: agent.model,
     display_name: agent.model,
-    context_window: leaderboard.contextWindow,
-    max_context_window: leaderboard.contextWindow,
+    context_window: contextWindow(agent.model) ?? leaderboard.contextWindow,
+    max_context_window: contextWindow(agent.model) ?? leaderboard.contextWindow,
     model_messages: { instructions_template: CodexFallback.instructions },
   }
   const config = [
     'model_provider = "hill-proxy"',
-    'model_context_window = ' + leaderboard.contextWindow,
+    'model_context_window = ' + (contextWindow(agent.model) ?? leaderboard.contextWindow),
     'model_catalog_json = "' + catalog + '"',
     '',
     '[model_providers.hill-proxy]',
@@ -577,7 +626,7 @@ function stockCodex(agent: Agent, url: string): string {
   )
 }
 
-function stockClaude(agent: Agent, options: { closed?: boolean; url: string }): string {
+function stockClaude(agent: Agent, options: Options): string {
   const root = '"$NANOEVAL_AGENT_RT"/agents/stock-claude'
   const model = quote(agent.model)
   return (
@@ -597,11 +646,13 @@ function stockClaude(agent: Agent, options: { closed?: boolean; url: string }): 
       'export ANTHROPIC_DEFAULT_HAIKU_MODEL=' + model,
       'export CLAUDE_CODE_SUBAGENT_MODEL=' + model,
       'export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 IS_SANDBOX=1',
-      'export CLAUDE_CODE_MAX_CONTEXT_TOKENS=' + leaderboard.contextWindow,
+      'export CLAUDE_CODE_MAX_CONTEXT_TOKENS=' +
+        (contextWindow(agent.model) ?? leaderboard.contextWindow),
       'export CLAUDE_CODE_MAX_OUTPUT_TOKENS=' + leaderboard.replyLimit,
       'export CLAUDE_CONFIG_DIR=/logs/agent/sessions',
       'mkdir -p $CLAUDE_CONFIG_DIR/debug $CLAUDE_CONFIG_DIR/projects/-app $CLAUDE_CONFIG_DIR/shell-snapshots $CLAUDE_CONFIG_DIR/statsig $CLAUDE_CONFIG_DIR/todos $CLAUDE_CONFIG_DIR/skills',
       'export PATH="${HOME:-/root}/.local/bin:$PATH"',
+      ...claudeBlocklist(options),
       ...prompt,
       [
         'printf "%s" "$prompt" | "$cli"',
@@ -616,7 +667,7 @@ function stockClaude(agent: Agent, options: { closed?: boolean; url: string }): 
   )
 }
 
-export function script(agent: Agent, options: { closed?: boolean; url: string }): string {
+export function script(agent: Agent, options: Options): string {
   if (!/^https?:\/\/[A-Za-z0-9.:[\]_/-]+$/.test(options.url))
     throw new Error('the model endpoint is not a plain http or https address: ' + options.url)
   const root = '"$NANOEVAL_AGENT_RT"/agents/' + agent.kind
@@ -652,7 +703,11 @@ export function script(agent: Agent, options: { closed?: boolean; url: string })
           '--ephemeral',
           '--no-tempo-tools',
           '--hedge-cap-percent 0',
-          ...(harness === 'claude' ? ['--context-window ' + leaderboard.contextWindow] : []),
+          ...(harness === 'claude'
+            ? ['--context-window ' + (contextWindow(agent.model) ?? leaderboard.contextWindow)]
+            : contextWindow(agent.model)
+              ? ['--context-window ' + contextWindow(agent.model)]
+              : []),
           '--max-output-tokens ' + leaderboard.replyLimit,
           '"$prompt" </dev/null',
         ].join(' '),
@@ -707,6 +762,7 @@ export function script(agent: Agent, options: { closed?: boolean; url: string })
       'export ANTHROPIC_BASE_URL=' + quote(options.url),
       'export ANTHROPIC_AUTH_TOKEN="$' + tokenVariable + '"',
       'export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 IS_SANDBOX=1',
+      ...claudeBlocklist(options),
       [
         'exec "$cli"',
         '-p',
@@ -766,6 +822,16 @@ export type Summary = {
   error: string | undefined
   message: string
   toolCalls: number
+}
+
+const fxStops = [
+  'Repeated shell validation failures stopped the tool loop.',
+  'Repeated identical shell failures stopped the tool loop.',
+  'Repeated malformed tool arguments stopped the agent loop.',
+]
+
+export function stopped(kind: Kind, said: string): boolean {
+  return kind === 'fx' && fxStops.some((stop) => said.includes(stop))
 }
 
 export function summarize(kind: Kind, stream: string): Summary {

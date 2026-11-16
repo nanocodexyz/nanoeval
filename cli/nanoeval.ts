@@ -17,6 +17,7 @@ import * as Runner from '../sandbox/Runner.ts'
 import * as Store from '../sandbox/Store.ts'
 import * as Arms from '../src/Arms.ts'
 import * as Baseline from '../src/Baseline.ts'
+import * as Blocklist from '../src/Blocklist.ts'
 import * as Bootstrap from '../src/Bootstrap.ts'
 import * as Compare from '../src/Compare.ts'
 import * as Config from '../src/Config.ts'
@@ -25,6 +26,7 @@ import * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
 import * as Logins from '../src/Logins.ts'
 import * as Loop from '../src/Loop.ts'
+import * as Overlay from '../src/Overlay.ts'
 import type * as Ledger from '../src/Ledger.ts'
 import * as Pace from '../src/Pace.ts'
 import * as Pins from '../src/Pins.ts'
@@ -131,6 +133,11 @@ const usage = `nanoeval <command>
             the terms of its provider.
   datasets  List the datasets that import knows, with the source each is pinned to and what
             was run end to end.
+  overlay   (FILE | DIR)...
+            Read nanoeval-overlay/1 candidates, each FILE or every .json file of each DIR,
+            check their levers by the rules of run, and print --agent ID=HARNESS:MODEL:...
+            for each runnable one. An overlay with pending keys is not runnable: it is
+            listed on standard error with them.
   import    --url URL --token T (DATASET | --task DIR...) [--eval NAME] [--only ID]... [--limit N]
             [--backend krun|ns|dir] [--store DIR|r2] [--cache DIR] [--layers DIR] [--sources DIR]
             [--report FILE] [--keep-going] [--pull-wait SEC] [--jobs N] [--closed]
@@ -184,10 +191,11 @@ const usage = `nanoeval <command>
             [--model-requests-per-min [MODEL=]REQUESTS]... [--agent-max-sec N]
             [--verifier-max-sec N] [--no-deadline]
             [--lease-sec 60] [--claims 3] [--step-retries 3] [--poll-ms 250]
-            [--disks keep|remove] [--free-disk-mb N] [--verifier-cache] [--name NAME] [--wait]
+            [--disks keep|remove] [--free-disk-mb N] [--package-archive] [--verifier-cache]
+            [--name NAME] [--wait]
             [--key-deposit N] [--key-top-up N]
             [--out DIR] [--location HINT] [--warm-sec N [--warm-budget-usd 0]]
-            [--payer deployment|plan]
+            [--payer deployment|plan] [--web-blocklist NAME|FILE]
             Create the rows of a run, task x agent x attempt, against one version of an eval.
             --only names a task by its id, by its name as status prints it, or by a pattern
             with * and ?, which takes every task whose id or name it matches. --only-file
@@ -283,6 +291,8 @@ const usage = `nanoeval <command>
             With --disks remove, the default for --provider e2b and gateway, a runner removes
             each environment disk it unpacked once no row of the run needs it. With --free-disk-mb, a runner claims only while its
             machine has that much free disk, and prepares one environment at a time.
+            With --package-archive, every runner of the run serves the verifiers of its krun
+            and ns slots as runner --package-archive does, so every arm of the run gets it.
             With --verifier-cache, the verifier of a krun or ns slot finds what uv downloaded for
             the same task on this machine before, when an oracle run with the option kept it.
             An agent's HARNESS is claude or codex, a nanocode session outside the slot,
@@ -346,9 +356,10 @@ const usage = `nanoeval <command>
             ways; never with skip_finish_check) and :tool_result_clearing=KEEP/TOKENS (the
             history keeps the last KEEP tool results whole and clears older ones in batches
             of TOKENS tokens at least) (nano-med-clear=claude:claude-opus-5-5:medium:
-            finish_ambiguity=on:tool_result_clearing=2/10000), :subagents=off (the session
-            has no tools that start or steer another agent) (nano-med-nosub=
-            claude:claude-opus-5-5:medium:subagents=off), and
+            finish_ambiguity=on:tool_result_clearing=2/10000), :subagents=off|on (off: a
+            claude session has no tools that start or steer another agent; on: a codex
+            session has them) (nano-med-nosub=claude:claude-opus-5-5:medium:subagents=off,
+            luna-opuscfg=codex-code-mode:gpt-6-luna:high:subagents=on), and
             :clearing_cache_floors=on (a request keeps two cache breakpoints at the places
             where the history was last cleared) (nano-med-floors=claude:claude-opus-5-5:
             medium:clearing_cache_floors=on). A codex, codex-code-mode or codex-jobs agent
@@ -358,14 +369,41 @@ const usage = `nanoeval <command>
             outside the built-in Codex models stops at N tokens) and :context_window=N (the
             session compacts its history at nine tenths of N tokens) (nanox-dsk=codex:
             deepseek-v4-pro:high:lenient_patches=on:min_wait_ms=2000:max_output_tokens=32000:
-            context_window=128000). The options come in
+            context_window=128000). A claude agent may end in :codesign=off (the session treats
+            its model as one nanocode has no model-specific prompts or defaults for)
+            (nano-high-nocd=claude:claude-opus-5-5:high:codesign=off). A codex, codex-code-mode
+            or codex-jobs agent that ends in :verification_requested=on has its sessions ask
+            the model to run the task's checks and its own tests before it finishes, which the
+            upstream Codex instructions forbid unless asked (nanox-v=codex:gpt-6-luna:high:
+            verification_requested=on).
+            A codex, codex-code-mode or codex-jobs agent may also name :prompt_variant=compact
+            (the session sends the compact system prompt of nanocode instead of its native one)
+            and :tool_profile=lean (the session declares exec_command and write_stdin without
+            their optional arguments) (nano-gc=codex:MODEL:high:prompt_variant=compact:
+            tool_profile=lean); nanocode applies both to a model it has no native prompt for
+            and ignores them for one it has. The options come in
             this order where several are named: branches, refusal_fallback, cell_yield_ms,
             brief_finish, fold_finish, low_effort_rounds, brief_final, lean_cells,
             escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens,
             persist_finish, skip_finish_check, late_finish_check_ms, result_effort,
             stop_at_target, yield_floor_ms, yield_share, finish_retries, finish_check,
             finish_ambiguity, tool_result_clearing, subagents, clearing_cache_floors,
-            lenient_patches, min_wait_ms, max_output_tokens, context_window.
+            lenient_patches, min_wait_ms, max_output_tokens, context_window, fix_provider,
+            fix_model, fix_thinking, verifier_provider, verifier_thinking, executor_share,
+            verifier_share, fork_on, codesign, verification_requested, prompt_variant,
+            tool_profile.
+            An agent with :branches=2:picker=verify_lazy that names :fix_provider=claude|codex
+            and :fix_model=MODEL runs a cascade: its own model works first, until
+            :executor_share=N percent of the agent time (50); the verifier, on
+            :verifier_provider and with :verifier_thinking where named, then checks it within
+            :verifier_share=N percent (10); anything but a confident pass has MODEL (with
+            :fix_thinking) go on in a live fork of the same sandbox, from a short handoff, and
+            that fork is graded (nano-cv=codex:MODEL:low:branches=2:picker=verify_lazy:
+            verifier_model=claude-haiku-5-5:fix_provider=claude:fix_model=claude-opus-5-5).
+            An agent with :picker=verify_lazy that ends in :fork_on=verifier_fail forks only
+            when the verifier's verdict is FAIL, or the verifier ended with an error: a PASS
+            of any confidence and an UNSURE keep the trunk. :fork_on=verifier_fail_or_unsure
+            is what an agent without the key does.
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
@@ -374,6 +412,15 @@ const usage = `nanoeval <command>
             (chat completions), fx-messages (Anthropic Messages) or fx-responses (OpenAI
             Responses), since their command lines speak all three and the run adds the
             credential of that provider.
+            --web-blocklist names a list of hosts (terminal-bench, the list this checkout
+            holds) or a file of hosts and host/path prefixes, one a line, # starts a comment,
+            at most 64. The agents of the run may not fetch them: the Worker adds them to the
+            blocked_domains of every web search and web fetch tool a claude request names,
+            and refuses a request it cannot filter so, and Claude Code refuses a WebFetch of
+            them in a PreToolUse hook. Only agents that enforce it may run with it: claude,
+            codex (whose sessions have no web search), oracle, claude-code, stock-claude and
+            nanocode-claude. A fetch from a shell of an open slot is not stopped: scan the
+            transcripts for the listed hosts before a claim. --rerun takes it from RUN.
             With --payer plan, the Claude plan signed in on the Worker (nanoeval plans) pays
             for the sessions of the run, its judge included, in place of the Worker's own
             credential: its agents and its judge are claude sessions, nothing is charged per
@@ -795,6 +842,12 @@ const model = { pattern: '[^:]+', value: 'MODEL' }
 
 const on = { pattern: 'on', value: 'on' }
 
+const percent = { pattern: '[0-9]+', value: '1..100' }
+
+const providers = { pattern: 'claude|codex', value: 'claude|codex' }
+
+const thinkings = { pattern: '[a-z]+', value: 'EFFORT' }
+
 const scopes = { pattern: 'return_once|session', value: 'return_once|session' }
 
 const efforts = { pattern: Config.efforts.join('|'), value: Config.efforts.join('|') }
@@ -967,10 +1020,11 @@ const agentOptions: readonly AgentOption[] = [
   },
   {
     name: 'subagents',
-    pattern: 'off',
-    read: () => ({ subagents: false }),
-    value: 'off',
-    write: (agent) => (agent.subagents === false ? 'off' : undefined),
+    pattern: 'off|on',
+    read: (text) => ({ subagents: text === 'on' }),
+    value: 'off|on',
+    write: (agent) =>
+      agent.subagents === undefined ? undefined : agent.subagents ? on.value : 'off',
   },
   {
     ...on,
@@ -1001,6 +1055,82 @@ const agentOptions: readonly AgentOption[] = [
     name: 'context_window',
     read: (text) => ({ contextWindow: Number(text) }),
     write: (agent) => agent.contextWindow,
+  },
+  {
+    ...providers,
+    name: 'fix_provider',
+    read: (text) => ({ fixProvider: text as 'claude' | 'codex' }),
+    write: (agent) => agent.fixProvider,
+  },
+  {
+    ...model,
+    name: 'fix_model',
+    read: (text) => ({ fixModel: text }),
+    write: (agent) => agent.fixModel,
+  },
+  {
+    ...thinkings,
+    name: 'fix_thinking',
+    read: (text) => ({ fixThinking: text }),
+    write: (agent) => agent.fixThinking,
+  },
+  {
+    ...providers,
+    name: 'verifier_provider',
+    read: (text) => ({ verifierProvider: text as 'claude' | 'codex' }),
+    write: (agent) => agent.verifierProvider,
+  },
+  {
+    ...thinkings,
+    name: 'verifier_thinking',
+    read: (text) => ({ verifierThinking: text }),
+    write: (agent) => agent.verifierThinking,
+  },
+  {
+    ...percent,
+    name: 'executor_share',
+    read: (text) => ({ executorShare: Number(text) }),
+    write: (agent) => agent.executorShare,
+  },
+  {
+    ...percent,
+    name: 'verifier_share',
+    read: (text) => ({ verifierShare: Number(text) }),
+    write: (agent) => agent.verifierShare,
+  },
+  {
+    name: 'fork_on',
+    pattern: Picker.forkOns.join('|'),
+    read: (text) => ({ forkOn: text as Picker.ForkOn }),
+    value: Picker.forkOns.join('|'),
+    write: (agent) => agent.forkOn,
+  },
+  {
+    name: 'codesign',
+    pattern: 'off',
+    read: () => ({ codesign: false }),
+    value: 'off',
+    write: (agent) => (agent.codesign === false ? 'off' : undefined),
+  },
+  {
+    ...on,
+    name: 'verification_requested',
+    read: () => ({ verificationRequested: true }),
+    write: (agent) => (agent.verificationRequested ? on.value : undefined),
+  },
+  {
+    name: 'prompt_variant',
+    pattern: Config.promptVariants.join('|'),
+    read: (text) => ({ promptVariant: text as Config.PromptVariant }),
+    value: Config.promptVariants.join('|'),
+    write: (agent) => agent.promptVariant,
+  },
+  {
+    name: 'tool_profile',
+    pattern: Config.toolProfiles.join('|'),
+    read: (text) => ({ toolProfile: text as Config.ToolProfile }),
+    value: Config.toolProfiles.join('|'),
+    write: (agent) => agent.toolProfile,
   },
 ]
 
@@ -1271,6 +1401,54 @@ export function agentText(agent: Config.Agent): string {
       })
       .join('')
   )
+}
+
+export async function readOverlays(paths: readonly string[]): Promise<Overlay.Overlay[]> {
+  const files: string[] = []
+  for (const path of paths) {
+    if ((await Fs.stat(path)).isDirectory())
+      files.push(
+        ...(await Fs.readdir(path))
+          .filter((name) => name.endsWith('.json'))
+          .sort()
+          .map((name) => Path.join(path, name)),
+      )
+    else files.push(path)
+  }
+  const overlays = await Promise.all(
+    files.map(async (file) => {
+      try {
+        return Overlay.parse(JSON.parse(await Fs.readFile(file, 'utf8')))
+      } catch (error) {
+        throw new Error(file + ': ' + (error as Error).message)
+      }
+    }),
+  )
+  const ids = overlays.map((overlay) => overlay.id)
+  const repeated = ids.filter((id, index) => ids.indexOf(id) !== index)
+  if (repeated.length) throw new Error('overlay ids must be unique: ' + repeated.join(', '))
+  return overlays
+}
+
+export function overlayLines(overlays: readonly Overlay.Overlay[]): {
+  runnable: string[]
+  unrunnable: string[]
+} {
+  return {
+    runnable: overlays
+      .filter((overlay) => !Overlay.pendingKeys(overlay).length)
+      .map((overlay) => '--agent ' + agentText(Overlay.compile(overlay))),
+    unrunnable: overlays
+      .filter((overlay) => Overlay.pendingKeys(overlay).length)
+      .map(
+        (overlay) =>
+          'not runnable: ' +
+          overlay.id +
+          ' (pending ' +
+          Overlay.pendingKeys(overlay).join(', ') +
+          ')',
+      ),
+  }
 }
 
 export type Gate = 'any-failure' | 'lost' | 'regression'
@@ -2049,6 +2227,9 @@ export function rerunConfig(
       ...(slots === undefined ? {} : { slots }),
       ...(template === undefined ? {} : { template }),
       ...(own.sandbox.timeoutSec === undefined ? {} : { timeoutSec: own.sandbox.timeoutSec }),
+      ...(own.sandbox.packageArchive || parent.sandbox.packageArchive
+        ? { packageArchive: true as const }
+        : {}),
       ...(own.sandbox.verifierCache || parent.sandbox.verifierCache
         ? { verifierCache: true as const }
         : {}),
@@ -2306,6 +2487,7 @@ async function main(
       unsound: { type: 'string' },
       url: { default: process.env['NANOEVAL_URL'], type: 'string' },
       'verifier-cache': { default: false, type: 'boolean' },
+      'web-blocklist': { type: 'string' },
       'verifier-max-sec': { type: 'string' },
       wait: { default: false, type: 'boolean' },
       'warm-budget-usd': { default: '0', type: 'string' },
@@ -2757,6 +2939,14 @@ async function main(
     const found = Doctor.checks(facts, wanted)
     console.log(Doctor.report(found, wanted))
     process.exitCode = found.some((check) => check.level === 'miss') ? 1 : 0
+    return
+  }
+
+  if (command === 'overlay') {
+    if (!rest.length) throw new Error('overlay takes overlay files or directories of them')
+    const lines = overlayLines(await readOverlays(rest))
+    for (const line of lines.runnable) console.log(line)
+    for (const line of lines.unrunnable) console.error(line)
     return
   }
 
@@ -3545,6 +3735,15 @@ async function main(
         ? { payer: (values.payer ?? parent?.payer) as Config.Payer }
         : {}),
       ...(rerun ? { rerun: { run: rerun, select } } : {}),
+      ...(values['web-blocklist']
+        ? {
+            webBlocklist:
+              Blocklist.lists[values['web-blocklist']] ??
+              Blocklist.parse(await Fs.readFile(values['web-blocklist'], 'utf8')),
+          }
+        : parent?.webBlocklist
+          ? { webBlocklist: parent.webBlocklist }
+          : {}),
       sandbox: {
         backend,
         ...admission,
@@ -3562,6 +3761,9 @@ async function main(
         ...(values.template ? { template: values.template } : {}),
         ...(values['sandbox-timeout-sec']
           ? { timeoutSec: Number(values['sandbox-timeout-sec']) }
+          : {}),
+        ...(values['package-archive'] || parent?.sandbox.packageArchive
+          ? { packageArchive: true as const }
           : {}),
         ...(values['verifier-cache'] || parent?.sandbox.verifierCache
           ? { verifierCache: true as const }
@@ -3591,6 +3793,12 @@ async function main(
                     ? Installed.provider(agent.provider, agent.api)
                     : agent.provider,
                 },
+                ...(agent.fixProvider
+                  ? [{ name: 'the fix of ' + agent.id, provider: agent.fixProvider }]
+                  : []),
+                ...(agent.verifierProvider
+                  ? [{ name: 'the verifier of ' + agent.id, provider: agent.verifierProvider }]
+                  : []),
               ],
         ),
         ...(config.judge ? [{ name: 'the judge', provider: config.judge.provider }] : []),

@@ -35,6 +35,16 @@ export function served(input: { model: string; provider: Proxy.Provider }): stri
   return [input.model, ...models(input)]
 }
 
+export function billed(input: {
+  model: string
+  provider: Proxy.Provider
+  reported?: string | undefined
+}): string {
+  return input.reported !== undefined && models(input).includes(input.reported)
+    ? input.reported
+    : input.model
+}
+
 export function refusal(model: unknown): string {
   return 'model ' + String(model) + ' is not served in this run'
 }

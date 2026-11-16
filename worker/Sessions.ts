@@ -3,6 +3,7 @@ import type { Contracts } from 'nanocode-ts'
 import { App, Forward } from 'nanocode-ts/cloudflare'
 import manifest from '../package.json' with { type: 'json' }
 import type * as Atif from '../src/Atif.ts'
+import * as Blocklist from '../src/Blocklist.ts'
 import type * as Config from '../src/Config.ts'
 import * as Logins from '../src/Logins.ts'
 import * as Pins from '../src/Pins.ts'
@@ -13,6 +14,7 @@ import * as Sql from '../src/Sql.ts'
 import * as Telemetry from '../src/Telemetry.ts'
 import { account, type Env } from './Env.ts'
 import * as Meter from './Meter.ts'
+import * as Relay from './Relay.ts'
 import * as Storage from './Storage.ts'
 import * as WorkersAi from './WorkersAi.ts'
 import * as Vault from './Vault.ts'
@@ -86,7 +88,8 @@ export const nanocode = App.create<Env>({
           if (name === 'codex' && env.CHATGPT_RELAY_URL) {
             target = env.CHATGPT_RELAY_URL.replace(/\/+$/, '') + source.pathname + source.search
             headers.set(Proxy.relaySecretHeader, env.CHATGPT_RELAY_SECRET ?? '')
-          }
+          } else if (name === 'codex' && Relay.bound(env))
+            target = Relay.origin + source.pathname + source.search
         } else {
           const held = Proxy.key(env, name)
           if (!held) return refuse('no ' + name + ' credential is set')
@@ -95,6 +98,10 @@ export const nanocode = App.create<Env>({
         }
 
         const session = Proxy.session(dispatch.authority.session_name ?? '')
+        const relayed =
+          login && name === 'codex'
+            ? Relay.fetcher(env, dispatch.authority.session_name ?? crypto.randomUUID())
+            : undefined
         const path =
           (session?.judge !== undefined
             ? 'judge/'
@@ -152,7 +159,7 @@ export const nanocode = App.create<Env>({
           return refuse('the Workers AI binding serves chat completions only')
         if (request.method !== 'POST' || headers.has('upgrade')) {
           const plain = (sent: Headers) =>
-            fetch(
+            (relayed ?? fetch)(
               new Request(target, {
                 method: request.method,
                 headers: sent,
@@ -168,12 +175,41 @@ export const nanocode = App.create<Env>({
             return unpaid(error)
           }
         }
-        const body = await request.arrayBuffer()
+        let body = await request.arrayBuffer()
+        if (name === 'claude' && session && session.judge === undefined) {
+          let value: Record<string, unknown> | undefined
+          try {
+            const parsed = JSON.parse(new TextDecoder().decode(body)) as unknown
+            if (typeof parsed === 'object' && parsed !== null)
+              value = parsed as Record<string, unknown>
+          } catch {}
+          if (value && Blocklist.searches(value)) {
+            const held = (await agentOf(env, session)) as Config.Agent & {
+              webBlocklist?: Blocklist.List
+            }
+            if (held.webBlocklist) {
+              const filtered = Blocklist.anthropic(value, held.webBlocklist)
+              if ('refusal' in filtered)
+                return Response.json(
+                  {
+                    type: 'error',
+                    error: { type: 'invalid_request_error', message: filtered.refusal },
+                  },
+                  { status: 400 },
+                )
+              body = new TextEncoder().encode(JSON.stringify(filtered.body)).buffer as ArrayBuffer
+            }
+          }
+        }
         const relay = (to: { headers: Headers; url: string }) =>
           Meter.relay({
             body,
             ...(workersAi ? { cost: false as const } : {}),
-            ...(binding ? { fetch: binding } : {}),
+            ...(binding
+              ? { fetch: binding }
+              : relayed
+                ? { fetch: (url: string, init: RequestInit) => relayed(new Request(url, init)) }
+                : {}),
             headers: to.headers,
             hooks: signed || login ? Meter.rejecting(hooks) : hooks,
             method: request.method,

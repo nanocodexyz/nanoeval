@@ -31,14 +31,14 @@ const turn: Turn.Turn = {
 }
 
 const usage =
-  /\[:finish_ambiguity=on\]\[:tool_result_clearing=KEEP\/TOKENS\]\[:subagents=off\]\[:clearing_cache_floors=on\]\[:lenient_patches=on\]\[:min_wait_ms=N\]\[:max_output_tokens=N\]\[:context_window=N\], not x=/
+  /\[:finish_ambiguity=on\]\[:tool_result_clearing=KEEP\/TOKENS\]\[:subagents=off\|on\]\[:clearing_cache_floors=on\]\[:lenient_patches=on\]\[:min_wait_ms=N\]\[:max_output_tokens=N\]\[:context_window=N\]\[:fix_provider=claude\|codex\]\[:fix_model=MODEL\]\[:fix_thinking=EFFORT\]\[:verifier_provider=claude\|codex\]\[:verifier_thinking=EFFORT\]\[:executor_share=1\.\.100\]\[:verifier_share=1\.\.100\]\[:fork_on=verifier_fail\|verifier_fail_or_unsure\]\[:codesign=off\]\[:verification_requested=on\]\[:prompt_variant=compact\]\[:tool_profile=lean\], not x=/
 
 const floors = 'nano-med-floors=claude:claude-opus-5-5:medium:clearing_cache_floors=on'
 
 const direct =
   'nano-df=claude-direct:claude-opus-5-5:high:brief_finish=on:yield_share=25:finish_check=on:finish_ambiguity=on:tool_result_clearing=2/10000:clearing_cache_floors=on'
 
-test('an agent names clearing_cache_floors last in the order of the options, and its text reads back', () => {
+test('an agent names clearing_cache_floors after subagents in the order of the options, and its text reads back', () => {
   assert.deepEqual(parseAgent(floors), {
     clearingCacheFloors: true,
     id: 'nano-med-floors',

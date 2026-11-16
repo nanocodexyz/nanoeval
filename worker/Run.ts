@@ -2,7 +2,9 @@ import { DurableObject } from 'cloudflare:workers'
 import { privateKeyToAccount } from 'viem/accounts'
 import * as Admission from '../src/Admission.ts'
 import * as Branch from '../src/Branch.ts'
+import * as Cascade from '../src/Cascade.ts'
 import * as Atif from '../src/Atif.ts'
+import * as Blocklist from '../src/Blocklist.ts'
 import * as Bootstrap from '../src/Bootstrap.ts'
 import * as Budget from '../src/Budget.ts'
 import * as Claim from '../src/Claim.ts'
@@ -35,6 +37,7 @@ import * as Route from '../src/Route.ts'
 import type * as Runs from '../src/Runs.ts'
 import * as Sandbox from '../src/Sandbox.ts'
 import * as SqlSetup from '../src/Sql.ts'
+import { Tally } from '../src/Tally.ts'
 import * as Timeline from '../src/Timeline.ts'
 import * as Turn from '../src/Turn.ts'
 import * as Verdict from '../src/Verdict.ts'
@@ -182,6 +185,7 @@ const tables = [
     again INTEGER,
     route TEXT
   )`,
+  'CREATE INDEX IF NOT EXISTS model_requests_attempt ON model_requests (attempt, claim)',
   `CREATE TABLE IF NOT EXISTS model_flights (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     attempt TEXT NOT NULL,
@@ -255,6 +259,7 @@ export class Run extends DurableObject<Env> {
   private readonly instance = secret()
   private readonly specs = new Map<string, Eval.Task>()
   private readonly sql: SqlSetup.Sql
+  private readonly tally: Tally
   private ticking: Promise<void> | undefined
   private readonly wallet: Payment.Wallet
 
@@ -262,6 +267,7 @@ export class Run extends DurableObject<Env> {
     super(ctx, env)
     this.sql = Storage.sql(ctx)
     SqlSetup.setup(this.sql, tables)
+    this.tally = new Tally(this.sql)
     this.wallet = Payment.wallet(Payment.stored(this.sql))
     const columns = this.sql.all('PRAGMA table_info(sandboxes)')
     if (!columns.some((column) => column['name'] === 'paid_until'))
@@ -363,7 +369,10 @@ export class Run extends DurableObject<Env> {
             },
             404,
           )
-        if (parts[2] === 'agent') return json(this.agentOf(row))
+        if (parts[2] === 'agent') {
+          const webBlocklist = this.config().webBlocklist
+          return json({ ...this.agentOf(row), ...(webBlocklist ? { webBlocklist } : {}) })
+        }
         if (parts[2] === 'artifacts' && parts[3]) {
           const name = decodeURIComponent(parts[3])
           const body = this.artifact(row.id, name) ?? (await this.live(row, name))
@@ -704,24 +713,18 @@ export class Run extends DurableObject<Env> {
   }
 
   private modelSpent(): number {
-    const priced = new Set<string>()
-    let total = 0
+    const tally = this.tally.read()
+    let total = tally.usd
     for (const row of this.sql.all(
-      'SELECT attempt, SUM(COALESCE(cost, tools_usd, 0)) AS usd, COUNT(cost) AS priced FROM model_requests GROUP BY attempt',
-    )) {
-      if (row['priced']) priced.add(row['attempt'] as string)
-      total += row['usd'] as number
-    }
-    for (const row of this.rows())
-      if (row.result && !priced.has(row.id)) {
-        const result = JSON.parse(row.result) as Result.Attempt
+      "SELECT id, json_extract(result, '$.usage.costUsd') AS cost, json_extract(result, '$.usage.toolsUsd') AS tools, json_extract(result, '$.judge.usage.costUsd') AS judge FROM attempts WHERE result IS NOT NULL",
+    ))
+      if (!tally.priced(row['id'] as string))
         total +=
-          (result.usage?.costUsd ?? 0) -
-          (result.usage?.toolsUsd ?? 0) +
-          (result.judge?.usage?.costUsd ?? 0)
-      }
+          ((row['cost'] as number | null) ?? 0) -
+          ((row['tools'] as number | null) ?? 0) +
+          ((row['judge'] as number | null) ?? 0)
     for (const lost of Ledger.lostUsage(this.sql))
-      if (!priced.has(lost.attempt)) total += (JSON.parse(lost.usage) as Atif.Usage).costUsd ?? 0
+      if (!tally.priced(lost.attempt)) total += (JSON.parse(lost.usage) as Atif.Usage).costUsd ?? 0
     return total
   }
 
@@ -741,10 +744,7 @@ export class Run extends DurableObject<Env> {
   }
 
   private largest(): number | undefined {
-    const seen = this.sql.all(
-      'SELECT COUNT(*) AS responses, MAX(COALESCE(cost, tools_usd, 0)) AS usd FROM model_requests WHERE usage IS NOT NULL',
-    )[0]!
-    return seen['responses'] ? (seen['usd'] as number) : undefined
+    return this.tally.read().largestUsd
   }
 
   private held(): boolean {
@@ -890,7 +890,10 @@ export class Run extends DurableObject<Env> {
     const tools = reported
       ? Proxy.tools(input.provider, reported, { listed: input.listed })
       : undefined
-    const price = reported && reported.costUsd === undefined ? this.price(input) : undefined
+    const price =
+      reported && reported.costUsd === undefined
+        ? this.price({ ...input, reported: reported.model })
+        : undefined
     const usage: Proxy.Usage | undefined =
       reported && price
         ? { ...reported, costBy: 'list', costUsd: Price.usd(price, reported) + (tools?.usd ?? 0) }
@@ -927,12 +930,23 @@ export class Run extends DurableObject<Env> {
     const row = Ledger.get(this.sql, input.attempt)
     if (input.path.startsWith(judgePath)) return this.config().judge?.model
     if (row && input.path.startsWith(Picker.path)) return Picker.model(this.agentOf(row))
+    if (row && input.path.startsWith(Cascade.path)) return this.agentOf(row).fixModel
     return row && this.agentOf(row).model
   }
 
-  private price(input: { attempt: string; path: string }): Price.Price | undefined {
-    const model = this.served(input)
-    if (model === undefined) return undefined
+  private price(input: {
+    attempt: string
+    path: string
+    provider: Proxy.Provider
+    reported?: string | undefined
+  }): Price.Price | undefined {
+    const configured = this.served(input)
+    if (configured === undefined) return undefined
+    const model = Fallback.billed({
+      model: configured,
+      provider: input.provider,
+      reported: input.reported,
+    })
     const row = Ledger.get(this.sql, input.attempt)
     return !input.path.startsWith(judgePath) && row && this.installed(row)
       ? Price.of(model, this.config().prices)
@@ -1132,7 +1146,7 @@ export class Run extends DurableObject<Env> {
       const pauseMs = this.pace({
         attempt: body.attempt,
         claim: Number(body.claim),
-        path: body.path,
+        path: this.branchPath(body as Settled & { path: string }),
       })
       return pauseMs === undefined ? {} : { pauseMs }
     }
@@ -1144,10 +1158,20 @@ export class Run extends DurableObject<Env> {
         claim: Number(body.claim),
         listed: true,
         outcome: body.outcome,
-        path: body.path,
+        path: this.branchPath(body as Settled & { path: string }),
         provider: body.provider === 'codex' ? 'codex' : 'claude',
       })
     return {}
+  }
+
+  private branchPath(body: Settled & { path: string }): string {
+    const row = Ledger.get(this.sql, body.attempt)
+    return row &&
+      body.branch !== undefined &&
+      body.branch >= Cascade.fixBranch &&
+      Cascade.on(this.agentOf(row))
+      ? Cascade.path + body.path
+      : body.path
   }
 
   private life(runner: RunnerRow): Admission.Life | undefined {
@@ -1662,6 +1686,11 @@ export class Run extends DurableObject<Env> {
     return typeof asked === 'number' && asked > 0 ? Math.min(asked, Number(this.env.HOLD_MS)) : 0
   }
 
+  private blocklisted(): { webBlocklist?: readonly string[] } {
+    const webBlocklist = this.config().webBlocklist
+    return webBlocklist ? { webBlocklist } : {}
+  }
+
   private agentOf(row: Pick<Ledger.Attempt, 'agent'>): Config.Agent {
     return this.config().agents.find((candidate) => candidate.id === row.agent)!
   }
@@ -1792,6 +1821,26 @@ export class Run extends DurableObject<Env> {
           },
           { status: 400 },
         )
+      }
+      const webBlocklist = this.config().webBlocklist
+      if (value && webBlocklist && provider === 'claude' && Blocklist.searches(value)) {
+        const filtered = Blocklist.anthropic(value, webBlocklist)
+        if ('refusal' in filtered) {
+          this.record({
+            attempt: row.id,
+            claim: row.claims,
+            listed: false,
+            outcome: { at: Date.now(), ms: 0, refusal: 'model', status: 400 },
+            path,
+            provider,
+          })
+          return Response.json(
+            { error: { message: filtered.refusal, type: 'invalid_request_error' } },
+            { status: 400 },
+          )
+        }
+        value = filtered.body
+        body = JSON.stringify(value)
       }
       const limit = Number(this.env.NANOEVAL_REPLY_LIMIT ?? 0)
       if (value && path === 'responses' && limit > 0 && !value['max_output_tokens']) {
@@ -2178,6 +2227,7 @@ export class Run extends DurableObject<Env> {
       ...(config.sandbox.slots === undefined ? {} : { slots: config.sandbox.slots }),
       token: meta.runnerToken,
       url: meta.publicUrl,
+      ...(config.sandbox.packageArchive ? { packageArchive: true as const } : {}),
       ...(config.sandbox.verifierCache ? { verifierCache: true as const } : {}),
     }
   }
@@ -3169,6 +3219,51 @@ export class Run extends DurableObject<Env> {
     return this.probed(row).map((index) => Picker.session(row.session!, index))
   }
 
+  private verifierLimitMs(row: Ledger.Attempt, now: number): number {
+    const agent = this.agentOf(row)
+    const limitMs = Math.max(60_000, row.deadline_at! + Picker.graceSec * 1000 - now)
+    return Cascade.on(agent)
+      ? Cascade.verifierLimitMs(agent, {
+          agentMs: this.task(row.task).agent.timeoutSec * 1000,
+          limitMs,
+        })
+      : limitMs
+  }
+
+  private verifierDeadline(row: Ledger.Attempt, index: number): number {
+    const name = Picker.session(row.session!, index)
+    const sent = (this.textArtifact(row.id, Turn.record) ?? '')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { at_ms: number; request_id: string; session: string })
+      .find((line) => line.session === name && line.request_id === Picker.requestId)
+    return sent
+      ? sent.at_ms + this.verifierLimitMs(row, sent.at_ms)
+      : row.deadline_at! + Picker.graceSec * 1000
+  }
+
+  private handedOver(row: Ledger.Attempt): Cascade.Verifier | undefined {
+    const recorded = this.textArtifact(row.id, Picker.file(0))
+    if (recorded === undefined) return undefined
+    const verification = JSON.parse(recorded) as Picker.Verification
+    return {
+      confidence: verification.confidence,
+      message: this.textArtifact(row.id, Picker.message(0)) ?? '',
+      verdict: verification.verdict,
+    }
+  }
+
+  private async fixWorked(row: Ledger.Attempt): Promise<boolean> {
+    const name = this.branchSessions(row)[Cascade.fixBranch]
+    if (!name) return false
+    try {
+      return Atif.usage(await Harness.events(this.env, name, requestId)).toolCalls > 0
+    } catch (error) {
+      if (!(error instanceof Harness.LostError)) throw error
+      return false
+    }
+  }
+
   private async verifyBranch(
     row: Ledger.Attempt,
     input: { index: number; late: boolean },
@@ -3256,18 +3351,20 @@ export class Run extends DurableObject<Env> {
     const agent = this.agentOf(row)
     const now = Date.now()
     const deadline = Turn.deadline(this.config().limits, {
-      limitMs: Math.max(60_000, row.deadline_at! + Picker.graceSec * 1000 - now),
+      limitMs: this.verifierLimitMs(row, now),
       now,
     })
+    const provider = Picker.provider(agent)
+    const thinking = agent.verifierThinking ?? agent.thinking
     const turn: Turn.Turn = {
       ...(deadline ? { deadline } : {}),
       hand: Protocol.handName,
       model: Picker.model(agent),
-      payer: this.payer(agent.provider as 'claude' | 'codex'),
+      payer: this.payer(provider),
       prompt: input.prompt,
-      provider: agent.provider as 'claude' | 'codex',
+      provider,
       requestId: Picker.requestId,
-      ...(agent.thinking ? { thinking: agent.thinking } : {}),
+      ...(thinking ? { thinking } : {}),
       ...this.webSearch(row),
     }
     this.mine(row)
@@ -3370,8 +3467,17 @@ export class Run extends DurableObject<Env> {
         this.keep(row, Preflight.artifact, body.facts)
       }
       if (agent.provider === 'claude' || agent.provider === 'codex')
-        for (const name of this.branchSessions(row))
+        for (const [branch, name] of this.branchSessions(row).entries())
           await this.ask(row, {
+            branch,
+            ...(Cascade.on(agent)
+              ? {
+                  deadlineAt: Cascade.executorDeadline(agent, {
+                    limitMs: task.agent.timeoutSec * 1000,
+                    startedAt: Date.now(),
+                  }),
+                }
+              : {}),
             prompt: agent.preflight
               ? Preflight.prompt({ facts: body.facts!, instruction: body.instruction! })
               : body.instruction!,
@@ -3396,11 +3502,12 @@ export class Run extends DurableObject<Env> {
       })
       return harness === 'session'
         ? { detached: false, state: 'running' }
-        : { state: 'attached', timeoutSec: task.agent.timeoutSec }
+        : { state: 'attached', timeoutSec: task.agent.timeoutSec, ...this.blocklisted() }
     }
     if (row.phase !== 'run' && row.phase !== 'verify')
       throw new Refusal(409, 'the attempt is in the ' + row.phase + ' phase')
-    if (harness !== 'session') return { state: 'attached', timeoutSec: task.agent.timeoutSec }
+    if (harness !== 'session')
+      return { state: 'attached', timeoutSec: task.agent.timeoutSec, ...this.blocklisted() }
     if (this.branches(row) > 1) return this.branched(row, { body, waitMs })
 
     const read = async (): Promise<Protocol.Agent> => {
@@ -3475,11 +3582,18 @@ export class Run extends DurableObject<Env> {
 
   private async ask(
     row: Ledger.Attempt,
-    input: { deadlineAt?: number; prompt: string; requestId: string; session: string },
+    input: {
+      branch?: number
+      deadlineAt?: number
+      prompt: string
+      requestId: string
+      session: string
+    },
   ): Promise<Harness.Report> {
     const agent = this.agentOf(row)
     if (agent.provider !== 'claude' && agent.provider !== 'codex')
       throw new Refusal(409, 'the agent of the attempt is not a session')
+    const stage = Cascade.stage(agent, input.branch ?? 0)
     const now = Date.now()
     const deadline = Turn.deadline(this.config().limits, {
       limitMs:
@@ -3488,11 +3602,12 @@ export class Run extends DurableObject<Env> {
           : input.deadlineAt - now,
       now,
     })
-    const turn: Turn.Turn = {
+    const full: Turn.Turn = {
       ...(agent.briefFinal ? { briefFinal: true } : {}),
       ...(agent.briefFinish ? { briefFinish: true } : {}),
       ...(agent.cellYieldMs === undefined ? {} : { cellYieldMs: agent.cellYieldMs }),
       ...(agent.clearingCacheFloors ? { clearingCacheFloors: true } : {}),
+      ...(agent.codesign === false ? { codesign: false } : {}),
       ...(agent.contextWindow === undefined ? {} : { contextWindow: agent.contextWindow }),
       ...(deadline ? { deadline } : {}),
       ...(agent.escalateContextTokens === undefined
@@ -3513,32 +3628,39 @@ export class Run extends DurableObject<Env> {
       ...(agent.leanCells ? { leanCells: true } : {}),
       ...(agent.lenientPatches ? { lenientPatches: true } : {}),
       ...(agent.lowEffortRounds ? { lowEffortRounds: true } : {}),
-      ...(agent.provider === 'codex'
-        ? { maxOutputTokens: agent.maxOutputTokens ?? Installed.leaderboard.replyLimit }
-        : {}),
+      // One output cap for every arm: the installed agents get the same value in Installed.ts.
+      ...(agent.maxOutputTokens !== undefined
+        ? { maxOutputTokens: agent.maxOutputTokens }
+        : stage.provider === 'codex'
+          ? { maxOutputTokens: Installed.leaderboard.replyLimit }
+          : {}),
       ...(agent.minWaitMs === undefined ? {} : { minWaitMs: agent.minWaitMs }),
-      model: agent.model,
+      model: stage.model,
       ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
-      payer: this.payer(agent.provider),
+      payer: this.payer(stage.provider),
       ...(agent.persistFinish ? { persistFinish: true } : {}),
       prompt: input.prompt,
-      provider: agent.provider,
+      ...(agent.promptVariant ? { promptVariant: agent.promptVariant } : {}),
+      provider: stage.provider,
       ...(agent.refusalFallback ? { refusalFallback: agent.refusalFallback } : {}),
       requestId: input.requestId,
       ...(agent.resultEffort ? { resultEffort: agent.resultEffort } : {}),
       ...(agent.skipFinishCheck ? { skipFinishCheck: true } : {}),
       ...(agent.stopAtTarget ? { stopAtTarget: true } : {}),
-      ...(agent.subagents === false ? { subagents: false } : {}),
-      ...(agent.thinking ? { thinking: agent.thinking } : {}),
+      ...(agent.subagents === undefined ? {} : { subagents: agent.subagents }),
+      ...(stage.thinking ? { thinking: stage.thinking } : {}),
+      ...(agent.toolProfile ? { toolProfile: agent.toolProfile } : {}),
       ...(agent.toolResultClearing === undefined
         ? {}
         : { toolResultClearing: agent.toolResultClearing }),
       ...(agent.toolResultTokens === undefined ? {} : { toolResultTokens: agent.toolResultTokens }),
+      ...(agent.verificationRequested ? { verificationRequested: true } : {}),
       ...this.webSearch(row),
       ...(agent.yieldFloorMs === undefined ? {} : { yieldFloorMs: agent.yieldFloorMs }),
       ...(agent.yieldShare === undefined ? {} : { yieldShare: agent.yieldShare }),
     }
     this.mine(row)
+    const turn = Cascade.fixing(agent, input.branch ?? 0) ? Cascade.bare(full) : full
     try {
       const report = await Harness.submit(this.env, input.session, turn)
       this.keep(
@@ -3560,6 +3682,7 @@ export class Run extends DurableObject<Env> {
     const task = this.task(row.task)
     const agent = this.agentOf(row)
     const lazy = agent.lazy === true
+    const cascade = Cascade.on(agent)
     const waitMs = input.waitMs
     const decided = (record: Branch.Record): Protocol.Agent => {
       const outcome = record.branches[record.chosen]!
@@ -3588,6 +3711,12 @@ export class Run extends DurableObject<Env> {
       const startedAt = current.deadline_at! - task.agent.timeoutSec * 1000
       const fork = lazy ? this.forkRecord(current) : undefined
       const deadlineAt = lazy ? current.deadline_at! : undefined
+      const executorAt = cascade
+        ? Cascade.executorDeadline(agent, {
+            limitMs: task.agent.timeoutSec * 1000,
+            startedAt,
+          })
+        : undefined
       const unasked = new Set<string>()
       if (fork) {
         for (const name of this.branchSessions(current).slice(1)) {
@@ -3610,15 +3739,20 @@ export class Run extends DurableObject<Env> {
           for (const name of unasked)
             if (!(await this.listed(current, { session: name, waitMs })))
               return { agent: { state: 'waiting' } }
-          for (const name of unasked)
-            await this.ask(current, {
-              deadlineAt: current.deadline_at!,
-              prompt: agent.preflight
-                ? Preflight.prompt({ facts: body.facts!, instruction: body.instruction })
-                : body.instruction,
-              requestId,
-              session: name,
-            })
+          const prompt = agent.preflight
+            ? Preflight.prompt({ facts: body.facts!, instruction: body.instruction })
+            : body.instruction
+          for (const [branch, name] of this.branchSessions(current).entries())
+            if (unasked.has(name))
+              await this.ask(current, {
+                branch,
+                deadlineAt: current.deadline_at!,
+                prompt: cascade
+                  ? Cascade.handoff({ instruction: prompt, verifier: this.handedOver(current) })
+                  : prompt,
+                requestId,
+                session: name,
+              })
           unasked.clear()
         }
       }
@@ -3633,6 +3767,18 @@ export class Run extends DurableObject<Env> {
         }
         const report = await this.kept(current, Harness.turn(this.env, name, requestId))
         this.mine(current)
+        const executorLate =
+          executorAt !== undefined &&
+          outcomes.length === 0 &&
+          (fork
+            ? fork.reason === 'unverified' && !fork.verifier && fork.at > executorAt
+            : now > executorAt)
+        if (executorLate && report.status !== 'completed') {
+          if (report.status !== 'failed' && report.status !== 'cancelled')
+            await Harness.cancel(this.env, name, requestId)
+          outcomes.push({ state: 'timeout' })
+          continue
+        }
         if (report.status === 'failed' || report.status === 'cancelled') {
           outcomes.push({
             error: report.error ?? 'the turn ended as ' + report.status,
@@ -3695,13 +3841,15 @@ export class Run extends DurableObject<Env> {
       if (agent.picker) {
         const probe: number[] = []
         for (const [index, outcome] of outcomes.entries()) {
-          if (outcome?.state !== 'completed') {
+          if (outcome?.state !== 'completed' || (cascade && index > 0)) {
             verifications.push(undefined)
             continue
           }
           const verified = await this.verifyBranch(current, {
             index,
-            late: now > current.deadline_at! + Picker.graceSec * 1000,
+            late: cascade
+              ? now > this.verifierDeadline(current, index)
+              : now > current.deadline_at! + Picker.graceSec * 1000,
           })
           if ('verification' in verified) {
             verifications.push(verified.verification)
@@ -3720,15 +3868,18 @@ export class Run extends DurableObject<Env> {
           const trunk = outcomes[0]
           const reason = agent.picker
             ? trunk === undefined
-              ? Branch.forkReason(trunk, {
-                  deadlineAt: current.deadline_at!,
-                  now,
-                  startedAt,
-                })
+              ? cascade
+                ? undefined
+                : Branch.forkReason(trunk, {
+                    deadlineAt: current.deadline_at!,
+                    now,
+                    startedAt,
+                  })
               : verifying
                 ? undefined
                 : Picker.forkReason(trunk, verifications[0], {
                     deadlineAt: current.deadline_at!,
+                    forkOn: agent.forkOn,
                     now,
                   })
             : Branch.forkReason(trunk, {
@@ -3738,7 +3889,14 @@ export class Run extends DurableObject<Env> {
               })
           const gate =
             agent.picker && trunk !== undefined && (reason || !verifying)
-              ? Picker.gateOf(verifications[0], { at: now, model: Picker.model(agent), reason })
+              ? {
+                  ...Picker.gateOf(verifications[0], {
+                    at: now,
+                    model: Picker.model(agent),
+                    reason,
+                  }),
+                  ...(cascade ? { cascade: true } : {}),
+                }
               : undefined
           if (gate) this.keep(row, Picker.gate, JSON.stringify(gate, null, 2) + '\n')
           if (reason) {
@@ -3752,6 +3910,10 @@ export class Run extends DurableObject<Env> {
           }
           if (trunk !== undefined && !verifying) chosen = 0
         } else if (!agent.picker) chosen = Branch.settle(outcomes)
+        else if (cascade && !outcomes.includes(undefined))
+          chosen = Cascade.pick(outcomes, {
+            worked: await this.fixWorked(current),
+          })
         if (chosen !== undefined)
           for (const [index, name] of this.branchSessions(current).entries())
             if (outcomes[index] === undefined) {
@@ -3775,14 +3937,25 @@ export class Run extends DurableObject<Env> {
           agent: { detached, state: 'running' },
           ...(waiting ? { waiting } : {}),
           ...(lazy && !fork && outcomes[0] === undefined
-            ? { wakeAt: Branch.forkAt({ deadlineAt: current.deadline_at!, startedAt }) }
-            : {}),
+            ? {
+                wakeAt:
+                  executorAt ?? Branch.forkAt({ deadlineAt: current.deadline_at!, startedAt }),
+              }
+            : cascade && !fork && verifying
+              ? { wakeAt: this.verifierDeadline(current, 0) }
+              : {}),
         }
       }
       const branches = outcomes as Branch.Outcome[]
       let picked: Picker.Record | undefined
       if (agent.picker) {
-        const choice = Picker.choose(branches, verifications)
+        const choice = cascade
+          ? {
+              agreement: Picker.agreement(branches, verifications),
+              chosen: chosen!,
+              evidence: 'cascade',
+            }
+          : Picker.choose(branches, verifications)
         chosen ??= choice.chosen
         const scan = this.textArtifact(current.id, Picker.probeScan)
         picked = {
@@ -4176,6 +4349,7 @@ export class Run extends DurableObject<Env> {
     }
 
     const verifierUsage: Atif.Usage[] = []
+    const fixUsage: Atif.Usage[] = []
     for (const [at, name] of this.verifierSessions(row).entries()) {
       if (submitted)
         try {
@@ -4200,6 +4374,7 @@ export class Run extends DurableObject<Env> {
         for (const [index, name] of sessions.entries()) {
           const events = await Harness.events(this.env, name, requestId)
           usages.push(Atif.usage(events))
+          if (Cascade.fixing(agent, index)) fixUsage.push(usages.at(-1)!)
           const projected = Object.entries(this.projected(row, { events, session: name }))
           if (index !== chosen) {
             for (const [file, body] of projected)
@@ -4256,7 +4431,7 @@ export class Run extends DurableObject<Env> {
 
     if (end.collect !== false) {
       const requests = this.sql.all(
-        'SELECT claim, cost, listed, path, tools_usd FROM model_requests WHERE attempt = ? ORDER BY id',
+        'SELECT claim, cost, listed, path, tools_usd, usage FROM model_requests WHERE attempt = ? ORDER BY id',
         row.id,
       )
       const priced = requests.filter(
@@ -4274,7 +4449,18 @@ export class Run extends DurableObject<Env> {
             !(request['path'] as string).startsWith(judgePath),
         )
         .reduce((sum, request) => sum + (request['tools_usd'] as number), 0)
-      if (usage && !kind && priced.length)
+      const unpriced = requests.some(
+        (request) =>
+          request['claim'] === row.claims &&
+          request['cost'] === null &&
+          request['usage'] !== null &&
+          !(request['path'] as string).startsWith(judgePath),
+      )
+      if (usage && !kind && priced.length && unpriced) {
+        usage = { ...usage }
+        delete usage.costUsd
+        delete usage.costBy
+      } else if (usage && !kind && priced.length)
         usage = {
           ...usage,
           ...(priced.some((request) => request['listed']) ? { costBy: 'list' as const } : {}),
@@ -4295,12 +4481,29 @@ export class Run extends DurableObject<Env> {
           verifierCalls: verifierUsage.length,
           verifierUsd,
         }
+        const pricedFix = priced.filter((request) =>
+          (request['path'] as string).startsWith(Cascade.path),
+        )
+        const branches = this.branchRecord(row)
         this.putArtifact(
           row.id,
           Picker.usageRecord,
           JSON.stringify(
             {
               ...record,
+              ...(Cascade.on(agent)
+                ? {
+                    cascade: Cascade.usage({
+                      branchUsd: record.branchUsd,
+                      executorTimedOut: branches?.branches[0]?.state === 'timeout',
+                      fixUsd: pricedFix.length
+                        ? pricedFix.reduce((sum, request) => sum + (request['cost'] as number), 0)
+                        : fixUsage.reduce((sum, used) => sum + (used.costUsd ?? 0), 0),
+                      fork: this.forkRecord(row),
+                      verifierUsd,
+                    }),
+                  }
+                : {}),
               pricedBy: pricedVerifier.length ? 'meter' : 'events',
               verifier,
             },

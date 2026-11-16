@@ -1,4 +1,5 @@
 import type { App } from 'nanocode-ts/cloudflare'
+import type * as Relay from './Relay.ts'
 import type * as WorkersAi from './WorkersAi.ts'
 import type { PlanVault } from './Vault.ts'
 
@@ -12,6 +13,8 @@ export type Env = App.Env & {
   CHATGPT_ACCESS_TOKEN?: string
   CHATGPT_ACCOUNT_ID?: string
   CHATGPT_LOGIN_URL?: string
+  CHATGPT_RELAY?: Relay.Namespace
+  CHATGPT_RELAY_INSTANCES?: string
   CHATGPT_RELAY_SECRET?: string
   CHATGPT_RELAY_URL?: string
   CLAUDE_PLAN_URL?: string

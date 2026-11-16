@@ -7812,7 +7812,7 @@ A directory slot has no image. Its verifier root is an empty directory, an artif
 - In the e2e lanes `picker` and `picker-lazy`, every verifier overwrites the graded file in its probe slot, and the kept branch still passes, which proves probes cannot change what is graded. The lanes also assert that the cheat scan is 0 and 0, and they run on the krun and ns backends too, where those can run.
 
 **Checked.** Hosted Hand, 2026-11-15, on main `16c5e5d`:
-- `npm test`, `npm run check:types` and `vp check`.
+- `npm test` (607 tests, 602 pass, 5 skipped, 0 fail), `npm run check:types` and `vp check`.
 - Dir e2e lanes `branches`, `lazy`, `lazy-pass`, `picker` and `picker-lazy`.
 - The fresh-clone ci.yml result for this head is recorded in the entry after this one.
 - The krun and ns lanes skip on the hosted Hand (no KVM). They need a KVM box.
@@ -7826,6 +7826,26 @@ A directory slot has no image. Its verifier root is an empty directory, an artif
 - The `pwd` check stays as an extra assertion on directory slots.
 - Unchanged, on every backend: `agent/probes.json` lists each branch once, the cheat scan is 0 and 0, and the kept branch passes after every verifier vandalised the graded file in its probe slot.
 
+## 2026-11-15: a cascade hands the sandbox of a cheap executor to a stronger fix when the verifier does not pass it
+
+**Problem.** `picker=verify_lazy` forks two more branches of the same model when its verifier does not pass the trunk. A cheaper arm would run a cheap model first and spend a stronger one only where the verifier says the work is not done, and the stronger one would start from the sandbox the cheap one left, not from scratch.
+
+**Behavior.** Opt-in agent keys, after `:yield_share=N`, in this order: `:fix_provider=claude|codex`, `:fix_model=MODEL`, `:fix_thinking=EFFORT`, `:verifier_provider=claude|codex`, `:verifier_thinking=EFFORT`, `:executor_share=1..100`, `:verifier_share=1..100` (`fixProvider`, `fixModel`, `fixThinking`, `verifierProvider`, `verifierThinking`, `executorShare`, `verifierShare` in a run configuration). An agent without them runs as before: every new branch of `worker/Run.ts` depends on `fixModel`, except the verifier's provider and thinking, which fall back to the agent's.
+- A `fixModel` needs `picker=verify_lazy`, `branches=2` and a `fixProvider`. `fixProvider` and `fixThinking` need a `fixModel`; `verifierProvider` and `verifierThinking` need a picker; a share needs a `fixModel`, and `executorShare + verifierShare` must stay below 100. A `verifierProvider` other than the agent's needs a `verifierModel`, since the default verifier model of a codex agent is its own model.
+- The executor is branch 0 on the agent's own provider, model and thinking. Its turn carries a deadline at `executorShare` percent of the agent time (50 by default), and the Worker cancels it there and records it as `timeout`, which the gate reads as `unverified`.
+- The verifier is the verify_lazy verifier, in its probe slot, unchanged except that its provider is `verifierProvider` (else the agent's), its model `Picker.model` (now taking the verifier's provider into account), its thinking `verifierThinking` (else the agent's), its payer that of its provider, and its limit the lesser of the verifier limit and `verifierShare` percent of the agent time (10 by default). `Picker.forkReason` and the 70 confidence threshold decide keep or fork as before. A kept executor is graded as it is.
+- On a fork, branch 1 is a live fork of the executor's slot, as for verify_lazy. Its session's first turn goes to `fixProvider` with `fixModel` and `fixThinking`; a nanocode-ts session takes its provider and model from its first turn, and the hand and the runner do not depend on the provider, so no slot or runner code changed. The prompt is `Cascade.handoff`: the instruction, then a note that another agent worked in this sandbox and was found not done, with the verifier's verdict, confidence and the last 3,000 characters of its message, and no transcript. The executor's escalation and refusal-fallback options do not go with the fix's turn.
+- After the fork, branch 1 is graded when it completed, or timed out after it called a tool; else branch 0 (`Cascade.pick`). Branch 1 is never verified, and `picker.evidence` is `cascade`.
+- Model requests of a session with branch 1 or above in a cascade are metered under `fix/` (the branch number of `Proxy.session`), and `served()` prices them with `fixModel`.
+- `agent/gate.json` adds `cascade: true`. `agent/picker-usage.json` keeps `branchUsd`, `verifierCalls` and `verifierUsd` as written without a cascade and adds `cascade`: `execUsd`, `verifierUsd`, `fixUsd`, `escalated`, `handoff: "continue"`, `reason` and `executorTimedOut`. `execUsd + fixUsd = branchUsd`.
+- The cheat scan of probe slots and verifier calls covers the cascade verifier unchanged: it is the same session, request id and probe slot.
+
+**Checked.** Linux dev machine, 2026-11-15, on `099ad72`:
+- `NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=cascade npm run e2e`: passed. The verifier failed the executor (`verifier_fail`), the fix on `gpt-fix` got the handoff with the verdict and no transcript, finished in place and passed; branch 1 was graded, only branch 0 was probed, the cheat scan was 0 and 0, and `fix/`, `verifier/` and unprefixed requests were metered.
+- `picker` and `picker-lazy`: passed, unchanged.
+- `test/Cascade.test.ts` (the keys' round trip and refusals, the deadline split, the stage of each branch, the handoff, the pick and the usage record), `npm test` (607 tests, 602 pass, 5 skipped, 0 fail), `npm run check:types` and `vp check`.
+
+**Not verified.** A real model, an executor cancelled at its share of the time, a fix on another provider than the executor's, and a live fork of a krun or ns slot (no KVM here).
 ## 2026-11-15: verifier sessions do not take a branch's turn in the scripted model
 
 **Problem.** On 099ad72 the KVM lanes ran `picker-lazy` with verdicts fail, pass, fail where the test expected fail, fail, pass, the same on krun and ns. On guest backends the scripted model makes the third session to ask (in order of `prompt_cache_key`) the right branch. In `picker-lazy` the trunk's verifier asks before the two forked branches, so it took arrival index 1, and branch 1 became the right one. The code was correct. The same run's assertion that the kept branch passed the hidden tests held, so the verifier passed exactly the branch the grader passed. Verdicts are recorded by branch index (`verifyBranch(index)` reads `Branch.session(session, index)` and probes `Picker.slot(base, index)`).
@@ -8259,6 +8279,27 @@ No agent option names this. The task decides it.
 - `nanocode-claude` and `nanocode-codex`, the nanocode command line inside the slot. Its `exec` has no option that turns the web search off, so such an arm on a closed task still has the search of its provider. It is not closed by this change.
 - The tools of fx, opencode and pi were read from their commands here and not from their binaries.
 
+## 2026-11-16: fork_on names the verdicts that fork a verify_lazy trunk
+
+**Problem.** A `picker=verify_lazy` trunk forks on anything but a PASS with a confidence of at least 70: a FAIL, an UNSURE and a PASS below the threshold. An arm that spends its second branch, or the fix of a cascade, only where the verifier found the work wrong could not be named.
+
+**Behavior.** One opt-in agent key, `:fork_on=verifier_fail|verifier_fail_or_unsure` (`forkOn` in a run configuration), last in the order, after `:verifier_share`.
+- `Picker.forkReason` takes `forkOn` in its options. With `verifier_fail`, a trunk that completed and whose verifier ended without an error forks only when its verdict is `fail`, at any confidence, with the reason `verifier_fail`. A PASS of any confidence and an UNSURE keep the trunk.
+- A verifier that completed and named no verdict is recorded as UNSURE with confidence 0, as before, and keeps the trunk under `verifier_fail`.
+- A verifier that ended with an error (its turn failed or was cancelled, or it did not start or finish before its deadline) is recorded as UNSURE with confidence 0 and its `error`, as before. `verifier_fail` does not read that verification: it takes the path it took before and forks with the reason `verifier_unsure`. So under `verifier_fail` a gate with the reason `verifier_unsure` always holds a `verifier.error`. The first commit of the key, `b26cfa3`, kept that trunk; a follow-up commit changed it before any run used the key.
+- The two lines before the verdict are unchanged under both values: a trunk past its deadline is kept, and a trunk that did not complete, or has no verification, forks as `unverified`.
+- `verifier_fail_or_unsure` and no key take the same path as before. An agent without the key parses to the same agent and prints the same text, and `worker/Run.ts` changes in one place: it passes `agent.forkOn` to `Picker.forkReason`.
+- `forkOn` is in `Config.agentKeys`, so a Worker without this change refuses it as a key it does not know. Another value is refused (`a: forkOn must be one of verifier_fail, verifier_fail_or_unsure`), and so is a `forkOn` on an agent whose picker is not `verify_lazy`.
+- The gate record, the fork record, the handoff, the pick and the usage record are unchanged. A kept trunk writes `agent/gate.json` with `decision: "keep"` and the verifier's verdict, as a confident PASS does, so under `verifier_fail` a kept gate can hold an UNSURE or a PASS below the threshold.
+
+**Checked.** Hosted Linux machine without KVM, 2026-11-16, on the parent `58a0e71` plus this change:
+- `node --test test/Picker.test.ts`: 15 of 15, four of them new (`forkReason` under `verifier_fail`, with a verifier that named no verdict and one that ended with an error; `verifier_fail_or_unsure` against no key over 88 inputs; the syntax and its round trip; the refusals).
+- `npm run lint`, `npm run check:types` and `npm run dry-run`: exit 0. `npm test`: 613 tests, 608 pass, 0 fail, 5 skipped (the parent: 609 tests).
+- `NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=picker-lazy npm run e2e`, and the same with `cascade` and `lazy-pass`: passed, on directory slots with the scripted model. No scenario names the key, so these show only that an agent without it runs as before.
+- The parent and this change, imported side by side: `parseAgent`, `agentText` and `Config.parse` over the 220 agent texts of the tests and the documents (139 parse, 81 are refused) give the same agents, texts and refusals apart from the usage line, and `Picker.forkReason` without the key, with `forkOn: undefined` and with `verifier_fail_or_unsure` gives the parent's reason on 2,432 of 2,432 inputs (4 trunk states, no verification and 3 verdicts at confidence 0 to 100, before and at the deadline).
+
+**Not verified.** An end-to-end lane with the key, the krun and ns lanes (no KVM here), a real model, and a deployed Worker.
+
 ## 2026-11-16: a codex agent takes the Codex session settings of the pinned nanocode-ts
 
 A `codex`, `codex-code-mode` or `codex-jobs` agent names `:lenient_patches=on`, `:min_wait_ms=N`, `:max_output_tokens=N` and `:context_window=N`, after `clearing_cache_floors`. The turn sends them as `lenient_patches`, `min_wait_ms`, `max_output_tokens` and `context_window`, the fields the session descriptor of nanocode-ts `build-acdb751` reads for a Codex session (`codexSwitches` and `codexLimits` in `src/cloudflare/App.ts`, `CodexOptions` and `codex_harness` in `src/wasm.rs`). A `claude` or `claude-direct` agent that names one is refused.
@@ -8300,3 +8341,201 @@ A `codex`, `codex-code-mode` or `codex-jobs` agent names `:lenient_patches=on`, 
 
 - A run with a model. Whether the pi rows that stopped at 16,384 now finish is for the next smoke run to show.
 - A `codex` session against the loopback server: its path was read in nanocode-ts (`src/wasm.rs`, `codex_options.max_output_tokens`) and nanocode (`transport/chat.rs`), not run.
+
+## 2026-11-16: a run can name a web blocklist that its agents may not fetch
+
+An open task lets its agent search and fetch the web. A benchmark whose tasks, reference solutions or leaderboard trajectories are published on the web can then be answered by fetching them, and a pass that fetched its answer is not a measurement.
+
+**The rule.** `nanoeval run --web-blocklist NAME|FILE` stores a list of hosts and host/path prefixes in the configuration of the run (`webBlocklist`). `terminal-bench` names the list this checkout holds in `src/Blocklist.ts`: the Terminal-Bench and Harbor sites (`tbench.ai`, `harborframework.com`, `tbench.oblok.me`, `marginlab.ai`) and the `laude-institute` and `harbor-framework` repositories of their tasks on `github.com`, `raw.githubusercontent.com`, `codeload.github.com` and `api.github.com`. A FILE holds one entry a line, `#` starts a comment. An entry is a lowercase host with an optional path and no scheme, at most 64 of them, the limit of the provider filter. A bare host covers its subdomains; a host/path entry covers what lies below the path on that exact host only.
+
+- The Worker adds the list to the `blocked_domains` of every `web_search_*` and `web_fetch_*` tool of a `claude` request: the requests of a nanocode session (its egress) and of an installed agent (the model route of the run, which carries the nested search request of Claude Code's `WebSearch`). A tool with `allowed_domains`, a web fetch tool when the list names a path (the provider filters a fetch by host only), or more than 64 entries in all, is refused with a 400, never sent without the list.
+- Claude Code (`claude-code`, `stock-claude`) is started with `--settings` naming a `PreToolUse` hook on `WebFetch`, written to `$NANOEVAL_AGENT_HOME/web-blocklist.sh`, that exits 2 for a listed URL, which refuses the call and tells the model why. Its `WebSearch` is filtered by the Worker.
+- A run with a list takes only agents that enforce it: `claude`, `codex` (a codex session is sent `web_search: false` on every task), `oracle`, `claude-code`, `stock-claude` and `nanocode-claude` (its requests take the model route). `codex-cli`, `stock-codex`, `nanocode-codex`, fx, opencode and pi are refused when the run is created: their searches run where the Worker cannot filter them.
+- `--rerun` takes the list of RUN.
+- A run without a list is unchanged: no request body and no command line differs.
+
+**Not stopped.** A fetch from a shell of an open slot (curl, git clone, pip from a URL) has the network of the slot. The list does not reach it. The backstop is the leak scan before a claim: a transcript that names a listed host, or holds a reference solution, is read, and a copied answer counts as failed.
+
+**Tests.** `node --test test/Blocklist.test.ts`: the matching of hosts, subdomains and paths, the hook refusing with exit 2 exactly the URLs the matcher refuses, the request filter and its refusals, the validation of the configuration, and the command of Claude Code with and without a list.
+
+**Not verified.**
+
+- A deployed Worker and a run with a model. No run was made with this change.
+- The pinned Claude Code reading `--settings` with a hook. The hook was run with `sh` on the JSON a PreToolUse hook receives, not inside Claude Code.
+- That the provider honours `blocked_domains` on the nested search request of Claude Code. That is the documented behaviour of the filter, not a read of a response.
+## 2026-11-16: a candidate arm is an overlay file
+
+A harness search writes many candidate arms and needs each one with its parent, what it changes and why. Until now an arm existed only as a hand-written `--agent` string. `src/Overlay.ts` reads a `nanoeval-overlay/1` object and `nanoeval overlay` turns a directory of them into `--agent` arguments.
+
+- The agent rules of `Config.parse` moved into `Config.parseAgents`, unchanged, so an overlay is refused exactly where a run would refuse its agent rather than by a second copy of the rules.
+- `harness` names the five harnesses of `--agent` and stands for provider and orchestration, so those, with id, model, thinking and api, are not levers.
+- A lever this checkout does not know is refused, not passed through: a setting no Worker takes yet belongs in `pending`, which keeps the overlay valid and marks it not runnable, so a search can record a candidate before the Worker can run it.
+- The agent string comes from `agentText`, the table `parseAgent` reads, and `test/Overlay.test.ts` round-trips `parseAgent(agentText(compile(overlay)))` for every lever, with a sample per key that must cover the whole lever list, so a lever added to `agentKeys` without one fails the test.
+
+## 2026-11-16: a promotion gate scores each candidate arm against the baseline arm of its own run
+
+`src/Promote.ts` turns the results of runs, what a Worker answers for `/v1/runs/RUN/results`, into one cell a candidate arm, for a search over arms that keeps the arms that beat a baseline.
+
+**The cell.** A candidate is scored only against the baseline arm of the same run, with `Scorecard.build` on those two arms alone: the matched set, the pass rate, USD a pass, and the task-clustered bootstrap of the difference of pass rates and of the ratio of USD a pass, with the seed and draws of the scorecard (1 and 2000 unless given). Its verdict:
+
+- `missing` with `why: 'run'` when the run of the arm holds no row of the baseline: such an arm is not measured.
+- `missing` with `why: 'unmatched'` when either arm has a row with a verdict outside the matched set, as in a run that is still running.
+- `missing` with `why: 'repeats'` when a matched task has fewer than 3 attempts.
+- `win` when the lower bound of the 95 % interval of the lead is above 0, `loss` when its upper bound is below 0.
+- `tie` when the interval of the lead holds 0 and the upper bound of the interval of the ratio of USD a pass is below 1: as good, and cheaper.
+- `none` otherwise, and whenever a row of either arm has no cost, since the ratio is then not recorded.
+
+**Selection.** `select(cells, { stage: 'A', survivors })` ranks the measured cells of the baseline's run by pass rate, then USD a pass, then id, keeps the Pareto front of pass rate against USD a pass, and returns the front first and then the rest by rank, up to the stated number of survivors. A stage A slice is one attempt a task, so a cell missing for its repeats is ranked; a cell missing for its run or for unmatched rows is not. `select(cells, { stage: 'B' })` promotes every `win` and `tie`.
+
+**Read on recorded runs.** `Promote.cells([run], { baseline })` and `Promote.text` over copies of the results in `scorecard-v6/raw`, all of eval `tb21-full@96741725ac06`, seed 1, 2000 draws:
+
+| Run | Candidate vs baseline | Pass | Lead pp [95 %] | USD a pass ratio | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| `1fbd4a11` finished, 89 x 3 | nano vs cc | 239/267 vs 223/267 | +6.0 [+0.4, +11.6] | not recorded for cc | win |
+| `200a4c68` finished, 89 x 3 | nano vs cc | 227/267 vs 234/267 | -2.6 [-8.2, +2.6] | not recorded for cc | none |
+| `0e9d30cd` finished, 89 x 3 | nanox vs cx | 170/267 vs 168/267 | +0.7 [-5.6, +7.1] | not recorded for cx | none |
+| `0ae149bf` running, 24 x 1 | nano-son vs cc | 47/57 vs 52/57 | -8.8 [-22.0, +3.3] | 0.21 [0.14, 0.29] | missing (unmatched) |
+| `047b0a7f` running, 30 x 1 | nano-son vs nano-med-plain | 26/30 vs 27/30 | -3.3 [-13.3, +6.7] | 0.55 [0.34, 0.88] | missing (unmatched) |
+
+The pass counts of `1fbd4a11` are the ones counted by hand for that run: 239 and 223 of 267. Claude Code and Codex CLI arms record no cost on these runs, so their ratio needs a list price (`prices`) before a candidate can tie them.
+
+**Tests.** `node --test test/Promote.test.ts`: win, loss, cheaper tie and none on one run; missing for another run, one attempt and a cancelled row; the refusals; the front and survivors of stage A; the promotions of stage B.
+
+**Not verified.** No run was made for this change, and no command calls the module yet.
+
+## 2026-11-16: an agent may turn the model-specific behavior of its claude session off
+
+**Why.** nanocode's claude backend keys some prompt text and defaults on the model ID: for `claude-opus-5-5` (and `claude-fable-5-1` for bash-first) it adds the Opus 5.5 paragraph, the bypass note and bash-first steer, drops the dedicated-tools line, adds the total-tokens reminder, and skips the finish check by default. No agent of this repository could name a session of such a model without them, so no run could measure what they add beside a session with them.
+
+**What.** One more entry of the table of options in `cli/nanoeval.ts`, after `:context_window=N` and last in the one order:
+
+| Option | Run configuration | What every turn of the session sends | Who takes it |
+| --- | --- | --- | --- |
+| `:codesign=off` | `"codesign": false` | `codesign: false` | `claude`, `claude-direct` among them |
+
+An example is `nano-high-nocd=claude:claude-opus-5-5:high:codesign=off`. `agent/turns.jsonl` names the field. It is on by default: an agent without it sends nothing new, and its turn body and its line of `agent/turns.jsonl` are the same bytes as before.
+
+**The field name.** `codesign: false` is the session field agreed with the nanocode-ts change that binds it at the first accepted turn, as `subagents` is bound, and passes it to `ClaudeBuilder::codesign(false)` in nanocode. With it the backend treats the model as one it has no model-specific prompts or defaults for. The finish check then follows the default of such a model, unless `:finish_check=on` or `:skip_finish_check=on` names it.
+
+**How it is taken.** The only value is `off`. The configuration refuses another value with "has a codesign that is not false", and a `codex` agent, an installed agent and the oracle with "has a codesign, which only a claude session takes". It goes with every other option.
+
+**The pin.** `package.json` stays at nanocode-ts `build-acdb751`. That build does not know the field and ignores it, so an arm with `:codesign=off` on a Worker of this pin is the arm without it. The arm is valid only once the pin moves to a build that takes `codesign`.
+
+**Checked.** `test/CodesignOff.test.ts` (new, 3 tests: the spec, its place last in the order and its text read back for `claude` and `claude-direct`; an empty value, another value, a second occurrence and another place refused; the configuration takes it and refuses malformed values and other providers; a turn sends the field only when named, a turn without it is the same bytes, and the body and the line of a plain turn with it are written out). The usage line in the test files that spell it names the option, and the name of one test of `test/ClearingCacheFloors.test.ts` no longer says that `clearing_cache_floors` is last. `npm run lint`, `npm run check:types` and `npm run dry-run` pass.
+
+**Not verified.** A Worker on a build that takes the field, a model, and a session whose requests lack the model-specific text. No end-to-end lane names the option.
+
+## 2026-11-16: a fleet of hosted runners for one run, ready and not dispatched
+
+`.github/workflows/fleet.yml` starts N GitHub-hosted `ubuntu-24.04` jobs on a dispatch, each running one `nanoeval runner --backend krun` against a run of a deployed Worker, so a run made with `--sandboxes 0` gets slots without a box of its own. It is the jobs of `e2e-krun` (the machine action, Node, the launcher cache, `npm ci`) with a runner at the end instead of the lanes. This entry adds that file only.
+
+**What it holds.** Inputs `run`, `jobs` (1 to 256, the most a matrix takes), `slots` (8), `cpus-per-thread` (2) and `runner-args` (`--memory-overcommit`). The URL and token come from the environment `fleet`: the variable `NANOEVAL_URL` and the secret `NANOEVAL_TOKEN`, the Worker's `ACCESS_TOKEN`, with which `runner` enrols at `/v1/runs/RUN/runners`. That token is the whole API of the Worker, so the environment should have a required reviewer. A job is cut at 355 minutes and the runner is started with `--ends-in-sec` for 5 h 45 min from the start of its job, so it takes no row that would end after that and its rows are never lost to the 6 h limit of a hosted job.
+
+**How many attempts at once, by what was measured.** A hosted 4-vCPU, 16 GB machine is two slots for each of 4 threads, 8. Terminal-Bench 2.1 declares 98 vCPUs for 89 tasks (84 of 1, 3 of 2, 2 of 4) and a mean of 2,646 MB (69 of 2,048, 17 of 4,096, 3 of 8,192), so `--cpus-per-thread 2` admits about 7.3 rows by vCPU, and admission by declared memory into 80 % of 16 GB about 4.9: without `--memory-overcommit` a runner stays near 5. The organization takes no larger runners (`GET /orgs/nanocodexyz/actions/hosted-runners` answers 404, "not supported for this organization"), which is the case of a Free plan, whose limit is 20 jobs at once: 20 x 8 = 160 attempts in flight, against 63 at most for the 534 rows of `3d92dcef` on one box. Those rows took 6.0 minutes on average, p99 47.8 and at most 60.5, so 4,000 rows are 24,000 slot-minutes, 150 minutes on 160 slots plus a tail of about an hour: within the 5 h 45 min of one wave, if a row takes on a hosted machine what it took on a box. A Team plan (60 jobs) is 480 slots, past the 400 rows at once that the entry of 2026-11-15 estimates for the busiest thread of workerd.
+
+**Not verified.** Actions is disabled for this repository (`"enabled": false`), so no job of this workflow has run. Not known: how long a row takes under nested virtualization on 4 threads; how long a job takes before its runner claims (the machine script, the launcher build when its cache is cold, `npm ci`); whether the 14 GB disk of a hosted machine holds the blobs of the tasks a runner meets; and whether 20 jobs that fetch the same blobs at once slow the Worker. `actionlint` 1.7.12 reports nothing for the file.
+
+## 2026-11-16: an agent may name verification_requested, and the package pins nanocode-ts build-aa3daa2
+
+**The pin.** `package` pins nanocode-ts `build-aa3daa2` (nanocode 7a46f58d1e918c63f06f62c0e04891f78e42e98c) in place of `build-acdb751`. The build reads the session field `verification_requested`, which nanocode-ts 304046b passes to `CodexBuilder::verification_requested` of nanocode ccc66f323. The hand stays `nanocode-cli-1a946f3`.
+
+**The option.** An agent that ends in `:verification_requested=on`, last in the one order, such as `nanox-v=codex:gpt-6-luna:high:verification_requested=on`, sends `verification_requested: true` on every turn of its `codex`, `codex-code-mode` or `codex-jobs` session, and an agent without it sends the same bytes as before. A run configuration names it `verificationRequested`. The configuration refuses another value than `true` and every provider but `codex`.
+
+**Why.** The upstream Codex instructions that a codex session of nanocode sends tell the model not to add or run tests unless the user asks. In an eval no person asks, and a task graded by hidden tests is lost when the model ships code it never ran: on one traps run with `gpt-6-luna` the codex agent ended all three attempts of a parsing task with a final message saying it had not run tests, and failed the hidden tests in each. The option lets an arm ask for verification so that a matched run measures it.
+
+**An arm across the pins.** A row on this pin is not the same arm as a row on `build-acdb751`: nanocode between dc09e1baf and 7a46f58 also changes other paths, so a comparison holds within one pin only.
+
+**Checked.** `test/VerificationRequested.test.ts` (new, 3 tests: the spec and its text read back, other values and places refused; the configuration takes it for codex agents and refuses other values and providers; a turn sends the field only when named, with the same bytes otherwise). The usage line in eleven other test files names the option. `npm run check` and `npm run lint` pass locally; the full `npm test` and `check:types` are left to CI because the machine was overloaded.
+
+**Not verified.** A deployed Worker on this pin, and a model run with the option.
+
+
+## 2026-11-16: Amp cannot be an installed agent
+
+An installed agent runs its own loop inside the slot, gets no credential, and sends its model requests to the endpoint of the run. Amp, Sourcegraph's coding agent, does none of the three, so it has no `Kind` and no row can name it.
+
+**The release that was read.** `@sourcegraph/amp` 0.0.1794844850-g57e01b (2026-11-16) depends on `@ampcode/cli`, which installs a platform package. `@ampcode/cli-linux-x64` 0.0.1794844850-g57e01b: tarball SHA-256 `09454c7f156fe5288a3b0d6d3e1d7f0a34d71d7da6d6209d85eb03d6e7025e7f`, its `amp` binary (ELF x86-64, 155,982,000 bytes) SHA-256 `d51107b2b1432b8dff0aa5a66a4d2383b56bde9eb95f804524ec9bb67665c01f`. Its license file says use is subject to Amp's terms of service.
+
+**What it asks before any work.** On a 5-core Linux x86_64 machine without KVM, with an empty `HOME`:
+
+```sh
+AMP_URL=http://127.0.0.1:18770 AMP_API_KEY=probe AMP_SKIP_UPDATE_CHECK=1 amp -x 'say hi' --stream-json </dev/null
+```
+
+A server on that port that logs each request and answers `401` saw two requests, `POST /api/internal?getUserInfo` and `POST /api/internal?listAgentModes`, and the command exited 1 with `Error: Invalid or missing API key. Run 'amp login' to authenticate.`. Without `AMP_URL` and `AMP_API_KEY` it printed nothing for 40 s and was ended by `timeout`. `amp config model-providers list` gives the same error. No model request left the machine either way.
+
+**Where its model requests go.** `amp config model-providers add-router` takes `openrouter`, `cloudflare` (with `--cloudflare-account-id` and `--cloudflare-gateway-id`), `custom-url` (with `--api-format` chat-completions, responses, anthropic-messages or google-genai and an HTTPS `--base-url`) and others, each stored with `--personal` or `--workspace`: on the Amp account, not in a file of the slot. Amp's documentation (ampcode.com/docs/customize/model-routing and ampcode.com/docs/egress-ips, read 2026-11-16) says that Amp runs the agent loop and inference on its own servers and calls a router from its own IP addresses, so a Custom URL must be public HTTPS.
+
+**What it would take.** A row of Amp would need an Amp account key in the slot, the task's files and output sent to Amp's servers, and the run's model endpoint public, holding a credential that Amp's servers present. The run would not see the loop, could not close the agent's network, and could not meter its requests. A stand-in for `/api/internal` would replace Amp's server rather than run Amp. None of this is done.
+
+## A response of a fallback model is priced at that model's list price
+
+**The defect.** A run priced each response from recorded tokens with the list price of the model the agent named, whatever model answered. When Anthropic answers a request of `claude-opus-5-5` with a fallback (`claude-opus-5` for bio and frontier_llm, `claude-opus-4-8` for cyber), the response was priced at Opus 5.5's list (4, 0.2, 20 USD a million input, cached and output tokens, 5 and 8 for cache writes) instead of the fallback's (5, 0.5, 25, 6.25 and 10). In the Terminal-Bench 2.1 run of 2026-11-15 that compared nano-high and cc-high on `claude-opus-5-5`, 638 of 6,968 responses named a fallback (361 `claude-opus-5`, 277 `claude-opus-4-8`) on 7 tasks: 363 of nano-high, 275 of cc-high. Repriced, nano-high costs 5.91 USD more and cc-high 4.83 USD more, and the ratio of their USD a pass over the 86 tasks both scored three times moves from 1.082 to 1.087 (task-clustered bootstrap 95% interval 0.971 to 1.219 before, 0.977 to 1.217 after). Both arms were priced by the same rule, so the ratio barely moved; each arm's USD a pass was understated by about 5%.
+
+**The behavior.** `Fallback.billed` names the model a response is billed as: the model the response reports when it is one of the agent's fallbacks, otherwise the agent's model. A response of a fallback that the run has no price for is recorded without a cost, and an attempt with such a response among priced ones has no cost: its USD a pass is unknown rather than priced at another model's list. A run that serves `claude-opus-5-5` gives a price for each fallback, for example `--model-price claude-opus-5=5,0.5,25,6.25,10 --model-price claude-opus-4-8=5,0.5,25,6.25,10` (Anthropic's pricing page, read 2026-11-16).
+
+**Checked.** `npm run lint`, `npm run check:types`, `npm test` on the hosted machine; the krun and ns lanes of `ci.yml` run in CI.
+
+## 2026-11-16: a run may ask its runners to serve the package archive
+
+**Why.** The verifiers of `qemu-alpine-ssh` and `qemu-startup` install `curl` from a Debian 11 security index whose package now answers 404 on the mirror. The release runners were not started with `--package-archive`, so in run `32458b36` all 12 rows of the two tasks, 6 of each arm, and in run `3d92dcef` all 12 again, ended as `verifier` errors and neither arm could be scored on those tasks. A runner option is a property of a machine, and two runners of one run could verify the same task differently.
+
+**What changed.** `run --package-archive` sets `sandbox.packageArchive` in the configuration of the run, the Worker passes it to every runner in the run's configuration, and a runner serves the archive to the verifiers of the run's krun and ns slots when either its own option or the run's is set. A rerun keeps it from its parent. It is refused on dir slots, as `verifierCache` is. Off by default.
+
+**Not run.** No run was made with this change. Unit test of the configuration only.
+
+
+## 2026-11-16: fx stopping its own tool loop is scored, not an error
+
+**The defect.** fx 0.0.17 ends a turn with exit status 1 when the model sends shell calls that fx refuses several times in a row, the same failing shell call again and again, or malformed tool arguments (`src/core/agent/runtime/orchestrator.zig` at 0.0.17, the notices `repeated_terminal_validation_notice`, `repeated_shell_execution_failure_notice` and `repeated_malformed_arguments_notice`, which `finishFailedTurnWithNotice` writes as the turn's text; `cli_ask.zig` sets `exit_code` to 1 for any failed turn). The runner ends every installed agent that exits non-zero as an `agent` error and starts no verifier, so these rows counted as errors. That is the agent giving up on the task, not the machine or the way to the model. Met in a run of `fx-chat` on `@cf/deepseek-ai/deepseek-v4.1-flash-1017` (thinking low), `path-tracing` attempt 1: 31 model requests through the Workers AI route all answered 200, then "fx exited with 1: … Repeated shell validation failures stopped the tool loop. The invalid shell calls were not executed and produced no shell effect." Attempts 2 and 3 of the same arm on the task passed.
+
+**The rule.** `Installed.stopped(kind, said)` is true for `fx` when its output or the last 2,000 bytes of its standard error hold one of the three notices. Such a row goes to the verifier with the agent's exit status like a row that exited 0, and scores what the agent left. Any other non-zero exit of fx, such as a provider that answered 401, stays an `agent` error.
+
+**Verified.**
+
+- `node --test --test-name-pattern='fx|summarize|event stream' test/Installed.test.ts`: 7 of 7 passed, including the new test with the stderr tail of that attempt, a notice of a repeated shell failure, a 401 from the provider (not a stop), and the same text under `opencode` (not a stop).
+- The pin: `gh release download v0.0.17 -R vercel-labs/fx -p 'fx-linux-*'` gives `78c155d5…23e75` for x86_64 and `b4633b89…3761f` for aarch64, the sha256 in `src/Installed.ts` and in the release's `.sha256` files. 0.0.17 (2026-11-14) is fx's latest release.
+
+**Not verified.** No run was made with this change: neither release nor a local Worker had a sandbox host and an allowed model route for fx here.
+
+## 2026-11-16: an agent may name prompt_variant and tool_profile
+
+A search over harness settings needs arms that differ in their system prompt and their tool set, and nanoeval sends a model only the prompts and tool text of nanocode. The pinned nanocode-ts `build-acdb751` already takes two session fields for that on codex sessions, `compact_instructions` and `lean_tool_arguments`. An agent names them as `:prompt_variant=compact` and `:tool_profile=lean` (`promptVariant` and `toolProfile` in a run configuration) rather than as two switches, so that later profiles of nanocode, for claude sessions too, are new values of the same two options and not new options. Only the values nanocode has are taken, and only for codex agents, since a claude session has no such field yet. An agent without them sends the same bytes as before.
+
+## 2026-11-16: the Run reads its model spend a new request at a time
+
+Before a budgeted model request goes out, the Run read the run's spend and its largest response by scanning every model request it had recorded (a GROUP BY over all of model_requests, and a MAX over it), parsed every finished row's result, and the per-row request reads (the meter, a finish's statuses and waits) had no index on model_requests by attempt. That made each budgeted request cost CPU in proportion to everything the run had recorded, all on the Run's one thread: past a few hundred rows at once, the meter, not the slots, was what limited a run.
+
+Now a `Tally` (src/Tally.ts) keeps the spend, the attempts with priced requests and the largest response, and reads only the requests recorded since its last read by id (requests are only inserted); finished rows' usage is read with json_extract instead of parsing each result; model_requests has an index on (attempt, claim) and claims on (attempt). test/Tally.test.ts checks that a tally reads what the old scan reads, and that each request is read once.
+
+Measured on the hosted Hand with node:sqlite (Node 24.22, :memory:), the old and new reads side by side over the same ledger: N rows at once, 40 model requests per row recorded, half the rows finished, CPU per budgeted request (insert plus the spend read) over 5 to 20 samples (~/swarm bench meter.mts):
+
+| rows | requests | before ms | after ms | before req/min at a full thread | after |
+|---|---|---|---|---|---|
+| 250 | 10,000 | 6.5 | 0.47 | 9,222 | 127,119 |
+| 500 | 20,000 | 15.5 | 0.51 | 3,861 | 118,099 |
+| 1,000 | 40,000 | 34.2 | 1.18 | 1,754 | 50,856 |
+| 2,000 | 80,000 | 107.2 | 4.58 | 560 | 13,106 |
+| 4,000 | 160,000 | 185.2 | 5.71 | 324 | 10,513 |
+
+A row's request read (one attempt's statuses) went from 0.5 to 11.5 ms to 0.02 to 0.03 ms. This is SQLite CPU outside workerd, not a run: the next measurement is a release run with a model budget at 500 or more rows at once, reading workerd's busiest thread. What still grows with rows after this is the finished rows' json_extract pass, about 4 ms at 2,000 finished rows.
+
+
+## 2026-11-16: a Worker pays codex sessions with a ChatGPT plan through its own relay container
+
+chatgpt.com refuses requests from the Workers runtime, so a deployed Worker could pay codex rows with a ChatGPT login only when `CHATGPT_RELAY_URL` named a relay somewhere public. Every codex arm so far paid by login from a runner with its own relay; none ran through a deployed Worker.
+
+1. A Worker that binds the `RelayContainer` of nanocode-egress as `CHATGPT_RELAY` sends codex plan requests and sockets, of installed agents (`worker/Model.ts`) and of nanocode sessions (`worker/Sessions.ts`), to that container with the secret the container derives from `PLAN_SECRET` (`worker/Relay.ts`). Key credentials, claude and Workers AI never go there.
+2. `CHATGPT_RELAY_URL` still wins when both are set, so a deployment that has a relay keeps it.
+3. `CHATGPT_RELAY_INSTANCES` (default 1, at most 64) spreads requests over containers named `relay-0` and on: a session's requests go to one container by its session name, an installed agent's at random. The relay only forwards bytes, so one container's limit is sockets and memory, not CPU; more instances spread the egress addresses chatgpt.com sees, not the plan's limits, which stay those of the one account.
+4. The binding itself (`containers`, a `durable_objects` binding, a migration and `@cloudflare/containers`) is left to the deployment's wrangler config, since it builds an image on every deploy; without it nothing changes.
+
+## 2026-11-16: a codex agent may turn the subagents of its session on
+
+The entry of 2026-11-14 created every `codex` session without subagents, as codex-cli runs. An ablation of the arms needs a `codex` session with the subagent tools beside one without them, such as `luna-opuscfg=codex-code-mode:gpt-6-luna:high:subagents=on`. This change makes `:subagents` take `off` or `on`: `off` only for a `claude` agent, as before, and `on` only for a `codex` agent. It changes `cli/nanoeval.ts`, `src/Config.ts`, `src/Turn.ts`, `worker/Run.ts`, the tests of the agent syntax, `test/SubagentsOff.test.ts`, `test/Turn.test.ts` and README.md.
+
+**What the session receives.** `Turn.body` sends the `subagents` of the agent when it names one, and a `codex` turn of an agent without it sends `subagents: false` as before, so every existing arm sends the same bytes. A `codex` agent with `on` sends `subagents: true` under each orchestration. Read in nanocode-ts `build-acdb751` (`src/wasm.rs`): the session config holds `subagents: Option<bool>`, and the builder calls `without_subagents()` only for `Some(false)`, so a missing field and `true` both give the subagent tools. `true` is sent rather than nothing so that `agent/turns.jsonl` records the arm, and so that a later build whose default changes still gets it.
+
+**What the configuration refuses.** `subagents: false` for any provider but `claude`, `subagents: true` for any provider but `codex` (`codex-cli` and the other installed agents are not sessions, and a `claude` session has the tools by default), and any value that is not a boolean, each with its own message. The option keeps its place in the one order, after `:tool_result_clearing=KEEP/TOKENS` and before `:clearing_cache_floors=on`, and the usage text says `[:subagents=off|on]`.
+
+**Not run.** An end-to-end lane with the option, a deployed Worker and a model. What a `codex` session with subagents costs, and whether it spawns any on a task, is for the ablation run.

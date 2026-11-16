@@ -150,3 +150,23 @@ test('arms and status name the attempts that a refused model ended, as infrastru
     false,
   )
 })
+
+test('a response of a fallback model is billed as that model, and any other as the agent model', () => {
+  const agent = { model: 'claude-opus-5-5', provider: 'claude' as const }
+  assert.equal(Fallback.billed({ ...agent, reported: 'claude-opus-5' }), 'claude-opus-5')
+  assert.equal(Fallback.billed({ ...agent, reported: 'claude-opus-4-8' }), 'claude-opus-4-8')
+  assert.equal(Fallback.billed({ ...agent, reported: 'claude-opus-5-5' }), 'claude-opus-5-5')
+  assert.equal(
+    Fallback.billed({ ...agent, reported: 'claude-opus-5-5-20261101' }),
+    'claude-opus-5-5',
+  )
+  assert.equal(Fallback.billed({ ...agent, reported: undefined }), 'claude-opus-5-5')
+  assert.equal(
+    Fallback.billed({
+      model: '@cf/deepseek-ai/deepseek-v4.1-flash-1017',
+      provider: 'codex',
+      reported: 'claude-opus-5',
+    }),
+    '@cf/deepseek-ai/deepseek-v4.1-flash-1017',
+  )
+})

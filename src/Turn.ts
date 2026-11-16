@@ -1,10 +1,12 @@
 import type * as Config from './Config.ts'
+import * as Installed from './Installed.ts'
 
 export type Turn = {
   briefFinal?: true
   briefFinish?: true
   cellYieldMs?: number
   clearingCacheFloors?: true
+  codesign?: false
   contextWindow?: number
   deadline?: { atMs: number; limitMs: number }
   escalateContextTokens?: number
@@ -26,16 +28,19 @@ export type Turn = {
   payer?: Config.Payer
   persistFinish?: true
   prompt: string
+  promptVariant?: Config.PromptVariant
   provider: 'claude' | 'codex'
   refusalFallback?: Config.RefusalFallback
   requestId: string
   resultEffort?: Config.Effort
   skipFinishCheck?: true
   stopAtTarget?: true
-  subagents?: false
+  subagents?: boolean
   thinking?: string
+  toolProfile?: Config.ToolProfile
   toolResultClearing?: Config.ToolResultClearing
   toolResultTokens?: number
+  verificationRequested?: true
   webSearch?: false
   yieldFloorMs?: number
   yieldShare?: number
@@ -57,6 +62,15 @@ function levers(turn: Turn): Record<string, true> {
     ...(turn.persistFinish ? { persist_finish: true as const } : {}),
     ...(turn.skipFinishCheck ? { skip_finish_check: true as const } : {}),
     ...(turn.stopAtTarget ? { stop_at_target: true as const } : {}),
+    ...(turn.verificationRequested ? { verification_requested: true as const } : {}),
+  }
+}
+
+function profiles(turn: Turn): Record<string, true> {
+  if (turn.provider !== 'codex') return {}
+  return {
+    ...(turn.promptVariant === 'compact' ? { compact_instructions: true as const } : {}),
+    ...(turn.toolProfile === 'lean' ? { lean_tool_arguments: true as const } : {}),
   }
 }
 
@@ -111,7 +125,9 @@ export function sent(turn: Turn, input: { at: number; session: string }): string
     JSON.stringify({
       at_ms: input.at,
       ...levers(turn),
+      ...profiles(turn),
       ...(turn.cellYieldMs === undefined ? {} : { cell_yield_ms: turn.cellYieldMs }),
+      ...(turn.codesign === false ? { codesign: false } : {}),
       deadline: turn.deadline
         ? { at_ms: turn.deadline.atMs, limit_ms: turn.deadline.limitMs }
         : null,
@@ -120,7 +136,7 @@ export function sent(turn: Turn, input: { at: number; session: string }): string
       ...(turn.refusalFallback ? { refusal_fallback: turn.refusalFallback } : {}),
       request_id: turn.requestId,
       session: input.session,
-      ...(turn.subagents === false ? { subagents: false } : {}),
+      ...(turn.subagents === undefined ? {} : { subagents: turn.subagents }),
       ...clearing(turn),
       ...(turn.toolResultTokens === undefined ? {} : { tool_result_tokens: turn.toolResultTokens }),
       ...(turn.webSearch === false ? { web_search: false } : {}),
@@ -131,12 +147,17 @@ export function sent(turn: Turn, input: { at: number; session: string }): string
 export function body(turn: Turn): Record<string, unknown> {
   return {
     ...levers(turn),
+    ...profiles(turn),
     ...(turn.hand ? { hand: turn.hand } : {}),
     ...(turn.orchestration && turn.provider === 'claude'
       ? { claude_orchestration: turn.orchestration }
       : {}),
+    ...(turn.codesign === false ? { codesign: false } : {}),
     ...(turn.orchestration && turn.provider === 'codex'
       ? { codex_orchestration: turn.orchestration }
+      : {}),
+    ...(Installed.contextWindow(turn.model)
+      ? { context_window: Installed.contextWindow(turn.model) }
       : {}),
     ...(turn.deadline
       ? { deadline: { at_ms: turn.deadline.atMs, limit_ms: turn.deadline.limitMs } }
@@ -149,7 +170,11 @@ export function body(turn: Turn): Record<string, unknown> {
     provider: turn.provider,
     ...(turn.refusalFallback ? { refusal_fallback: turn.refusalFallback } : {}),
     request_id: turn.requestId,
-    ...(turn.provider === 'codex' || turn.subagents === false ? { subagents: false } : {}),
+    ...(turn.subagents !== undefined
+      ? { subagents: turn.subagents }
+      : turn.provider === 'codex'
+        ? { subagents: false }
+        : {}),
     ...(turn.thinking ? { thinking: turn.thinking } : {}),
     ...clearing(turn),
     ...(turn.toolResultTokens === undefined ? {} : { tool_result_tokens: turn.toolResultTokens }),

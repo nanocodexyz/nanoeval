@@ -31,7 +31,7 @@ const turn: Turn.Turn = {
 }
 
 const usage =
-  /\[:finish_ambiguity=on\]\[:tool_result_clearing=KEEP\/TOKENS\]\[:subagents=off\]\[:clearing_cache_floors=on\]\[:lenient_patches=on\]\[:min_wait_ms=N\]\[:max_output_tokens=N\]\[:context_window=N\], not x=/
+  /\[:finish_ambiguity=on\]\[:tool_result_clearing=KEEP\/TOKENS\]\[:subagents=off\|on\]\[:clearing_cache_floors=on\]\[:lenient_patches=on\]\[:min_wait_ms=N\]\[:max_output_tokens=N\]\[:context_window=N\]\[:fix_provider=claude\|codex\]\[:fix_model=MODEL\]\[:fix_thinking=EFFORT\]\[:verifier_provider=claude\|codex\]\[:verifier_thinking=EFFORT\]\[:executor_share=1\.\.100\]\[:verifier_share=1\.\.100\]\[:fork_on=verifier_fail\|verifier_fail_or_unsure\]\[:codesign=off\]\[:verification_requested=on\]\[:prompt_variant=compact\]\[:tool_profile=lean\], not x=/
 
 const nosub = 'nano-med-nosub=claude:claude-opus-5-5:medium:subagents=off'
 
@@ -72,10 +72,12 @@ test('an agent names subagents=off after tool_result_clearing in the order of th
   )
   for (const text of [
     'x=claude:claude-opus-5-5:subagents=',
-    'x=claude:claude-opus-5-5:subagents=on',
+    'x=claude:claude-opus-5-5:subagents=true',
     'x=claude:claude-opus-5-5:subagents=false',
     'x=claude:claude-opus-5-5:subagents=0',
     'x=claude:claude-opus-5-5:subagents=OFF',
+    'x=claude:claude-opus-5-5:subagents=ON',
+    'x=codex:gpt-6-luna:high:subagents=on:subagents=on',
     'x=claude:claude-opus-5-5:subagents=off:tool_result_clearing=2/10000',
     'x=claude:claude-opus-5-5:subagents=off:finish_check=on',
     'x=claude:claude-opus-5-5:subagents=off:subagents=off',
@@ -85,7 +87,33 @@ test('an agent names subagents=off after tool_result_clearing in the order of th
     assert.throws(() => parseAgent(text), usage)
 })
 
-test('the configuration takes subagents as false for a claude agent and refuses other values and other providers', () => {
+const codexOn = 'luna-opuscfg=codex-code-mode:gpt-6-luna:high:subagents=on'
+
+test('a codex agent names subagents=on in the same place, and its text reads back', () => {
+  assert.deepEqual(parseAgent(codexOn), {
+    id: 'luna-opuscfg',
+    model: 'gpt-6-luna',
+    provider: 'codex',
+    subagents: true,
+    thinking: 'high',
+  })
+  assert.deepEqual(parseAgent('nanox=codex:gpt-6-luna:high:subagents=on'), {
+    id: 'nanox',
+    model: 'gpt-6-luna',
+    orchestration: 'direct',
+    provider: 'codex',
+    subagents: true,
+    thinking: 'high',
+  })
+  for (const text of [
+    codexOn,
+    'nanox=codex:gpt-6-luna:high:subagents=on',
+    'nanox=codex:gpt-6-luna:high:finish_check=on:subagents=on',
+  ])
+    assert.equal(agentText(parseAgent(text)), text)
+})
+
+test('the configuration takes subagents as false for a claude agent and true for a codex agent, and refuses other values and other providers', () => {
   assert.deepEqual(
     Config.parse({
       ...config,
@@ -102,15 +130,26 @@ test('the configuration takes subagents as false for a claude agent and refuses 
     ],
   )
   assert.equal(Config.agentKeys.includes('subagents'), true)
-  for (const subagents of [true, 'off', 0, null])
-    assert.throws(
-      () =>
-        Config.parse({
-          ...config,
-          agents: [{ id: 'x', model: 'm', provider: 'claude', subagents }],
-        }),
-      /x has a subagents that is not false/,
-    )
+  assert.deepEqual(
+    Config.parse({
+      ...config,
+      agents: [parseAgent(codexOn), parseAgent('nanox=codex:gpt-6-luna:high:subagents=on')],
+    }).agents.map((agent) => [agent.id, agent.subagents]),
+    [
+      ['luna-opuscfg', true],
+      ['nanox', true],
+    ],
+  )
+  for (const provider of ['claude', 'codex'])
+    for (const subagents of ['off', 'on', 0, 1, null])
+      assert.throws(
+        () =>
+          Config.parse({
+            ...config,
+            agents: [{ id: 'x', model: 'm', provider, subagents }],
+          }),
+        /x has a subagents that is not a boolean/,
+      )
   for (const provider of ['codex', 'codex-cli', 'claude-code', 'nanocode-claude', 'oracle'])
     assert.throws(
       () =>
@@ -118,7 +157,16 @@ test('the configuration takes subagents as false for a claude agent and refuses 
           ...config,
           agents: [{ id: 'x', model: 'm', provider, subagents: false }],
         }),
-      /x has a subagents, which only a claude session takes/,
+      /x has a subagents that is false, which only a claude session takes/,
+    )
+  for (const provider of ['claude', 'codex-cli', 'claude-code', 'nanocode-claude', 'oracle'])
+    assert.throws(
+      () =>
+        Config.parse({
+          ...config,
+          agents: [{ id: 'x', model: 'm', provider, subagents: true }],
+        }),
+      /x has a subagents that is true, which only a codex session takes/,
     )
   for (const text of [
     'nanox=codex:gpt-6-luna:high:subagents=off',
@@ -127,7 +175,16 @@ test('the configuration takes subagents as false for a claude agent and refuses 
   ])
     assert.throws(
       () => Config.parse({ ...config, agents: [parseAgent(text)] }),
-      /nanox has a subagents, which only a claude session takes/,
+      /nanox has a subagents that is false, which only a claude session takes/,
+    )
+  for (const text of [
+    'nanox=claude:claude-opus-5-5:medium:subagents=on',
+    'nanox=claude-direct:claude-opus-5-5:medium:subagents=on',
+    'nanox=codex-cli:gpt-6-luna:high:subagents=on',
+  ])
+    assert.throws(
+      () => Config.parse({ ...config, agents: [parseAgent(text)] }),
+      /nanox has a subagents that is true, which only a codex session takes/,
     )
 })
 
@@ -179,5 +236,13 @@ test('a turn sends subagents as false only for an agent that names it, and an ag
   assert.equal(
     Turn.sent(codex, input),
     '{"at_ms":1800000000000,"deadline":null,"request_id":"turn-1","session":"run-a00001"}\n',
+  )
+  assert.equal(
+    JSON.stringify(Turn.body({ ...codex, subagents: true })),
+    '{"hand":"slot","model":"gpt-6-luna","prompt":"Write the greeting.","provider":"codex","request_id":"turn-1","subagents":true,"thinking":"medium","web_search":false}',
+  )
+  assert.equal(
+    Turn.sent({ ...codex, subagents: true }, input),
+    '{"at_ms":1800000000000,"deadline":null,"request_id":"turn-1","session":"run-a00001","subagents":true}\n',
   )
 })

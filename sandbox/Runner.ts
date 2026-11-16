@@ -611,7 +611,8 @@ async function attend(
     ...(options.store ? [Store.directory(options.store)] : []),
     Store.remote({ base: base + '/blobs', token: options.config.token }),
   ]
-  const archived = process.env['NANOEVAL_PACKAGE_ARCHIVE'] !== undefined
+  const archived =
+    process.env['NANOEVAL_PACKAGE_ARCHIVE'] !== undefined || options.config.packageArchive === true
   const archives = new Map<string, Archive.Open>()
   const work = new Map<string, Work>()
   const up = new Set<Work>()
@@ -1058,7 +1059,11 @@ async function attend(
     await Fs.writeFile(slots.agentFile(item.row.slot, 'instruction.md'), instruction)
     await Fs.writeFile(
       slots.agentFile(item.row.slot, 'run.sh'),
-      Installed.script(cli, { closed: Eval.offline(item.row.task).includes('agent'), url }),
+      Installed.script(cli, {
+        closed: Eval.offline(item.row.task).includes('agent'),
+        url,
+        ...(state.webBlocklist ? { blocklist: state.webBlocklist } : {}),
+      }),
     )
     await Fs.writeFile(file, endpoint.token + '\n', { mode: 0o600 })
     try {
@@ -1125,7 +1130,8 @@ async function attend(
             (early.kind === 'agent' ? ': ' + (summary.error ?? errors.slice(-2000)) : ''),
         },
       })
-    if (input.code !== 0 && !Verdict.timeoutCodes.includes(input.code))
+    const gaveUp = Installed.stopped(input.cli.kind, summary.message + '\n' + errors.slice(-2000))
+    if (input.code !== 0 && !Verdict.timeoutCodes.includes(input.code) && !gaveUp)
       return fail(
         item,
         'agent',
