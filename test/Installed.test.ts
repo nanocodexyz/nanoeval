@@ -523,7 +523,7 @@ test('the command of fx names the endpoint of the attempt in its settings and no
   }
   const plain = run({ api: 'chat', kind: 'fx', model: 'open-model' }, install('fx', 'any'))
   assert.doesNotMatch(plain, /^argument:--effort$/m)
-  assert.equal(
+  assert.deepEqual(
     JSON.parse(Fs.readFileSync(Path.join(root, 'home-fx', 'fx', 'settings.json'), 'utf8')).providers
       .nanoeval.model_metadata,
     { 'open-model': { max_output_tokens: Installed.leaderboard.replyLimit } },
@@ -562,7 +562,10 @@ test('the command of opencode is the build of the image and names the endpoint i
     assert.match(out, /^OPENCODE_DISABLE_MODELS_FETCH=true$/m)
     assert.match(
       out,
-      new RegExp('^OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=' + Installed.leaderboard.replyLimit + '$', 'm'),
+      new RegExp(
+        '^OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=' + Installed.leaderboard.replyLimit + '$',
+        'm',
+      ),
     )
     assert.deepEqual(JSON.parse(/^OPENCODE_CONFIG_CONTENT=(.*)$/m.exec(out)![1]!), {
       autoupdate: false,
@@ -909,6 +912,8 @@ test('the command of nanocode is the runtime of the slot and reads the endpoint 
     '--no-tempo-tools',
     '--hedge-cap-percent',
     '0',
+    '--max-output-tokens',
+    String(Installed.leaderboard.replyLimit),
     "Write it's done.",
   ])
   assert.match(
@@ -1000,7 +1005,7 @@ test('every agent of a Workers AI model is told the window the endpoint serves',
   assert.deepEqual(
     JSON.parse(Fs.readFileSync(Path.join(root, 'home-pi', 'pi', 'models.json'), 'utf8')).providers
       .nanoeval.models,
-    [{ contextWindow: window, id: model }],
+    [{ contextWindow: window, id: model, maxTokens: Installed.leaderboard.replyLimit }],
   )
   const codex = Installed.script({ kind: 'stock-codex', model }, { url: 'http://host/a' })
   assert.match(codex, new RegExp('^model_context_window = ' + window + '$', 'm'))
