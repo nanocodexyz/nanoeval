@@ -102,6 +102,7 @@ const samples: Record<string, Record<string, unknown>> = {
   promptVariant: { promptVariant: 'compact' },
   toolProfile: { toolProfile: 'lean' },
   omitMediaOnEmptyCut: { omitMediaOnEmptyCut: true },
+  stallNudgeMs: { stallNudgeMs: 300000 },
 }
 
 // Levers only a codex session takes, and levers that need a picker or a fix model the combined

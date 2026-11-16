@@ -31,7 +31,8 @@ test('an agent names how often a session hears that it keeps waiting on commands
     thinking: 'medium',
   })
   assert.equal(agentText(agent), text)
-  const last = 'x=claude:claude-opus-5-5:high:yield_share=25:clearing_cache_floors=on:stall_nudge_ms=1'
+  const last =
+    'x=claude:claude-opus-5-5:high:yield_share=25:clearing_cache_floors=on:stall_nudge_ms=1'
   assert.equal(agentText(parseAgent(last)), last)
   for (const bad of [
     'x=claude:claude-opus-5-5:high:stall_nudge_ms=',
