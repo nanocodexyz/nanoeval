@@ -8275,6 +8275,8 @@ No agent option names this. The task decides it.
 
 **The limit fits the models.** On 2026-11-16 each of `@cf/deepseek-ai/deepseek-v4.1-flash-1017`, `@cf/zai-org/glm-5.3-flash`, `@cf/moonshotai/kimi-k2.7-code`, `@cf/google/gemma-4-26b-a4b-it` and `@cf/qwen/qwen3.8-27b` answered a short prompt with `max_completion_tokens` of 32,768, 65,536 and 131,072 with `finish_reason: stop` and no error, so one limit needs no clamp for them.
 
+**opencode sent no effort.** With `--variant low` and a model it does not know, opencode 1.19.5 sent no `reasoning_effort`: it has no variants for such a model, so the model ran at the default effort of its provider while pi and fx sent `reasoning_effort: "low"`. The model now names a variant of its thinking for the `chat` API, `variants: { low: { reasoningEffort: 'low' } }`. Against the same loopback server: without it no `reasoning_effort`, with it `reasoning_effort: "low"` and `max_tokens: 65536`. The `responses` and `messages` APIs are unchanged and were not checked.
+
 **Tests.** `node --test test/Installed.test.ts test/OutputCap.test.ts`.
 
 **Not verified.**
