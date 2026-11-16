@@ -97,6 +97,7 @@ const samples: Record<string, Record<string, unknown>> = {
   minWaitMs: { minWaitMs: 5000 },
   maxOutputTokens: { maxOutputTokens: 32000 },
   contextWindow: { contextWindow: 200000 },
+  codesign: { codesign: false },
 }
 
 // Levers only a codex session takes, and levers that need a picker or a fix model the combined
