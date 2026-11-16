@@ -31,7 +31,7 @@ const turn: Turn.Turn = {
 }
 
 const usage =
-  /\[:finish_ambiguity=on\]\[:tool_result_clearing=KEEP\/TOKENS\]\[:clearing_cache_floors=on\], not x=/
+  /\[:finish_ambiguity=on\]\[:tool_result_clearing=KEEP\/TOKENS\]\[:subagents=off\]\[:clearing_cache_floors=on\], not x=/
 
 const floors = 'nano-med-floors=claude:claude-opus-5-5:medium:clearing_cache_floors=on'
 
@@ -66,6 +66,7 @@ test('an agent names clearing_cache_floors last in the order of the options, and
     'b=claude+preflight:claude-sonnet-5-5:low:yield_share=50:clearing_cache_floors=on',
     'c=claude:claude-opus-5-5:medium:tool_result_clearing=2/10000:clearing_cache_floors=on',
     'd=claude:claude-opus-5-5:medium:skip_finish_check=on:clearing_cache_floors=on',
+    'e=claude:claude-opus-5-5:medium:tool_result_clearing=2/10000:subagents=off:clearing_cache_floors=on',
   ])
     assert.equal(agentText(parseAgent(text)), text)
   for (const text of [
@@ -77,6 +78,7 @@ test('an agent names clearing_cache_floors last in the order of the options, and
     'x=claude:claude-opus-5-5:clearing_cache_floors=on:yield_share=25',
     'x=claude:claude-opus-5-5:clearing_cache_floors=on:finish_ambiguity=on',
     'x=claude:claude-opus-5-5:clearing_cache_floors=on:tool_result_clearing=2/10000',
+    'x=claude:claude-opus-5-5:clearing_cache_floors=on:subagents=off',
     'x=claude:claude-opus-5-5:clearing_cache_floors=on:clearing_cache_floors=on',
     'x=claude:claude-opus-5-5:clearing_cache_floor=on',
   ])

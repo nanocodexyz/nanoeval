@@ -346,7 +346,9 @@ const usage = `nanoeval <command>
             ways; never with skip_finish_check) and :tool_result_clearing=KEEP/TOKENS (the
             history keeps the last KEEP tool results whole and clears older ones in batches
             of TOKENS tokens at least) (nano-med-clear=claude:claude-opus-5-5:medium:
-            finish_ambiguity=on:tool_result_clearing=2/10000), and
+            finish_ambiguity=on:tool_result_clearing=2/10000), :subagents=off (the session
+            has no tools that start or steer another agent) (nano-med-nosub=
+            claude:claude-opus-5-5:medium:subagents=off), and
             :clearing_cache_floors=on (a request keeps two cache breakpoints at the places
             where the history was last cleared) (nano-med-floors=claude:claude-opus-5-5:
             medium:clearing_cache_floors=on). The options come in
@@ -355,7 +357,7 @@ const usage = `nanoeval <command>
             escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens,
             persist_finish, skip_finish_check, late_finish_check_ms, result_effort,
             stop_at_target, yield_floor_ms, yield_share, finish_retries, finish_check,
-            finish_ambiguity, tool_result_clearing, clearing_cache_floors.
+            finish_ambiguity, tool_result_clearing, subagents, clearing_cache_floors.
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
@@ -954,6 +956,13 @@ const agentOptions: readonly AgentOption[] = [
       agent.toolResultClearing
         ? agent.toolResultClearing.keep + '/' + agent.toolResultClearing.atLeastTokens
         : undefined,
+  },
+  {
+    name: 'subagents',
+    pattern: 'off',
+    read: () => ({ subagents: false }),
+    value: 'off',
+    write: (agent) => (agent.subagents === false ? 'off' : undefined),
   },
   {
     ...on,

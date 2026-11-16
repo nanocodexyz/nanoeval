@@ -8098,3 +8098,35 @@ An example is `nano-med-floors=claude:claude-opus-5-5:medium:clearing_cache_floo
 **Checked.** `test/ClearingCacheFloors.test.ts` (new, 3 tests: the spec, its place in the order and its text read back for `claude` and `claude-direct`; an empty value, another value, a second occurrence and another place refused; the configuration takes it, also with `skip_finish_check`, and refuses malformed values and other providers; a turn sends the field only when named, and a turn without it is the same bytes, with the body of a plain turn written out). `test/Lever.test.ts` refuses each malformed value and each other provider for every name of `Config.finishLevers`, this one among them. The usage line in twelve places of ten other test files names the option, and the name of one test of `test/ToolResultClearing.test.ts` no longer says that `tool_result_clearing` is last. `npm test`: 628 tests, 623 pass, 0 fail, 5 skipped, and the skips need KVM. `npm run check:types`, `npm run lint` and `npm run dry-run` pass.
 
 **Not verified.** When this was written: `ci.yml` from a fresh clone on KVM. A Worker on this pin, a model, and a session that took the field. No request body with the two breakpoints was read here, and no cache write was counted. No end-to-end lane names the option.
+
+## 2026-11-16: an agent may turn the subagents of its session off
+
+**Why.** A `claude` session of this repository opens with nanocode's subagent tools, and no agent could name a session without them. Without an option, no run could set a session without the tools beside one with them.
+
+**What.** One more entry of the table of options in `cli/nanoeval.ts`, after `:tool_result_clearing=KEEP/TOKENS` and last in the one order:
+
+| Option | Run configuration | What every turn of the session sends | Who takes it |
+| --- | --- | --- | --- |
+| `:subagents=off` | `"subagents": false` | `subagents: false` | `claude`, `claude-direct` among them |
+
+The arm it is for is `nano-med-nosub=claude:claude-opus-5-5:medium:subagents=off`. `agent/turns.jsonl` names the field for an agent that names the option. It is off by default. An agent without it sends nothing new: its turn body and its line of `agent/turns.jsonl` are the same bytes as before.
+
+**The mechanism is a session field, not a flag of a command line.** A `claude` agent is a nanocode-ts session that the Worker hosts, and `src/Turn.ts` writes the body of each of its turns. It has no command line. The line `exec "$@" exec` of `src/Installed.ts` starts the installed agents `nanocode-claude` and `nanocode-codex` only, a vendor command line inside the slot, and this change does not touch it. The field name is read from the declarations of the pinned `build-5630e0f` tarball: `subagents?: boolean` on `SessionDescriptor` of `dist/cloudflare/App.d.ts` and on `AgentConfiguration` of `dist/Contracts.d.ts`.
+
+**What the field does.** Read in nanocode-ts 5630e0f and in nanocode b19220112, not run. `dist/cloudflare/App.js` answers 400 to a value that is not a boolean, stores the value with the session, adds it to the session key, and answers 409 "session subagents is immutable; create a new session" to a later turn that names another value. `src/wasm.rs` calls `builder.without_subagents()` for a session whose value is `false`. In nanocode, `without_subagents` makes the runtime build no subagent registry, so no harness receives the tools that start, message, list, wait for, interrupt or close another agent. `--no-subagents` of the nanocode command line calls the same `without_subagents`, in `bin/nanocode/src/host.rs`. So the option is that flag for a session.
+
+**Who takes it.** `claude` only, `claude-direct` among them. The only value of the agent text is `off`, and the only value of the configuration is `false`: `true` is refused, because the default already has the tools and one arm must have one spelling. A `codex` agent is refused with "has a subagents, which only a claude session takes": `Turn.body` already sends `subagents: false` with every turn of a `codex` session, and its line of `agent/turns.jsonl` does not name the field, both unchanged. An installed agent and the oracle are refused with the same sentence. The verifier session of a picker and the judge sessions do not take the option of the agent.
+
+**Checked.** `test/SubagentsOff.test.ts` (new, 3 tests: the spec, its place last in the order and its text read back for `claude` and `claude-direct`; an empty value, `on`, `false`, another value, a second occurrence and another place refused; the configuration takes `false` and refuses other values and other providers; a turn sends the field only when named, a turn without it is the same bytes, and the body and the line of a plain turn, of a turn with the option and of a `codex` turn are written out). The usage line in twelve places of ten other test files names the option, and the name of one test of `test/ToolResultClearing.test.ts` no longer says that `tool_result_clearing` is last. `npm test`: 622 tests, 617 pass, 0 fail, 5 skipped (the skips need KVM; 619 tests before, the 3 new are this file). `npm run check:types`, `npm run lint` and `npm run dry-run` pass.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM. A Worker on this pin, a model, a session that took the field, and the size of the first request of a session with and without the tools. No end-to-end lane names the option.
+
+## 2026-11-16: subagents comes before clearing_cache_floors in the order of the options
+
+**Why.** The two entries above were written on two branches, and each says that its option is the last of the one order. main takes both.
+
+**What.** The order of the options ends in `finish_ambiguity`, `tool_result_clearing`, `subagents`, `clearing_cache_floors`. An agent that names the last two is `x=claude:claude-opus-5-5:medium:subagents=off:clearing_cache_floors=on`, and the other order is refused, as any other place of an option is. Neither option changes what the other sends. The README and the usage text of `cli/nanoeval.ts` name the order.
+
+**Checked.** The usage line of the tests names both options. `test/ClearingCacheFloors.test.ts` reads back an agent with both and refuses `clearing_cache_floors` before `subagents`. `npm test`: 631 tests, 626 pass, 0 fail, 5 skipped, and the skips need KVM. `npm run check:types`, `npm run lint` and `npm run dry-run` pass.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM, a Worker, a model, and a session with both fields.
