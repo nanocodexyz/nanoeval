@@ -8,6 +8,7 @@ export type Turn = {
   escalateContextTokens?: number
   escalateModel?: string
   escalateToolErrors?: number
+  finishCheck?: true
   finishRetries?: number
   foldFinish?: true
   hand?: string
@@ -37,6 +38,7 @@ function levers(turn: Turn): Record<string, true> {
   return {
     ...(turn.briefFinal ? { brief_final: true as const } : {}),
     ...(turn.briefFinish ? { brief_finish: true as const } : {}),
+    ...(turn.finishCheck ? { finish_check: true as const } : {}),
     ...(turn.foldFinish ? { fold_finish: true as const } : {}),
     ...(turn.leanCells ? { lean_cells: true as const } : {}),
     ...(turn.lowEffortRounds ? { low_effort_rounds: true as const } : {}),

@@ -30,14 +30,14 @@ const turn: Turn.Turn = {
   thinking: 'medium',
 }
 
-const usage = /\[:yield_share=N\]\[:finish_retries=N\], not x=/
+const usage = /\[:yield_share=N\]\[:finish_retries=N\]\[:finish_check=on\], not x=/
 
 const retry = 'nano-med-retry=claude:claude-opus-5-5:medium:finish_retries=1'
 
 const direct =
   'nano-dr=claude-direct:claude-sonnet-5-5:high:brief_finish=on:late_finish_check_ms=120000:result_effort=low:yield_share=25:finish_retries=3'
 
-test('an agent names finish_retries last in the order of the options, and its text reads back', () => {
+test('an agent names finish_retries after yield_share in the order of the options, and its text reads back', () => {
   assert.deepEqual(parseAgent(retry), {
     finishRetries: 1,
     id: 'nano-med-retry',

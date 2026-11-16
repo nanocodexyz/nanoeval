@@ -331,12 +331,15 @@ const usage = `nanoeval <command>
             (nano-w7n=claude:claude-opus-5-5:medium:skip_finish_check=on:result_effort=low:
             stop_at_target=on:yield_floor_ms=30000), and :finish_retries=N (the finish check
             may send the turn back N times; never with skip_finish_check) (nano-med-retry=
-            claude:claude-opus-5-5:medium:finish_retries=1). The options come in
+            claude:claude-opus-5-5:medium:finish_retries=1), and :finish_check=on (the finish
+            check runs, which a claude-opus- model skips unless a session asks for it; never
+            with skip_finish_check) (nano-med-check=claude:claude-opus-5-5:medium:
+            finish_check=on). The options come in
             this order where several are named: branches, refusal_fallback, cell_yield_ms,
             brief_finish, fold_finish, low_effort_rounds, brief_final, lean_cells,
             escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens,
             persist_finish, skip_finish_check, late_finish_check_ms, result_effort,
-            stop_at_target, yield_floor_ms, yield_share, finish_retries.
+            stop_at_target, yield_floor_ms, yield_share, finish_retries, finish_check.
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
@@ -910,6 +913,12 @@ const agentOptions: readonly AgentOption[] = [
     name: 'finish_retries',
     read: (text) => ({ finishRetries: Number(text) }),
     write: (agent) => agent.finishRetries,
+  },
+  {
+    ...on,
+    name: 'finish_check',
+    read: () => ({ finishCheck: true }),
+    write: (agent) => (agent.finishCheck ? on.value : undefined),
   },
 ]
 
