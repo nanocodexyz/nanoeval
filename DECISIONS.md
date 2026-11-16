@@ -8472,3 +8472,7 @@ A server on that port that logs each request and answers `401` saw two requests,
 - The pin: `gh release download v0.0.17 -R vercel-labs/fx -p 'fx-linux-*'` gives `78c155d5…23e75` for x86_64 and `b4633b89…3761f` for aarch64, the sha256 in `src/Installed.ts` and in the release's `.sha256` files. 0.0.17 (2026-11-14) is fx's latest release.
 
 **Not verified.** No run was made with this change: neither release nor a local Worker had a sandbox host and an allowed model route for fx here.
+
+## 2026-11-16: an agent may name prompt_variant and tool_profile
+
+A search over harness settings needs arms that differ in their system prompt and their tool set, and nanoeval sends a model only the prompts and tool text of nanocode. The pinned nanocode-ts `build-acdb751` already takes two session fields for that on codex sessions, `compact_instructions` and `lean_tool_arguments`. An agent names them as `:prompt_variant=compact` and `:tool_profile=lean` (`promptVariant` and `toolProfile` in a run configuration) rather than as two switches, so that later profiles of nanocode, for claude sessions too, are new values of the same two options and not new options. Only the values nanocode has are taken, and only for codex agents, since a claude session has no such field yet. An agent without them sends the same bytes as before.

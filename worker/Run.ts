@@ -3640,6 +3640,7 @@ export class Run extends DurableObject<Env> {
       payer: this.payer(stage.provider),
       ...(agent.persistFinish ? { persistFinish: true } : {}),
       prompt: input.prompt,
+      ...(agent.promptVariant ? { promptVariant: agent.promptVariant } : {}),
       provider: stage.provider,
       ...(agent.refusalFallback ? { refusalFallback: agent.refusalFallback } : {}),
       requestId: input.requestId,
@@ -3648,6 +3649,7 @@ export class Run extends DurableObject<Env> {
       ...(agent.stopAtTarget ? { stopAtTarget: true } : {}),
       ...(agent.subagents === false ? { subagents: false } : {}),
       ...(stage.thinking ? { thinking: stage.thinking } : {}),
+      ...(agent.toolProfile ? { toolProfile: agent.toolProfile } : {}),
       ...(agent.toolResultClearing === undefined
         ? {}
         : { toolResultClearing: agent.toolResultClearing }),
