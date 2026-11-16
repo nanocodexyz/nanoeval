@@ -1,5 +1,7 @@
 # Decisions
 
+- feat: an agent may name `:stall_nudge_ms=N` (2026-11-16, K7 small-models lane). Last in the one order, after `:clearing_cache_floors=on`. A run configuration names it `stallNudgeMs`. Every turn of such a `claude` or `claude-direct` agent sends `stall_nudge_ms: N`: each time the session's `exec`, `wait` and `Bash` calls have run for another N ms in all, nanocode adds a reminder to that tool result to stop a job that will not finish instead of waiting on it again (nanocode 8ec3b215e, nanocodexyz/nanocode#1194; nanocode-ts reads it from nanocodexyz/nanocode-ts#209). N is a whole number of at least 1; another provider is refused. An agent without it sends the same bytes as before. Why: both feal-linear-cryptanalysis timeouts of claude-haiku-5-5 in run 0f032a59 spent their last 30% of wall time sleeping on or polling a brute-force job. Tests: test/StallNudge.test.ts; usage-line regexes in the option tests gain the new option. Not run: a model.
+
 The record below describes what each change established and why, with the commands, dates and measurements behind it. Where it conflicts with AGENTS.md, AGENTS.md applies to new and changed code.
 
 ## 2026-11-10: first version
