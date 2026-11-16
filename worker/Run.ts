@@ -3628,7 +3628,12 @@ export class Run extends DurableObject<Env> {
       ...(agent.leanCells ? { leanCells: true } : {}),
       ...(agent.lenientPatches ? { lenientPatches: true } : {}),
       ...(agent.lowEffortRounds ? { lowEffortRounds: true } : {}),
-      ...(agent.maxOutputTokens === undefined ? {} : { maxOutputTokens: agent.maxOutputTokens }),
+      // One output cap for every arm: the installed agents get the same value in Installed.ts.
+      ...(agent.maxOutputTokens !== undefined
+        ? { maxOutputTokens: agent.maxOutputTokens }
+        : stage.provider === 'codex'
+          ? { maxOutputTokens: Installed.leaderboard.replyLimit }
+          : {}),
       ...(agent.minWaitMs === undefined ? {} : { minWaitMs: agent.minWaitMs }),
       model: stage.model,
       ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),

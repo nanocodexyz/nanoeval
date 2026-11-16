@@ -504,7 +504,12 @@ test('the command of fx names the endpoint of the attempt in its settings and no
           nanoeval: {
             auth: { env: 'NANOEVAL_AGENT_TOKEN', type: 'bearer' },
             base_url: base,
-            model_metadata: { "open/model'x": { reasoning_efforts: { high: effort } } },
+            model_metadata: {
+              "open/model'x": {
+                max_output_tokens: Installed.leaderboard.replyLimit,
+                reasoning_efforts: { high: effort },
+              },
+            },
             protocol,
           },
         },
@@ -518,10 +523,10 @@ test('the command of fx names the endpoint of the attempt in its settings and no
   }
   const plain = run({ api: 'chat', kind: 'fx', model: 'open-model' }, install('fx', 'any'))
   assert.doesNotMatch(plain, /^argument:--effort$/m)
-  assert.equal(
+  assert.deepEqual(
     JSON.parse(Fs.readFileSync(Path.join(root, 'home-fx', 'fx', 'settings.json'), 'utf8')).providers
       .nanoeval.model_metadata,
-    undefined,
+    { 'open-model': { max_output_tokens: Installed.leaderboard.replyLimit } },
   )
   assert.throws(
     () => Installed.script({ kind: 'fx', model: 'm' }, { url }),
@@ -555,12 +560,24 @@ test('the command of opencode is the build of the image and names the endpoint i
         new RegExp('^XDG_' + name + '_HOME=.*home-opencode/' + name.toLowerCase() + '$', 'm'),
       )
     assert.match(out, /^OPENCODE_DISABLE_MODELS_FETCH=true$/m)
+    assert.match(
+      out,
+      new RegExp(
+        '^OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=' + Installed.leaderboard.replyLimit + '$',
+        'm',
+      ),
+    )
     assert.deepEqual(JSON.parse(/^OPENCODE_CONFIG_CONTENT=(.*)$/m.exec(out)![1]!), {
       autoupdate: false,
       permission: 'allow',
       provider: {
         nanoeval: {
-          models: { "open/model'x": { reasoning: true } },
+          models: {
+            "open/model'x": {
+              reasoning: true,
+              ...(api === 'chat' ? { variants: { high: { reasoningEffort: 'high' } } } : {}),
+            },
+          },
           npm,
           options: { apiKey: '{env:NANOEVAL_AGENT_TOKEN}', baseURL: base },
         },
@@ -691,7 +708,14 @@ test('the command of pi is its glibc build and names the endpoint in its models 
             apiKey: '$NANOEVAL_AGENT_TOKEN',
             authHeader: true,
             baseUrl: url,
-            models: [{ id: "open/model'x", ...thinking, reasoning: true }],
+            models: [
+              {
+                id: "open/model'x",
+                maxTokens: Installed.leaderboard.replyLimit,
+                ...thinking,
+                reasoning: true,
+              },
+            ],
           },
         },
       },
@@ -707,7 +731,7 @@ test('the command of pi is its glibc build and names the endpoint in its models 
   assert.deepEqual(
     JSON.parse(Fs.readFileSync(Path.join(root, 'home-pi', 'pi', 'models.json'), 'utf8')).providers
       .nanoeval.models,
-    [{ id: 'open-model' }],
+    [{ id: 'open-model', maxTokens: Installed.leaderboard.replyLimit }],
   )
   assert.doesNotMatch(
     Installed.script({ api: 'chat', kind: 'pi', model: 'm' }, { url }),
@@ -888,6 +912,8 @@ test('the command of nanocode is the runtime of the slot and reads the endpoint 
     '--no-tempo-tools',
     '--hedge-cap-percent',
     '0',
+    '--max-output-tokens',
+    String(Installed.leaderboard.replyLimit),
     "Write it's done.",
   ])
   assert.match(
@@ -947,6 +973,11 @@ test('a nanocode codex agent keeps the catalog window of its model and sends no 
   assert.ok(!args.includes('--context-window'), args.join(' '))
   assert.ok(!out.includes('NANOCODE_CONTEXT_WINDOW'), out)
   assert.equal(args[args.indexOf('--hedge-cap-percent') + 1], '0')
+  assert.equal(
+    args[args.indexOf('--max-output-tokens') + 1],
+    String(Installed.leaderboard.replyLimit),
+    'every arm sends the same explicit output cap',
+  )
 })
 
 test('every agent of a Workers AI model is told the window the endpoint serves', () => {
@@ -974,7 +1005,7 @@ test('every agent of a Workers AI model is told the window the endpoint serves',
   assert.deepEqual(
     JSON.parse(Fs.readFileSync(Path.join(root, 'home-pi', 'pi', 'models.json'), 'utf8')).providers
       .nanoeval.models,
-    [{ contextWindow: window, id: model }],
+    [{ contextWindow: window, id: model, maxTokens: Installed.leaderboard.replyLimit }],
   )
   const codex = Installed.script({ kind: 'stock-codex', model }, { url: 'http://host/a' })
   assert.match(codex, new RegExp('^model_context_window = ' + window + '$', 'm'))
