@@ -328,12 +328,14 @@ const usage = `nanoeval <command>
             :yield_floor_ms=N (an exec or wait yields after N ms at the soonest) and
             :yield_share=N (an exec or wait yields after N percent of the time left at most)
             (nano-w7n=claude:claude-opus-5-5:medium:skip_finish_check=on:result_effort=low:
-            stop_at_target=on:yield_floor_ms=30000). The options come in
+            stop_at_target=on:yield_floor_ms=30000), and :finish_retries=N (the finish check
+            may send the turn back N times; never with skip_finish_check) (nano-med-retry=
+            claude:claude-opus-5-5:medium:finish_retries=1). The options come in
             this order where several are named: branches, refusal_fallback, cell_yield_ms,
             brief_finish, fold_finish, low_effort_rounds, brief_final, lean_cells,
             escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens,
             persist_finish, skip_finish_check, late_finish_check_ms, result_effort,
-            stop_at_target, yield_floor_ms, yield_share.
+            stop_at_target, yield_floor_ms, yield_share, finish_retries.
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
@@ -867,6 +869,12 @@ const agentOptions: readonly AgentOption[] = [
     name: 'yield_share',
     read: (text) => ({ yieldShare: Number(text) }),
     write: (agent) => agent.yieldShare,
+  },
+  {
+    ...count,
+    name: 'finish_retries',
+    read: (text) => ({ finishRetries: Number(text) }),
+    write: (agent) => agent.finishRetries,
   },
 ]
 

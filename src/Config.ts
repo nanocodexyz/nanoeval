@@ -27,6 +27,7 @@ export type Agent = {
   escalateContextTokens?: number
   escalateModel?: string
   escalateToolErrors?: number
+  finishRetries?: number
   foldFinish?: true
   id: string
   lateFinishCheckMs?: number
@@ -357,6 +358,13 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude')
         fail(agent.id + ' has a yieldShare, which only a claude session takes')
     }
+    if (agent.finishRetries !== undefined) {
+      integer(agent.finishRetries, agent.id + ': finishRetries', 1)
+      if (provider !== 'claude')
+        fail(agent.id + ' has a finishRetries, which only a claude session takes')
+      if (agent.skipFinishCheck !== undefined)
+        fail(agent.id + ' has a skipFinishCheck and a finishRetries, which never go in one arm')
+    }
     for (const lever of finishLevers) {
       if (agent[lever] === undefined) continue
       if (agent[lever] !== true) fail(agent.id + ' has a ' + lever + ' that is not true')
@@ -386,6 +394,7 @@ export function parse(value: unknown): Config {
       ...(agent.escalateToolErrors === undefined
         ? {}
         : { escalateToolErrors: agent.escalateToolErrors }),
+      ...(agent.finishRetries === undefined ? {} : { finishRetries: agent.finishRetries }),
       ...(agent.foldFinish ? { foldFinish: true as const } : {}),
       id: agent.id,
       ...(agent.lateFinishCheckMs === undefined
