@@ -35,7 +35,7 @@ export type Turn = {
   resultEffort?: Config.Effort
   skipFinishCheck?: true
   stopAtTarget?: true
-  subagents?: false
+  subagents?: boolean
   thinking?: string
   toolProfile?: Config.ToolProfile
   toolResultClearing?: Config.ToolResultClearing
@@ -136,7 +136,7 @@ export function sent(turn: Turn, input: { at: number; session: string }): string
       ...(turn.refusalFallback ? { refusal_fallback: turn.refusalFallback } : {}),
       request_id: turn.requestId,
       session: input.session,
-      ...(turn.subagents === false ? { subagents: false } : {}),
+      ...(turn.subagents === undefined ? {} : { subagents: turn.subagents }),
       ...clearing(turn),
       ...(turn.toolResultTokens === undefined ? {} : { tool_result_tokens: turn.toolResultTokens }),
       ...(turn.webSearch === false ? { web_search: false } : {}),
@@ -170,7 +170,11 @@ export function body(turn: Turn): Record<string, unknown> {
     provider: turn.provider,
     ...(turn.refusalFallback ? { refusal_fallback: turn.refusalFallback } : {}),
     request_id: turn.requestId,
-    ...(turn.provider === 'codex' || turn.subagents === false ? { subagents: false } : {}),
+    ...(turn.subagents !== undefined
+      ? { subagents: turn.subagents }
+      : turn.provider === 'codex'
+        ? { subagents: false }
+        : {}),
     ...(turn.thinking ? { thinking: turn.thinking } : {}),
     ...clearing(turn),
     ...(turn.toolResultTokens === undefined ? {} : { tool_result_tokens: turn.toolResultTokens }),

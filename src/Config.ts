@@ -61,7 +61,7 @@ export type Agent = {
   resultEffort?: Effort
   skipFinishCheck?: true
   stopAtTarget?: true
-  subagents?: false
+  subagents?: boolean
   thinking?: string
   toolProfile?: ToolProfile
   toolResultClearing?: ToolResultClearing
@@ -511,9 +511,12 @@ export function parseAgents(value: unknown): Agent[] {
         fail(agent.id + ' has a toolResultClearing, which only a claude session takes')
     }
     if (agent.subagents !== undefined) {
-      if (agent.subagents !== false) fail(agent.id + ' has a subagents that is not false')
-      if (provider !== 'claude')
-        fail(agent.id + ' has a subagents, which only a claude session takes')
+      if (agent.subagents === false && provider !== 'claude')
+        fail(agent.id + ' has a subagents that is false, which only a claude session takes')
+      if (agent.subagents === true && provider !== 'codex')
+        fail(agent.id + ' has a subagents that is true, which only a codex session takes')
+      if (agent.subagents !== false && agent.subagents !== true)
+        fail(agent.id + ' has a subagents that is not a boolean')
     }
     if (agent.codesign !== undefined) {
       if (agent.codesign !== false) fail(agent.id + ' has a codesign that is not false')
@@ -649,7 +652,7 @@ export function parseAgents(value: unknown): Agent[] {
       ...(agent.resultEffort ? { resultEffort: agent.resultEffort } : {}),
       ...(agent.skipFinishCheck ? { skipFinishCheck: true as const } : {}),
       ...(agent.stopAtTarget ? { stopAtTarget: true as const } : {}),
-      ...(agent.subagents === false ? { subagents: false as const } : {}),
+      ...(agent.subagents === undefined ? {} : { subagents: agent.subagents }),
       ...(agent.thinking ? { thinking: agent.thinking } : {}),
       ...(agent.toolProfile ? { toolProfile: agent.toolProfile } : {}),
       ...(agent.toolResultClearing === undefined
