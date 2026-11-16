@@ -7888,6 +7888,18 @@ On `5a36d52`, the nanoeval lane ran fresh clones on its KVM box (2026-11-16 01:1
 - Rows of plain agents are admitted as before.
 
 **Checked.** Hosted Hand: `npm test` 603 pass, 0 fail (a new test in `test/Ledger.test.ts`), plus `npm run check:types` and `vp check`. The fresh-clone ci.yml result follows before merge. This is a Worker change, so it reaches runs only with a deploy.
+## 2026-11-16: every probe slot's hidden-path scan is kept
+
+**Problem.** The VPICK smoke (run `673c5245` on canary3, 509d9f6) found two gaps in the probe-slot scan.
+- The vpick3 row's `agent/probe-scan.json` held branches 1 and 2 only. Probe 0 forked 38 s before the others, and the runner wrote the file from the probes of the current batch, so the later upload replaced it. `picker.cheatScan.probeHiddenPaths` counted from that file, so it missed probe 0.
+- On directory slots, `slot.sh _fork` never wrote `hidden`: its `dir)` branch came after an earlier `dir)` arm of the same `case` and could not be reached. The scan read as empty there. krun and ns slots were scanned, so the smoke's KVM rows were scanned, apart from the overwritten probe 0.
+
+**Behavior.**
+- `slot.sh _fork` writes `hidden` on directory slots in the reachable `dir)` arm.
+- On each probe batch, the runner writes `agent/probe-scan.json` from every probe slot of the row that has a `hidden` file, not only the slots of that batch.
+- The e2e lane `picker-lazy` asserts that the scan holds probes 0, 1 and 2, with the trunk's probe forked before the other two.
+
+**Checked.** Hosted Hand: `npm run check:types`, `vp check`, and the dir e2e lanes `picker` and `picker-lazy`. Only the runner changed (`sandbox/slot.sh`, `sandbox/Runner.ts`). The Worker and `src/Protocol.ts` did not, so a runner at this commit serves the canary3 Worker (509d9f6).
 ## 2026-11-16: an agent may name finish_retries, how many times the finish check sends a turn back
 
 **Problem.** nanocode 80fe87002 lets a session set how many times the finish check of its Claude harness may send a turn back to the model before the turn ends. nanocode-ts `build-15cffb1` (which pins nanocode 80fe87002) takes it as an optional field of a turn, `finish_retries`, a positive whole number. Builds before it ignore the field. No agent of a run could set it, so a run could not hold an arm with more retries beside an arm with the default.
@@ -7945,3 +7957,5 @@ So the Opus arm without an option of an earlier run is the arm `:finish_check=on
 **Checked.** In the tree of the entry above: `test/FinishCheck.test.ts` (new, 3 tests: the spec, its place in the order and its text read back for `claude` and `claude-direct`, with `finish_retries` and with a late check; an empty value, `1`, `true`, `off`, a second occurrence and another place refused; the configuration takes it, refuses another value than `true`, other providers and `skip_finish_check` with it; a turn sends `finish_check` only when named, and an agent without it sends the same bytes). The usage line in seven other test files names the new option, and the name of one test of `test/FinishRetries.test.ts` no longer says that `finish_retries` is last. `npm test`: 613 tests, 608 pass, 5 skipped, 0 fail. `npm run check:types`, `npm run lint` and `npm run dry-run` pass.
 
 **Not verified.** When this was written: `ci.yml` from a fresh clone on KVM. A Worker on this pin, a model, and a session that took the field. No end-to-end lane names the option.
+
+**CI.** `0663a0e` is `6f82369` with main `8bda5e3` merged in (DECISIONS.md conflict only). Its fresh-clone ci.yml on a hosted Hand passed 138 of 138: check 5, e2e-dir 70, e2e-krun 40, e2e-ns 16, e2e-revision 4, krun 3, where the KVM steps skip without KVM. The nanoeval lane's KVM box passed 59 of 59 on `0663a0e`, every step on its first try (2026-11-16 03:06 UTC). It also passed 59 of 59 on `6f82369`.
