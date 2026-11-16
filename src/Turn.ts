@@ -17,6 +17,7 @@ export type Turn = {
   lateFinishCheckMs?: number
   leanCells?: true
   lowEffortRounds?: true
+  maxOutputTokens?: number
   model: string
   orchestration?: 'direct' | 'jobs'
   payer?: Config.Payer
@@ -109,6 +110,7 @@ export function sent(turn: Turn, input: { at: number; session: string }): string
         : null,
       ...escalate(turn),
       ...losses(turn),
+      ...(turn.maxOutputTokens === undefined ? {} : { max_output_tokens: turn.maxOutputTokens }),
       ...(turn.refusalFallback ? { refusal_fallback: turn.refusalFallback } : {}),
       request_id: turn.requestId,
       session: input.session,
@@ -135,6 +137,9 @@ export function body(turn: Turn): Record<string, unknown> {
       : {}),
     ...escalate(turn),
     ...losses(turn),
+    ...(turn.maxOutputTokens === undefined || turn.provider !== 'codex'
+      ? {}
+      : { max_output_tokens: turn.maxOutputTokens }),
     model: turn.model,
     ...(turn.payer ? { payer: turn.payer } : {}),
     prompt: turn.prompt,

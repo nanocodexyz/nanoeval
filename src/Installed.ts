@@ -344,15 +344,14 @@ function fxAsk(agent: Agent, url: string): string {
       nanoeval: {
         auth: { env: tokenVariable, type: 'bearer' },
         base_url: url + api.base,
-        ...(agent.thinking
-          ? {
-              model_metadata: {
-                [agent.model]: {
-                  reasoning_efforts: { [agent.thinking]: api.effort(agent.thinking) },
-                },
-              },
-            }
-          : {}),
+        model_metadata: {
+          [agent.model]: {
+            max_output_tokens: leaderboard.replyLimit,
+            ...(agent.thinking
+              ? { reasoning_efforts: { [agent.thinking]: api.effort(agent.thinking) } }
+              : {}),
+          },
+        },
         protocol: api.protocol,
       },
     },
@@ -443,6 +442,7 @@ function opencodeRun(agent: Agent, url: string): string {
       'export XDG_CACHE_HOME="$NANOEVAL_AGENT_HOME/cache" XDG_CONFIG_HOME="$NANOEVAL_AGENT_HOME/config"',
       'export XDG_DATA_HOME="$NANOEVAL_AGENT_HOME/data" XDG_STATE_HOME="$NANOEVAL_AGENT_HOME/state"',
       'export OPENCODE_DISABLE_LSP_DOWNLOAD=true OPENCODE_DISABLE_MODELS_FETCH=true',
+      'export OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX=' + leaderboard.replyLimit,
       'export OPENCODE_CONFIG_CONTENT=' + quote(JSON.stringify(config)),
       [
         'exec "$cli" run',
@@ -471,7 +471,11 @@ function piPrint(agent: Agent, url: string): string {
         authHeader: true,
         baseUrl: url,
         models: [
-          { id: agent.model, ...(agent.thinking ? { ...api.thinking, reasoning: true } : {}) },
+          {
+            id: agent.model,
+            maxTokens: leaderboard.replyLimit,
+            ...(agent.thinking ? { ...api.thinking, reasoning: true } : {}),
+          },
         ],
       },
     },
@@ -638,12 +642,8 @@ export function script(agent: Agent, options: { closed?: boolean; url: string })
           '--ephemeral',
           '--no-tempo-tools',
           '--hedge-cap-percent 0',
-          ...(harness === 'claude'
-            ? [
-                '--context-window ' + leaderboard.contextWindow,
-                '--max-output-tokens ' + leaderboard.replyLimit,
-              ]
-            : []),
+          ...(harness === 'claude' ? ['--context-window ' + leaderboard.contextWindow] : []),
+          '--max-output-tokens ' + leaderboard.replyLimit,
           '"$prompt" </dev/null',
         ].join(' '),
       ].join('\n') + '\n'

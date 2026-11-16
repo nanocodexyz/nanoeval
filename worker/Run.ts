@@ -3511,6 +3511,8 @@ export class Run extends DurableObject<Env> {
         : { lateFinishCheckMs: agent.lateFinishCheckMs }),
       ...(agent.leanCells ? { leanCells: true } : {}),
       ...(agent.lowEffortRounds ? { lowEffortRounds: true } : {}),
+      // One output cap for every arm: the installed agents get the same value in Installed.ts.
+      ...(agent.provider === 'codex' ? { maxOutputTokens: Installed.leaderboard.replyLimit } : {}),
       model: agent.model,
       ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
       payer: this.payer(agent.provider),
