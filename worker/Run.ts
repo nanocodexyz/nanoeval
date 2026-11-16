@@ -2997,6 +2997,7 @@ export class Run extends DurableObject<Env> {
       run: meta.id,
       runner,
       secOf: (task) => Config.rowSec(config.limits, this.task(task)),
+      slotsOf: (row) => Picker.slots(this.agentOf(row)),
       token: secret,
       wholeLast: !Admission.wholeFirst(this.share(runner, body.offer.capacityMb)),
     })

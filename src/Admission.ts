@@ -127,12 +127,14 @@ export function wholeFirst(share: Share): boolean {
 }
 
 export function fill<T>(
-  candidates: readonly { cpus: number; item: T; memoryMb: number }[],
+  candidates: readonly { cpus: number; item: T; memoryMb: number; slots?: number }[],
   offered: Offer & { wholeLast?: boolean },
 ): T[] {
   const chosen: T[] = []
   let cpus = offered.cpus?.free ?? 0
   let memoryMb = offered.memoryMb
+  let slots = 0
+  const idle = offered.memoryMb >= offered.capacityMb
   const whole = (candidate: { memoryMb: number }) => candidate.memoryMb >= offered.capacityMb
   const rest = candidates.filter((candidate) => !whole(candidate))
   const ordered =
@@ -142,13 +144,17 @@ export function fill<T>(
         : [...candidates.filter(whole), ...rest]
       : candidates
   for (const candidate of ordered) {
-    if (chosen.length >= offered.slots) break
-    const needed = Math.min(candidate.memoryMb, offered.capacityMb)
+    if (slots >= offered.slots) break
+    const weight = Math.max(1, candidate.slots ?? 1)
+    const alone = weight > offered.slots && idle && !chosen.length && offered.slots > 0
+    if (slots + weight > offered.slots && !alone) continue
+    const needed = Math.min(candidate.memoryMb * weight, offered.capacityMb)
     if (needed > memoryMb) continue
-    const threads = offered.cpus ? Math.min(candidate.cpus, offered.cpus.capacity) : 0
+    const threads = offered.cpus ? Math.min(candidate.cpus * weight, offered.cpus.capacity) : 0
     if (threads > cpus) continue
     cpus -= threads
     memoryMb -= needed
+    slots += alone ? offered.slots : weight
     chosen.push(candidate.item)
   }
   return chosen
