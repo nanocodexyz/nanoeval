@@ -34,6 +34,7 @@ export type Turn = {
   toolResultClearing?: Config.ToolResultClearing
   toolResultTokens?: number
   verificationRequested?: true
+  webSearch?: false
   yieldFloorMs?: number
   yieldShare?: number
 }
@@ -118,6 +119,7 @@ export function sent(turn: Turn, input: { at: number; session: string }): string
       ...(turn.subagents === false ? { subagents: false } : {}),
       ...clearing(turn),
       ...(turn.toolResultTokens === undefined ? {} : { tool_result_tokens: turn.toolResultTokens }),
+      ...(turn.webSearch === false ? { web_search: false } : {}),
     }) + '\n'
   )
 }
@@ -147,6 +149,6 @@ export function body(turn: Turn): Record<string, unknown> {
     ...(turn.thinking ? { thinking: turn.thinking } : {}),
     ...clearing(turn),
     ...(turn.toolResultTokens === undefined ? {} : { tool_result_tokens: turn.toolResultTokens }),
-    ...(turn.provider === 'codex' ? { web_search: false } : {}),
+    ...(turn.provider === 'codex' || turn.webSearch === false ? { web_search: false } : {}),
   }
 }

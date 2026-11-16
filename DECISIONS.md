@@ -8163,6 +8163,102 @@ The arm it is for is `nano-med-nosub=claude:claude-opus-5-5:medium:subagents=off
 
 **Not verified.** When this was written: fx, opencode or pi against a deployed Worker with this change, the e2e jobs and the krun job of `ci.yml`. opencode and pi read the stream before this change; that they read it after is not shown here. Whether another `@cf/` model writes its usage this way was not observed.
 
+## 2026-11-16: a second import of the same task directories is a new version
+
+An eval version is named by a digest over its rows, and the row of a task whose environment is a disk holds the digest and the size of that disk. Two conversions of one Dockerfile task did not make the same disk bytes, so a second import of the same directories has another digest and is another version.
+
+Measured once, on 2026-11-16. The same 29 task directories of SWE-bench Pro in the closed form were imported twice, on two Linux machines with KVM: the first import into a directory store, the second with `--store r2` from a checkout of `8bda5e3`, 29 of 29 in 940 s, 40.7 GB of disks. The versions are `8783ba6c` and `26db3dfc`. Read from the Worker, they have the same 29 task ids, the same dataset and source, and every field of a task is equal (instruction, tests, verifier, agent, resources, the digest in the image meta) except `environment.disk`, the digest and the size of the packed disk. `krun/` and `sandbox/` hold the same bytes at `5abaeea` and at `8bda5e3`, so the converter did not change between the two imports.
+
+What follows from it:
+
+- A version is one import. The rows of two versions are not pooled and not paired, although their tasks read the same. A read-out names its version, and for a second import it states the reason.
+- A version runs on another machine only when its blobs are where that machine reads them. A directory store ends with its machine: the disks of `8783ba6c` were in one, only its rows were copied to another Worker, and it cannot run again. `--store r2` at import keeps them in the bucket.
+- An import is not a way to get an existing version back. Copy its rows and its blobs.
+
+Not established: which bytes of the disks differ, and why. The formatter takes its UUID and its hash seed from the digest of the image or of the build recipe (`format` in `krun/host/src/image/build.rs`), so what remains is the build (the times and the files that `RUN` steps write, what a step fetches) and what the guest kernel writes to the file system. Whether a task whose environment is an image reference converts to the same bytes twice was not measured. No test covers this, and no code changed with this entry.
+
+## 2026-11-16: a claim that ended writes nothing to its row
+
+**The defect.** A lost claim must start again from nothing. In a run of 2026-11-16 a runner was stopped with a signal while rows of session agents were in their turns, and three of the rows it gave back broke that. The Worker ran an earlier commit with the code of `6835d07` in these paths.
+
+- Two rows of a single-session agent ended `errored` with `agent: the turn ended as cancelled` and were never run again. Each has one claim that ended `released` in the run phase, a failure whose time is the end of that claim to the millisecond, a result with no sandbox, an empty timing and a start 26 ms after the claim ended.
+- One row of an agent with two branches was claimed again. Its second claim has an agent execution of 0.12 s, the verifier graded the fresh sandbox of that claim, and the row ended `failed`. Its artifacts hold the `agent/branches.json` of the first claim: the trunk completed, the other branch `the turn ended as cancelled`.
+
+**The cause** is one order and three writes. `lose()` cancelled the turns of the sessions of the row and read their events, and gave the row back to the ledger only after those round trips. For that time the claim still looked held, and the cancelled turn woke the `agent` call that the runner held open. A runner that is stopped ends its claim loop and lets its row steps go on, so it acted on the answer.
+
+1. The read of a single session answered `failed` with `the turn ended as cancelled` for the turn that `lose()` had cancelled. The runner reported that failure, `finish()` passed the fence, awaited the same sessions, and then completed the row it read again from the ledger without a look at its claim. `Ledger.finish` took any row that was not done, so it ended the row that `lose()` had given back in between.
+2. The read of a branched row checked the claim once, awaited the turn of each branch, and then wrote `agent/branches.json` under the row id, after `lose()` had deleted the artifacts of the row. The second claim found a decided record at its first read and answered `completed`.
+3. `complete()` wrote artifacts between its awaits, and every write of a runner request after an await had the same shape.
+
+An installed agent has no session turn that the run cancels, and the Worker never answers `failed` for its agent, so its rows went back clean. A lease that expires after the machine of the runner died leaves no request of the claim in the Worker: a held call ends within `HOLD_MS`, 50 s, and the default lease is 60 s. A runner that lives while its lease expires, or that is told to leave, has the race.
+
+**The rule.**
+
+- `lose()` ends the claim first, in one step with no await: the ledger takes the row back, the artifacts of the row are deleted, and the calls held for it wake. The sessions are halted, read for the usage of the lost claim and deleted after that. `Ledger.spend` writes that usage to the claim that ended.
+- `Ledger.requeue` and `Ledger.finish` take the claim token that the caller read, and change nothing when the row has another. `requeue` answers `requeued`, `ended` (the claims of the run are used up, and the row stays for its errored result) or `stale`. `Ledger.held` is false for a claim that ended, also while its row waits for that result.
+- A request of a runner checks its claim again after each await and before each write: `mine()` answers 410, `keep()` writes an artifact and `amend()` changes the row only under it. A turn is read, then the claim, then the answer, so the turn that the run cancelled with the claim is the answer to no runner.
+- `complete()` collects the events of its sessions first and writes after its last await, and only when the row still has the claim it was called with. It returns whether it ended the row. `finish()` answers 410 when it did not, and a cancelled run asks again for a row that changed under it.
+- A branch record names the session of the claim that decided it.
+- At result time a graded result is refused when the agent was not run by the claim of the row (`Claim.unowned`): the timing of the claim has no agent execution, `agent/turns.jsonl` has no turn of the session of the claim or has a turn of the session of another claim, the branch record is missing or names another session, or the turn of the chosen session did not complete and the row has no failure of its own. The row ends `errored` with the kind `internal` and `the result of the attempt is refused: ` followed by the reason, and no reward. The fence above makes this state unreachable through the paths that are known. The check names it if another path reaches it.
+
+**Tests.** `node --test test/Ledger.test.ts test/Claim.test.ts`: a claim that ended finishes and requeues no row, before and after another claim takes it, and each refusal of `Claim.unowned`, with the record of the branched row above. Against the ledger of `6835d07` the same calls answered `true` twice: the row that was given back ended `done` with one claim, `released`.
+
+Two lanes on directory slots, `NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=released NANOEVAL_E2E_SLOTS=2 npm run e2e` and `NANOEVAL_E2E_SCENARIO=released-branches`: the scripted model holds its answers, the one runner is stopped with SIGTERM when its rows are in the run phase and a request is held, and a second runner starts. Each row of the stopped runner has two claims, `released` and `finished`, and passes or fails by its agent with the session of its second claim, a sandbox, an agent execution and at least one model call.
+
+**Measured** on 2026-11-16 on one Linux machine with 4 threads, local workerd, the working tree of this change on `6835d07`, and `6835d07` with the two lanes added. A local session object answers in a few milliseconds, so the window of the race is narrow there. The lines marked "with a wait" add 400 ms before `Harness.events` reads a turn, in place of the round trip to a session object of a deployed Worker.
+
+| | `released` | `released-branches` |
+| --- | --- | --- |
+| `6835d07` | passed 3 of 3: the race was not hit | passed 3 of 3: the race was not hit |
+| `6835d07` with a wait | failed 2 of 2: both rows of the stopped runner `errored`, `agent: the turn ended as cancelled`, one claim | failed 2 of 2: the row `errored` the same way, one claim |
+| This change | passed 3 of 3 | passed 3 of 3 |
+| This change with a wait | passed 2 of 2 | passed 2 of 2 |
+
+One more run of `released` with this change failed for a reason of the measurement: a source of the Worker was edited during the run, the local Worker loaded again, and its log held `Uncaught Error: session deleted`.
+
+**Rejected.** A check of the claim only in `finish()`: the record of a branched row and the artifacts of `complete()` are written on other paths. Keeping the order of `lose()` and holding the row in a state between claimed and given back: a state that every reader must know. A test knob in the Worker that slows a session: the Worker has no code for tests.
+
+**Not verified.**
+
+- A deployed Worker. No Worker was deployed with this change.
+- krun and ns slots. The lanes run on directory slots, and the paths that changed do not read the kind of slot.
+- The exact interleaving of the branched row, a trunk that completed and a branch under way when the runner is stopped. The branches lane stops the runner with every session under way. On `6835d07` with a wait it fails by the first write, not the second.
+- A runner whose lease expires while it lives. The path is the same `lose()`, and no lane stalls the heartbeats of a runner that still runs its rows.
+
+## 2026-11-16: a closed task closes the web search that a model provider runs
+
+A task with `network.allowInternet` false is a closed task: the slot of its agent has no network. A web search that the model provider runs is outside the slot, so that slot did not stop it. A closed task with such a search is not closed.
+
+**Seen.** One run on a closed slice of SWE-bench Pro, 28 tasks, three attempts, with a `claude` session arm at high effort beside Claude Code: 5 of the 84 session rows made 19 web searches through 10 calls of the web search tool. One row searched for a hidden test file by its name, and two for the upstream fix. No search returned a hidden test file or the code of the fix. Three of the five rows passed. The Claude Code rows made none, and the tool list of each had `WebSearch` and `WebFetch`.
+
+**The cause.** `Turn.body` sent `web_search: false` only for a `codex` turn (the entry of 2026-11-14 on codex sessions), and the nanocode-ts host turns the search of a provider on unless the turn says so. `Installed.script` started Claude Code with its default tools. `WebSearch` of Claude Code is a nested model request with the search tool of the provider. Neither read the network of the task.
+
+**The rule.** The agent of a closed task (`Eval.offline(task)` names `agent`) gets no web tool that runs outside its slot.
+
+- A nanocode session of any provider is sent `web_search: false`: the turn of the agent and the turn of a picker, which is a session of the model of the agent. The turn of a judge is not changed: it belongs to the verifier. `agent/turns.jsonl` names `web_search: false` for such a turn, so a row shows that it ran closed.
+- Claude Code, as `claude-code` and as `stock-claude`, is started with `--disallowedTools WebFetch WebSearch`.
+- Codex CLI, as `codex-cli`, is started with `-c web_search=disabled`, the setting that `stock-codex` has on every task.
+- fx, opencode and pi get nothing: their commands name no tool that a provider runs, and a fetch from the slot has no network.
+- An open task is unchanged: the body of its turn and the command of its agent are byte for byte what they were.
+
+No agent option names this. The task decides it.
+
+**Checked with the pinned Claude Code.** The 2.1.318 build for x86_64 glibc, SHA-256 as in `src/Installed.ts`, was started with the command of `Installed.script` against an endpoint that refuses connections. The `init` line of its stream lists 22 tools without the flag, `WebFetch` and `WebSearch` among them, and 20 with it, neither among them. `--dangerously-skip-permissions` was set both times.
+
+**Which runs had the defect.** Every run of a closed task before this change, of 2026-11-16 and earlier. A read-out of such a run lists the rows with a provider web search: the request log of a row counts them (`webSearches`).
+
+**The Worker and the runner both carry it.** The Worker builds the turn of a session, and the runner writes the command of an installed agent. A run is closed for both kinds of agent only when both are at this change.
+
+**Tests.** `node --test test/Turn.test.ts test/Installed.test.ts`: the body of a `claude` turn of an open task equals the string it was before, and of a closed task that string with `web_search: false`. A `codex` turn is the same string in both. The last line of the script of `claude-code`, `stock-claude` and `codex-cli` of an open task equals the line it was before, and the script of a closed task differs by the one argument. The scripts of the other kinds are equal in both.
+
+**Not verified.**
+
+- A session with a model. No run was made with this change. The switch is the one a `codex` session has had since 2026-11-14.
+- A subagent of a closed `claude` session. The Worker starts no session for a subagent, so a subagent runs in the runtime of the session that was sent the switch. Whether that runtime keeps the search from a subagent was not read.
+- `-c web_search=disabled` with Codex CLI 0.166.0. It is the setting of `stock-codex` at 0.162.1, and no binary of 0.166.0 was started with it.
+- `nanocode-claude` and `nanocode-codex`, the nanocode command line inside the slot. Its `exec` has no option that turns the web search off, so such an arm on a closed task still has the search of its provider. It is not closed by this change.
+- The tools of fx, opencode and pi were read from their commands here and not from their binaries.
+
 ## 2026-11-16: the package pins nanocode-ts build-304046b
 
 **The pin.** `package` pins nanocode-ts `build-304046b` (nanocode-ts master 304046b1dc39ac898208538cce5d118c011a7ae9, nanocode ccc66f3236627a18c082d0dc6af0a484e795696d, WASM build e8275406c56fff6a60ec) in place of `build-acdb751`. The hand stays `nanocode-cli-1a946f3`. The release tarball as downloaded has 58,275,632 bytes and the SHA-256 9b70ffb990bc60012c0072a10852d4e750ebf51715aa3d35e2ad0c3ec56e5bf8, which is the digest GitHub records for the release asset, and the integrity in `package-lock.json` is its SHA-512. The `package.json` of the tarball is the same bytes as that of `build-acdb751`, the two tarballs hold the same list of files, and the files of the bundled `node_modules` are the same bytes, so only the address and the integrity changed in the lock.

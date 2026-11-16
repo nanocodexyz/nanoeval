@@ -122,3 +122,23 @@ test('a claude session keeps the web search and subagents of its app, as Claude 
   assert.equal('web_search' in body, false)
   assert.equal(body['provider'], 'claude')
 })
+
+test('a session of a closed task is sent no web search of its provider, and a session of an open task is sent what it was', () => {
+  const claude = { ...turn, model: 'claude-opus-5-5', provider: 'claude' as const }
+  const open =
+    '{"hand":"slot","model":"claude-opus-5-5","payer":"plan","prompt":"Write the greeting.","provider":"claude","request_id":"turn-1","thinking":"high"}'
+  assert.equal(JSON.stringify(Turn.body(claude)), open)
+  assert.equal(
+    JSON.stringify(Turn.body({ ...claude, webSearch: false })),
+    open.slice(0, -1) + ',"web_search":false}',
+  )
+  const codex =
+    '{"hand":"slot","model":"gpt-6-luna","payer":"plan","prompt":"Write the greeting.","provider":"codex","request_id":"turn-1","subagents":false,"thinking":"high","web_search":false}'
+  assert.equal(JSON.stringify(Turn.body(turn)), codex)
+  assert.equal(JSON.stringify(Turn.body({ ...turn, webSearch: false })), codex)
+  const input = { at: 1_800_000_000_000, session: 'run-a00001' }
+  for (const session of [claude, turn]) {
+    assert.equal('web_search' in JSON.parse(Turn.sent(session, input)), false)
+    assert.equal(JSON.parse(Turn.sent({ ...session, webSearch: false }, input)).web_search, false)
+  }
+})

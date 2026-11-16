@@ -1794,3 +1794,62 @@ test(
     }
   },
 )
+
+test('an installed agent of a closed task is started without the web tools that its provider runs, and of an open task as it was', () => {
+  const url = 'http://127.0.0.1:8787/v1/runs/r/model/a00001'
+  const last = (script: string) => script.trimEnd().split('\n').at(-1)
+  const web = '--disallowedTools WebFetch WebSearch'
+  const claude: Installed.Agent = {
+    kind: 'claude-code',
+    model: 'claude-opus-5-5',
+    thinking: 'high',
+  }
+  const open = Installed.script(claude, { url })
+  assert.equal(
+    last(open),
+    "exec \"$cli\" -p --output-format stream-json --verbose --dangerously-skip-permissions --model 'claude-opus-5-5' --effort 'high'",
+  )
+  assert.equal(Installed.script(claude, { closed: false, url }), open)
+  assert.equal(
+    Installed.script(claude, { closed: true, url }),
+    open.replace(' --model ', ' ' + web + ' --model '),
+  )
+  const stock = Installed.script({ ...claude, kind: 'stock-claude' }, { url })
+  assert.equal(
+    last(stock),
+    'printf "%s" "$prompt" | "$cli" --verbose --output-format=stream-json --effort \'high\' --permission-mode=bypassPermissions --print 2>&1',
+  )
+  assert.equal(
+    Installed.script({ ...claude, kind: 'stock-claude' }, { closed: true, url }),
+    stock.replace(' --effort ', ' ' + web + ' --effort '),
+  )
+  const codex: Installed.Agent = { kind: 'codex-cli', model: 'gpt-6-luna', thinking: 'high' }
+  const exec = Installed.script(codex, { url })
+  assert.equal(
+    last(exec),
+    'exec "$NANOEVAL_AGENT_RT"/agents/codex-cli/any/bin/codex exec --json --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -m \'gpt-6-luna\' -c \'model_reasoning_effort="high"\' -c \'model_provider="nanoeval"\' -c \'model_providers.nanoeval={name="nanoeval", base_url="' +
+      url +
+      '", env_key="NANOEVAL_AGENT_TOKEN", wire_api="responses"}\' -',
+  )
+  assert.equal(Installed.script(codex, { closed: false, url }), exec)
+  assert.equal(
+    Installed.script(codex, { closed: true, url }),
+    exec.slice(0, -' -\n'.length) + ' -c web_search=disabled -\n',
+  )
+  const others: Installed.Agent[] = [
+    { api: 'messages', kind: 'fx', model: 'm' },
+    { kind: 'nanocode-claude', model: 'm' },
+    { kind: 'nanocode-codex', model: 'm' },
+    { api: 'messages', kind: 'opencode', model: 'm' },
+    { api: 'messages', kind: 'pi', model: 'm' },
+    { kind: 'stock-codex', model: 'm' },
+  ]
+  for (const agent of others)
+    assert.equal(Installed.script(agent, { closed: true, url }), Installed.script(agent, { url }))
+  assert.equal(
+    Installed.script({ kind: 'stock-codex', model: 'm' }, { url }).includes(
+      ' -c web_search=disabled ',
+    ),
+    true,
+  )
+})

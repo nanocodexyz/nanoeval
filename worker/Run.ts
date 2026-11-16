@@ -5,6 +5,7 @@ import * as Branch from '../src/Branch.ts'
 import * as Atif from '../src/Atif.ts'
 import * as Bootstrap from '../src/Bootstrap.ts'
 import * as Budget from '../src/Budget.ts'
+import * as Claim from '../src/Claim.ts'
 import * as Config from '../src/Config.ts'
 import * as E2b from '../src/E2b.ts'
 import * as Eval from '../src/Eval.ts'
@@ -656,6 +657,10 @@ export class Run extends DurableObject<Env> {
     return spec
   }
 
+  private webSearch(row: Ledger.Attempt): Pick<Turn.Turn, 'webSearch'> {
+    return Eval.offline(this.task(row.task)).includes('agent') ? { webSearch: false } : {}
+  }
+
   private imported(name: string): Eval.Task {
     const row = this.sql.all('SELECT body FROM tasks WHERE name = ?', name)[0]!
     return JSON.parse(row['body'] as string) as Eval.Task
@@ -1099,10 +1104,12 @@ export class Run extends DurableObject<Env> {
       Config.planSignIn +
       ')'
     this.refuse({ kind: 'plan', text, tries: 0 })
-    await this.complete(Ledger.get(this.sql, row.id)!, {
-      failure: { at: Date.now(), kind: 'environment', message: text },
-      reward: null,
-    })
+    const current = Ledger.current(this.sql, row)
+    if (current)
+      await this.complete(current, {
+        failure: { at: Date.now(), kind: 'environment', message: text },
+        reward: null,
+      })
     return new Refusal(410, text)
   }
 
@@ -1855,7 +1862,7 @@ export class Run extends DurableObject<Env> {
   }
 
   private async forgotten(row: Ledger.Attempt, said: string): Promise<never> {
-    const gone = 'the attempt is not claimed by this runner any more'
+    const gone = Claim.gone
     if (!Ledger.held(this.sql, { claim: row.claim!, id: row.id })) throw new Refusal(410, gone)
     Ledger.explain(this.sql, { claim: row.claim!, error: said })
     Timeline.add(this.sql, { at: Date.now(), attempt: row.id, name: 'attempt.forgotten' })
@@ -1879,47 +1886,49 @@ export class Run extends DurableObject<Env> {
   ): Promise<void> {
     const config = this.config()
     const submitted = this.submitted(row)
-    let usage: string | undefined
-    const sessions: string[] = []
-    if (row.session) {
-      const branches = this.installed(row) === undefined ? this.branchSessions(row) : []
-      if (submitted && row.phase === 'run')
-        for (const name of [...branches, ...this.verifierSessions(row)]) await this.halt(name)
-      if (submitted)
-        usage = await Promise.all(
-          branches.map((name) => Harness.events(this.env, name, requestId)),
-        ).then(
-          (all) => {
-            const requested = Timeline.modelRequest(all[0]!)
-            if (requested !== undefined)
-              Timeline.add(this.sql, { at: requested, attempt: row.id, name: 'attempt.model' })
-            const usages = all.map((events) => Atif.usage(events))
-            return JSON.stringify(usages.length === 1 ? usages[0]! : Atif.sum(usages))
-          },
-          () => undefined,
-        )
-      const installed = this.installed(row) !== undefined
-      if (installed && ['judge', 'run', 'verify'].includes(row.phase))
-        usage = JSON.stringify(this.metered(row))
-      sessions.push(...this.judgeSessions(row))
-      if (row.phase !== 'claimed' && !installed)
-        sessions.push(...branches, ...this.verifierSessions(row))
-    }
+    const installed = this.installed(row) !== undefined
+    const branches = row.session && !installed ? this.branchSessions(row) : []
+    const verifiers = row.session ? this.verifierSessions(row) : []
+    const judges = row.session ? this.judgeSessions(row) : []
     const requeued = Ledger.requeue(this.sql, {
+      claim: row.claim,
       ending,
       id: row.id,
       limit: final !== undefined ? 0 : config.limits.claims,
       now: Date.now(),
-      ...(usage ? { usage } : {}),
+      ...(row.session && installed && ['judge', 'run', 'verify'].includes(row.phase)
+        ? { usage: JSON.stringify(this.metered(row)) }
+        : {}),
     })
+    if (requeued === 'stale') return
     this.wake(row.id)
-    if (requeued) {
+    if (requeued === 'requeued') {
       this.sql.run('DELETE FROM artifacts WHERE attempt = ?', row.id)
       this.sql.run('DELETE FROM binary_artifacts WHERE attempt = ?', row.id)
       this.wake()
     }
-    for (const name of sessions) await this.remove(name)
-    if (requeued) return
+    for (const name of [...branches, ...verifiers]) this.cursors.delete(name)
+    if (submitted && row.phase === 'run')
+      for (const name of [...branches, ...verifiers]) await this.halt(name)
+    if (submitted && row.claim) {
+      const usage = await Promise.all(
+        branches.map((name) => Harness.events(this.env, name, requestId)),
+      ).then(
+        (all) => {
+          const requested = Timeline.modelRequest(all[0]!)
+          if (requested !== undefined)
+            Timeline.add(this.sql, { at: requested, attempt: row.id, name: 'attempt.model' })
+          const usages = all.map((events) => Atif.usage(events))
+          return JSON.stringify(usages.length === 1 ? usages[0]! : Atif.sum(usages))
+        },
+        () => undefined,
+      )
+      if (usage) Ledger.spend(this.sql, { claim: row.claim, usage })
+    }
+    for (const name of judges) await this.remove(name)
+    if (row.phase !== 'claimed' && !installed)
+      for (const name of [...branches, ...verifiers]) await this.remove(name)
+    if (requeued === 'requeued') return
     const current = Ledger.get(this.sql, row.id)
     if (current && current.phase !== 'done')
       await this.complete(current, {
@@ -1943,16 +1952,20 @@ export class Run extends DurableObject<Env> {
   }
 
   private async cancelAll(): Promise<void> {
-    for (const row of this.rows()) {
-      if (row.phase === 'done') continue
-      if (row.session && row.phase === 'run' && this.submitted(row))
-        for (const name of [...this.branchSessions(row), ...this.verifierSessions(row)])
-          await this.halt(name)
-      await this.complete(row, {
-        ending: 'cancelled',
-        failure: { at: Date.now(), kind: 'cancelled', message: 'the run was cancelled' },
-        reward: null,
-      })
+    for (const listed of this.rows()) {
+      for (;;) {
+        const row = Ledger.get(this.sql, listed.id)!
+        if (row.phase === 'done') break
+        if (row.session && row.phase === 'run' && this.submitted(row))
+          for (const name of [...this.branchSessions(row), ...this.verifierSessions(row)])
+            await this.halt(name)
+        const ended = await this.complete(row, {
+          ending: 'cancelled',
+          failure: { at: Date.now(), kind: 'cancelled', message: 'the run was cancelled' },
+          reward: null,
+        })
+        if (ended) break
+      }
     }
   }
 
@@ -2748,11 +2761,8 @@ export class Run extends DurableObject<Env> {
     }
     if (request.method === 'PUT' && resource === 'rows' && id && action === 'artifacts' && name) {
       const row = this.fenced(id, new URL(request.url).searchParams.get('claim') ?? '')
-      this.putArtifact(
-        row.id,
-        decodeURIComponent(name),
-        new Uint8Array(await request.arrayBuffer()),
-      )
+      const body = new Uint8Array(await request.arrayBuffer())
+      this.keep(row, decodeURIComponent(name), body)
       return json({ stored: true })
     }
     if (request.method !== 'POST') return json({ error: 'method not allowed' }, 405)
@@ -2788,9 +2798,25 @@ export class Run extends DurableObject<Env> {
     return json({ error: 'route not found' }, 404)
   }
 
+  private mine(row: Ledger.Attempt): Ledger.Attempt {
+    const current = row.claim ? Ledger.held(this.sql, { claim: row.claim, id: row.id }) : undefined
+    if (!current) throw new Refusal(410, Claim.gone)
+    return current
+  }
+
+  private keep(row: Ledger.Attempt, name: string, body: string | Uint8Array): void {
+    this.mine(row)
+    this.putArtifact(row.id, name, body)
+  }
+
+  private amend(row: Ledger.Attempt, patch: Parameters<typeof Ledger.update>[2]): void {
+    this.mine(row)
+    Ledger.update(this.sql, row.id, patch)
+  }
+
   private fenced(id: string, claim: string): Ledger.Attempt {
     const row = Ledger.held(this.sql, { claim, id: decodeURIComponent(id) })
-    if (!row) throw new Refusal(410, 'the attempt is not claimed by this runner any more')
+    if (!row) throw new Refusal(410, Claim.gone)
     Ledger.update(this.sql, row.id, {
       lease_until: Date.now() + this.config().limits.leaseSec * 1000,
     })
@@ -3109,7 +3135,7 @@ export class Run extends DurableObject<Env> {
     if (body.verifier) {
       const probed = new Set(this.probed(row))
       probed.add(branch)
-      this.putArtifact(row.id, Picker.probes, JSON.stringify([...probed].sort()) + '\n')
+      this.keep(row, Picker.probes, JSON.stringify([...probed].sort()) + '\n')
     }
     const token = await Harness.token(this.env, session)
     return {
@@ -3169,7 +3195,7 @@ export class Run extends DurableObject<Env> {
           if (!(failure instanceof Harness.LostError)) throw failure
         }
       const said = report?.status === 'completed' ? (report.ok?.message ?? '') : ''
-      if (said) this.putArtifact(row.id, Picker.message(input.index), said)
+      if (said) this.keep(row, Picker.message(input.index), said)
       const parsed: Omit<Picker.Verification, 'usd'> = said
         ? Picker.parse(said)
         : { confidence: 0, verdict: 'unsure' }
@@ -3180,11 +3206,7 @@ export class Run extends DurableObject<Env> {
         ...(usage ? { usage } : {}),
         usd: usage?.costUsd ?? 0,
       }
-      this.putArtifact(
-        row.id,
-        Picker.file(input.index),
-        JSON.stringify(verification, null, 2) + '\n',
-      )
+      this.keep(row, Picker.file(input.index), JSON.stringify(verification, null, 2) + '\n')
       return { verification }
     }
     let report: Harness.Report | undefined
@@ -3246,11 +3268,13 @@ export class Run extends DurableObject<Env> {
       provider: agent.provider as 'claude' | 'codex',
       requestId: Picker.requestId,
       ...(agent.thinking ? { thinking: agent.thinking } : {}),
+      ...this.webSearch(row),
     }
+    this.mine(row)
     try {
       const report = await Harness.submit(this.env, input.session, turn)
-      this.putArtifact(
-        row.id,
+      this.keep(
+        row,
         Turn.record,
         (this.textArtifact(row.id, Turn.record) ?? '') +
           Turn.sent(turn, { at: now, session: input.session }),
@@ -3286,7 +3310,7 @@ export class Run extends DurableObject<Env> {
     const now = Date.now()
     if (row.phase === 'claimed') {
       Timeline.add(this.sql, { at: now, attempt: row.id, name: 'attempt.environment' })
-      Ledger.update(this.sql, row.id, {
+      this.amend(row, {
         phase: 'attach',
         phase_at: now,
         timing: Ledger.mark(
@@ -3312,7 +3336,7 @@ export class Run extends DurableObject<Env> {
         Math.min(left, Number(this.env.HAND_LIST_MS)),
       )
       if (!Ledger.held(this.sql, { claim: row.claim!, id: row.id }))
-        throw new Refusal(410, 'the attempt is not claimed by this runner any more')
+        throw new Refusal(410, Claim.gone)
     }
   }
 
@@ -3335,16 +3359,15 @@ export class Run extends DurableObject<Env> {
         )
           throw new Refusal(400, 'the instruction does not match the digest of the task')
       }
-      if (harness === 'installed')
-        this.putArtifact(row.id, Installed.instruction, body.instruction!)
-      if (agent.picker) this.putArtifact(row.id, Picker.instruction, body.instruction!)
+      if (harness === 'installed') this.keep(row, Installed.instruction, body.instruction!)
+      if (agent.picker) this.keep(row, Picker.instruction, body.instruction!)
       if (agent.preflight) {
         if (typeof body.facts !== 'string')
           throw new Refusal(
             400,
             'the agent takes a preflight, and the runner sent no facts from its probe',
           )
-        this.putArtifact(row.id, Preflight.artifact, body.facts)
+        this.keep(row, Preflight.artifact, body.facts)
       }
       if (agent.provider === 'claude' || agent.provider === 'codex')
         for (const name of this.branchSessions(row))
@@ -3356,8 +3379,9 @@ export class Run extends DurableObject<Env> {
             session: name,
           })
       const now = Date.now()
+      this.mine(row)
       Timeline.add(this.sql, { at: now, attempt: row.id, name: 'attempt.agent' })
-      Ledger.update(this.sql, row.id, {
+      this.amend(row, {
         deadline_at: now + task.agent.timeoutSec * 1000,
         phase: 'run',
         phase_at: now,
@@ -3381,13 +3405,14 @@ export class Run extends DurableObject<Env> {
 
     const read = async (): Promise<Protocol.Agent> => {
       const current = Ledger.held(this.sql, { claim: row.claim!, id: row.id })
-      if (!current) throw new Refusal(410, 'the attempt is not claimed by this runner any more')
+      if (!current) throw new Refusal(410, Claim.gone)
       const earlier = current.failure ? (JSON.parse(current.failure) as Result.Failure) : undefined
       if (earlier?.kind === 'agent_timeout' || earlier?.kind === 'environment')
         return { state: 'timeout' }
       if (earlier?.message.startsWith(Retry.refusedPrefix))
         return { error: earlier.message, state: 'failed' }
       const report = await this.kept(current, Harness.turn(this.env, session, requestId))
+      this.mine(current)
       if (report.status === 'completed')
         return { message: report.ok?.message ?? '', state: 'completed' }
       if (report.status === 'failed' || report.status === 'cancelled')
@@ -3395,14 +3420,14 @@ export class Run extends DurableObject<Env> {
       const now = Date.now()
       const refused = this.refusedOut(current, now)
       if (refused) {
-        Ledger.update(this.sql, row.id, { failure: JSON.stringify(refused) })
+        this.amend(row, { failure: JSON.stringify(refused) })
         Timeline.add(this.sql, { at: now, attempt: row.id, name: 'attempt.refused' })
         await Harness.cancel(this.env, session, requestId)
         return { error: refused.message, state: 'failed' }
       }
       if (now > current.deadline_at!) {
         await Harness.cancel(this.env, session, requestId)
-        Ledger.update(this.sql, row.id, {
+        this.amend(row, {
           failure: JSON.stringify(
             (report.status === 'queued'
               ? {
@@ -3505,13 +3530,15 @@ export class Run extends DurableObject<Env> {
         : { toolResultClearing: agent.toolResultClearing }),
       ...(agent.toolResultTokens === undefined ? {} : { toolResultTokens: agent.toolResultTokens }),
       ...(agent.verificationRequested ? { verificationRequested: true } : {}),
+      ...this.webSearch(row),
       ...(agent.yieldFloorMs === undefined ? {} : { yieldFloorMs: agent.yieldFloorMs }),
       ...(agent.yieldShare === undefined ? {} : { yieldShare: agent.yieldShare }),
     }
+    this.mine(row)
     try {
       const report = await Harness.submit(this.env, input.session, turn)
-      this.putArtifact(
-        row.id,
+      this.keep(
+        row,
         Turn.record,
         (this.textArtifact(row.id, Turn.record) ?? '') +
           Turn.sent(turn, { at: now, session: input.session }),
@@ -3544,7 +3571,7 @@ export class Run extends DurableObject<Env> {
     }
     const read = async (body: Protocol.Ask): Promise<Read> => {
       const current = Ledger.held(this.sql, { claim: row.claim!, id: row.id })
-      if (!current) throw new Refusal(410, 'the attempt is not claimed by this runner any more')
+      if (!current) throw new Refusal(410, Claim.gone)
       const recorded = this.branchRecord(current)
       if (recorded) return { agent: decided(recorded) }
       const earlier = current.failure ? (JSON.parse(current.failure) as Result.Failure) : undefined
@@ -3601,6 +3628,7 @@ export class Run extends DurableObject<Env> {
           continue
         }
         const report = await this.kept(current, Harness.turn(this.env, name, requestId))
+        this.mine(current)
         if (report.status === 'failed' || report.status === 'cancelled') {
           outcomes.push({
             error: report.error ?? 'the turn ended as ' + report.status,
@@ -3708,14 +3736,14 @@ export class Run extends DurableObject<Env> {
             agent.picker && trunk !== undefined && (reason || !verifying)
               ? Picker.gateOf(verifications[0], { at: now, model: Picker.model(agent), reason })
               : undefined
-          if (gate) this.putArtifact(row.id, Picker.gate, JSON.stringify(gate, null, 2) + '\n')
+          if (gate) this.keep(row, Picker.gate, JSON.stringify(gate, null, 2) + '\n')
           if (reason) {
             const record: Branch.Fork = {
               at: now,
               reason,
               ...(gate?.verifier ? { verifier: gate.verifier } : {}),
             }
-            this.putArtifact(row.id, Branch.forkRecord, JSON.stringify(record, null, 2) + '\n')
+            this.keep(row, Branch.forkRecord, JSON.stringify(record, null, 2) + '\n')
             return { agent: { state: 'fork' } }
           }
           if (trunk !== undefined && !verifying) chosen = 0
@@ -3731,7 +3759,7 @@ export class Run extends DurableObject<Env> {
       if (chosen === undefined && (outcomes.includes(undefined) || verifying)) {
         const refused = this.refusedOut(current, now)
         if (refused) {
-          Ledger.update(this.sql, row.id, { failure: JSON.stringify(refused) })
+          this.amend(row, { failure: JSON.stringify(refused) })
           Timeline.add(this.sql, { at: now, attempt: row.id, name: 'attempt.refused' })
           for (const name of this.branchSessions(current)) {
             await Harness.cancel(this.env, name, requestId)
@@ -3771,7 +3799,7 @@ export class Run extends DurableObject<Env> {
       }
       chosen ??= Branch.choose(branches)
       if (branches[chosen]!.state === 'timeout')
-        Ledger.update(this.sql, row.id, {
+        this.amend(row, {
           failure: JSON.stringify(
             (queued === branches.length
               ? {
@@ -3795,8 +3823,9 @@ export class Run extends DurableObject<Env> {
         chosen,
         ...(fork ? { fork } : {}),
         ...(picked ? { picker: picked } : {}),
+        session: current.session!,
       }
-      this.putArtifact(row.id, Branch.record, JSON.stringify(record, null, 2) + '\n')
+      this.keep(row, Branch.record, JSON.stringify(record, null, 2) + '\n')
       return { agent: decided(record) }
     }
     const first = await read(input.body)
@@ -3839,7 +3868,7 @@ export class Run extends DurableObject<Env> {
     const task = this.task(row.task)
     const now = Date.now()
     Timeline.add(this.sql, { at: now, attempt: row.id, name: 'attempt.verify' })
-    Ledger.update(this.sql, row.id, {
+    this.amend(row, {
       ...(body.solve && Verdict.timeoutCodes.includes(body.solve.code)
         ? {
             failure: JSON.stringify({
@@ -3883,9 +3912,10 @@ export class Run extends DurableObject<Env> {
       } catch (error) {
         return { error: message(error), state: 'invalid' }
       }
-      this.putArtifact(row.id, judgeRequest, body.request)
+      this.keep(row, judgeRequest, body.request)
       try {
-        for (const [index, entry] of requests.entries())
+        for (const [index, entry] of requests.entries()) {
+          this.mine(row)
           await Harness.submit(this.env, row.session + '-judge-' + index, {
             model: config.judge.model,
             payer: this.payer(config.judge.provider),
@@ -3894,10 +3924,11 @@ export class Run extends DurableObject<Env> {
             requestId: judgeRequestId,
             ...(config.judge.thinking ? { thinking: config.judge.thinking } : {}),
           })
+        }
       } catch (error) {
         throw await this.unpaid(row, error)
       }
-      Ledger.update(this.sql, row.id, {
+      this.amend(row, {
         phase: 'judge',
         phase_at: now,
         timing: Ledger.mark(row.timing, 'judge', { at: now, edge: 'start' }),
@@ -3929,13 +3960,32 @@ export class Run extends DurableObject<Env> {
       requests,
       reports.map((report) => report.ok?.message ?? ''),
     )
-    this.putArtifact(row.id, judgeResponse, response)
-    Ledger.update(this.sql, row.id, {
+    this.keep(row, judgeResponse, response)
+    this.amend(row, {
       phase: 'verify',
       phase_at: now,
       timing: Ledger.mark(row.timing, 'judge', { at: now, edge: 'finish' }),
     })
     return { response, state: 'answered' }
+  }
+
+  private async unowned(row: Ledger.Attempt): Promise<string | undefined> {
+    if (Config.harness(this.agentOf(row)) !== 'session') return Claim.unowned({ row })
+    const branches = this.branches(row)
+    const record = branches > 1 ? this.branchRecord(row) : undefined
+    const turns = this.textArtifact(row.id, Turn.record)
+    const turn = row.session
+      ? await Harness.turn(
+          this.env,
+          Branch.session(row.session, record?.chosen ?? 0),
+          requestId,
+        ).catch((error: unknown) => {
+          if (error instanceof Harness.LostError || error instanceof Harness.RequestError)
+            return undefined
+          throw error
+        })
+      : undefined
+    return Claim.unowned({ row, session: { branches, record, requestId, turn, turns } })
   }
 
   private async finish(row: Ledger.Attempt, body: Protocol.Finish): Promise<Protocol.Finished> {
@@ -3988,7 +4038,7 @@ export class Run extends DurableObject<Env> {
           },
           reward: null,
         }
-      Ledger.update(this.sql, row.id, {
+      this.amend(row, {
         timing: Ledger.mark(row.timing, 'verifier', { at: now, edge: 'finish' }),
       })
     } else if (body.failure) {
@@ -4022,9 +4072,17 @@ export class Run extends DurableObject<Env> {
         reward: null,
       }
     } else throw new Refusal(400, 'finishing an attempt reports a verifier or a failure')
+    const unowned = body.verifier ? await this.unowned(row) : undefined
+    if (unowned !== undefined)
+      end = {
+        ...end,
+        failure: { at: now, kind: 'internal', message: Claim.refusedPrefix + unowned },
+        reward: null,
+      }
     if (row.session && row.phase === 'run' && this.submitted(row))
       for (const name of [...this.branchSessions(row), ...this.verifierSessions(row)])
         await this.halt(name)
+    const current = this.mine(row)
     const statuses = this.sql
       .all(
         'SELECT status FROM model_requests WHERE attempt = ? AND claim = ? AND status IS NOT NULL',
@@ -4065,10 +4123,10 @@ export class Run extends DurableObject<Env> {
     if (cause && Ledger.retriable(this.sql, { id: row.id, limit: config.limits.claims })) {
       Ledger.explain(this.sql, { claim: row.claim!, error: cause + ': ' + end.failure!.message })
       Timeline.add(this.sql, { at: now, attempt: row.id, name: 'attempt.retried' })
-      await this.lose(Ledger.get(this.sql, row.id)!, 'retried')
+      await this.lose(current, 'retried')
       return { evict: false }
     }
-    await this.complete(Ledger.get(this.sql, row.id)!, end)
+    if (!(await this.complete(current, end))) throw new Refusal(410, Claim.gone)
 
     const disk = (name: string) => {
       const environment = this.task(name).environment
@@ -4092,7 +4150,7 @@ export class Run extends DurableObject<Env> {
       oomKills?: number
       reward: number | null
     },
-  ): Promise<void> {
+  ): Promise<boolean> {
     const meta = this.meta()!
     const config = this.config()
     const task = this.task(row.task)
@@ -4102,11 +4160,13 @@ export class Run extends DurableObject<Env> {
     const now = Date.now()
     const judges = this.judgeSessions(row)
     const judgeUsage: Atif.Usage[] = []
+    const kept: [string, string][] = []
+    let requested: number | undefined
     for (const name of judges) {
       try {
         judgeUsage.push(Atif.usage(await Harness.events(this.env, name, judgeRequestId)))
       } catch (error) {
-        this.putArtifact(row.id, 'verifier/judge-error.txt', message(error))
+        kept.push(['verifier/judge-error.txt', message(error)])
       }
       await this.remove(name)
     }
@@ -4119,13 +4179,9 @@ export class Run extends DurableObject<Env> {
           verifierUsage.push(Atif.usage(events))
           const index = this.probed(row)[at]!
           for (const [file, body] of Object.entries(this.projected(row, { events, session: name })))
-            this.putArtifact(
-              row.id,
-              file.replace(/^agent\//, 'agent/verifier-' + index + '/'),
-              body,
-            )
+            kept.push([file.replace(/^agent\//, 'agent/verifier-' + index + '/'), body])
         } catch (error) {
-          this.putArtifact(row.id, 'agent/verifier-error.txt', message(error))
+          kept.push(['agent/verifier-error.txt', message(error)])
         }
       await this.remove(name)
     }
@@ -4143,37 +4199,35 @@ export class Run extends DurableObject<Env> {
           const projected = Object.entries(this.projected(row, { events, session: name }))
           if (index !== chosen) {
             for (const [file, body] of projected)
-              this.putArtifact(
-                row.id,
-                file.replace(/^agent\//, 'agent/branch-' + index + '/'),
-                body,
-              )
+              kept.push([file.replace(/^agent\//, 'agent/branch-' + index + '/'), body])
             continue
           }
           reported = Route.reported(events)
-          const requested = Timeline.modelRequest(events)
-          if (requested !== undefined)
-            Timeline.add(this.sql, { at: requested, attempt: row.id, name: 'attempt.model' })
-          for (const [file, body] of projected) this.putArtifact(row.id, file, body)
+          requested = Timeline.modelRequest(events)
+          kept.push(...projected)
         }
         usage = usages.length === 1 ? usages[0]! : Atif.sum(usages)
         if (agent.picker && verifierUsage.length) usage = Atif.sum([usage, ...verifierUsage])
       } catch (error) {
-        this.putArtifact(row.id, 'agent/events-error.txt', message(error))
+        kept.push(['agent/events-error.txt', message(error)])
       }
     }
+    if (!Ledger.current(this.sql, row)) return false
+    for (const [name, body] of kept) this.putArtifact(row.id, name, body)
+    if (requested !== undefined)
+      Timeline.add(this.sql, { at: requested, attempt: row.id, name: 'attempt.model' })
     const kind = this.installed(row)
     if (kind && end.collect !== false && ['judge', 'run', 'verify'].includes(row.phase)) {
       const stream = this.textArtifact(row.id, Installed.events) ?? ''
       const summary = Installed.summarize(kind, stream)
       const metered = this.metered(row)
-      const requested = this.sql.all(
+      const first = this.sql.all(
         'SELECT MIN(at) AS at FROM model_requests WHERE attempt = ? AND claim = ?',
         row.id,
         row.claims,
       )[0]?.['at']
-      if (typeof requested === 'number')
-        Timeline.add(this.sql, { at: requested, attempt: row.id, name: 'attempt.model' })
+      if (typeof first === 'number')
+        Timeline.add(this.sql, { at: first, attempt: row.id, name: 'attempt.model' })
       usage = {
         ...metered,
         costUsd: metered.costUsd ?? summary.costUsd,
@@ -4312,12 +4366,14 @@ export class Run extends DurableObject<Env> {
         ? {}
         : { verifierMaxSec: config.limits.verifierMaxSec }),
     }
-    Ledger.finish(this.sql, {
+    const finished = Ledger.finish(this.sql, {
+      claim: row.claim,
       ...(end.ending ? { ending: end.ending } : {}),
       id: row.id,
       now,
       result,
     })
+    if (!finished) return false
     if (row.phase !== 'unclaimed')
       Timeline.add(this.sql, { at: Date.now(), attempt: row.id, name: 'attempt.verdict' })
     for (const name of sessions) this.cursors.delete(name)
@@ -4325,5 +4381,6 @@ export class Run extends DurableObject<Env> {
     if (this.finished()) this.wake()
     if (row.session && row.phase !== 'unclaimed' && row.phase !== 'claimed' && !kind)
       for (const name of sessions) await this.remove(name)
+    return true
   }
 }
