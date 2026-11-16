@@ -425,6 +425,7 @@ function responses(
   if (preflighted) preflightInputs.push(text)
   const arrived = (() => {
     if (!branching || backend === 'dir') return undefined
+    if (picking && text.includes('You are an independent verifier')) return undefined
     const key = body.prompt_cache_key
     if (key === undefined) throw new Error('a branch asks its model without a prompt_cache_key')
     if (!branchSessions.has(key)) branchSessions.set(key, branchSessions.size)

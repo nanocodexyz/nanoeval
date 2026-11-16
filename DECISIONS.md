@@ -7846,3 +7846,8 @@ A directory slot has no image. Its verifier root is an empty directory, an artif
 - `test/Cascade.test.ts` (the keys' round trip and refusals, the deadline split, the stage of each branch, the handoff, the pick and the usage record), `npm test` (607 tests, 602 pass, 5 skipped, 0 fail), `npm run check:types` and `vp check`.
 
 **Not verified.** A real model, an executor cancelled at its share of the time, a fix on another provider than the executor's, and a live fork of a krun or ns slot (no KVM here).
+## 2026-11-15: verifier sessions do not take a branch's turn in the scripted model
+
+**Problem.** On 099ad72 the KVM lanes ran `picker-lazy` with verdicts fail, pass, fail where the test expected fail, fail, pass, the same on krun and ns. On guest backends the scripted model makes the third session to ask (in order of `prompt_cache_key`) the right branch. In `picker-lazy` the trunk's verifier asks before the two forked branches, so it took arrival index 1, and branch 1 became the right one. The code was correct. The same run's assertion that the kept branch passed the hidden tests held, so the verifier passed exactly the branch the grader passed. Verdicts are recorded by branch index (`verifyBranch(index)` reads `Branch.session(session, index)` and probes `Picker.slot(base, index)`).
+
+**Behavior.** The scripted model skips verifier requests when it counts branch arrivals, so branch 2 is the right branch on every backend, as on directory slots.
