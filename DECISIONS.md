@@ -8150,3 +8150,23 @@ The arm it is for is `nano-med-nosub=claude:claude-opus-5-5:medium:subagents=off
 **Checked.** On 2026-11-16, on a 5-core Linux machine without KVM and Node 24.22.1, from a fresh clone of this commit: `npm ci`, `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test`, each with exit status 0. `test/Forward.test.ts` is new, 4 tests.
 
 **Not verified.** When this was written: the e2e jobs and the krun job of `ci.yml`. A real Workers AI binding, a deployed Worker, and fx, opencode or pi against this route: that their chat completions clients read the binding's stream is not shown here. What Workers AI answers when an account is out of credit, as a thrown error or as a `Response`, was not observed.
+
+## 2026-11-16: the package pins nanocode-ts build-304046b
+
+**The pin.** `package` pins nanocode-ts `build-304046b` (nanocode-ts master 304046b1dc39ac898208538cce5d118c011a7ae9, nanocode ccc66f3236627a18c082d0dc6af0a484e795696d, WASM build e8275406c56fff6a60ec) in place of `build-acdb751`. The hand stays `nanocode-cli-1a946f3`. The release tarball as downloaded has 58,275,632 bytes and the SHA-256 9b70ffb990bc60012c0072a10852d4e750ebf51715aa3d35e2ad0c3ec56e5bf8, which is the digest GitHub records for the release asset, and the integrity in `package-lock.json` is its SHA-512. The `package.json` of the tarball is the same bytes as that of `build-acdb751`, the two tarballs hold the same list of files, and the files of the bundled `node_modules` are the same bytes, so only the address and the integrity changed in the lock.
+
+**What the build contains.** nanocode-ts 304046b is one commit after acdb751, and nanocode ccc66f323 is four commits after dc09e1baf. Read in the commit messages and in the `DECISIONS.md` of the two repositories, not run here:
+
+| nanocode | What it changes | A session that names no new field |
+| --- | --- | --- |
+| f78d0f841, d4a9ef0d7 | `DECISIONS.md` only | No code changes |
+| d5928d314 | A Claude request writes the cached system and tools JSON into its body once, where it serialized them into two strings first and copied those | The requests are unchanged, as the commit states: it dumped every request body of a mock harness from both builds and `cmp` found no difference |
+| ccc66f323 | `CodexBuilder::verification_requested`: a `<verification_request>` block after the host instructions of a Codex session | The requests are unchanged, as the commit states: 8 of 8 system prompt and host instruction outputs with the option off are equal to those of its parent |
+
+The declarations of the package differ from `build-acdb751` in `Contracts.d.ts` and `cloudflare/App.d.ts` only: the optional field `verification_requested?: boolean` on `CodexOptions` and on the session descriptor, and `verification_requested` in `codexSwitches`. `dist/cloudflare/App.js` differs in that one name only. `nanocode_wasm.wasm` is another build, as its fingerprint says. `python.wasm` and the Pyodide snapshot are other bytes too (28,947,423 bytes against 28,948,893), though no commit of the two ranges names the Python interpreter: that difference is seen in the tarballs and not explained here.
+
+**An arm across the pins.** As the release states it, and not measured here: a Claude arm behaves on this pin as on `build-acdb751`. The one commit of the range that touches the Claude client, d5928d314, changes how a request body is built and leaves its bytes the same. A Codex arm that names no new option sends the same requests too, by ccc66f323. A comparison of two arms still holds within one pin only, because this repository compared no request of the two builds.
+
+**Checked.** `npm ci`, which verifies the tarball against the integrity of the lock, `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test` from a fresh clone, with the change of the next entry.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM, a deployed Worker on this pin, and a model. The request bodies of d5928d314 and the prompts of ccc66f323 are read from the commits, not measured here.
