@@ -8338,3 +8338,11 @@ An open task lets its agent search and fetch the web. A benchmark whose tasks, r
 - A deployed Worker and a run with a model. No run was made with this change.
 - The pinned Claude Code reading `--settings` with a hook. The hook was run with `sh` on the JSON a PreToolUse hook receives, not inside Claude Code.
 - That the provider honours `blocked_domains` on the nested search request of Claude Code. That is the documented behaviour of the filter, not a read of a response.
+## 2026-11-16: a candidate arm is an overlay file
+
+A harness search writes many candidate arms and needs each one with its parent, what it changes and why. Until now an arm existed only as a hand-written `--agent` string. `src/Overlay.ts` reads a `nanoeval-overlay/1` object and `nanoeval overlay` turns a directory of them into `--agent` arguments.
+
+- The agent rules of `Config.parse` moved into `Config.parseAgents`, unchanged, so an overlay is refused exactly where a run would refuse its agent rather than by a second copy of the rules.
+- `harness` names the five harnesses of `--agent` and stands for provider and orchestration, so those, with id, model, thinking and api, are not levers.
+- A lever this checkout does not know is refused, not passed through: a setting no Worker takes yet belongs in `pending`, which keeps the overlay valid and marks it not runnable, so a search can record a candidate before the Worker can run it.
+- The agent string comes from `agentText`, the table `parseAgent` reads, and `test/Overlay.test.ts` round-trips `parseAgent(agentText(compile(overlay)))` for every lever, with a sample per key that must cover the whole lever list, so a lever added to `agentKeys` without one fails the test.

@@ -313,28 +313,23 @@ export function rerunAgents(parent: readonly Agent[], ids: readonly string[]): A
   return parent.filter((agent) => ids.includes(agent.id))
 }
 
-export function parse(value: unknown): Config {
-  const config = value as Config
-  const fail = (message: string): never => {
-    throw new InvalidError(message)
-  }
-  const integer = (candidate: unknown, name: string, minimum: number) =>
-    Number.isSafeInteger(candidate) && (candidate as number) >= minimum
-      ? (candidate as number)
-      : fail(name + ' must be an integer of at least ' + minimum)
-  const amount = (candidate: unknown, name: string) =>
-    typeof candidate === 'number' && Number.isFinite(candidate) && candidate >= 0
-      ? candidate
-      : fail(name + ' must be a non-negative number')
-  const choice = <T extends string>(candidate: unknown, name: string, choices: readonly T[]): T =>
-    choices.includes(candidate as T)
-      ? (candidate as T)
-      : fail(name + ' must be one of ' + choices.join(', '))
+const fail = (message: string): never => {
+  throw new InvalidError(message)
+}
 
-  if (typeof config !== 'object' || config === null) fail('the run configuration is not an object')
-  if (typeof config.name !== 'string' || !config.name) fail('name is required')
-  if (!Array.isArray(config.agents) || !config.agents.length) fail('at least one agent is required')
-  const agents = config.agents.map((agent: Agent) => {
+const integer = (candidate: unknown, name: string, minimum: number) =>
+  Number.isSafeInteger(candidate) && (candidate as number) >= minimum
+    ? (candidate as number)
+    : fail(name + ' must be an integer of at least ' + minimum)
+
+const choice = <T extends string>(candidate: unknown, name: string, choices: readonly T[]): T =>
+  choices.includes(candidate as T)
+    ? (candidate as T)
+    : fail(name + ' must be one of ' + choices.join(', '))
+
+export function parseAgents(value: unknown): Agent[] {
+  if (!Array.isArray(value) || !value.length) fail('at least one agent is required')
+  const agents = (value as Agent[]).map((agent: Agent) => {
     if (typeof agent?.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(agent.id))
       fail('an agent id is letters, digits, dots, dashes and underscores')
     if (typeof agent.model !== 'string' || !agent.model) fail(agent.id + ' names no model')
@@ -636,6 +631,19 @@ export function parse(value: unknown): Config {
     fail('agent ids must be unique')
   if (agents.some((agent) => agent.provider === 'oracle') && agents.length > 1)
     fail('an oracle run has the oracle as its only agent')
+  return agents
+}
+
+export function parse(value: unknown): Config {
+  const config = value as Config
+  const amount = (candidate: unknown, name: string) =>
+    typeof candidate === 'number' && Number.isFinite(candidate) && candidate >= 0
+      ? candidate
+      : fail(name + ' must be a non-negative number')
+
+  if (typeof config !== 'object' || config === null) fail('the run configuration is not an object')
+  if (typeof config.name !== 'string' || !config.name) fail('name is required')
+  const agents = parseAgents(config.agents)
 
   let judge: Judge | undefined
   if (config.judge !== undefined) {
