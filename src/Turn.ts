@@ -5,6 +5,7 @@ export type Turn = {
   briefFinish?: true
   cellYieldMs?: number
   clearingCacheFloors?: true
+  contextWindow?: number
   deadline?: { atMs: number; limitMs: number }
   escalateContextTokens?: number
   escalateModel?: string
@@ -16,7 +17,10 @@ export type Turn = {
   hand?: string
   lateFinishCheckMs?: number
   leanCells?: true
+  lenientPatches?: true
   lowEffortRounds?: true
+  maxOutputTokens?: number
+  minWaitMs?: number
   model: string
   orchestration?: 'direct' | 'jobs'
   payer?: Config.Payer
@@ -48,6 +52,7 @@ function levers(turn: Turn): Record<string, true> {
     ...(turn.finishCheck ? { finish_check: true as const } : {}),
     ...(turn.foldFinish ? { fold_finish: true as const } : {}),
     ...(turn.leanCells ? { lean_cells: true as const } : {}),
+    ...(turn.lenientPatches ? { lenient_patches: true as const } : {}),
     ...(turn.lowEffortRounds ? { low_effort_rounds: true as const } : {}),
     ...(turn.persistFinish ? { persist_finish: true as const } : {}),
     ...(turn.skipFinishCheck ? { skip_finish_check: true as const } : {}),
@@ -57,6 +62,9 @@ function levers(turn: Turn): Record<string, true> {
 
 function losses(turn: Turn): Record<string, number | string> {
   return {
+    ...(turn.contextWindow === undefined ? {} : { context_window: turn.contextWindow }),
+    ...(turn.maxOutputTokens === undefined ? {} : { max_output_tokens: turn.maxOutputTokens }),
+    ...(turn.minWaitMs === undefined ? {} : { min_wait_ms: turn.minWaitMs }),
     ...(turn.finishRetries === undefined ? {} : { finish_retries: turn.finishRetries }),
     ...(turn.lateFinishCheckMs === undefined
       ? {}

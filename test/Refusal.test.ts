@@ -37,7 +37,7 @@ test('the command prints a refusal as one line and exits 1', () => {
   const agent = run('run', ...there, '--eval', 'samples', '--agent', 'bad')
   assert.equal(
     agent.stderr,
-    'nanoeval: an agent is ID=HARNESS:MODEL[:THINKING][:branches=[lazy]N][:picker=verify|verify_lazy][:verifier_model=MODEL][:refusal_fallback=return_once|session][:cell_yield_ms=N][:brief_finish=on][:fold_finish=on][:low_effort_rounds=on][:brief_final=on][:lean_cells=on][:escalate_model=MODEL][:escalate_tool_errors=N][:escalate_context_tokens=N][:tool_result_tokens=N][:persist_finish=on][:skip_finish_check=on][:late_finish_check_ms=N][:result_effort=low|medium|high|xhigh|max][:stop_at_target=on][:yield_floor_ms=N][:yield_share=N][:finish_retries=N][:finish_check=on][:finish_ambiguity=on][:tool_result_clearing=KEEP/TOKENS][:subagents=off][:clearing_cache_floors=on], not bad\n',
+    'nanoeval: an agent is ID=HARNESS:MODEL[:THINKING][:branches=[lazy]N][:picker=verify|verify_lazy][:verifier_model=MODEL][:refusal_fallback=return_once|session][:cell_yield_ms=N][:brief_finish=on][:fold_finish=on][:low_effort_rounds=on][:brief_final=on][:lean_cells=on][:escalate_model=MODEL][:escalate_tool_errors=N][:escalate_context_tokens=N][:tool_result_tokens=N][:persist_finish=on][:skip_finish_check=on][:late_finish_check_ms=N][:result_effort=low|medium|high|xhigh|max][:stop_at_target=on][:yield_floor_ms=N][:yield_share=N][:finish_retries=N][:finish_check=on][:finish_ambiguity=on][:tool_result_clearing=KEEP/TOKENS][:subagents=off][:clearing_cache_floors=on][:lenient_patches=on][:min_wait_ms=N][:max_output_tokens=N][:context_window=N], not bad\n',
   )
   assert.equal(agent.status, 1)
   const option = run('run', '--tag', 'x')
