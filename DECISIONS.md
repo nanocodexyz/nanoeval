@@ -8009,6 +8009,128 @@ The launcher now takes the glibc build only when a glibc loader path exists and 
 
 Checked: a unit test runs the launcher of Claude Code against a directory of loaders: a glibc loader alone and beside musl takes the glibc build, musl alone, a link to musl and a stub that names musl take the musl build, and no loader ends with 127. Run once on a krun slot with Claude Code 2.1.318 and that image, on a task of the closed SWE-bench Pro form: before the change the attempt ended at the loader with no model request, and with it the agent made 5 model requests and exited 0.
 
+## 2026-11-16: the package pins nanocode-ts build-5630e0f
+
+**The pin.** `package` pins nanocode-ts `build-5630e0f` (nanocode-ts master 5630e0f6a0976a150b68a4249118399252ef56d0, nanocode b19220112213691591a2a2f1ae5d1a682a417698) in place of `build-7b8677c`. The hand stays `nanocode-cli-1a946f3`. The release tarball as downloaded has 58,320,999 bytes and the SHA-256 ec8f412e1d2cd5f1f7ba512fc996a2c22a48321c18dfb47e9676c0ba297b90aa, and the integrity in `package-lock.json` is its SHA-512. The `package.json` of the tarball names the dependencies, the peer dependencies, the bundled dependencies and the exports of `build-7b8677c`, and the files of its bundled `node_modules` are the same bytes, so only the address and the integrity changed in the lock.
+
+**What the build contains.** nanocode-ts 5630e0f is three commits after 7b8677c, and nanocode b19220112 is five commits after 1b62f5c8b. Read in the commit messages and in the `DECISIONS.md` of the two repositories, not run here:
+
+| nanocode | What it changes | A session that names no new field |
+| --- | --- | --- |
+| c55648a2c | The turn log skips an evicted index page whose key filter lacks the owner | No field or request changes |
+| d3137af0b | The build of the release binaries | Not in a session |
+| 9951a4bf8, d2253c609 | `ClaudeBuilder::finish_ambiguity`: one more bullet in the headless finish notice while less than half of the deadline has elapsed | Every notice is the same bytes |
+| b19220112 | `ClaudeBuilder::tool_result_clearing(keep, at_least_tokens)`: how many recent tool results history clearing keeps whole and the batch it clears older ones in, in place of the fixed 12 results and 20,000 tokens | The requests are unchanged, 62 of 62 mock request bodies equal by the commit |
+
+The declarations of the package differ from `build-7b8677c` in `Contracts.d.ts` and `cloudflare/App.d.ts` only: the type `ToolResultClearing` (`at_least_tokens`, `keep`), the optional session fields `finish_ambiguity` and `tool_result_clearing`, and `finish_ambiguity` in `finishLevers`. Both fields are off unless a session names them, so an agent of this repository is the arm it was on `build-7b8677c` until it names one of the options of the next entry. The default of `build-7b8677c` stays: a Claude Opus session runs no finish check unless its agent asks for one.
+
+**Checked.** `npm ci`, which verifies the tarball against the integrity of the lock, `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test` from a fresh clone, with the change of the next entry.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM, a deployed Worker on this pin, and a model.
+
+## 2026-11-16: an agent may name finish_ambiguity and tool_result_clearing
+
+**Why.** The pinned nanocode-ts `build-5630e0f` takes two session fields that no agent of this repository could name, see the entry above. Without an option, no run could set a session with either of them beside one without.
+
+**What.** Two more entries of the table of options in `cli/nanoeval.ts`, after `:finish_check=on` and so after `:yield_share=N`, in this order and last in the one order:
+
+| Option | Run configuration | What every turn of the session sends | Who takes it |
+| --- | --- | --- | --- |
+| `:finish_ambiguity=on` | `"finishAmbiguity": true` | `finish_ambiguity: true` | `claude`, `claude-direct` among them |
+| `:tool_result_clearing=KEEP/TOKENS`, such as `2/10000` | `"toolResultClearing": { "atLeastTokens": TOKENS, "keep": KEEP }` | `tool_result_clearing: { "at_least_tokens": TOKENS, "keep": KEEP }` | `claude`, `claude-direct` among them |
+
+An example is `nano-med-clear=claude:claude-opus-5-5:medium:finish_ambiguity=on:tool_result_clearing=2/10000`. `agent/turns.jsonl` names both fields. Both are off by default. An agent without them sends nothing new: its turn body and its line of `agent/turns.jsonl` are the same bytes as before.
+
+**The field names.** They are read from the declarations of the `build-5630e0f` tarball: `finish_ambiguity?: boolean` and `tool_result_clearing?: Contracts.ToolResultClearing` on the session request of `dist/cloudflare/App.d.ts`, and `ToolResultClearing = { at_least_tokens: number; keep: number }` in `dist/Contracts.d.ts`. nanocode-ts answers 400 to an object with another key and to a value that is not a whole number of zero or more.
+
+**finish_ambiguity.** nanocode-ts passes the field to `ClaudeBuilder::finish_ambiguity`. Read in nanocode 9951a4bf8, not run: the builder runs the headless finish check for a session that names it, on a model whose ID starts with `claude-opus-` too, and while less than half of the deadline has elapsed, or with no deadline, the finish notice gains one bullet, which asks the model to list each place the task statement can be read two ways and to settle it by the literal wording and examples. So `:finish_ambiguity=on` alone asks for the check, as `:finish_check=on` does, and the two may go in one arm. The option is one more of `Config.finishLevers`: only `on` is a value, a `codex` agent, an installed agent and the oracle are refused with "has a finishAmbiguity, which only a claude session takes", and the configuration refuses it with `skipFinishCheck`, since nanocode would run the check for a session that sends both.
+
+**tool_result_clearing.** nanocode-ts passes the object to `ClaudeBuilder::tool_result_clearing(keep, at_least_tokens)` and adds it to the session key. Read in nanocode b19220112, not run: history clearing keeps the `keep` most recent tool results whole and clears older ones in batches of at least `at_least_tokens` tokens, in place of the fixed 12 results and 20,000 tokens. The agent text is two whole numbers with a slash between them, KEEP first. The configuration takes an object of `atLeastTokens` and `keep` and nothing else, each a whole number of zero or more, which is what nanocode-ts takes, and refuses it for a provider that is not `claude`. It follows `tool_result_tokens` in whom it admits, so a `claude-direct` agent takes it. It is a different thing from `tool_result_tokens`, which bounds the result of one code cell, and one arm may name both.
+
+**An earlier build.** A Worker on `build-7b8677c` or earlier ignores `finish_ambiguity`. It copies `tool_result_clearing` neither to its session nor to its session key, read in the difference of the two builds of `dist/cloudflare/App.js`. An arm with either option on such a Worker is the arm without it.
+
+**Checked.** `test/FinishAmbiguity.test.ts` and `test/ToolResultClearing.test.ts` (new, 3 tests each: the spec, its place in the order and its text read back for `claude` and `claude-direct`; an empty value, another value, a second occurrence and another place refused; the configuration takes it and refuses malformed values, other providers and, for `finish_ambiguity`, `skip_finish_check` with it; a turn sends the field only when named, and a turn without it is the same bytes, with the body of a plain turn written out). The usage line in ten places of eight other test files names the two options, and the name of one test of `test/FinishCheck.test.ts` no longer says that `finish_check` is last. `npm test`: 619 tests, 614 pass, 0 fail, 5 skipped on a machine without KVM, where the tree before this change has 613 tests. `npm run check:types`, `npm run lint` and `npm run dry-run` pass.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM. A Worker on this pin, a model, and a session that took either field. No end-to-end lane names the options.
+
+## 2026-11-16: the package pins nanocode-ts build-acdb751
+
+**The pin.** `package` pins nanocode-ts `build-acdb751` (nanocode-ts master acdb7518a9503264812c4bbf87466c506915fae7, nanocode dc09e1baf21d20e09b9f82b954a23f7cd8923c63, WASM build f954f3ee5f8157850f95) in place of `build-5630e0f`. The hand stays `nanocode-cli-1a946f3`. The release tarball as downloaded has 58,248,417 bytes and the SHA-256 849487795bd89a7390b873305bc1b107c250270b74e54dcb5a3e8a6aeeaf956a, which is the digest GitHub records for the release asset, and the integrity in `package-lock.json` is its SHA-512. The `package.json` of the tarball is the same bytes as that of `build-5630e0f`, and so are the files of its bundled `node_modules`, so only the address and the integrity changed in the lock.
+
+**What the build contains.** nanocode-ts acdb751 is two commits after 5630e0f, and nanocode dc09e1baf is three commits after b19220112. Read in the commit messages and in the `DECISIONS.md` of the two repositories, not run here:
+
+| nanocode | What it changes | A session that names no new field |
+| --- | --- | --- |
+| 36dd8652d | The turn log counts only rewritten section bytes in its snapshot rule and loads the index root lazily | No field or request changes |
+| 59df7a1bb | The finish notice v2 becomes the headless default: the notice gains two bullets (each number the task states is computed and compared, a named library call keeps its defaults), and its input bullet asks for a run on an input that must stay unchanged. The default notice grows from 2,007 to 2,396 bytes by the commit | **Changed** for every session that runs the finish check. A session that runs none sends the same requests |
+| dc09e1baf | `ClaudeBuilder::clearing_cache_floors`: two cache breakpoints at the boundaries of the last two tool result clearings | The requests are unchanged: by the commit, 406 of 406 mock request bodies are equal once session IDs, paths and wall times are normalized |
+
+The declarations of the package differ from `build-5630e0f` in `Contracts.d.ts` and `cloudflare/App.d.ts` only: the optional session field `clearing_cache_floors?: boolean`, and `clearing_cache_floors` in `finishLevers`. `dist/cloudflare/App.js` differs in that one name only.
+
+**An arm across the pins.** A row on this pin is not the same arm as a row on `build-7b8677c` or on `build-5630e0f`. An agent whose session runs the finish check sends the finish notice v2, which is the longer one. That is every Sonnet, Haiku and other non-Opus Claude agent without `:skip_finish_check=on`, and an Opus agent with `:finish_check=on`, `:finish_retries=N`, `:late_finish_check_ms=N` or `:finish_ambiguity=on`. An Opus agent that names none of them runs no finish check, as from `build-7b8677c`, and by the commits no request of its session changes, which is read and not measured here. A comparison of two arms holds within one pin only.
+
+**With the options of the entries above.** This change is made on main 6a49cbc merged with `pin-5630e0f` f23bf1e, so main gets `finish_ambiguity` and `tool_result_clearing` together with this pin. `DECISIONS.md` was the only conflict of the merge, and both sides are kept.
+
+**Checked.** `npm ci`, which verifies the tarball against the integrity of the lock, `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test` from a fresh clone, with the change of the next entry.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM, a deployed Worker on this pin, and a model. The notice of 59df7a1bb and the request bodies of dc09e1baf are read, not measured here.
+
+## 2026-11-16: an agent may name clearing_cache_floors
+
+**Why.** The pinned nanocode-ts `build-acdb751` takes one session field that no agent of this repository could name, see the entry above. Without an option, no run could set a session with it beside one without.
+
+**What.** One more entry of the table of options in `cli/nanoeval.ts`, after `:tool_result_clearing=KEEP/TOKENS` and last in the one order:
+
+| Option | Run configuration | What every turn of the session sends | Who takes it |
+| --- | --- | --- | --- |
+| `:clearing_cache_floors=on` | `"clearingCacheFloors": true` | `clearing_cache_floors: true` | `claude`, `claude-direct` among them |
+
+An example is `nano-med-floors=claude:claude-opus-5-5:medium:clearing_cache_floors=on`. `agent/turns.jsonl` names the field. It is off by default. An agent without it sends nothing new: its turn body and its line of `agent/turns.jsonl` are the same bytes as before.
+
+**The field name.** It is read from the declarations of the `build-acdb751` tarball: `clearing_cache_floors?: boolean` on the session request of `dist/cloudflare/App.d.ts` and in `dist/Contracts.d.ts`, and `clearing_cache_floors` in `finishLevers`. nanocode-ts answers 400 to a value that is not a boolean, adds the name to the session key of a session that sends `true`, and passes it to `ClaudeBuilder::clearing_cache_floors`.
+
+**What it does.** Read in nanocode dc09e1baf, not run. History clearing changes the bytes of a tool result inside the cached prefix, so the longest cached prefix falls back to the system prompt and every later message is written to the cache again. With the field, a request with no image floor keeps two cache breakpoints: one before the first result that the latest clearing kept, and one where the clearing before it started. The prefix up to the earlier boundary is then read from the cache. The two breakpoints take the slots of the tools tail and of the second system marker. The commit models -6.21% of the input cost and -13.07% of the cache-write tokens on a replay of six turns against a mock, and that is its measurement, not one of this repository.
+
+**How it is taken.** The option is one more of `Config.finishLevers`, as the field is one of the `finishLevers` of nanocode-ts, though it is no part of the finish check: only `on` is a value, and a `codex` agent, an installed agent and the oracle are refused with "has a clearingCacheFloors, which only a claude session takes". It changes where a request places its cache breakpoints and nothing of the finish check, so the configuration takes it with `skipFinishCheck` and with every other option. It needs no `:tool_result_clearing=KEEP/TOKENS`: the clearing of nanocode, 12 results and 20,000 tokens, has boundaries too, and the two options may go in one arm.
+
+**An earlier build.** A Worker on `build-5630e0f` or earlier copies `clearing_cache_floors` neither to its session nor to its session key, read in the difference of the two builds of `dist/cloudflare/App.js`. An arm with the option on such a Worker is the arm without it.
+
+**Checked.** `test/ClearingCacheFloors.test.ts` (new, 3 tests: the spec, its place in the order and its text read back for `claude` and `claude-direct`; an empty value, another value, a second occurrence and another place refused; the configuration takes it, also with `skip_finish_check`, and refuses malformed values and other providers; a turn sends the field only when named, and a turn without it is the same bytes, with the body of a plain turn written out). `test/Lever.test.ts` refuses each malformed value and each other provider for every name of `Config.finishLevers`, this one among them. The usage line in twelve places of ten other test files names the option, and the name of one test of `test/ToolResultClearing.test.ts` no longer says that `tool_result_clearing` is last. `npm test`: 628 tests, 623 pass, 0 fail, 5 skipped, and the skips need KVM. `npm run check:types`, `npm run lint` and `npm run dry-run` pass.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM. A Worker on this pin, a model, and a session that took the field. No request body with the two breakpoints was read here, and no cache write was counted. No end-to-end lane names the option.
+
+## 2026-11-16: an agent may turn the subagents of its session off
+
+**Why.** A `claude` session of this repository opens with nanocode's subagent tools, and no agent could name a session without them. Without an option, no run could set a session without the tools beside one with them.
+
+**What.** One more entry of the table of options in `cli/nanoeval.ts`, after `:tool_result_clearing=KEEP/TOKENS` and last in the one order:
+
+| Option | Run configuration | What every turn of the session sends | Who takes it |
+| --- | --- | --- | --- |
+| `:subagents=off` | `"subagents": false` | `subagents: false` | `claude`, `claude-direct` among them |
+
+The arm it is for is `nano-med-nosub=claude:claude-opus-5-5:medium:subagents=off`. `agent/turns.jsonl` names the field for an agent that names the option. It is off by default. An agent without it sends nothing new: its turn body and its line of `agent/turns.jsonl` are the same bytes as before.
+
+**The mechanism is a session field, not a flag of a command line.** A `claude` agent is a nanocode-ts session that the Worker hosts, and `src/Turn.ts` writes the body of each of its turns. It has no command line. The line `exec "$@" exec` of `src/Installed.ts` starts the installed agents `nanocode-claude` and `nanocode-codex` only, a vendor command line inside the slot, and this change does not touch it. The field name is read from the declarations of the pinned `build-5630e0f` tarball: `subagents?: boolean` on `SessionDescriptor` of `dist/cloudflare/App.d.ts` and on `AgentConfiguration` of `dist/Contracts.d.ts`.
+
+**What the field does.** Read in nanocode-ts 5630e0f and in nanocode b19220112, not run. `dist/cloudflare/App.js` answers 400 to a value that is not a boolean, stores the value with the session, adds it to the session key, and answers 409 "session subagents is immutable; create a new session" to a later turn that names another value. `src/wasm.rs` calls `builder.without_subagents()` for a session whose value is `false`. In nanocode, `without_subagents` makes the runtime build no subagent registry, so no harness receives the tools that start, message, list, wait for, interrupt or close another agent. `--no-subagents` of the nanocode command line calls the same `without_subagents`, in `bin/nanocode/src/host.rs`. So the option is that flag for a session.
+
+**Who takes it.** `claude` only, `claude-direct` among them. The only value of the agent text is `off`, and the only value of the configuration is `false`: `true` is refused, because the default already has the tools and one arm must have one spelling. A `codex` agent is refused with "has a subagents, which only a claude session takes": `Turn.body` already sends `subagents: false` with every turn of a `codex` session, and its line of `agent/turns.jsonl` does not name the field, both unchanged. An installed agent and the oracle are refused with the same sentence. The verifier session of a picker and the judge sessions do not take the option of the agent.
+
+**Checked.** `test/SubagentsOff.test.ts` (new, 3 tests: the spec, its place last in the order and its text read back for `claude` and `claude-direct`; an empty value, `on`, `false`, another value, a second occurrence and another place refused; the configuration takes `false` and refuses other values and other providers; a turn sends the field only when named, a turn without it is the same bytes, and the body and the line of a plain turn, of a turn with the option and of a `codex` turn are written out). The usage line in twelve places of ten other test files names the option, and the name of one test of `test/ToolResultClearing.test.ts` no longer says that `tool_result_clearing` is last. `npm test`: 622 tests, 617 pass, 0 fail, 5 skipped (the skips need KVM; 619 tests before, the 3 new are this file). `npm run check:types`, `npm run lint` and `npm run dry-run` pass.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM. A Worker on this pin, a model, a session that took the field, and the size of the first request of a session with and without the tools. No end-to-end lane names the option.
+
+## 2026-11-16: subagents comes before clearing_cache_floors in the order of the options
+
+**Why.** The two entries above were written on two branches, and each says that its option is the last of the one order. main takes both.
+
+**What.** The order of the options ends in `finish_ambiguity`, `tool_result_clearing`, `subagents`, `clearing_cache_floors`. An agent that names the last two is `x=claude:claude-opus-5-5:medium:subagents=off:clearing_cache_floors=on`, and the other order is refused, as any other place of an option is. Neither option changes what the other sends. The README and the usage text of `cli/nanoeval.ts` name the order.
+
+**Checked.** The usage line of the tests names both options. `test/ClearingCacheFloors.test.ts` reads back an agent with both and refuses `clearing_cache_floors` before `subagents`. `npm test`: 631 tests, 626 pass, 0 fail, 5 skipped, and the skips need KVM. `npm run check:types`, `npm run lint` and `npm run dry-run` pass.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM, a Worker, a model, and a session with both fields.
+
 ## 2026-11-16: an installed agent on a @cf/ model is answered by the Workers AI binding
 
 **Why.** An installed agent on chat completions (`fx-chat`, `opencode-chat`, `pi-chat`) takes the Worker's OpenAI credential, whatever its model. On a Worker whose OpenAI credential is a ChatGPT plan login, a request for `@cf/deepseek-ai/deepseek-v4.1-flash-1017` went to that login and never to Workers AI. A `codex` session on the same model is answered by the Workers AI binding of the Worker (`worker/Sessions.ts`). The two could not be set beside each other on one Worker.
