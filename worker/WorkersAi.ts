@@ -21,17 +21,19 @@ function failed(status: number, message: string): Response {
   })
 }
 
-function chunk(line: string, model: string): string {
-  if (!line.startsWith('data:')) return line
+function event(line: string): Record<string, unknown> | undefined {
+  if (!line.startsWith('data:')) return undefined
   const payload = line.slice('data:'.length).trim()
-  if (!payload.startsWith('{')) return line
-  const value = (() => {
-    try {
-      return JSON.parse(payload) as Record<string, unknown>
-    } catch {
-      return undefined
-    }
-  })()
+  if (!payload.startsWith('{')) return undefined
+  try {
+    return JSON.parse(payload) as Record<string, unknown>
+  } catch {
+    return undefined
+  }
+}
+
+function chunk(line: string, model: string): string {
+  const value = event(line)
   if (!value || 'choices' in value || value['response'] !== '' || !value['usage']) return line
   return 'data: ' + JSON.stringify({ choices: [], model, usage: value['usage'] })
 }
@@ -51,6 +53,63 @@ function trailer(model: string): TransformStream<string, string> {
   })
 }
 
+function last(model: string): TransformStream<string, string> {
+  let held: string[] | undefined
+  let rest = ''
+  const read = (lines: readonly string[]) => {
+    const out: string[] = []
+    for (const line of lines) {
+      if (held?.length === 1 && line === '') {
+        held.push(line)
+        continue
+      }
+      if (line.startsWith('data:') && line.slice('data:'.length).trim() === '[DONE]') {
+        out.push(...(held ?? []), line)
+        held = undefined
+        continue
+      }
+      const value = event(line)
+      if (!value || !('usage' in value)) {
+        out.push(line)
+        continue
+      }
+      const choices = value['choices']
+      if (choices === undefined) {
+        const total = chunk(line, model)
+        if (total !== line) held = undefined
+        out.push(total)
+        continue
+      }
+      if (Array.isArray(choices) && choices.length === 0) {
+        held = [line]
+        continue
+      }
+      const { usage: _usage, ...kept } = value
+      out.push('data: ' + JSON.stringify(kept))
+    }
+    return out
+  }
+  return new TransformStream({
+    flush(controller) {
+      const whole = held
+      const out = read(rest ? [rest] : [])
+      const text =
+        held === undefined
+          ? out.join('\n')
+          : held === whole
+            ? [...held, ...out].join('\n') + (out.length ? '' : '\n')
+            : [...out, ...held].join('\n')
+      if (text) controller.enqueue(text)
+    },
+    transform(text, controller) {
+      const lines = (rest + text).split('\n')
+      rest = lines.pop() ?? ''
+      const out = read(lines)
+      if (out.length) controller.enqueue(out.join('\n') + '\n')
+    },
+  })
+}
+
 /** The status a thrown Workers AI error answers with: 429 for capacity and rate limits, else 502. */
 export function status(error: unknown): number {
   const text = error instanceof Error ? error.message : String(error)
@@ -63,8 +122,10 @@ export function status(error: unknown): number {
  * Answers a session's `POST …/ai/v1/chat/completions` through the binding instead of the REST address.
  * The request body (a chat completions request naming its `@cf/` model) goes to `AI.run` unchanged, and the
  * model's chat completions answer comes back as it is: a stream of server-sent events, or one JSON object.
+ * With `usage: 'last'` a stream carries its usage once, in a last chunk without choices, as chat completions
+ * with `stream_options.include_usage` does: the usage the binding writes on each chunk is left out.
  */
-export function fetcher(ai: Binding, options: { gateway?: string } = {}): Fetch {
+export function fetcher(ai: Binding, options: { gateway?: string; usage?: 'last' } = {}): Fetch {
   return async (url, init) => {
     if (init.method !== 'POST' || !new URL(url).pathname.endsWith('/ai/v1/chat/completions'))
       return failed(404, 'the Workers AI binding serves chat completions only')
@@ -91,7 +152,7 @@ export function fetcher(ai: Binding, options: { gateway?: string } = {}): Fetch 
       return new Response(
         answer
           .pipeThrough(new TextDecoderStream())
-          .pipeThrough(trailer(model))
+          .pipeThrough(options.usage === 'last' ? last(model) : trailer(model))
           .pipeThrough(new TextEncoderStream()),
         {
           headers: { 'cache-control': 'no-cache', 'content-type': 'text/event-stream' },

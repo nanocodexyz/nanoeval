@@ -144,6 +144,55 @@ test('a chat completions request of an installed agent for a @cf/ model is answe
   }
 })
 
+test('an installed agent reads the usage of a Workers AI stream once, in its last chunk, and the meter reads the same totals', async () => {
+  const provider = await upstream()
+  try {
+    const stream =
+      'data: {"id":"a","model":"' +
+      model +
+      '","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}],"usage":{"prompt_tokens":5028,"completion_tokens":0,"total_tokens":5028}}\n\n' +
+      'data: {"id":"a","model":"' +
+      model +
+      '","choices":[{"index":0,"delta":{"content":"!"},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":1,"total_tokens":1}}\n\n' +
+      'data: {"id":"a","model":"' +
+      model +
+      '","choices":[],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"prompt_tokens_details":{"cached_tokens":4608}}}\n\n' +
+      'data: {"response":"","usage":{"prompt_tokens":5028,"completion_tokens":250,"total_tokens":5278,"prompt_tokens_details":{"cached_tokens":4608}}}\n\n' +
+      'data: [DONE]\n\n'
+    const { ai } = binding(() => new Response(stream).body)
+    const sent = await send(
+      { ...credentials(provider.url), AI: ai, WORKERS_AI_ACCOUNT_ID: 'abc' },
+      { body: JSON.stringify(chat), path: 'chat/completions' },
+    )
+    assert.equal(
+      sent.text,
+      'data: {"id":"a","model":"' +
+        model +
+        '","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}\n\n' +
+        'data: {"id":"a","model":"' +
+        model +
+        '","choices":[{"index":0,"delta":{"content":"!"},"finish_reason":"stop"}]}\n\n' +
+        'data: {"choices":[],"model":"' +
+        model +
+        '","usage":{"prompt_tokens":5028,"completion_tokens":250,"total_tokens":5278,"prompt_tokens_details":{"cached_tokens":4608}}}\n\n' +
+        'data: [DONE]\n\n',
+    )
+    assert.deepEqual(
+      sent.outcomes.map((outcome) => [outcome.route, outcome.status, outcome.usage]),
+      [
+        [
+          'workers-ai',
+          200,
+          { cacheWriteTokens: 0, cachedTokens: 4608, inputTokens: 5028, model, outputTokens: 250 },
+        ],
+      ],
+    )
+    assert.deepEqual(provider.seen, [])
+  } finally {
+    await provider.close()
+  }
+})
+
 test('a @cf/ request of an installed agent is refused when the Worker has no Workers AI binding or no account, and no credential is asked', async () => {
   const provider = await upstream()
   try {
