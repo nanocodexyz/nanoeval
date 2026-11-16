@@ -560,3 +560,33 @@ test('a verifier cache is named by the disk, the tests, the verifier variables a
   )
   assert.throws(() => Config.parse(config({ ...krun, verifierCache: 'yes' })), Config.InvalidError)
 })
+
+test('a run serves the package archive to its verifiers only when it asks, on krun and ns slots', () => {
+  const config = (sandbox: Record<string, unknown>) => ({
+    agents: [{ id: 'haiku', model: 'claude-haiku-4-5', provider: 'claude' }],
+    attempts: 1,
+    budget: { sandboxUsd: 0 },
+    eval: { name: 'example' },
+    limits: { attachSec: 60, claims: 3, leaseSec: 60, setupSec: 600, stepRetries: 3 },
+    name: 'example',
+    sandbox: { max: 1, pollMs: 250, provider: 'local', slots: 4, timeoutSec: 60, ...sandbox },
+  })
+  const krun = { backend: 'krun', network: 'private' }
+  assert.equal(Config.parse(config(krun)).sandbox.packageArchive, undefined)
+  assert.equal(
+    Config.parse(config({ ...krun, packageArchive: false })).sandbox.packageArchive,
+    undefined,
+  )
+  assert.equal(Config.parse(config({ ...krun, packageArchive: true })).sandbox.packageArchive, true)
+  for (const backend of ['auto', 'ns'])
+    assert.equal(
+      Config.parse(config({ backend, network: 'private', packageArchive: true })).sandbox
+        .packageArchive,
+      true,
+    )
+  assert.throws(
+    () => Config.parse(config({ backend: 'dir', network: 'host', packageArchive: true })),
+    Config.InvalidError,
+  )
+  assert.throws(() => Config.parse(config({ ...krun, packageArchive: 'yes' })), Config.InvalidError)
+})

@@ -191,7 +191,8 @@ const usage = `nanoeval <command>
             [--model-requests-per-min [MODEL=]REQUESTS]... [--agent-max-sec N]
             [--verifier-max-sec N] [--no-deadline]
             [--lease-sec 60] [--claims 3] [--step-retries 3] [--poll-ms 250]
-            [--disks keep|remove] [--free-disk-mb N] [--verifier-cache] [--name NAME] [--wait]
+            [--disks keep|remove] [--free-disk-mb N] [--package-archive] [--verifier-cache]
+            [--name NAME] [--wait]
             [--key-deposit N] [--key-top-up N]
             [--out DIR] [--location HINT] [--warm-sec N [--warm-budget-usd 0]]
             [--payer deployment|plan] [--web-blocklist NAME|FILE]
@@ -290,6 +291,8 @@ const usage = `nanoeval <command>
             With --disks remove, the default for --provider e2b and gateway, a runner removes
             each environment disk it unpacked once no row of the run needs it. With --free-disk-mb, a runner claims only while its
             machine has that much free disk, and prepares one environment at a time.
+            With --package-archive, every runner of the run serves the verifiers of its krun
+            and ns slots as runner --package-archive does, so every arm of the run gets it.
             With --verifier-cache, the verifier of a krun or ns slot finds what uv downloaded for
             the same task on this machine before, when an oracle run with the option kept it.
             An agent's HARNESS is claude or codex, a nanocode session outside the slot,
@@ -2201,6 +2204,9 @@ export function rerunConfig(
       ...(slots === undefined ? {} : { slots }),
       ...(template === undefined ? {} : { template }),
       ...(own.sandbox.timeoutSec === undefined ? {} : { timeoutSec: own.sandbox.timeoutSec }),
+      ...(own.sandbox.packageArchive || parent.sandbox.packageArchive
+        ? { packageArchive: true as const }
+        : {}),
       ...(own.sandbox.verifierCache || parent.sandbox.verifierCache
         ? { verifierCache: true as const }
         : {}),
@@ -3732,6 +3738,9 @@ async function main(
         ...(values.template ? { template: values.template } : {}),
         ...(values['sandbox-timeout-sec']
           ? { timeoutSec: Number(values['sandbox-timeout-sec']) }
+          : {}),
+        ...(values['package-archive'] || parent?.sandbox.packageArchive
+          ? { packageArchive: true as const }
           : {}),
         ...(values['verifier-cache'] || parent?.sandbox.verifierCache
           ? { verifierCache: true as const }

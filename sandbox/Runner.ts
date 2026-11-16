@@ -611,7 +611,8 @@ async function attend(
     ...(options.store ? [Store.directory(options.store)] : []),
     Store.remote({ base: base + '/blobs', token: options.config.token }),
   ]
-  const archived = process.env['NANOEVAL_PACKAGE_ARCHIVE'] !== undefined
+  const archived =
+    process.env['NANOEVAL_PACKAGE_ARCHIVE'] !== undefined || options.config.packageArchive === true
   const archives = new Map<string, Archive.Open>()
   const work = new Map<string, Work>()
   const up = new Set<Work>()
