@@ -7825,3 +7825,9 @@ A directory slot has no image. Its verifier root is an empty directory, an artif
 - Every verifier first counts the `.vmark-*` files in its workdir, then leaves one of its own. The lanes assert that every verifier counted 0. Three verifiers sharing one slot, or one verifier reaching another's slot, would count at least 1. The check holds on every backend.
 - The `pwd` check stays as an extra assertion on directory slots.
 - Unchanged, on every backend: `agent/probes.json` lists each branch once, the cheat scan is 0 and 0, and the kept branch passes after every verifier vandalised the graded file in its probe slot.
+
+## 2026-11-15: verifier sessions do not take a branch's turn in the scripted model
+
+**Problem.** On 099ad72 the KVM lanes ran `picker-lazy` with verdicts fail, pass, fail where the test expected fail, fail, pass, the same on krun and ns. On guest backends the scripted model makes the third session to ask (in order of `prompt_cache_key`) the right branch. In `picker-lazy` the trunk's verifier asks before the two forked branches, so it took arrival index 1, and branch 1 became the right one. The code was correct. The same run's assertion that the kept branch passed the hidden tests held, so the verifier passed exactly the branch the grader passed. Verdicts are recorded by branch index (`verifyBranch(index)` reads `Branch.session(session, index)` and probes `Picker.slot(base, index)`).
+
+**Behavior.** The scripted model skips verifier requests when it counts branch arrivals, so branch 2 is the right branch on every backend, as on directory slots.
