@@ -20,15 +20,16 @@ can run. Start one probe instance before a fleet:
 
 and read its line in the Containers logs of the dashboard (or `wrangler tail`).
 
-If loop devices or mounts are refused but /dev/fuse is there, ns slots need fuse2fs and
-fuse-overlayfs in place of losetup and the kernel overlay; slot.sh does not do that yet.
+If loop devices or mounts are refused but /dev/fuse is there, ns slots need fuse2fs for the base disk and
+fuse-overlayfs in place of the loop mounts and kernel overlay of slot.sh (base.ext4, upper.ext4); slot.sh does not do that yet.
 
 ## Size
 
-Terminal-Bench 2.1: 84 of 89 tasks ask 1 vCPU, 69 ask 2 GiB, 17 ask 4 GiB, 3 ask 8 GiB, every one
-10 GiB of storage; four images are 6 to 9 GB compressed (mteb-leaderboard, mteb-retrieve,
-hf-model-inference, pytorch-model-recovery) and do not fit the 20 GB disk of a standard-4 with
-anything else. A standard-4 (4 vCPU, 12 GiB, 20 GB) holds 4 rows of 1 vCPU and 2 GiB, or 2 of 4 GiB.
+Terminal-Bench 2.1 tasks ask 1 to 4 vCPU and 2 to 8 GiB, and every one asks 10 GiB of storage, so all 89 fit a
+standard-4. Their environments are not pulled from a registry: the 89 packed disks (19.16 GB, largest 1.40 GB)
+are blobs the nanoeval Worker serves from R2, which the runner fetches and unpacks. Unpacked, all of them do not fit
+the 20 GB disk of one instance, so run with --free-disk-mb and let each instance keep only the disks it uses.
+A standard-4 (4 vCPU, 12 GiB, 20 GB) holds 4 rows of 1 vCPU and 2 GiB, or 2 of 4 GiB.
 
 | instance | vCPU | GiB | rows each | instances by the 1,500 vCPU / 6 TiB account limit | rows per account |
 | --- | --- | --- | --- | --- | --- |
@@ -36,9 +37,7 @@ anything else. A standard-4 (4 vCPU, 12 GiB, 20 GB) holds 4 rows of 1 vCPU and 2
 | standard-3 | 2 | 8 | 2 | 750 | 1,500 |
 | standard-2 | 1 | 6 | 1 | 1,000 (memory) | 1,000 |
 
-The task images are pulled and converted to disks inside each instance, so they do not count
-against the 50 GB of image storage an account has (the 89 images are 49 GB compressed). The
-runner image does.
+Only the runner image counts against the 50 GB of image storage an account has; task disks come from R2.
 
 ## Credentials
 
