@@ -4706,6 +4706,11 @@ async function main(): Promise<void> {
           'the trunk forks when its verifier fails',
         )
         assert.ok(artifacts.includes(Branch.forkRecord))
+        assert.deepEqual(
+          Object.keys(JSON.parse(await read(Picker.probeScan)) as Picker.ProbeScan).sort(),
+          ['0', '1', '2'],
+          'the scan of every probe slot is kept, also of the trunk probe forked before the others',
+        )
       } else assert.equal(record.fork, undefined)
       assert.deepEqual(
         JSON.parse(await read(Picker.probes)) as number[],

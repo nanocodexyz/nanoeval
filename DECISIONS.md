@@ -7877,6 +7877,92 @@ On `583b4f8`, the nanoeval lane's KVM box passed e2e-krun, e2e-ns and krun at 59
 
 On `5a36d52`, the nanoeval lane ran fresh clones on its KVM box (2026-11-16 01:16 UTC): all 138 of 138 steps passed. The KVM lanes passed 59 of 59 on the first try: e2e-krun 40, e2e-ns 16, krun 3. Two e2e-dir steps failed once while that box's disk was saturated, then passed alone on a retry.
 
+## 2026-11-16: the Worker admits a row by the slots it holds
+
+**Problem.** The nanoeval lane found this at 509d9f6 on canary3. A runner offers its free slots, and `Admission.fill` handed it one row per free slot. So a 12-slot runner could be handed 12 picker rows, which hold 72 slots: three branch slots and three probe slots each. The runner already counted a row's slots (`Picker.slots`, branches or twice the branches for a picker) in its own load. The Worker's claim did not. The lane bounded picker rows in flight with one-slot runners instead.
+
+**Behavior.**
+- `Ledger.claim` takes `slotsOf(row)`, and the Worker passes `Picker.slots(agent)`: 1 for a plain agent, `branches` for a branching one, and `2 * branches` for a picker.
+- `Admission.fill` counts that weight against the offered slots. It also scales the row's CPUs and memory by the weight, each clamped to the runner's capacity so a heavy row is never starved.
+- A row heavier than every free slot of an idle runner (its free memory is all its memory) is still taken, alone, so a one-slot runner still runs picker rows. A busy runner does not take a row heavier than its free slots.
+- Rows of plain agents are admitted as before.
+
+**Checked.** Hosted Hand: `npm test` 603 pass, 0 fail (a new test in `test/Ledger.test.ts`), plus `npm run check:types` and `vp check`. The fresh-clone ci.yml result follows before merge. This is a Worker change, so it reaches runs only with a deploy.
+
+**CI.** `2ec9bc5` is `0fb9e87` with main `a75dce8` merged in (DECISIONS.md conflict only). Its fresh-clone ci.yml on a hosted Hand passed 138 of 138: check 5, e2e-dir 70, e2e-krun 40, e2e-ns 16, e2e-revision 4, krun 3, where the KVM steps skip without KVM. The nanoeval lane's KVM box passed 59 of 59 on `2ec9bc5`, every step on its first try (2026-11-16 03:33 UTC): e2e-krun 40, e2e-ns 16, krun 3. It also passed 59 of 59 on `0fb9e87`.
+
+## 2026-11-16: every probe slot's hidden-path scan is kept
+
+**Problem.** The VPICK smoke (run `673c5245` on canary3, 509d9f6) found two gaps in the probe-slot scan.
+- The vpick3 row's `agent/probe-scan.json` held branches 1 and 2 only. Probe 0 forked 38 s before the others, and the runner wrote the file from the probes of the current batch, so the later upload replaced it. `picker.cheatScan.probeHiddenPaths` counted from that file, so it missed probe 0.
+- On directory slots, `slot.sh _fork` never wrote `hidden`: its `dir)` branch came after an earlier `dir)` arm of the same `case` and could not be reached. The scan read as empty there. krun and ns slots were scanned, so the smoke's KVM rows were scanned, apart from the overwritten probe 0.
+
+**Behavior.**
+- `slot.sh _fork` writes `hidden` on directory slots in the reachable `dir)` arm.
+- On each probe batch, the runner writes `agent/probe-scan.json` from every probe slot of the row that has a `hidden` file, not only the slots of that batch.
+- The e2e lane `picker-lazy` asserts that the scan holds probes 0, 1 and 2, with the trunk's probe forked before the other two.
+
+**Checked.** Hosted Hand: `npm run check:types`, `vp check`, and the dir e2e lanes `picker` and `picker-lazy`. Only the runner changed (`sandbox/slot.sh`, `sandbox/Runner.ts`). The Worker and `src/Protocol.ts` did not, so a runner at this commit serves the canary3 Worker (509d9f6).
+## 2026-11-16: an agent may name finish_retries, how many times the finish check sends a turn back
+
+**Problem.** nanocode 80fe87002 lets a session set how many times the finish check of its Claude harness may send a turn back to the model before the turn ends. nanocode-ts `build-15cffb1` (which pins nanocode 80fe87002) takes it as an optional field of a turn, `finish_retries`, a positive whole number. Builds before it ignore the field. No agent of a run could set it, so a run could not hold an arm with more retries beside an arm with the default.
+
+**Behavior.** An agent spec may end in `:finish_retries=N`, after `:yield_share=N` and last in the one order of the options, such as `nano-med-retry=claude:claude-opus-5-5:medium:finish_retries=1`. A run configuration names it `{ "provider": "claude", "finishRetries": 1 }`. Every turn of such an agent sends `finish_retries: N` with the other session fields and names it in `agent/turns.jsonl`. An agent without it sends nothing new: its turn body is the same bytes as before. The configuration refuses an N that is not a whole number of at least 1. It also refuses `finishRetries` with `skipFinishCheck`, because one removes the finish check the other sets the retries of. Only a `claude` agent takes it, `claude-direct` among them, since nanocode reads it in its Claude harness only. A `codex` agent, an installed agent and the oracle are refused with "has a finishRetries, which only a claude session takes".
+
+**The pin.** Unchanged, `build-1d85e83`, which ignores the field. An arm that names it does what it says only on a Worker pinned to `build-15cffb1` or later.
+
+**Checked.** On the hosted Hand, in the tree of this commit before it was made: `test/FinishRetries.test.ts` (new, 3 tests: the spec, its place in the order and its text read back for `claude` and `claude-direct`; bad values, a second occurrence and another place refused; the configuration takes it, refuses 0, a negative, a fraction, a string, other providers and `skip_finish_check` with it; a turn sends `finish_retries` only when named, and an agent without it sends the same bytes). The usage line in six other test files names the new option. `npm test`, `npm run check:types`, `npm run lint` and `npm run dry-run`.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone. A Worker on `build-15cffb1`, a model, and a session that took the field.
+
+
+## 2026-11-16: the package pins nanocode-ts build-7b8677c, and a Claude Opus session runs no finish check unless its agent asks for one
+
+**The pin.** `package` pins nanocode-ts `build-7b8677c` (nanocode-ts master 7b8677c101892f0d81b08b29fd54d865d92c7e53, nanocode 1b62f5c8ba4aec018d6bf31e464fd0742894710f) in place of `build-1d85e83`. The hand stays `nanocode-cli-1a946f3`. The release tarball as downloaded has 58,273,205 bytes and the SHA-256 cd68c66800ca5df5cf7d1c63d50b4cf052f71612b9cd0a380fdc330e5f33a8af, and the integrity in `package-lock.json` is its SHA-512. The `package.json` of the tarball names the dependencies, the peer dependencies and the bundled dependencies of the lock entry of `build-1d85e83`, so only the address and the integrity changed in the lock.
+
+**The default that changed.** From nanocode 1adee5c97, a headless root session of the Claude harness on a model whose ID starts with `claude-opus-` adds no finish notice after its first final message. Every eval session of this repository opens headless. An Opus agent of `claude` or `claude-direct` that names no finish option therefore ends its turn at the first final message on this pin, as an agent with `:skip_finish_check=on` did on `build-1d85e83`. Effort does not change the default. On Opus the check still runs for an agent that names `:finish_retries=N` or `:late_finish_check_ms=N`, and for one that names `:finish_check=on`, the option of the next entry. Sonnet, Haiku and every other Claude model keep the check by default, and `:skip_finish_check=on` still removes it there. The Codex harness has a finish check of its own, which this build does not change.
+
+**Results before and after this pin are not the same arm.** An agent such as `nano-med=claude:claude-opus-5-5:medium` is a session with the finish check on every pin up to `build-1d85e83` and a session without it from this pin. Its text, its turn body and its lines of `agent/turns.jsonl` are the same bytes on both. Only the `harness` a run records, the nanocode-ts build of its Worker, tells the two apart. A comparison of an Opus agent across this pin compares two arms unless one side names the option that makes them one:
+
+| An Opus agent that names | up to `build-1d85e83` | from `build-7b8677c` |
+| --- | --- | --- |
+| no finish option | check | no check |
+| `:skip_finish_check=on` | no check | no check |
+| `:finish_check=on` | not an option | check |
+| `:finish_retries=N` or `:late_finish_check_ms=N` | `finish_retries` ignored, late check as named | check |
+
+So the Opus arm without an option of an earlier run is the arm `:finish_check=on` of a run on this pin, and the Opus arm without an option of a run on this pin is the arm `:skip_finish_check=on` of an earlier run. An agent of another Claude model is the same arm on both sides of the pin as far as this default goes.
+
+**Options that word the check.** Read in `crates/backends/claude/src/agent/rounds.rs` of nanocode 1b62f5c8b, not run: `brief_finish` and `persist_finish` change the text of the finish notice, so on an Opus agent without the check `brief_finish` changes nothing. `fold_finish` adds its folded notice to the first prompt whether the check runs or not, and `persist_finish` still reaches that notice. `brief_final` and `stop_at_target` do not depend on the check.
+
+**What else the build contains.** nanocode 1b62f5c8b is 22 commits after 42e37d2cf, the nanocode of `build-1d85e83`. Read by their subjects, and 1adee5c97 by its diff, these reach a session of this repository: a turn whose final round is empty after one reprompt ends instead of failing, in both harnesses. The chat parser accepts the usage trailer frame of a Workers AI stream, a frame without `choices`. A turn may name `finish_retries`, and its fresh-attempt notice asks for a run on an input the task did not show and on one that must come out unchanged. A turn may name `finish_check_min_requests`, which no agent here can name. A codex session may name six options (`codex_options` and `context_window`), which no agent here can name. The resume note of a subagent is capped at 8 KiB. The finish notice gains a bullet for the cases the task statement names, and the final reply names the checks that ran. That last change reaches every session that runs the check, so a Sonnet or Haiku agent is sent another finish notice than on `build-1d85e83`. Beside `build-1d85e83`, the declarations of the package differ in two files. `Contracts.d.ts` and `cloudflare/App.d.ts` gain optional fields only (`finish_check`, `finish_check_min_requests`, `finish_retries`, `context_window` and a `codex_options` group of `compact_instructions`, `lean_tool_arguments`, `lenient_patches`, `max_output_tokens` and `min_wait_ms`), `finishLevers` gains `finish_check`, and two lists of codex options are new. No field was removed or made required, so the pin alone changes no source file of this repository.
+
+**The trailer rewrite stays.** `worker/WorkersAi.ts` still sends the usage trailer of a binding stream as a chat completions chunk, although the parser of this build accepts the native frame. The rewrite also repairs the meter: the trailer is the only frame with the true token counts, and `Proxy.meter` reads them from the chunk. It also serves an installed agent, whose own parser reads the stream without nanocode.
+
+**Why nanocode changed the default.** Its own DECISIONS.md of 2026-11-16 gives the measurements: Opus at medium effort with and without the check on Terminal-Bench 2.1 tasks and on a trap suite. They are not repeated here and were not checked here. Sonnet, Haiku and the Codex harness were not in them, which is why their default stays.
+
+**Checked.** On 2026-11-16, on a 5-core Linux machine without KVM and Node 24.22.1, in a tree of main 5abaeea merged with `feat/finish-retries` 4207268, with this pin and the agent option of the next entry: `npm ci` (it verifies the integrity), `npm run lint` (210 files formatted, 197 linted, no warnings), `npm run check:types` (the Node sources and the Worker), `npm run dry-run`, and `npm test`: 613 tests, 608 pass, 5 skipped, 0 fail. No expectation of a test changed for the pin. No end-to-end lane names a model whose ID starts with `claude-opus-`: the scripted model answers as `claude-haiku-4-5`, so the lanes that count the finish check of a Claude turn count what they counted.
+
+**Not verified.** When this was written: the e2e jobs and the krun job of `ci.yml`. A model and a deployed Worker on this pin, so neither the skipped check of an Opus session nor the check that `finish_check` asks for was seen at work here. nanocode's own check counts the requests of one headless turn against a mock: 1 for Opus by default, 2 with `finish_check`, `finish_retries`, a late check or a request threshold, 2 for Sonnet and Haiku. Most commits of nanocode between the two pins were read by their subjects only.
+
+## 2026-11-16: an agent may name finish_check, the finish check that a Claude Opus session no longer runs by default
+
+**Why.** On the pinned nanocode-ts `build-7b8677c` a headless session of a model whose ID starts with `claude-opus-` runs no finish check unless its session asks for one, see the entry above. Without an option, no run on this pin could have the Opus arm of the runs before it, and the two could not be set beside each other in one run.
+
+**What.** An agent may end in `:finish_check=on`, after `:finish_retries=N` and last in the one order, such as `nano-med-check=claude:claude-opus-5-5:medium:finish_check=on`. A run configuration names it `{ "provider": "claude", "finishCheck": true }`. Every turn of such a session sends `finish_check: true`, the session field that nanocode-ts passes to `ClaudeBuilder::finish_check`, and `agent/turns.jsonl` names it. An agent without it sends nothing new: its turn body is the same bytes as before. The option is one more entry of the table of options in `cli/nanoeval.ts` and one more of `Config.finishLevers`, so it is parsed, validated and written back as `skip_finish_check` is. Only `on` is a value. Only a `claude` agent takes it, `claude-direct` among them: a `codex` agent, an installed agent and the oracle are refused with "has a finishCheck, which only a claude session takes". The configuration also refuses `finishCheck` with `skipFinishCheck`. nanocode would run the check for a session that sends both, and an arm that names both says two things. It goes with `finish_retries` and `late_finish_check_ms`, each of which runs the check without it. On a model that is not Opus the option changes the turn body and nothing nanocode does.
+
+**The default, stated once more for a reader of results.** An Opus agent that names none of `:finish_check=on`, `:finish_retries=N` and `:late_finish_check_ms=N` runs no finish check on this pin and ran one on every pin before it. The agent text does not say which. The result of such an arm before this pin and its result after it are not results of the same arm. `:finish_check=on` on this pin is the arm that had no option before, and no option on this pin is the arm that named `:skip_finish_check=on` before.
+
+**The verifier of a picker.** The verifier session of a `claude` agent with `:picker=verify` or `:picker=verify_lazy` runs `claude-opus-5-5` unless the agent names `verifier_model`, and its turn names no finish option. It is a headless root session of its own, so on this pin it runs no finish check either. `finish_check` goes to the turns of the agent's own sessions and not to its verifier. A picker arm of a `claude` agent therefore differs across the pin in its verifier as well, and no option brings the check of the verifier back. Whether the verifier should ask for it is not decided here. A `codex` verifier is not changed. Read in `worker/Run.ts` and `src/Picker.ts`, not run.
+
+**With finish_retries.** This change is made on main 5abaeea merged with `feat/finish-retries` 4207268, so main gets `finish_retries` and `finish_check` together with the pin that reads both. `Config.agentKeys`, the list of agent keys a Worker knows, gains `finishRetries` and `finishCheck`: the branch of `finish_retries` was cut before that list reached main.
+
+**Checked.** In the tree of the entry above: `test/FinishCheck.test.ts` (new, 3 tests: the spec, its place in the order and its text read back for `claude` and `claude-direct`, with `finish_retries` and with a late check; an empty value, `1`, `true`, `off`, a second occurrence and another place refused; the configuration takes it, refuses another value than `true`, other providers and `skip_finish_check` with it; a turn sends `finish_check` only when named, and an agent without it sends the same bytes). The usage line in seven other test files names the new option, and the name of one test of `test/FinishRetries.test.ts` no longer says that `finish_retries` is last. `npm test`: 613 tests, 608 pass, 5 skipped, 0 fail. `npm run check:types`, `npm run lint` and `npm run dry-run` pass.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM. A Worker on this pin, a model, and a session that took the field. No end-to-end lane names the option.
+
+**CI.** `0663a0e` is `6f82369` with main `8bda5e3` merged in (DECISIONS.md conflict only). Its fresh-clone ci.yml on a hosted Hand passed 138 of 138: check 5, e2e-dir 70, e2e-krun 40, e2e-ns 16, e2e-revision 4, krun 3, where the KVM steps skip without KVM. The nanoeval lane's KVM box passed 59 of 59 on `0663a0e`, every step on its first try (2026-11-16 03:06 UTC). It also passed 59 of 59 on `6f82369`.
+
 ## 2026-11-16: `import --closed` imports the closed form of a task that checks its tests out of the fix commit
 
 **The problem.** The SWE-bench Pro task directories of Harbor verify with `git checkout FIX -- PATHS`: the last line of `before_repo_set_cmd` in `tests/config.json`, which `tests/test.sh` evaluates in the repository of the agent. So the image must hold the fix commit or be able to fetch it, and an agent with `git` reads the fix from `git show`, from the object store, or from the forge. A score on such a task does not separate an agent that wrote the fix from one that read it.

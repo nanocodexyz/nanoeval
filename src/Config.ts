@@ -28,6 +28,8 @@ export type Agent = {
   escalateContextTokens?: number
   escalateModel?: string
   escalateToolErrors?: number
+  finishCheck?: true
+  finishRetries?: number
   foldFinish?: true
   id: string
   lateFinishCheckMs?: number
@@ -60,6 +62,8 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'escalateContextTokens',
   'escalateModel',
   'escalateToolErrors',
+  'finishCheck',
+  'finishRetries',
   'foldFinish',
   'id',
   'lateFinishCheckMs',
@@ -106,6 +110,7 @@ export const efforts: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'ma
 export const finishLevers = [
   'briefFinal',
   'briefFinish',
+  'finishCheck',
   'foldFinish',
   'leanCells',
   'lowEffortRounds',
@@ -413,12 +418,21 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude')
         fail(agent.id + ' has a yieldShare, which only a claude session takes')
     }
+    if (agent.finishRetries !== undefined) {
+      integer(agent.finishRetries, agent.id + ': finishRetries', 1)
+      if (provider !== 'claude')
+        fail(agent.id + ' has a finishRetries, which only a claude session takes')
+      if (agent.skipFinishCheck !== undefined)
+        fail(agent.id + ' has a skipFinishCheck and a finishRetries, which never go in one arm')
+    }
     for (const lever of finishLevers) {
       if (agent[lever] === undefined) continue
       if (agent[lever] !== true) fail(agent.id + ' has a ' + lever + ' that is not true')
       if (provider !== 'claude')
         fail(agent.id + ' has a ' + lever + ', which only a claude session takes')
     }
+    if (agent.finishCheck !== undefined && agent.skipFinishCheck !== undefined)
+      fail(agent.id + ' has a skipFinishCheck and a finishCheck, which never go in one arm')
     if (agent.persistFinish !== undefined) {
       if (agent.persistFinish !== true) fail(agent.id + ' has a persistFinish that is not true')
       if (provider !== 'claude' && provider !== 'codex')
@@ -442,6 +456,8 @@ export function parse(value: unknown): Config {
       ...(agent.escalateToolErrors === undefined
         ? {}
         : { escalateToolErrors: agent.escalateToolErrors }),
+      ...(agent.finishCheck ? { finishCheck: true as const } : {}),
+      ...(agent.finishRetries === undefined ? {} : { finishRetries: agent.finishRetries }),
       ...(agent.foldFinish ? { foldFinish: true as const } : {}),
       id: agent.id,
       ...(agent.lateFinishCheckMs === undefined

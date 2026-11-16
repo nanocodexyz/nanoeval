@@ -164,6 +164,7 @@ export function claim(sql: Sql.Sql, input: claim.Input): Attempt[] {
       cpus: input.cpusOf(row.task),
       item: row,
       memoryMb: input.memoryOf(row.task),
+      ...(input.slotsOf ? { slots: input.slotsOf(row) } : {}),
     })),
     { ...input.offer, ...(input.wholeLast ? { wholeLast: true } : {}) },
   )
@@ -211,6 +212,7 @@ export declare namespace claim {
     run: string
     runner: number
     secOf?(task: string): number
+    slotsOf?(row: Attempt): number
     token(): string
     wholeLast?: boolean
   }
