@@ -79,10 +79,10 @@ async function bound(
   return Meter.relay({
     body: input.body,
     cost: false,
-    fetch: WorkersAi.fetcher(
-      env.AI,
-      env.WORKERS_AI_GATEWAY ? { gateway: env.WORKERS_AI_GATEWAY } : {},
-    ),
+    fetch: WorkersAi.fetcher(env.AI, {
+      ...(env.WORKERS_AI_GATEWAY ? { gateway: env.WORKERS_AI_GATEWAY } : {}),
+      usage: 'last',
+    }),
     headers: new Headers(),
     hooks,
     method: request.method,

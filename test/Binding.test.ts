@@ -103,6 +103,147 @@ test('an answer that is no stream comes back as one JSON object', async () => {
   assert.deepEqual(await response.json(), answer)
 })
 
+const chunkOf = (fields: Record<string, unknown>) =>
+  'data: ' +
+  JSON.stringify({
+    id: 'chatcmpl-7f051b3d',
+    object: 'chat.completion.chunk',
+    created: 1794809592,
+    model: '@cf/deepseek-ai/deepseek-v4.1-flash-1017',
+    ...fields,
+  }) +
+  '\n\n'
+const part = (prompt: number, completion: number, cached = 0) => ({
+  prompt_tokens: prompt,
+  completion_tokens: completion,
+  total_tokens: prompt + completion,
+  prompt_tokens_details: { cached_tokens: cached },
+  neurons: 0.1,
+})
+const spoken = [
+  {
+    choices: [
+      { index: 0, delta: { role: 'assistant', content: '' }, logprobs: null, finish_reason: null },
+    ],
+    prompt_token_ids: null,
+    prompt_text: null,
+    p: 'l2h1',
+  },
+  {
+    choices: [
+      {
+        index: 0,
+        delta: { reasoning: 'We', reasoning_content: 'We' },
+        logprobs: null,
+        finish_reason: null,
+        token_ids: null,
+      },
+    ],
+    p: 'us9l',
+  },
+  {
+    choices: [
+      {
+        index: 0,
+        delta: {
+          tool_calls: [
+            {
+              index: 0,
+              id: 'chatcmpl-tool-995b',
+              type: 'function',
+              function: { name: 'shell', arguments: '{"command": "pwd"}' },
+            },
+          ],
+        },
+        logprobs: null,
+        finish_reason: 'tool_calls',
+        stop_reason: null,
+        token_ids: null,
+      },
+    ],
+    p: 'vna5',
+  },
+]
+const parts = [part(5028, 0), part(0, 1), part(0, 9)]
+const total = {
+  prompt_tokens: 5028,
+  completion_tokens: 250,
+  total_tokens: 5278,
+  prompt_tokens_details: { cached_tokens: 4608 },
+  neurons: 41.24070629477501,
+}
+
+function pieces(text: string) {
+  const sizes = [37, 1, 211, 5, 89]
+  const out: string[] = []
+  for (let at = 0, n = 0; at < text.length; n += 1) {
+    const size = sizes[n % sizes.length]!
+    out.push(text.slice(at, at + size))
+    at += size
+  }
+  return () =>
+    new ReadableStream({
+      start(controller) {
+        for (const piece of out) controller.enqueue(new TextEncoder().encode(piece))
+        controller.close()
+      },
+    })
+}
+
+test('with usage last, the stream Workers AI writes for deepseek carries its usage once: the usage of each chunk and the empty chunk before the totals are left out', async () => {
+  const stream =
+    spoken.map((fields, n) => chunkOf({ ...fields, usage: parts[n] })).join('') +
+    chunkOf({ choices: [], usage: part(0, 0, 4608), p: 'orzb' }) +
+    'data: ' +
+    JSON.stringify({ response: '', usage: total }) +
+    '\n\ndata: [DONE]\n\n'
+  const request = { messages: [], model: '@cf/deepseek-ai/deepseek-v4.1-flash-1017', stream: true }
+  const asked = async (options: { usage?: 'last' }) =>
+    (
+      await WorkersAi.fetcher(binding(pieces(stream)).ai, options)(url, {
+        body: body(request),
+        method: 'POST',
+      })
+    ).text()
+  const last =
+    'data: ' +
+    JSON.stringify({ choices: [], model: request.model, usage: total }) +
+    '\n\ndata: [DONE]\n\n'
+  assert.equal(
+    await asked({ usage: 'last' }),
+    spoken.map((fields) => chunkOf(fields)).join('') + last,
+  )
+  const session = await asked({})
+  assert.equal(
+    session,
+    spoken.map((fields, n) => chunkOf({ ...fields, usage: parts[n] })).join('') +
+      chunkOf({ choices: [], usage: part(0, 0, 4608), p: 'orzb' }) +
+      last,
+    'a session reads the stream as before',
+  )
+  const usages = (text: string) =>
+    text
+      .split('\n\n')
+      .filter((line) => line.startsWith('data: {'))
+      .map((line) => JSON.parse(line.slice(6)) as { usage?: { prompt_tokens: number } })
+      .flatMap((value) => (value.usage ? [value.usage.prompt_tokens] : []))
+  assert.deepEqual(usages(session), [5028, 0, 0, 0, 5028], 'the prompt tokens fall and rise again')
+  assert.deepEqual(usages(await asked({ usage: 'last' })), [5028])
+})
+
+test('with usage last, a stream that ends in its own usage chunk and has no totals after it comes back unchanged', async () => {
+  const own =
+    'data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\n' +
+    'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2}}\n\n'
+  for (const stream of [own + 'data: [DONE]\n\n', own, own.trimEnd()]) {
+    const response = await WorkersAi.fetcher(binding(pieces(stream)).ai, { usage: 'last' })(url, {
+      body: body({ messages: [], model: '@cf/a', stream: true }),
+      method: 'POST',
+    })
+    assert.equal(await response.text(), stream)
+  }
+})
+
 test('a request the binding cannot serve is refused without calling it', async () => {
   const { ai, calls } = binding(() => ({}))
   const fetch = WorkersAi.fetcher(ai)
