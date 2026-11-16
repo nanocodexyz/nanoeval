@@ -62,8 +62,7 @@ export const adapters: readonly Dataset.Adapter[] = [
     version: '7ab245d0ff3c7d0fdf40f8e8387bc3ed596cb23641bfba3746dd2fc30d84d3e6',
   }),
   HarborHub.create({
-    description:
-      'SWE-bench Pro, the 731 public instances, as published to the Harbor registry',
+    description: 'SWE-bench Pro, the 731 public instances, as published to the Harbor registry',
     name: 'swe-bench-pro',
     package: 'scale-ai/swe-bench-pro',
     proof:
