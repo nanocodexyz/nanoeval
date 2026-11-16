@@ -1892,3 +1892,18 @@ test('an installed agent of a closed task is started without the web tools that 
     true,
   )
 })
+
+test('fx stopping its own tool loop is told from a failed turn', () => {
+  const tail =
+    'Running cd /app && readelf -S orig\nRepeated shell validation failures stopped the tool loop. The invalid shell calls were not executed and produced no shell effect.\n'
+  assert.equal(Installed.stopped('fx', tail), true)
+  assert.equal(
+    Installed.stopped(
+      'fx',
+      'Repeated identical shell failures stopped the tool loop. The failed action was not retried again.',
+    ),
+    true,
+  )
+  assert.equal(Installed.stopped('fx', 'fx ask: provider returned 401 Unauthorized\n'), false)
+  assert.equal(Installed.stopped('opencode', tail), false)
+})

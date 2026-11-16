@@ -8458,3 +8458,17 @@ A server on that port that logs each request and answers `401` saw two requests,
 **What changed.** `run --package-archive` sets `sandbox.packageArchive` in the configuration of the run, the Worker passes it to every runner in the run's configuration, and a runner serves the archive to the verifiers of the run's krun and ns slots when either its own option or the run's is set. A rerun keeps it from its parent. It is refused on dir slots, as `verifierCache` is. Off by default.
 
 **Not run.** No run was made with this change. Unit test of the configuration only.
+
+
+## 2026-11-16: fx stopping its own tool loop is scored, not an error
+
+**The defect.** fx 0.0.17 ends a turn with exit status 1 when the model sends shell calls that fx refuses several times in a row, the same failing shell call again and again, or malformed tool arguments (`src/core/agent/runtime/orchestrator.zig` at 0.0.17, the notices `repeated_terminal_validation_notice`, `repeated_shell_execution_failure_notice` and `repeated_malformed_arguments_notice`, which `finishFailedTurnWithNotice` writes as the turn's text; `cli_ask.zig` sets `exit_code` to 1 for any failed turn). The runner ends every installed agent that exits non-zero as an `agent` error and starts no verifier, so these rows counted as errors. That is the agent giving up on the task, not the machine or the way to the model. Met in a run of `fx-chat` on `@cf/deepseek-ai/deepseek-v4.1-flash-1017` (thinking low), `path-tracing` attempt 1: 31 model requests through the Workers AI route all answered 200, then "fx exited with 1: … Repeated shell validation failures stopped the tool loop. The invalid shell calls were not executed and produced no shell effect." Attempts 2 and 3 of the same arm on the task passed.
+
+**The rule.** `Installed.stopped(kind, said)` is true for `fx` when its output or the last 2,000 bytes of its standard error hold one of the three notices. Such a row goes to the verifier with the agent's exit status like a row that exited 0, and scores what the agent left. Any other non-zero exit of fx, such as a provider that answered 401, stays an `agent` error.
+
+**Verified.**
+
+- `node --test --test-name-pattern='fx|summarize|event stream' test/Installed.test.ts`: 7 of 7 passed, including the new test with the stderr tail of that attempt, a notice of a repeated shell failure, a 401 from the provider (not a stop), and the same text under `opencode` (not a stop).
+- The pin: `gh release download v0.0.17 -R vercel-labs/fx -p 'fx-linux-*'` gives `78c155d5…23e75` for x86_64 and `b4633b89…3761f` for aarch64, the sha256 in `src/Installed.ts` and in the release's `.sha256` files. 0.0.17 (2026-11-14) is fx's latest release.
+
+**Not verified.** No run was made with this change: neither release nor a local Worker had a sandbox host and an allowed model route for fx here.

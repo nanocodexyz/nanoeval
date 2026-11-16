@@ -817,6 +817,16 @@ export type Summary = {
   toolCalls: number
 }
 
+const fxStops = [
+  'Repeated shell validation failures stopped the tool loop.',
+  'Repeated identical shell failures stopped the tool loop.',
+  'Repeated malformed tool arguments stopped the agent loop.',
+]
+
+export function stopped(kind: Kind, said: string): boolean {
+  return kind === 'fx' && fxStops.some((stop) => said.includes(stop))
+}
+
 export function summarize(kind: Kind, stream: string): Summary {
   const summary: Summary = { costUsd: undefined, error: undefined, message: '', toolCalls: 0 }
   if (releases[kind].source === 'runtime') {
