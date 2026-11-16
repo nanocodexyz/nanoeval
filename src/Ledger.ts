@@ -83,6 +83,7 @@ export const tables = [
     usage TEXT,
     error TEXT
   )`,
+  'CREATE INDEX IF NOT EXISTS claims_attempt ON claims (attempt)',
 ]
 
 export function create(sql: Sql.Sql, seeds: readonly Seed[]): number {

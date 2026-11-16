@@ -8476,3 +8476,22 @@ A server on that port that logs each request and answers `401` saw two requests,
 ## 2026-11-16: an agent may name prompt_variant and tool_profile
 
 A search over harness settings needs arms that differ in their system prompt and their tool set, and nanoeval sends a model only the prompts and tool text of nanocode. The pinned nanocode-ts `build-acdb751` already takes two session fields for that on codex sessions, `compact_instructions` and `lean_tool_arguments`. An agent names them as `:prompt_variant=compact` and `:tool_profile=lean` (`promptVariant` and `toolProfile` in a run configuration) rather than as two switches, so that later profiles of nanocode, for claude sessions too, are new values of the same two options and not new options. Only the values nanocode has are taken, and only for codex agents, since a claude session has no such field yet. An agent without them sends the same bytes as before.
+
+## 2026-11-16: the Run reads its model spend a new request at a time
+
+Before a budgeted model request goes out, the Run read the run's spend and its largest response by scanning every model request it had recorded (a GROUP BY over all of model_requests, and a MAX over it), parsed every finished row's result, and the per-row request reads (the meter, a finish's statuses and waits) had no index on model_requests by attempt. That made each budgeted request cost CPU in proportion to everything the run had recorded, all on the Run's one thread: past a few hundred rows at once, the meter, not the slots, was what limited a run.
+
+Now a `Tally` (src/Tally.ts) keeps the spend, the attempts with priced requests and the largest response, and reads only the requests recorded since its last read by id (requests are only inserted); finished rows' usage is read with json_extract instead of parsing each result; model_requests has an index on (attempt, claim) and claims on (attempt). test/Tally.test.ts checks that a tally reads what the old scan reads, and that each request is read once.
+
+Measured on the hosted Hand with node:sqlite (Node 24.22, :memory:), the old and new reads side by side over the same ledger: N rows at once, 40 model requests per row recorded, half the rows finished, CPU per budgeted request (insert plus the spend read) over 5 to 20 samples (~/swarm bench meter.mts):
+
+| rows | requests | before ms | after ms | before req/min at a full thread | after |
+|---|---|---|---|---|---|
+| 250 | 10,000 | 6.5 | 0.47 | 9,222 | 127,119 |
+| 500 | 20,000 | 15.5 | 0.51 | 3,861 | 118,099 |
+| 1,000 | 40,000 | 34.2 | 1.18 | 1,754 | 50,856 |
+| 2,000 | 80,000 | 107.2 | 4.58 | 560 | 13,106 |
+| 4,000 | 160,000 | 185.2 | 5.71 | 324 | 10,513 |
+
+A row's request read (one attempt's statuses) went from 0.5 to 11.5 ms to 0.02 to 0.03 ms. This is SQLite CPU outside workerd, not a run: the next measurement is a release run with a model budget at 500 or more rows at once, reading workerd's busiest thread. What still grows with rows after this is the finished rows' json_extract pass, about 4 ms at 2,000 finished rows.
+
