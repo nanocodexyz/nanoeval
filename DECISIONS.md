@@ -8299,3 +8299,20 @@ No agent option names this. The task decides it.
 - The parent and this change, imported side by side: `parseAgent`, `agentText` and `Config.parse` over the 220 agent texts of the tests and the documents (139 parse, 81 are refused) give the same agents, texts and refusals apart from the usage line, and `Picker.forkReason` without the key, with `forkOn: undefined` and with `verifier_fail_or_unsure` gives the parent's reason on 2,432 of 2,432 inputs (4 trunk states, no verification and 3 verdicts at confidence 0 to 100, before and at the deadline).
 
 **Not verified.** An end-to-end lane with the key, the krun and ns lanes (no KVM here), a real model, and a deployed Worker.
+
+## 2026-11-16: a codex agent takes the Codex session settings of the pinned nanocode-ts
+
+A `codex`, `codex-code-mode` or `codex-jobs` agent names `:lenient_patches=on`, `:min_wait_ms=N`, `:max_output_tokens=N` and `:context_window=N`, after `clearing_cache_floors`. The turn sends them as `lenient_patches`, `min_wait_ms`, `max_output_tokens` and `context_window`, the fields the session descriptor of nanocode-ts `build-acdb751` reads for a Codex session (`codexSwitches` and `codexLimits` in `src/cloudflare/App.ts`, `CodexOptions` and `codex_harness` in `src/wasm.rs`). A `claude` or `claude-direct` agent that names one is refused.
+
+**Why.** Every other finish, retry, clearing and escalation lever of an agent is refused for a codex agent, because nanocode-ts `build-acdb751` passes them only to its Claude harness (`FinishLevers`, `escalation`, `tool_result_clearing` and `tool_result_tokens` go to `claude_harness`; `codex_harness` takes `persist_finish` and `CodexOptions` only). Before this change a codex agent took 7 of the 29 lever keys (`branches`, `cellYieldMs`, `lazy`, `persistFinish`, `picker`, `preflight`, `verifierModel`). The four settings here are behavior the pinned build already has for Codex sessions and no arm could name.
+
+**What each one does in the pinned build.**
+
+- `lenient_patches`: the Codex tool settings accept a patch whose context differs only in whitespace.
+- `min_wait_ms`: the Codex tool settings make a wait for a running command last at least N ms.
+- `max_output_tokens`: applied only to a model outside `Model::ALL`, the built-in Codex models, so it changes DeepSeek, GLM, Kimi and other custom models and not `gpt-6-luna`.
+- `context_window`: the Codex client compacts at nine tenths of N tokens.
+
+**Tests.** `node --test test/CodexSessionOptions.test.ts`: each option reads back to the same agent text, a claude agent that names one is refused, a value that is not a whole number of at least one is refused, and the body of a codex turn without them is the string it was before.
+
+**Not verified.** No run was made with this change.

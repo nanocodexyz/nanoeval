@@ -27,6 +27,7 @@ export type Agent = {
   briefFinish?: true
   cellYieldMs?: number
   clearingCacheFloors?: true
+  contextWindow?: number
   escalateContextTokens?: number
   escalateModel?: string
   escalateToolErrors?: number
@@ -42,8 +43,11 @@ export type Agent = {
   id: string
   lateFinishCheckMs?: number
   lazy?: true
+  lenientPatches?: true
   leanCells?: true
   lowEffortRounds?: true
+  maxOutputTokens?: number
+  minWaitMs?: number
   model: string
   orchestration?: Orchestration
   persistFinish?: true
@@ -73,6 +77,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'briefFinish',
   'cellYieldMs',
   'clearingCacheFloors',
+  'contextWindow',
   'escalateContextTokens',
   'escalateModel',
   'escalateToolErrors',
@@ -88,8 +93,11 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'id',
   'lateFinishCheckMs',
   'lazy',
+  'lenientPatches',
   'leanCells',
   'lowEffortRounds',
+  'maxOutputTokens',
+  'minWaitMs',
   'model',
   'orchestration',
   'persistFinish',
@@ -538,6 +546,17 @@ export function parse(value: unknown): Config {
       fail(agent.id + ' has a skipFinishCheck and a finishCheck, which never go in one arm')
     if (agent.finishAmbiguity !== undefined && agent.skipFinishCheck !== undefined)
       fail(agent.id + ' has a skipFinishCheck and a finishAmbiguity, which never go in one arm')
+    if (agent.lenientPatches !== undefined) {
+      if (agent.lenientPatches !== true) fail(agent.id + ' has a lenientPatches that is not true')
+      if (provider !== 'codex')
+        fail(agent.id + ' has a lenientPatches, which only a codex session takes')
+    }
+    for (const limit of ['contextWindow', 'maxOutputTokens', 'minWaitMs'] as const) {
+      if (agent[limit] === undefined) continue
+      integer(agent[limit], agent.id + ': ' + limit, 1)
+      if (provider !== 'codex')
+        fail(agent.id + ' has a ' + limit + ', which only a codex session takes')
+    }
     if (agent.persistFinish !== undefined) {
       if (agent.persistFinish !== true) fail(agent.id + ' has a persistFinish that is not true')
       if (provider !== 'claude' && provider !== 'codex')
@@ -555,6 +574,7 @@ export function parse(value: unknown): Config {
       ...(agent.briefFinish ? { briefFinish: true as const } : {}),
       ...(agent.cellYieldMs === undefined ? {} : { cellYieldMs: agent.cellYieldMs }),
       ...(agent.clearingCacheFloors ? { clearingCacheFloors: true as const } : {}),
+      ...(agent.contextWindow === undefined ? {} : { contextWindow: agent.contextWindow }),
       ...(agent.escalateContextTokens === undefined
         ? {}
         : { escalateContextTokens: agent.escalateContextTokens }),
@@ -577,7 +597,10 @@ export function parse(value: unknown): Config {
         : { lateFinishCheckMs: agent.lateFinishCheckMs }),
       ...(agent.lazy || Picker.lazy(agent.picker) ? { lazy: true as const } : {}),
       ...(agent.leanCells ? { leanCells: true as const } : {}),
+      ...(agent.lenientPatches ? { lenientPatches: true as const } : {}),
       ...(agent.lowEffortRounds ? { lowEffortRounds: true as const } : {}),
+      ...(agent.maxOutputTokens === undefined ? {} : { maxOutputTokens: agent.maxOutputTokens }),
+      ...(agent.minWaitMs === undefined ? {} : { minWaitMs: agent.minWaitMs }),
       model: agent.model,
       ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
       ...(agent.persistFinish ? { persistFinish: true as const } : {}),
