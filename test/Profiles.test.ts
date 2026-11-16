@@ -57,7 +57,10 @@ test('an agent names prompt_variant and tool_profile last in the order of the op
     'x=codex:kimi-k3.1-pro:tool_profile=lean:prompt_variant=compact',
     'x=codex:kimi-k3.1-pro:prompt_variant=compact:persist_finish=on',
   ])
-    assert.throws(() => parseAgent(text), /\[:prompt_variant=compact\]\[:tool_profile=lean\], not x=/)
+    assert.throws(
+      () => parseAgent(text),
+      /\[:prompt_variant=compact\]\[:tool_profile=lean\], not x=/,
+    )
 })
 
 test('the configuration takes promptVariant and toolProfile for a codex agent and refuses bad values and other providers', () => {
@@ -85,7 +88,10 @@ test('the configuration takes promptVariant and toolProfile for a codex agent an
   for (const toolProfile of ['full', true, 1, null])
     assert.throws(
       () =>
-        Config.parse({ ...config, agents: [{ id: 'x', model: 'm', provider: 'codex', toolProfile }] }),
+        Config.parse({
+          ...config,
+          agents: [{ id: 'x', model: 'm', provider: 'codex', toolProfile }],
+        }),
       /toolProfile/,
     )
   for (const provider of ['claude', 'codex-cli', 'claude-code', 'oracle']) {
@@ -132,10 +138,19 @@ test('a codex turn sends compact_instructions and lean_tool_arguments only for a
     const sent = JSON.parse(Turn.sent(named, input))
     assert.equal(sent.compact_instructions, true)
     assert.equal(sent.lean_tool_arguments, true)
-    assert.deepEqual(Turn.body({ ...plain, promptVariant: 'compact' }).lean_tool_arguments, undefined)
+    assert.deepEqual(
+      Turn.body({ ...plain, promptVariant: 'compact' }).lean_tool_arguments,
+      undefined,
+    )
     assert.deepEqual(Turn.body({ ...plain, toolProfile: 'lean' }).compact_instructions, undefined)
   }
-  const claude = { ...turn, orchestration: undefined, provider: 'claude', promptVariant: 'compact', toolProfile: 'lean' } as const
+  const claude = {
+    ...turn,
+    orchestration: undefined,
+    provider: 'claude',
+    promptVariant: 'compact',
+    toolProfile: 'lean',
+  } as const
   assert.equal('compact_instructions' in Turn.body(claude), false)
   assert.equal('lean_tool_arguments' in Turn.body(claude), false)
 })

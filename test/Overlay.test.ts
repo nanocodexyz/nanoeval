@@ -99,6 +99,8 @@ const samples: Record<string, Record<string, unknown>> = {
   contextWindow: { contextWindow: 200000 },
   codesign: { codesign: false },
   verificationRequested: { verificationRequested: true },
+  promptVariant: { promptVariant: 'compact' },
+  toolProfile: { toolProfile: 'lean' },
 }
 
 // Levers only a codex session takes, and levers that need a picker or a fix model the combined
@@ -108,6 +110,8 @@ const codexLevers = [
   'lenientPatches',
   'maxOutputTokens',
   'minWaitMs',
+  'promptVariant',
+  'toolProfile',
   'verificationRequested',
 ]
 const apart = [
@@ -193,19 +197,18 @@ test('an overlay with pending keys is not runnable', () => {
   const overlay = Overlay.parse({
     ...base,
     dims: ['prompt', 'tools'],
-    pending: { toolProfile: 'lean', promptVariant: 'terse' },
+    pending: { toolSet: 'lean', promptStyle: 'terse' },
   })
-  assert.deepEqual(Overlay.pendingKeys(overlay), ['promptVariant', 'toolProfile'])
+  assert.deepEqual(Overlay.pendingKeys(overlay), ['promptStyle', 'toolSet'])
   assert.throws(
     () => Overlay.compile(overlay),
     (error: Error) =>
       error.name === 'Overlay.PendingError' &&
-      error.message ===
-        'opus55-g1-01 is not runnable until a Worker accepts promptVariant, toolProfile',
+      error.message === 'opus55-g1-01 is not runnable until a Worker accepts promptStyle, toolSet',
   )
   assert.deepEqual(overlayLines([overlay, Overlay.parse({ ...base, id: 'b' })]), {
     runnable: ['--agent b=claude:claude-opus-5-5:high'],
-    unrunnable: ['not runnable: opus55-g1-01 (pending promptVariant, toolProfile)'],
+    unrunnable: ['not runnable: opus55-g1-01 (pending promptStyle, toolSet)'],
   })
 })
 
@@ -218,7 +221,7 @@ test('an overlay is refused where run would refuse its agent', () => {
     [{ harness: 'codex-cli' }, /harness must be one of/],
     [{ thinking: 'huge' }, /thinking must be one of/],
     [{ parent: '' }, /parent is the id/],
-    [{ levers: { promptVariant: 'terse' } }, /put a lever no Worker accepts in pending/],
+    [{ levers: { promptStyle: 'terse' } }, /put a lever no Worker accepts in pending/],
     [{ levers: { model: 'x' } }, /levers this checkout does not know \(model\)/],
     [{ pending: { briefFinish: true } }, /put them in levers/],
     [{ dims: ['speed'] }, /dims is a list of/],
@@ -240,7 +243,7 @@ test('nanoeval overlay prints an --agent for each runnable overlay of a director
     Fs.writeFile(Path.join(directory, name), JSON.stringify(value))
   await write('b.json', { ...base, id: 'b', levers: { briefFinish: true } })
   await write('a.json', { ...base, harness: 'codex-jobs', id: 'a', thinking: 'xhigh' })
-  await write('c.json', { ...base, id: 'c', pending: { toolProfile: 'lean' } })
+  await write('c.json', { ...base, id: 'c', pending: { toolSet: 'lean' } })
   await write('notes.txt', 'not an overlay')
   assert.deepEqual(
     (await readOverlays([directory])).map((overlay) => overlay.id),
@@ -256,7 +259,7 @@ test('nanoeval overlay prints an --agent for each runnable overlay of a director
     ran.stdout,
     '--agent a=codex-jobs:claude-opus-5-5:xhigh\n--agent b=claude:claude-opus-5-5:high:brief_finish=on\n',
   )
-  assert.match(ran.stderr, /not runnable: c \(pending toolProfile\)/)
+  assert.match(ran.stderr, /not runnable: c \(pending toolSet\)/)
   await write('d.json', { ...base, id: 'b' })
   await assert.rejects(readOverlays([directory]), /overlay ids must be unique: b/)
   await write('d.json', { ...base, id: 'd', levers: { yieldShare: 0 } })

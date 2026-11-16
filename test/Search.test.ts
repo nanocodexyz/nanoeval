@@ -14,7 +14,7 @@ const space = Search.parseSpace({
       values: [null, { toolResultClearing: { atLeastTokens: 20000, keep: 3 } }],
     },
     { dim: 'retries', name: 'retries', values: [null, { finishRetries: 1 }, { finishRetries: 2 }] },
-    { dim: 'prompt', name: 'prompt', pending: true, values: [null, { promptVariant: 'terse' }] },
+    { dim: 'prompt', name: 'prompt', pending: true, values: [null, { promptStyle: 'terse' }] },
   ],
   format: 'nanoeval-space/1',
   harnesses: ['claude', 'claude-direct'],
@@ -88,7 +88,7 @@ test('every candidate reads as an overlay and keeps claude-only levers off other
       assert.equal(overlay.levers.toolResultClearing, undefined)
     }
   }
-  assert.ok(candidates.some((overlay) => overlay.pending['promptVariant'] === 'terse'))
+  assert.ok(candidates.some((overlay) => overlay.pending['promptStyle'] === 'terse'))
   assert.ok(candidates.some((overlay) => overlay.harness === 'claude-direct'))
   assert.ok(candidates.some((overlay) => overlay.thinking === 'medium'))
 })
@@ -144,7 +144,7 @@ test('a parent setting a lever the space does not cover is refused', () => {
 })
 
 test('a plan runs the baseline first and leaves out pending and foreign overlays', () => {
-  const pending = { ...baseline, id: 'opus55-g1-01', pending: { promptVariant: 'terse' } }
+  const pending = { ...baseline, id: 'opus55-g1-01', pending: { promptStyle: 'terse' } }
   const runnable = { ...baseline, id: 'opus55-g1-02', thinking: 'medium' }
   assert.deepEqual(
     Search.members([runnable, pending, baseline], baseline).map((overlay) => overlay.id),
@@ -179,7 +179,7 @@ test('a space refuses two dimensions that set one lever, and levers on the wrong
   assert.throws(
     () =>
       Search.parseSpace(
-        shape([{ dim: 'prompt', name: 'p', values: [null, { promptVariant: 'x' }] }]),
+        shape([{ dim: 'prompt', name: 'p', values: [null, { promptStyle: 'x' }] }]),
       ),
     /mark the dimension pending/,
   )
