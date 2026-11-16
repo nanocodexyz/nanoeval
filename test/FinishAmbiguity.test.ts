@@ -31,7 +31,7 @@ const turn: Turn.Turn = {
 }
 
 const usage =
-  /\[:finish_check=on\]\[:finish_ambiguity=on\]\[:tool_result_clearing=KEEP\/TOKENS\]\[:subagents=off\]\[:clearing_cache_floors=on\]\[:verification_requested=on\], not x=/
+  /\[:finish_check=on\]\[:finish_ambiguity=on\]\[:tool_result_clearing=KEEP\/TOKENS\]\[:subagents=off\]\[:clearing_cache_floors=on\]\[:verification_requested=on\]\[:persistence_nudge=on\], not x=/
 
 const ambiguity = 'nano-med-amb=claude:claude-opus-5-5:medium:finish_ambiguity=on'
 

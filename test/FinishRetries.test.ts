@@ -31,7 +31,7 @@ const turn: Turn.Turn = {
 }
 
 const usage =
-  /\[:yield_share=N\]\[:finish_retries=N\]\[:finish_check=on\]\[:finish_ambiguity=on\]\[:tool_result_clearing=KEEP\/TOKENS\]\[:subagents=off\]\[:clearing_cache_floors=on\]\[:verification_requested=on\], not x=/
+  /\[:yield_share=N\]\[:finish_retries=N\]\[:finish_check=on\]\[:finish_ambiguity=on\]\[:tool_result_clearing=KEEP\/TOKENS\]\[:subagents=off\]\[:clearing_cache_floors=on\]\[:verification_requested=on\]\[:persistence_nudge=on\], not x=/
 
 const retry = 'nano-med-retry=claude:claude-opus-5-5:medium:finish_retries=1'
 

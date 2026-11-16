@@ -8214,3 +8214,34 @@ The declarations of the package differ from `build-304046b` in `Contracts.d.ts` 
 **Checked.** `npm ci`, which verifies the tarball against the integrity of the lock, `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test` from a fresh clone, with the change of the next entry.
 
 **Not verified.** When this was written: `ci.yml` from a fresh clone on KVM, a deployed Worker on this pin, and a model. The request bodies of f192991d1 are read from the commit, not measured here.
+
+## 2026-11-16: a claude agent may name persistence_nudge
+
+**Why.** A turn of a `claude` session can end with a final message that says part of the task is not done or not verified while time of the task is left, and the verifier then fails the result. nanocode f192991d1 adds an option that sends such a session back to work once, and no agent of this repository could name it. Without an option, no run could set a `claude` session with the nudge beside one without it.
+
+**What.** One more entry of the table of options in `cli/nanoeval.ts`, after `:verification_requested=on` and last in the one order:
+
+| Option | Run configuration | What every turn of the session sends | Who takes it |
+| --- | --- | --- | --- |
+| `:persistence_nudge=on` | `"persistenceNudge": true` | `persistence_nudge: true` | `claude`, under each of its harness names: `claude`, `claude-direct` |
+
+The arms it is for, with the options in the one order:
+
+| Arm | Beside |
+| --- | --- |
+| `claude:claude-opus-5-5:medium:persistence_nudge=on` | `claude:claude-opus-5-5:medium` |
+| `claude:claude-opus-5-5:medium:finish_retries=1:persistence_nudge=on` | `claude:claude-opus-5-5:medium:finish_retries=1` |
+
+`finish_retries` comes before `persistence_nudge`, and the other order is refused with the usage line. `agent/turns.jsonl` names the field for an agent that names the option. It is off by default. An agent without it sends nothing new: its turn body and its line of `agent/turns.jsonl` are the same bytes as before, and so is its entry of the run configuration.
+
+**The field name.** It is read from the declarations of the `build-95de2ce` tarball: `persistence_nudge?: boolean` on the session request of `dist/cloudflare/App.d.ts`, `persistence_nudge` in its `finishLevers`, and `persistence_nudge?: boolean` on the session descriptor of `dist/Contracts.d.ts`. A turn of this repository sends the field of the session request. Read in `dist/cloudflare/App.js`, not run: nanocode-ts answers 400 to a value that is not a boolean, copies each of its `finishLevers` to the session, and adds a lever that is `true` to the session key. The option is one of `Config.finishLevers` here too, beside `clearingCacheFloors` and `finishAmbiguity`, so one loop checks its value and its provider.
+
+**What it does.** Read in nanocode f192991d1, not run. `ClaudeBuilder::persistence_nudge(true)` compares the final message of a headless root session with the list of admissions that the Codex backend already used ("couldn't", "I haven't", "could not" among its 43 phrases). On a match it appends the persistence nudge as a user message and the round goes on. It does so once per turn, and the check comes after the finish check and after the fresh attempt of `finish_retries`, so it reads only a final message that those two let end the turn. By the commit, a mock harness built against it and against its parent sent the same request bodies in four cases with the option off, one more request in the two cases with an admission and the option on, and a second admission after the nudge ended the turn. Those are its measurements, not ones of this repository. The task's `instruction.md` is sent unchanged, and the nudge is nanocode's own text, as its finish notice is.
+
+**Who takes it.** A `claude` session only, `claude-direct` among them. The only value of the agent text is `on`, and the only value of the configuration is `true`. A `codex` agent of any orchestration is refused with "has a persistenceNudge, which only a claude session takes": the builder is `ClaudeBuilder`'s, and by the commit a Codex session reads the same list and gets the same nudge without an option. An installed agent and the oracle are refused with the same sentence, since they are no session. It goes with every other option that a `claude` agent takes. `finish_retries` and `finish_check` are among them, since the nudge reads the final message that they let through. `skip_finish_check` is another, since by the commit the nudge is the one guard of a session that makes no finish check. The verifier session of a picker and the judge sessions do not take the option of the agent.
+
+**An earlier build.** A Worker on `build-304046b` or earlier does not know `persistence_nudge` as one of its `finishLevers`, so it copies the field neither to its session nor to its session key, read in the difference of the two builds of `dist/cloudflare/App.js`. An arm with the option on such a Worker is the arm without it. A Worker of an earlier commit of this repository refuses the run, because `persistenceNudge` is a key of the agent that it does not know.
+
+**Checked.** `test/PersistenceNudge.test.ts` (new, 3 tests: the spec, its place last in the order and its text read back for `claude`, `claude-direct` and `claude+preflight`, alone and after `finish_retries`, `finish_check`, `skip_finish_check`, `persist_finish` and other options; an empty value, `off`, `true`, `1`, `ON`, another value, no value, a second occurrence, another spelling and a place before `finish_retries`, `finish_check`, `clearing_cache_floors` or `verification_requested` refused; the configuration takes `true` with and without `finishRetries`, `finishCheck` and `skipFinishCheck`, writes a plain agent as the same bytes, and refuses other values, `codex` under each of its four harness names, every installed kind and harness name, and the oracle; a turn sends the field only when named, a turn without it is the same bytes for `claude` and `claude-direct` with and without `finishRetries`, and the bodies and the lines of a plain turn, of one with the option and of one with `finish_retries` and the option are written out). The usage line in fifteen places of thirteen other test files names the option, and the name of one test of `test/VerificationRequested.test.ts` no longer says that `verification_requested` is last. `npm test`: 641 tests, 636 pass, 0 fail, 5 skipped, and the skips need KVM. `npm run check:types`, `npm run lint` and `npm run dry-run` pass.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM. A Worker on this pin, a model, and a session that took the field. No request with the nudge was read here, and no pass rate, cost or time of an arm with the option was measured. No end-to-end lane names the option.

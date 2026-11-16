@@ -33,13 +33,13 @@ const turn: Turn.Turn = {
 }
 
 const usage =
-  /\[:tool_result_clearing=KEEP\/TOKENS\]\[:subagents=off\]\[:clearing_cache_floors=on\]\[:verification_requested=on\], not x=/
+  /\[:tool_result_clearing=KEEP\/TOKENS\]\[:subagents=off\]\[:clearing_cache_floors=on\]\[:verification_requested=on\]\[:persistence_nudge=on\], not x=/
 
 const verify = 'nanox-verify=codex:gpt-6-luna:high:verification_requested=on'
 
 const persist = 'nanox-pv=codex:gpt-6-luna:high:persist_finish=on:verification_requested=on'
 
-test('an agent names verification_requested last in the order of the options, and its text reads back', () => {
+test('an agent names verification_requested after clearing_cache_floors in the order of the options, and its text reads back', () => {
   assert.deepEqual(parseAgent(verify), {
     id: 'nanox-verify',
     model: 'gpt-6-luna',

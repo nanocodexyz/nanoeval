@@ -40,6 +40,7 @@ export type Agent = {
   lowEffortRounds?: true
   model: string
   orchestration?: Orchestration
+  persistenceNudge?: true
   persistFinish?: true
   picker?: Picker.Kind
   preflight?: true
@@ -79,6 +80,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'lowEffortRounds',
   'model',
   'orchestration',
+  'persistenceNudge',
   'persistFinish',
   'picker',
   'preflight',
@@ -128,6 +130,7 @@ export const finishLevers = [
   'foldFinish',
   'leanCells',
   'lowEffortRounds',
+  'persistenceNudge',
   'skipFinishCheck',
   'stopAtTarget',
 ] as const
@@ -510,6 +513,7 @@ export function parse(value: unknown): Config {
       ...(agent.lowEffortRounds ? { lowEffortRounds: true as const } : {}),
       model: agent.model,
       ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
+      ...(agent.persistenceNudge ? { persistenceNudge: true as const } : {}),
       ...(agent.persistFinish ? { persistFinish: true as const } : {}),
       ...(agent.picker ? { picker: agent.picker } : {}),
       ...(agent.preflight ? { preflight: true as const } : {}),

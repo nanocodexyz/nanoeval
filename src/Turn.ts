@@ -20,6 +20,7 @@ export type Turn = {
   model: string
   orchestration?: 'direct' | 'jobs'
   payer?: Config.Payer
+  persistenceNudge?: true
   persistFinish?: true
   prompt: string
   provider: 'claude' | 'codex'
@@ -50,6 +51,7 @@ function levers(turn: Turn): Record<string, true> {
     ...(turn.leanCells ? { lean_cells: true as const } : {}),
     ...(turn.lowEffortRounds ? { low_effort_rounds: true as const } : {}),
     ...(turn.persistFinish ? { persist_finish: true as const } : {}),
+    ...(turn.persistenceNudge ? { persistence_nudge: true as const } : {}),
     ...(turn.skipFinishCheck ? { skip_finish_check: true as const } : {}),
     ...(turn.stopAtTarget ? { stop_at_target: true as const } : {}),
     ...(turn.verificationRequested ? { verification_requested: true as const } : {}),
