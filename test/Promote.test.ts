@@ -95,8 +95,14 @@ test('an arm of another run, fewer than three attempts or an unmatched row is mi
         ...grid('base', 4, 3, () => ({ passed: false })),
         ...grid('unmatched', 4, 3, (task) => (task === 0 ? { cancelled: true } : {})),
       ]),
-      run('r2', grid('elsewhere', 4, 3, () => ({}))),
-      run('r3', [...grid('base', 4, 1, () => ({ passed: false })), ...grid('once', 4, 1, () => ({}))]),
+      run(
+        'r2',
+        grid('elsewhere', 4, 3, () => ({})),
+      ),
+      run('r3', [
+        ...grid('base', 4, 1, () => ({ passed: false })),
+        ...grid('once', 4, 1, () => ({})),
+      ]),
     ],
     options,
   )
@@ -110,7 +116,10 @@ test('an arm of another run, fewer than three attempts or an unmatched row is mi
 })
 
 test('a run without the baseline arm and a run named twice are refused', () => {
-  const only = run('r1', grid('other', 2, 3, () => ({})))
+  const only = run(
+    'r1',
+    grid('other', 2, 3, () => ({})),
+  )
   assert.throws(() => Promote.cells([only], options), Promote.InvalidError)
   const both = run('r1', [...grid('base', 2, 3, () => ({})), ...grid('other', 2, 3, () => ({}))])
   assert.throws(() => Promote.cells([both, both], options), Promote.InvalidError)
@@ -126,7 +135,10 @@ test('stage A keeps the front first, then the best ranked, up to the survivors',
         ...grid('middle', 4, 1, (task) => ({ passed: task < 3, usd: 2 })),
         ...grid('dear', 4, 1, (task) => ({ passed: task < 2, usd: 4 })),
       ]),
-      run('r2', grid('elsewhere', 4, 1, () => ({}))),
+      run(
+        'r2',
+        grid('elsewhere', 4, 1, () => ({})),
+      ),
     ],
     options,
   )

@@ -61,7 +61,10 @@ export function parseSpace(value: unknown): Space {
   if (typeof slug !== 'string' || !idPattern.test(slug))
     return fail('the slug of a search space is letters, digits, dots, dashes and underscores')
   const allowed = strings(space['harnesses'], 'harnesses')
-  if (!allowed.length || allowed.some((harness) => !harnessNames.includes(harness as Overlay.Harness)))
+  if (
+    !allowed.length ||
+    allowed.some((harness) => !harnessNames.includes(harness as Overlay.Harness))
+  )
     fail('harnesses is a non-empty list of ' + harnessNames.join(', '))
   const thinking = strings(space['thinking'], 'thinking')
   if (!thinking.length || thinking.some((level) => !Overlay.thinkings.includes(level)))
@@ -82,9 +85,15 @@ export function parseSpace(value: unknown): Space {
       setting === null ? null : record(setting, name + ': a value'),
     )
     for (const key of keys({ values })) {
-      if (pending && isLever(key)) fail(name + ' is pending but sets ' + key + ', a lever the Worker takes')
+      if (pending && isLever(key))
+        fail(name + ' is pending but sets ' + key + ', a lever the Worker takes')
       if (!pending && !isLever(key))
-        fail(name + ' sets ' + key + ', a lever this checkout does not know: mark the dimension pending')
+        fail(
+          name +
+            ' sets ' +
+            key +
+            ', a lever this checkout does not know: mark the dimension pending',
+        )
     }
     const only =
       dimension['harnesses'] === undefined
@@ -128,7 +137,9 @@ export function runnable(overlay: Overlay.Overlay): boolean {
 }
 
 function sorted(levers: object): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(levers).sort(([left], [right]) => (left < right ? -1 : 1)))
+  return Object.fromEntries(
+    Object.entries(levers).sort(([left], [right]) => (left < right ? -1 : 1)),
+  )
 }
 
 export function key(
@@ -330,7 +341,8 @@ export function generate(
     try {
       valid.push(Overlay.parse(candidate))
     } catch (error) {
-      if (!(error instanceof Config.InvalidError || error instanceof Overlay.InvalidError)) throw error
+      if (!(error instanceof Config.InvalidError || error instanceof Overlay.InvalidError))
+        throw error
       refused.push({
         hypothesis: proposal.hypothesis,
         reason: error.message.replace(candidate.id + ' ', ''),

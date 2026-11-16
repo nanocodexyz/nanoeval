@@ -42,7 +42,9 @@ test('a generation is the same for the same seed and differs for another', () =>
   assert.deepEqual(Search.generate(space, input), Search.generate(space, input))
   assert.notDeepEqual(
     Search.generate(space, input).candidates.map((overlay) => Search.key(overlay)),
-    Search.generate(space, { ...input, seed: 's2' }).candidates.map((overlay) => Search.key(overlay)),
+    Search.generate(space, { ...input, seed: 's2' }).candidates.map((overlay) =>
+      Search.key(overlay),
+    ),
   )
 })
 
@@ -50,7 +52,14 @@ test('candidates are named by generation, distinct, and none repeats a parent or
   const first = Search.generate(space, { gen: 1, n: 6, parents: [baseline], seed: 's' })
   assert.deepEqual(
     first.candidates.map((overlay) => overlay.id),
-    ['opus55-g1-01', 'opus55-g1-02', 'opus55-g1-03', 'opus55-g1-04', 'opus55-g1-05', 'opus55-g1-06'],
+    [
+      'opus55-g1-01',
+      'opus55-g1-02',
+      'opus55-g1-03',
+      'opus55-g1-04',
+      'opus55-g1-05',
+      'opus55-g1-06',
+    ],
   )
   const keys = first.candidates.map((overlay) => Search.key(overlay))
   assert.equal(new Set(keys).size, keys.length)
@@ -110,7 +119,12 @@ test('crossover mixes the settings of two parents', () => {
     levers: { briefFinish: true, finishRetries: 2 },
     thinking: 'medium',
   }
-  const { candidates } = Search.generate(space, { gen: 1, n: 200, parents: [baseline, other], seed: 'c' })
+  const { candidates } = Search.generate(space, {
+    gen: 1,
+    n: 200,
+    parents: [baseline, other],
+    seed: 'c',
+  })
   const crossed = candidates.filter((overlay) => overlay.hypothesis.startsWith('crossover of'))
   assert.ok(crossed.length)
   for (const overlay of crossed) assert.ok(overlay.dims.length)
@@ -136,7 +150,10 @@ test('a plan runs the baseline first and leaves out pending and foreign overlays
     Search.members([runnable, pending, baseline], baseline).map((overlay) => overlay.id),
     ['opus55-g0-00', 'opus55-g1-02'],
   )
-  assert.throws(() => Search.members([{ ...runnable, model: 'gpt-6-luna' }], baseline), Search.InvalidError)
+  assert.throws(
+    () => Search.members([{ ...runnable, model: 'gpt-6-luna' }], baseline),
+    Search.InvalidError,
+  )
   assert.throws(() => Search.members([runnable], pending), /pending levers/)
 })
 
@@ -160,7 +177,10 @@ test('a space refuses two dimensions that set one lever, and levers on the wrong
     /finishRetries is set by both a and b/,
   )
   assert.throws(
-    () => Search.parseSpace(shape([{ dim: 'prompt', name: 'p', values: [null, { promptVariant: 'x' }] }])),
+    () =>
+      Search.parseSpace(
+        shape([{ dim: 'prompt', name: 'p', values: [null, { promptVariant: 'x' }] }]),
+      ),
     /mark the dimension pending/,
   )
   assert.throws(

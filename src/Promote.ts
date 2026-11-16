@@ -35,7 +35,9 @@ export type Scored = Measured &
 
 export type Cell = { id: string; run: string; verdict: 'missing'; why: 'run' } | Scored
 
-export function verdict(measured: Measured): 'loss' | 'none' | 'repeats' | 'tie' | 'unmatched' | 'win' {
+export function verdict(
+  measured: Measured,
+): 'loss' | 'none' | 'repeats' | 'tie' | 'unmatched' | 'win' {
   if (measured.unmatched.baseline || measured.unmatched.run) return 'unmatched'
   if (measured.repeats < repeats) return 'repeats'
   const { lead, ratio } = measured
@@ -52,7 +54,7 @@ export function cells(runs: readonly Compare.Run[], options: cells.Options): Cel
     run.attempts.some((attempt) => attempt.agent.id === options.baseline)
   if (!runs.some(holds))
     throw new InvalidError('no run holds a row of the baseline arm ' + options.baseline)
-  return runs.flatMap((run) => {
+  return runs.flatMap<Cell>((run) => {
     const ids = [...new Set(run.attempts.map((attempt) => attempt.agent.id))]
       .filter((id) => id !== options.baseline)
       .sort(ordered)
@@ -152,9 +154,7 @@ export function select(given: readonly Cell[], options: select.Options): select.
       throw new InvalidError(
         'stage A keeps a whole number of survivors above zero, not ' + options.survivors,
       )
-    const ranked = scored
-      .filter((found) => !('why' in found) || found.why === 'repeats')
-      .sort(rank)
+    const ranked = scored.filter((found) => !('why' in found) || found.why === 'repeats').sort(rank)
     const best = front(ranked)
     const survivors = [...best, ...ranked.filter((found) => !best.includes(found))]
       .slice(0, options.survivors)
@@ -176,11 +176,23 @@ export declare namespace select {
 
 function shown(found: Scorecard.Estimate | null, format: (value: number) => string): string {
   const bound = (value: number | null) => (value === null ? 'inf' : format(value))
-  return found ? bound(found.value) + ' [' + bound(found.low) + ', ' + bound(found.high) + ']' : 'n/a'
+  return found
+    ? bound(found.value) + ' [' + bound(found.low) + ', ' + bound(found.high) + ']'
+    : 'n/a'
 }
 
 export function text(given: readonly Cell[]): string {
-  const head = ['arm', 'run', 'verdict', 'pass', 'baseline', 'lead pp', '$/pass', 'ratio', 'tasks x N']
+  const head = [
+    'arm',
+    'run',
+    'verdict',
+    'pass',
+    'baseline',
+    'lead pp',
+    '$/pass',
+    'ratio',
+    'tasks x N',
+  ]
   const rows: string[][] = [
     head,
     ...given.map((found) =>
@@ -205,6 +217,11 @@ export function text(given: readonly Cell[]): string {
   ]
   const widths = head.map((_, at) => Math.max(...rows.map((row) => row[at]!.length)))
   return rows
-    .map((row) => row.map((value, at) => value.padEnd(widths[at]!)).join('  ').trimEnd())
+    .map((row) =>
+      row
+        .map((value, at) => value.padEnd(widths[at]!))
+        .join('  ')
+        .trimEnd(),
+    )
     .join('\n')
 }
