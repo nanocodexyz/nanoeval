@@ -133,7 +133,7 @@ test('an agent names a session harness or an installed command', () => {
   )
   assert.throws(
     () => Config.parse({ ...config, agents: [{ id: 'x', model: 'm', provider: 'cursor' }] }),
-    /provider must be one of claude, codex, oracle, claude-code, codex-cli, fx, nanocode-claude, nanocode-codex, opencode, pi/,
+    /provider must be one of claude, codex, oracle, claude-code, codex-cli, fx, goose, nanocode-claude, nanocode-codex, opencode, pi/,
   )
   assert.throws(
     () => Config.parse({ ...config, judge: { model: 'gpt-6.1-sol', provider: 'codex-cli' } }),
@@ -287,7 +287,7 @@ test('every pinned release names a checksum for each build it fetches', () => {
 })
 
 function install(
-  kind: 'claude-code' | 'codex-cli' | 'fx' | 'opencode' | 'pi',
+  kind: 'claude-code' | 'codex-cli' | 'fx' | 'goose' | 'opencode' | 'pi',
   libc: string,
 ): string {
   const rt = Path.join(root, 'rt-' + kind + '-' + libc)
@@ -301,7 +301,7 @@ function install(
       '#!/bin/sh',
       'printf "argument:%s\\n" "$@"',
       'printf "input:%s\\n" "$(cat)"',
-      'env | grep -E "^(ANTHROPIC|CLAUDE|CODEX|DISABLE|FX|IS_SANDBOX|NANOEVAL_AGENT|OPENCODE|PI_|XDG)" | sort',
+      'env | grep -E "^(ANTHROPIC|CLAUDE|CODEX|DISABLE|FX|GOOSE|IS_SANDBOX|NANOEVAL_AGENT|OPENAI|OPENCODE|PI_|XDG)" | sort',
       '',
     ].join('\n'),
     { mode: 0o755 },
@@ -604,6 +604,159 @@ test('the command of opencode is the build of the image and names the endpoint i
   assert.throws(
     () => Installed.script({ kind: 'opencode', model: 'm' }, { url }),
     /opencode names no API for its model/,
+  )
+})
+
+test('the command of goose is the build of the image and names the endpoint in its environment', () => {
+  const url = 'http://127.0.0.1:8787/v1/runs/r/model/a00001'
+  const expected: [Installed.Api, string[]][] = [
+    [
+      'chat',
+      [
+        'GOOSE_PROVIDER=openai',
+        'OPENAI_HOST=http://127.0.0.1:8787',
+        'OPENAI_BASE_PATH=v1/runs/r/model/a00001/chat/completions',
+        'OPENAI_API_KEY=' + attemptToken,
+      ],
+    ],
+    [
+      'responses',
+      [
+        'GOOSE_PROVIDER=openai',
+        'OPENAI_HOST=http://127.0.0.1:8787',
+        'OPENAI_BASE_PATH=v1/runs/r/model/a00001/responses',
+        'OPENAI_API_KEY=' + attemptToken,
+      ],
+    ],
+    [
+      'messages',
+      ['GOOSE_PROVIDER=anthropic', 'ANTHROPIC_HOST=' + url, 'ANTHROPIC_API_KEY=' + attemptToken],
+    ],
+  ]
+  for (const [api, variables] of expected) {
+    const out = run(
+      { api, kind: 'goose', model: "open/model'x", thinking: 'high' },
+      install('goose', 'any'),
+    )
+    assert.deepEqual(
+      out
+        .split('\n')
+        .filter((line) => line.startsWith('argument:'))
+        .map((line) => line.slice('argument:'.length)),
+      [
+        'run',
+        '--no-session',
+        '--no-profile',
+        '--with-builtin',
+        'developer',
+        '--output-format',
+        'stream-json',
+        '-i',
+        '-',
+      ],
+    )
+    assert.match(out, /^input:Write it's done\.$/m)
+    for (const variable of [
+      ...variables,
+      "GOOSE_MODEL=open/model'x",
+      'GOOSE_THINKING_EFFORT=high',
+      'GOOSE_MODE=auto',
+      'GOOSE_DISABLE_KEYRING=1',
+      'GOOSE_TELEMETRY_ENABLED=false',
+    ])
+      assert.ok(out.split('\n').includes(variable), variable)
+    for (const name of ['CACHE', 'CONFIG', 'DATA', 'STATE'])
+      assert.match(
+        out,
+        new RegExp('^XDG_' + name + '_HOME=.*home-goose/' + name.toLowerCase() + '$', 'm'),
+      )
+    assert.deepEqual(
+      out
+        .split('\n')
+        .filter((line) => line.includes(attemptToken))
+        .map((line) => line.split('=')[0])
+        .sort(),
+      ['NANOEVAL_AGENT_TOKEN', variables.at(-1)!.split('=')[0]].sort(),
+      'the token reaches the command in its own variable and the provider key, and in no argument',
+    )
+  }
+  const glibc =
+    Fs.existsSync('/lib64/ld-linux-x86-64.so.2') || Fs.existsSync('/lib/ld-linux-aarch64.so.1')
+  const plain = run(
+    { api: 'chat', kind: 'goose', model: 'open-model' },
+    install('goose', glibc ? 'gnu' : 'musl'),
+  )
+  assert.doesNotMatch(plain, /^GOOSE_THINKING_EFFORT=/m)
+  assert.match(plain, /^GOOSE_MODEL=open-model$/m)
+  assert.throws(
+    () => Installed.script({ kind: 'goose', model: 'm' }, { url }),
+    /goose names no API for its model/,
+  )
+})
+
+const gooseStream = [
+  '',
+  '    __( O)>  new session',
+  '{"type":"message","message":{"id":"msg_1","role":"assistant","created":1,"content":[{"type":"thinking","thinking":"plan","signature":"s"},{"type":"toolRequest","id":"call_1","toolCall":{"status":"success","value":{"name":"shell","arguments":{"command":"echo hi > a.txt"}}}}]}}',
+  '{"type":"message","message":{"id":"msg_2","role":"user","created":2,"content":[{"type":"toolResponse","id":"call_1","toolResult":{"status":"success","value":{"content":[{"type":"text","text":"ok"}],"structuredContent":{"stdout":"ok","stderr":"","exit_code":0},"isError":false}}}]}}',
+  '{"type":"message","message":{"id":"msg_3","role":"assistant","created":3,"content":[{"type":"toolRequest","id":"call_2","toolCall":{"status":"success","value":{"name":"shell","arguments":{"command":"false"}}}}]}}',
+  '{"type":"message","message":{"id":"msg_4","role":"user","created":4,"content":[{"type":"toolResponse","id":"call_2","toolResult":{"status":"success","value":{"content":[{"type":"text","text":"failed"}],"structuredContent":{"exit_code":1},"isError":true}}}]}}',
+  '{"type":"message","message":{"id":"msg_5","role":"assistant","created":5,"content":[{"type":"text","text":"Done."}]}}',
+  '{"type":"complete","total_tokens":214,"input_tokens":200,"output_tokens":14}',
+  '',
+].join('\n')
+
+test('the event stream of goose gives the final message, the tool calls and an ATIF trajectory', () => {
+  assert.deepEqual(Installed.summarize('goose', gooseStream), {
+    costUsd: undefined,
+    error: undefined,
+    message: 'Done.',
+    toolCalls: 2,
+  })
+  assert.deepEqual(
+    Installed.summarize('goose', '{"type":"error","error":"Network error: refused"}\n'),
+    { costUsd: undefined, error: 'Network error: refused', message: '', toolCalls: 0 },
+  )
+  const trajectory = Installed.trajectory(
+    'goose',
+    { instruction: 'Write the file.', stream: gooseStream, usage },
+    { model: 'open-model', name: 'goose', session: 'fallback', version: '1.59.2' },
+  )
+  assert.equal(trajectory.session_id, 'fallback')
+  assert.deepEqual(
+    trajectory.steps.map((step) => [step.step_id, step.source, step.message]),
+    [
+      [1, 'user', 'Write the file.'],
+      [2, 'agent', ''],
+      [3, 'agent', ''],
+      [4, 'agent', 'Done.'],
+    ],
+  )
+  assert.equal(trajectory.steps[1]!.reasoning_content, 'plan')
+  assert.deepEqual(trajectory.steps[1]!.tool_calls, [
+    { tool_call_id: 'call_1', function_name: 'shell', arguments: { command: 'echo hi > a.txt' } },
+  ])
+  assert.deepEqual(trajectory.steps[1]!.observation, {
+    results: [
+      {
+        source_call_id: 'call_1',
+        content: 'ok',
+        extra: { duration_ns: null, exit_code: 0, status: 'completed' },
+      },
+    ],
+  })
+  assert.deepEqual(trajectory.steps[2]!.observation!.results[0]!.extra, {
+    duration_ns: null,
+    exit_code: 1,
+    status: 'failed',
+  })
+  assert.deepEqual(
+    Installed.trajectory(
+      'goose',
+      { stream: '{"type":"error","error":"Network error: refused"}\n', usage },
+      { model: 'm', name: 'goose', session: 's', version: '1.59.2' },
+    ).steps.map((step) => [step.source, step.message]),
+    [['system', 'error: Network error: refused']],
   )
 })
 

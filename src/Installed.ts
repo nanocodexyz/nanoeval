@@ -9,6 +9,7 @@ export type Kind =
   | 'claude-code'
   | 'codex-cli'
   | 'fx'
+  | 'goose'
   | 'nanocode-claude'
   | 'nanocode-codex'
   | 'opencode'
@@ -46,6 +47,7 @@ export const kinds: readonly Kind[] = [
   'claude-code',
   'codex-cli',
   'fx',
+  'goose',
   'nanocode-claude',
   'nanocode-codex',
   'opencode',
@@ -62,6 +64,7 @@ const claude =
   'https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.318'
 const codex = 'https://github.com/openai/codex/releases/download/rust-v0.166.0'
 const fx = 'https://github.com/vercel-labs/fx/releases/download/v0.0.17'
+const goose = 'https://github.com/block/goose/releases/download/v1.59.2'
 const opencode = 'https://github.com/sst/opencode/releases/download/v1.19.5'
 const pi = 'https://github.com/badlogic/pi-mono/releases/download/v1.5.2'
 const leaderboardClaude =
@@ -162,6 +165,39 @@ export const releases: Record<Kind, Release> = {
     provider: 'api',
     source: 'release',
     version: '0.0.17',
+  },
+  goose: {
+    binaries: [
+      {
+        arch: 'aarch64',
+        libc: 'gnu',
+        sha256: 'ec2e0aded1e2aba8d310727a5138f2e3cce0769f2611fbe196ed014c31ce370a',
+        url: goose + '/goose-aarch64-unknown-linux-gnu.tar.gz',
+      },
+      {
+        arch: 'aarch64',
+        libc: 'musl',
+        sha256: 'd5d2b4b999c6664a15684d0972e84afd6a1b7cb8ca9e72b49bf335d0e8e08b93',
+        url: goose + '/goose-aarch64-unknown-linux-musl.tar.gz',
+      },
+      {
+        arch: 'x86_64',
+        libc: 'gnu',
+        sha256: 'c63cf82953e968d84b7542eb38a621dfdb5050b967728ed363517be5cdc666ea',
+        url: goose + '/goose-x86_64-unknown-linux-gnu.tar.gz',
+      },
+      {
+        arch: 'x86_64',
+        libc: 'musl',
+        sha256: '73c40735b207e583cc827b087df07680fbd97d56d42a2940ffe692f9e077f6c8',
+        url: goose + '/goose-x86_64-unknown-linux-musl.tar.gz',
+      },
+    ],
+    entry: 'goose',
+    format: 'tar.gz',
+    provider: 'api',
+    source: 'release',
+    version: '1.59.2',
   },
   'nanocode-claude': {
     provider: 'claude',
@@ -454,6 +490,35 @@ function build(kind: Kind, name: string): string[] {
   ]
 }
 
+function gooseRun(agent: Agent, url: string): string {
+  if (!agent.api) throw new Error('goose names no API for its model')
+  const endpoint = new URL(url)
+  const path = endpoint.pathname.replace(/^\/+|\/+$/g, '')
+  const base = (path ? path + '/' : '') + (agent.api === 'chat' ? 'chat/completions' : 'responses')
+  return (
+    [
+      ...preamble,
+      ...build('goose', 'goose'),
+      'export XDG_CACHE_HOME="$NANOEVAL_AGENT_HOME/cache" XDG_CONFIG_HOME="$NANOEVAL_AGENT_HOME/config"',
+      'export XDG_DATA_HOME="$NANOEVAL_AGENT_HOME/data" XDG_STATE_HOME="$NANOEVAL_AGENT_HOME/state"',
+      'export GOOSE_DISABLE_KEYRING=1 GOOSE_MODE=auto GOOSE_TELEMETRY_ENABLED=false',
+      'export GOOSE_MODEL=' + quote(agent.model),
+      ...(agent.thinking ? ['export GOOSE_THINKING_EFFORT=' + quote(agent.thinking)] : []),
+      ...(agent.api === 'messages'
+        ? [
+            'export GOOSE_PROVIDER=anthropic ANTHROPIC_HOST=' + quote(url),
+            'export ANTHROPIC_API_KEY="$' + tokenVariable + '"',
+          ]
+        : [
+            'export GOOSE_PROVIDER=openai OPENAI_HOST=' + quote(endpoint.origin),
+            'export OPENAI_BASE_PATH=' + quote(base),
+            'export OPENAI_API_KEY="$' + tokenVariable + '"',
+          ]),
+      'exec "$cli" run --no-session --no-profile --with-builtin developer --output-format stream-json -i -',
+    ].join('\n') + '\n'
+  )
+}
+
 const opencodeApis: Record<Api, { base: string; npm: string }> = {
   chat: { base: '', npm: '@ai-sdk/openai-compatible' },
   messages: { base: '/v1', npm: '@ai-sdk/anthropic' },
@@ -715,6 +780,7 @@ export function script(agent: Agent, options: Options): string {
     )
   }
   if (agent.kind === 'fx') return fxAsk(agent, options.url)
+  if (agent.kind === 'goose') return gooseRun(agent, options.url)
   if (agent.kind === 'opencode') return opencodeRun(agent, options.url)
   if (agent.kind === 'pi') return piPrint(agent, options.url)
   if (agent.kind === 'stock-codex') return stockCodex(agent, options.url)
@@ -806,6 +872,15 @@ function count(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
+function gooseBlocks(line: Line, role: string): Line[] {
+  const message = line['message'] as Line | undefined
+  return line['type'] === 'message' &&
+    message?.['role'] === role &&
+    Array.isArray(message['content'])
+    ? message['content']
+    : []
+}
+
 function piBlocks(message: Line): Line[] {
   return Array.isArray(message['content']) ? message['content'] : []
 }
@@ -845,6 +920,18 @@ export function summarize(kind: Kind, stream: string): Summary {
       summary.message = text(line['final_output'] || line['output'])
       summary.toolCalls = Array.isArray(line['tool_calls']) ? line['tool_calls'].length : 0
       summary.error = line['error'] === undefined ? undefined : text(line['error'])
+      continue
+    }
+    if (kind === 'goose') {
+      const said = gooseBlocks(line, 'assistant')
+        .filter((block) => block['type'] === 'text')
+        .map((block) => text(block['text']))
+        .join('')
+      if (said) summary.message = said
+      summary.toolCalls += gooseBlocks(line, 'assistant').filter(
+        (block) => block['type'] === 'toolRequest',
+      ).length
+      if (line['type'] === 'error') summary.error = text(line['error'])
       continue
     }
     if (kind === 'opencode') {
@@ -945,6 +1032,54 @@ export function trajectory(
       if (target) target.model_name = model
       if (line['error'] !== undefined) step('system', 'error: ' + text(line['error']))
       else step('agent', text(line['final_output'] || line['output'])).model_name = model
+      continue
+    }
+    if (kind === 'goose') {
+      if (line['type'] === 'error') step('system', 'error: ' + text(line['error']))
+      const made = gooseBlocks(line, 'assistant')
+      if (made.length) {
+        const target = step(
+          'agent',
+          made
+            .filter((block) => block['type'] === 'text')
+            .map((block) => text(block['text']))
+            .join(''),
+        )
+        target.model_name = model
+        const thought = made
+          .filter((block) => block['type'] === 'thinking')
+          .map((block) => text(block['thinking']))
+          .join('')
+        if (thought) target.reasoning_content = thought
+        for (const block of made)
+          if (block['type'] === 'toolRequest') {
+            const value = (block['toolCall']?.value ?? {}) as Line
+            call(target, {
+              tool_call_id: text(block['id']),
+              function_name: text(value['name']),
+              arguments: (value['arguments'] ?? {}) as Record<string, unknown>,
+            })
+          }
+      }
+      for (const block of gooseBlocks(line, 'user'))
+        if (block['type'] === 'toolResponse') {
+          const id = text(block['id'])
+          const value = (block['toolResult']?.value ?? {}) as Line
+          const exit = value['structuredContent']?.exit_code
+          const target = calls.get(id) ?? step('agent', '')
+          ;(target.observation ??= { results: [] }).results.push({
+            source_call_id: id,
+            content: text(value['content'] ?? block['toolResult']?.error ?? ''),
+            extra: {
+              duration_ns: null,
+              ...(typeof exit === 'number' ? { exit_code: exit } : {}),
+              status:
+                value['isError'] || block['toolResult']?.status !== 'success'
+                  ? 'failed'
+                  : 'completed',
+            },
+          })
+        }
       continue
     }
     if (kind === 'opencode') {
