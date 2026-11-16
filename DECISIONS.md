@@ -8224,3 +8224,37 @@ One more run of `released` with this change failed for a reason of the measureme
 - krun and ns slots. The lanes run on directory slots, and the paths that changed do not read the kind of slot.
 - The exact interleaving of the branched row, a trunk that completed and a branch under way when the runner is stopped. The branches lane stops the runner with every session under way. On `6835d07` with a wait it fails by the first write, not the second.
 - A runner whose lease expires while it lives. The path is the same `lose()`, and no lane stalls the heartbeats of a runner that still runs its rows.
+
+## 2026-11-16: a closed task closes the web search that a model provider runs
+
+A task with `network.allowInternet` false is a closed task: the slot of its agent has no network. A web search that the model provider runs is outside the slot, so that slot did not stop it. A closed task with such a search is not closed.
+
+**Seen.** One run on a closed slice of SWE-bench Pro, 28 tasks, three attempts, with a `claude` session arm at high effort beside Claude Code: 5 of the 84 session rows made 19 web searches through 10 calls of the web search tool. One row searched for a hidden test file by its name, and two for the upstream fix. No search returned a hidden test file or the code of the fix. Three of the five rows passed. The Claude Code rows made none, and the tool list of each had `WebSearch` and `WebFetch`.
+
+**The cause.** `Turn.body` sent `web_search: false` only for a `codex` turn (the entry of 2026-11-14 on codex sessions), and the nanocode-ts host turns the search of a provider on unless the turn says so. `Installed.script` started Claude Code with its default tools. `WebSearch` of Claude Code is a nested model request with the search tool of the provider. Neither read the network of the task.
+
+**The rule.** The agent of a closed task (`Eval.offline(task)` names `agent`) gets no web tool that runs outside its slot.
+
+- A nanocode session of any provider is sent `web_search: false`: the turn of the agent and the turn of a picker, which is a session of the model of the agent. The turn of a judge is not changed: it belongs to the verifier. `agent/turns.jsonl` names `web_search: false` for such a turn, so a row shows that it ran closed.
+- Claude Code, as `claude-code` and as `stock-claude`, is started with `--disallowedTools WebFetch WebSearch`.
+- Codex CLI, as `codex-cli`, is started with `-c web_search=disabled`, the setting that `stock-codex` has on every task.
+- fx, opencode and pi get nothing: their commands name no tool that a provider runs, and a fetch from the slot has no network.
+- An open task is unchanged: the body of its turn and the command of its agent are byte for byte what they were.
+
+No agent option names this. The task decides it.
+
+**Checked with the pinned Claude Code.** The 2.1.318 build for x86_64 glibc, SHA-256 as in `src/Installed.ts`, was started with the command of `Installed.script` against an endpoint that refuses connections. The `init` line of its stream lists 22 tools without the flag, `WebFetch` and `WebSearch` among them, and 20 with it, neither among them. `--dangerously-skip-permissions` was set both times.
+
+**Which runs had the defect.** Every run of a closed task before this change, of 2026-11-16 and earlier. A read-out of such a run lists the rows with a provider web search: the request log of a row counts them (`webSearches`).
+
+**The Worker and the runner both carry it.** The Worker builds the turn of a session, and the runner writes the command of an installed agent. A run is closed for both kinds of agent only when both are at this change.
+
+**Tests.** `node --test test/Turn.test.ts test/Installed.test.ts`: the body of a `claude` turn of an open task equals the string it was before, and of a closed task that string with `web_search: false`. A `codex` turn is the same string in both. The last line of the script of `claude-code`, `stock-claude` and `codex-cli` of an open task equals the line it was before, and the script of a closed task differs by the one argument. The scripts of the other kinds are equal in both.
+
+**Not verified.**
+
+- A session with a model. No run was made with this change. The switch is the one a `codex` session has had since 2026-11-14.
+- A subagent of a closed `claude` session. The Worker starts no session for a subagent, so a subagent runs in the runtime of the session that was sent the switch. Whether that runtime keeps the search from a subagent was not read.
+- `-c web_search=disabled` with Codex CLI 0.166.0. It is the setting of `stock-codex` at 0.162.1, and no binary of 0.166.0 was started with it.
+- `nanocode-claude` and `nanocode-codex`, the nanocode command line inside the slot. Its `exec` has no option that turns the web search off, so such an arm on a closed task still has the search of its provider. It is not closed by this change.
+- The tools of fx, opencode and pi were read from their commands here and not from their binaries.

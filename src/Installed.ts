@@ -309,6 +309,12 @@ const preamble = ['set -eu', 'mkdir -p "$NANOEVAL_AGENT_HOME"']
 
 const prompt = ['prompt=$(cat; printf x)', 'prompt=${prompt%x}']
 
+const claudeWebTools = ['WebFetch', 'WebSearch']
+
+function claudeClosed(options: { closed?: boolean }): string[] {
+  return options.closed ? ['--disallowedTools ' + claudeWebTools.join(' ')] : []
+}
+
 const fxApis: Record<Api, { base: string; effort: (level: string) => unknown; protocol: string }> =
   {
     chat: {
@@ -557,7 +563,7 @@ function stockCodex(agent: Agent, url: string): string {
   )
 }
 
-function stockClaude(agent: Agent, url: string): string {
+function stockClaude(agent: Agent, options: { closed?: boolean; url: string }): string {
   const root = '"$NANOEVAL_AGENT_RT"/agents/stock-claude'
   const model = quote(agent.model)
   return (
@@ -570,7 +576,7 @@ function stockClaude(agent: Agent, url: string): string {
         '/gnu/claude; fi',
       'ln -sf "$cli" /usr/local/bin/claude 2>/dev/null || true',
       'export ANTHROPIC_AUTH_TOKEN="$' + tokenVariable + '"',
-      'export ANTHROPIC_BASE_URL=' + quote(url),
+      'export ANTHROPIC_BASE_URL=' + quote(options.url),
       'export ANTHROPIC_MODEL=' + model,
       'export ANTHROPIC_DEFAULT_SONNET_MODEL=' + model,
       'export ANTHROPIC_DEFAULT_OPUS_MODEL=' + model,
@@ -587,6 +593,7 @@ function stockClaude(agent: Agent, url: string): string {
         'printf "%s" "$prompt" | "$cli"',
         '--verbose',
         '--output-format=stream-json',
+        ...claudeClosed(options),
         ...(agent.thinking ? ['--effort ' + quote(agent.thinking)] : []),
         '--permission-mode=bypassPermissions',
         '--print 2>&1',
@@ -595,7 +602,7 @@ function stockClaude(agent: Agent, url: string): string {
   )
 }
 
-export function script(agent: Agent, options: { url: string }): string {
+export function script(agent: Agent, options: { closed?: boolean; url: string }): string {
   if (!/^https?:\/\/[A-Za-z0-9.:[\]_/-]+$/.test(options.url))
     throw new Error('the model endpoint is not a plain http or https address: ' + options.url)
   const root = '"$NANOEVAL_AGENT_RT"/agents/' + agent.kind
@@ -646,7 +653,7 @@ export function script(agent: Agent, options: { url: string }): string {
   if (agent.kind === 'opencode') return opencodeRun(agent, options.url)
   if (agent.kind === 'pi') return piPrint(agent, options.url)
   if (agent.kind === 'stock-codex') return stockCodex(agent, options.url)
-  if (agent.kind === 'stock-claude') return stockClaude(agent, options.url)
+  if (agent.kind === 'stock-claude') return stockClaude(agent, options)
   if (agent.kind === 'codex-cli') {
     const provider =
       'model_providers.nanoeval={name="nanoeval", base_url="' +
@@ -670,6 +677,7 @@ export function script(agent: Agent, options: { url: string }): string {
             : []),
           '-c ' + quote('model_provider="nanoeval"'),
           '-c ' + quote(provider),
+          ...(options.closed ? ['-c web_search=disabled'] : []),
           '-',
         ].join(' '),
       ].join('\n') + '\n'
@@ -695,6 +703,7 @@ export function script(agent: Agent, options: { url: string }): string {
         '--output-format stream-json',
         '--verbose',
         '--dangerously-skip-permissions',
+        ...claudeClosed(options),
         '--model ' + quote(agent.model),
         ...(agent.thinking ? ['--effort ' + quote(agent.thinking)] : []),
       ].join(' '),

@@ -657,6 +657,10 @@ export class Run extends DurableObject<Env> {
     return spec
   }
 
+  private webSearch(row: Ledger.Attempt): Pick<Turn.Turn, 'webSearch'> {
+    return Eval.offline(this.task(row.task)).includes('agent') ? { webSearch: false } : {}
+  }
+
   private imported(name: string): Eval.Task {
     const row = this.sql.all('SELECT body FROM tasks WHERE name = ?', name)[0]!
     return JSON.parse(row['body'] as string) as Eval.Task
@@ -3264,6 +3268,7 @@ export class Run extends DurableObject<Env> {
       provider: agent.provider as 'claude' | 'codex',
       requestId: Picker.requestId,
       ...(agent.thinking ? { thinking: agent.thinking } : {}),
+      ...this.webSearch(row),
     }
     this.mine(row)
     try {
@@ -3523,6 +3528,7 @@ export class Run extends DurableObject<Env> {
         ? {}
         : { toolResultClearing: agent.toolResultClearing }),
       ...(agent.toolResultTokens === undefined ? {} : { toolResultTokens: agent.toolResultTokens }),
+      ...this.webSearch(row),
       ...(agent.yieldFloorMs === undefined ? {} : { yieldFloorMs: agent.yieldFloorMs }),
       ...(agent.yieldShare === undefined ? {} : { yieldShare: agent.yieldShare }),
     }
