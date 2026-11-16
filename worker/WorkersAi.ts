@@ -21,6 +21,36 @@ function failed(status: number, message: string): Response {
   })
 }
 
+function chunk(line: string, model: string): string {
+  if (!line.startsWith('data:')) return line
+  const payload = line.slice('data:'.length).trim()
+  if (!payload.startsWith('{')) return line
+  const value = (() => {
+    try {
+      return JSON.parse(payload) as Record<string, unknown>
+    } catch {
+      return undefined
+    }
+  })()
+  if (!value || 'choices' in value || value['response'] !== '' || !value['usage']) return line
+  return 'data: ' + JSON.stringify({ choices: [], model, usage: value['usage'] })
+}
+
+function trailer(model: string): TransformStream<string, string> {
+  let rest = ''
+  return new TransformStream({
+    flush(controller) {
+      if (rest) controller.enqueue(chunk(rest, model))
+    },
+    transform(text, controller) {
+      const lines = (rest + text).split('\n')
+      rest = lines.pop() ?? ''
+      if (lines.length)
+        controller.enqueue(lines.map((line) => chunk(line, model)).join('\n') + '\n')
+    },
+  })
+}
+
 /** The status a thrown Workers AI error answers with: 429 for capacity and rate limits, else 502. */
 export function status(error: unknown): number {
   const text = error instanceof Error ? error.message : String(error)
@@ -58,10 +88,16 @@ export function fetcher(ai: Binding, options: { gateway?: string } = {}): Fetch 
       return failed(code, error instanceof Error ? error.message : String(error))
     }
     if (answer instanceof ReadableStream)
-      return new Response(answer, {
-        headers: { 'cache-control': 'no-cache', 'content-type': 'text/event-stream' },
-        status: 200,
-      })
+      return new Response(
+        answer
+          .pipeThrough(new TextDecoderStream())
+          .pipeThrough(trailer(model))
+          .pipeThrough(new TextEncoderStream()),
+        {
+          headers: { 'cache-control': 'no-cache', 'content-type': 'text/event-stream' },
+          status: 200,
+        },
+      )
     if (answer instanceof Response) return answer
     return new Response(JSON.stringify(answer), { headers: json, status: 200 })
   }
