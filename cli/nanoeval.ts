@@ -17,6 +17,7 @@ import * as Runner from '../sandbox/Runner.ts'
 import * as Store from '../sandbox/Store.ts'
 import * as Arms from '../src/Arms.ts'
 import * as Baseline from '../src/Baseline.ts'
+import * as Blocklist from '../src/Blocklist.ts'
 import * as Bootstrap from '../src/Bootstrap.ts'
 import * as Compare from '../src/Compare.ts'
 import * as Config from '../src/Config.ts'
@@ -187,7 +188,7 @@ const usage = `nanoeval <command>
             [--disks keep|remove] [--free-disk-mb N] [--verifier-cache] [--name NAME] [--wait]
             [--key-deposit N] [--key-top-up N]
             [--out DIR] [--location HINT] [--warm-sec N [--warm-budget-usd 0]]
-            [--payer deployment|plan]
+            [--payer deployment|plan] [--web-blocklist NAME|FILE]
             Create the rows of a run, task x agent x attempt, against one version of an eval.
             --only names a task by its id, by its name as status prints it, or by a pattern
             with * and ?, which takes every task whose id or name it matches. --only-file
@@ -374,6 +375,15 @@ const usage = `nanoeval <command>
             (chat completions), fx-messages (Anthropic Messages) or fx-responses (OpenAI
             Responses), since their command lines speak all three and the run adds the
             credential of that provider.
+            --web-blocklist names a list of hosts (terminal-bench, the list this checkout
+            holds) or a file of hosts and host/path prefixes, one a line, # starts a comment,
+            at most 64. The agents of the run may not fetch them: the Worker adds them to the
+            blocked_domains of every web search and web fetch tool a claude request names,
+            and refuses a request it cannot filter so, and Claude Code refuses a WebFetch of
+            them in a PreToolUse hook. Only agents that enforce it may run with it: claude,
+            codex (whose sessions have no web search), oracle, claude-code, stock-claude and
+            nanocode-claude. A fetch from a shell of an open slot is not stopped: scan the
+            transcripts for the listed hosts before a claim. --rerun takes it from RUN.
             With --payer plan, the Claude plan signed in on the Worker (nanoeval plans) pays
             for the sessions of the run, its judge included, in place of the Worker's own
             credential: its agents and its judge are claude sessions, nothing is charged per
@@ -2306,6 +2316,7 @@ async function main(
       unsound: { type: 'string' },
       url: { default: process.env['NANOEVAL_URL'], type: 'string' },
       'verifier-cache': { default: false, type: 'boolean' },
+      'web-blocklist': { type: 'string' },
       'verifier-max-sec': { type: 'string' },
       wait: { default: false, type: 'boolean' },
       'warm-budget-usd': { default: '0', type: 'string' },
@@ -3545,6 +3556,15 @@ async function main(
         ? { payer: (values.payer ?? parent?.payer) as Config.Payer }
         : {}),
       ...(rerun ? { rerun: { run: rerun, select } } : {}),
+      ...(values['web-blocklist']
+        ? {
+            webBlocklist:
+              Blocklist.lists[values['web-blocklist']] ??
+              Blocklist.parse(await Fs.readFile(values['web-blocklist'], 'utf8')),
+          }
+        : parent?.webBlocklist
+          ? { webBlocklist: parent.webBlocklist }
+          : {}),
       sandbox: {
         backend,
         ...admission,

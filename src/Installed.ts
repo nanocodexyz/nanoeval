@@ -1,4 +1,5 @@
 import type * as Atif from './Atif.ts'
+import * as Blocklist from './Blocklist.ts'
 import * as CodexFallback from './CodexFallback.ts'
 import * as Slot from './Slot.ts'
 
@@ -311,9 +312,30 @@ const prompt = ['prompt=$(cat; printf x)', 'prompt=${prompt%x}']
 
 const claudeWebTools = ['WebFetch', 'WebSearch']
 
-function claudeClosed(options: { closed?: boolean }): string[] {
-  return options.closed ? ['--disallowedTools ' + claudeWebTools.join(' ')] : []
+function claudeClosed(options: Options): string[] {
+  return [
+    ...(options.closed ? ['--disallowedTools ' + claudeWebTools.join(' ')] : []),
+    ...(options.blocklist ? ['--settings "$NANOEVAL_AGENT_HOME/web-blocklist.json"'] : []),
+  ]
 }
+
+const hookEnd = 'NANOEVAL_WEB_BLOCKLIST'
+
+function claudeBlocklist(options: Options): string[] {
+  if (!options.blocklist) return []
+  const hook = Blocklist.hook(options.blocklist)
+  if (hook.split('\n').includes(hookEnd)) throw new Error('the web blocklist hook ends its own here-document')
+  return [
+    "cat > \"$NANOEVAL_AGENT_HOME/web-blocklist.sh\" <<'" + hookEnd + "'",
+    ...hook.trimEnd().split('\n'),
+    hookEnd,
+    'cat > "$NANOEVAL_AGENT_HOME/web-blocklist.json" <<' + hookEnd,
+    '{"hooks":{"PreToolUse":[{"matcher":"WebFetch","hooks":[{"type":"command","command":"sh $NANOEVAL_AGENT_HOME/web-blocklist.sh"}]}]}}',
+    hookEnd,
+  ]
+}
+
+export type Options = { blocklist?: Blocklist.List; closed?: boolean; url: string }
 
 const fxApis: Record<Api, { base: string; effort: (level: string) => unknown; protocol: string }> =
   {
@@ -563,7 +585,7 @@ function stockCodex(agent: Agent, url: string): string {
   )
 }
 
-function stockClaude(agent: Agent, options: { closed?: boolean; url: string }): string {
+function stockClaude(agent: Agent, options: Options): string {
   const root = '"$NANOEVAL_AGENT_RT"/agents/stock-claude'
   const model = quote(agent.model)
   return (
@@ -588,6 +610,7 @@ function stockClaude(agent: Agent, options: { closed?: boolean; url: string }): 
       'export CLAUDE_CONFIG_DIR=/logs/agent/sessions',
       'mkdir -p $CLAUDE_CONFIG_DIR/debug $CLAUDE_CONFIG_DIR/projects/-app $CLAUDE_CONFIG_DIR/shell-snapshots $CLAUDE_CONFIG_DIR/statsig $CLAUDE_CONFIG_DIR/todos $CLAUDE_CONFIG_DIR/skills',
       'export PATH="${HOME:-/root}/.local/bin:$PATH"',
+      ...claudeBlocklist(options),
       ...prompt,
       [
         'printf "%s" "$prompt" | "$cli"',
@@ -602,7 +625,7 @@ function stockClaude(agent: Agent, options: { closed?: boolean; url: string }): 
   )
 }
 
-export function script(agent: Agent, options: { closed?: boolean; url: string }): string {
+export function script(agent: Agent, options: Options): string {
   if (!/^https?:\/\/[A-Za-z0-9.:[\]_/-]+$/.test(options.url))
     throw new Error('the model endpoint is not a plain http or https address: ' + options.url)
   const root = '"$NANOEVAL_AGENT_RT"/agents/' + agent.kind
@@ -697,6 +720,7 @@ export function script(agent: Agent, options: { closed?: boolean; url: string })
       'export ANTHROPIC_BASE_URL=' + quote(options.url),
       'export ANTHROPIC_AUTH_TOKEN="$' + tokenVariable + '"',
       'export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1 IS_SANDBOX=1',
+      ...claudeBlocklist(options),
       [
         'exec "$cli"',
         '-p',

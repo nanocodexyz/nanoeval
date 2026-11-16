@@ -98,7 +98,7 @@ export type Next =
   | { state: 'idle' }
 
 export type Agent =
-  | { state: 'attached'; timeoutSec: number }
+  | { state: 'attached'; timeoutSec: number; webBlocklist?: readonly string[] }
   | { branch?: number; message: string; state: 'completed' }
   | { error: string; state: 'failed' }
   | { state: 'fork' }

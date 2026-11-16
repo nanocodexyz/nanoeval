@@ -3,6 +3,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import * as Admission from '../src/Admission.ts'
 import * as Branch from '../src/Branch.ts'
 import * as Atif from '../src/Atif.ts'
+import * as Blocklist from '../src/Blocklist.ts'
 import * as Bootstrap from '../src/Bootstrap.ts'
 import * as Budget from '../src/Budget.ts'
 import * as Claim from '../src/Claim.ts'
@@ -363,7 +364,10 @@ export class Run extends DurableObject<Env> {
             },
             404,
           )
-        if (parts[2] === 'agent') return json(this.agentOf(row))
+        if (parts[2] === 'agent') {
+          const webBlocklist = this.config().webBlocklist
+          return json({ ...this.agentOf(row), ...(webBlocklist ? { webBlocklist } : {}) })
+        }
         if (parts[2] === 'artifacts' && parts[3]) {
           const name = decodeURIComponent(parts[3])
           const body = this.artifact(row.id, name) ?? (await this.live(row, name))
@@ -1662,6 +1666,11 @@ export class Run extends DurableObject<Env> {
     return typeof asked === 'number' && asked > 0 ? Math.min(asked, Number(this.env.HOLD_MS)) : 0
   }
 
+  private blocklisted(): { webBlocklist?: readonly string[] } {
+    const webBlocklist = this.config().webBlocklist
+    return webBlocklist ? { webBlocklist } : {}
+  }
+
   private agentOf(row: Pick<Ledger.Attempt, 'agent'>): Config.Agent {
     return this.config().agents.find((candidate) => candidate.id === row.agent)!
   }
@@ -1792,6 +1801,26 @@ export class Run extends DurableObject<Env> {
           },
           { status: 400 },
         )
+      }
+      const webBlocklist = this.config().webBlocklist
+      if (value && webBlocklist && provider === 'claude' && Blocklist.searches(value)) {
+        const filtered = Blocklist.anthropic(value, webBlocklist)
+        if ('refusal' in filtered) {
+          this.record({
+            attempt: row.id,
+            claim: row.claims,
+            listed: false,
+            outcome: { at: Date.now(), ms: 0, refusal: 'model', status: 400 },
+            path,
+            provider,
+          })
+          return Response.json(
+            { error: { message: filtered.refusal, type: 'invalid_request_error' } },
+            { status: 400 },
+          )
+        }
+        value = filtered.body
+        body = JSON.stringify(value)
       }
       const limit = Number(this.env.NANOEVAL_REPLY_LIMIT ?? 0)
       if (value && path === 'responses' && limit > 0 && !value['max_output_tokens']) {
@@ -3396,11 +3425,12 @@ export class Run extends DurableObject<Env> {
       })
       return harness === 'session'
         ? { detached: false, state: 'running' }
-        : { state: 'attached', timeoutSec: task.agent.timeoutSec }
+        : { state: 'attached', timeoutSec: task.agent.timeoutSec, ...this.blocklisted() }
     }
     if (row.phase !== 'run' && row.phase !== 'verify')
       throw new Refusal(409, 'the attempt is in the ' + row.phase + ' phase')
-    if (harness !== 'session') return { state: 'attached', timeoutSec: task.agent.timeoutSec }
+    if (harness !== 'session')
+      return { state: 'attached', timeoutSec: task.agent.timeoutSec, ...this.blocklisted() }
     if (this.branches(row) > 1) return this.branched(row, { body, waitMs })
 
     const read = async (): Promise<Protocol.Agent> => {
