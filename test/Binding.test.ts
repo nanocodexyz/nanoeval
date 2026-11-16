@@ -47,6 +47,48 @@ test('a chat completions request of a session goes to the binding with its body 
   ])
 })
 
+test('a native usage trailer of the binding becomes the usage chunk of chat completions, and every other line comes back unchanged', async () => {
+  const usage = {
+    completion_tokens: 38,
+    prompt_tokens: 288,
+    prompt_tokens_details: { cached_tokens: 192 },
+  }
+  const head =
+    'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"hi"}}]},"finish_reason":null}]}\n\ndata: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":0,"completion_tokens":0}}\n\n'
+  const native = 'data: ' + JSON.stringify({ response: '', usage }) + '\n\ndata: [DONE]\n\n'
+  const pieces = [head.slice(0, 37), head.slice(37), native.slice(0, 20), native.slice(20)]
+  const { ai } = binding(
+    () =>
+      new ReadableStream({
+        start(controller) {
+          for (const piece of pieces) controller.enqueue(new TextEncoder().encode(piece))
+          controller.close()
+        },
+      }),
+  )
+  const response = await WorkersAi.fetcher(ai)(url, {
+    body: body({ messages: [], model: '@cf/deepseek-ai/deepseek-v4.1-flash-1017', stream: true }),
+    method: 'POST',
+  })
+  assert.equal(
+    await response.text(),
+    head +
+      'data: ' +
+      JSON.stringify({ choices: [], model: '@cf/deepseek-ai/deepseek-v4.1-flash-1017', usage }) +
+      '\n\ndata: [DONE]\n\n',
+  )
+})
+
+test('a line without choices that is no empty usage trailer comes back unchanged', async () => {
+  const events = 'data: {"response":"hi"}\n\ndata: {"response":"","usage":null}\n\ndata: [DONE]\n\n'
+  const { ai } = binding(() => new Response(events).body)
+  const response = await WorkersAi.fetcher(ai)(url, {
+    body: body({ messages: [], model: '@cf/deepseek-ai/deepseek-v4.1-flash-1017', stream: true }),
+    method: 'POST',
+  })
+  assert.equal(await response.text(), events)
+})
+
 test('an answer that is no stream comes back as one JSON object', async () => {
   const answer = {
     choices: [{ message: { content: 'hi', role: 'assistant' } }],
