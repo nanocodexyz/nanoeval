@@ -3471,6 +3471,8 @@ export class Run extends DurableObject<Env> {
       ...(agent.escalateToolErrors === undefined
         ? {}
         : { escalateToolErrors: agent.escalateToolErrors }),
+      ...(agent.finishCheck ? { finishCheck: true } : {}),
+      ...(agent.finishRetries === undefined ? {} : { finishRetries: agent.finishRetries }),
       ...(agent.foldFinish ? { foldFinish: true } : {}),
       hand: Protocol.handName,
       ...(agent.lateFinishCheckMs === undefined
