@@ -42,6 +42,7 @@ import * as Subset from '../src/Subset.ts'
 import * as Task from '../src/Task.ts'
 import * as Timeline from '../src/Timeline.ts'
 import * as Unsound from '../src/Unsound.ts'
+import * as Closed from './Closed.ts'
 import * as Doctor from './Doctor.ts'
 import * as Import from './Import.ts'
 import * as Login from './Login.ts'
@@ -132,7 +133,7 @@ const usage = `nanoeval <command>
             was run end to end.
   import    --url URL --token T (DATASET | --task DIR...) [--eval NAME] [--only ID]... [--limit N]
             [--backend krun|ns|dir] [--store DIR|r2] [--cache DIR] [--layers DIR] [--sources DIR]
-            [--report FILE] [--keep-going] [--pull-wait SEC] [--jobs N]
+            [--report FILE] [--keep-going] [--pull-wait SEC] [--jobs N] [--closed]
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
             Import a dataset, or local task directories, as a version of a durable eval:
             the adapter writes each task, its instruction, tests and solution become blobs
@@ -154,7 +155,13 @@ const usage = `nanoeval <command>
             at once, one without it: each conversion of an image runs a builder microVM of 2
             threads and 2 GiB, and one waits while the disk of the cache has no room for its
             environment beside the ones being written. The rows of the version are in the
-            order of the adapter whatever ends first.
+            order of the adapter whatever ends first. --closed imports the closed form of a
+            task whose verifier checks its test files out of the fix commit (SWE-bench Pro):
+            those files are read from the repository of the task and kept with the tests,
+            the repository in the image becomes one commit of its tracked files, the build
+            fails when the image holds the fix commit or a file it added, the verifier
+            places its own copy of the test files and counts the ones the agent changed,
+            and the agent gets no network. A task that cannot be closed fails the import.
   import    DATASET --out DIR [--only ID]... [--limit N] [--sources DIR]
             Write the dataset's tasks as Harbor task directories instead, with dataset.json.
   evals     --url URL --token T
@@ -2099,6 +2106,7 @@ async function main(
       cache: { type: 'string' },
       claims: { default: '3', type: 'string' },
       close: { default: false, type: 'boolean' },
+      closed: { default: false, type: 'boolean' },
       'claude-login': { type: 'string' },
       code: { type: 'string' },
       'codex-login': { type: 'string' },
@@ -3015,6 +3023,8 @@ async function main(
     throw new Error('--jobs is how many tasks an import converts at once, not ' + values.jobs)
   const jobs = Number(values.jobs ?? '1')
   const refusals: { error: string; id: string }[] = []
+  if (values.closed && Config.kind(backend) !== 'disk')
+    throw new Error('--closed builds the image of a task, which --backend dir does not')
   const imported = async (
     source: AsyncIterable<Dataset.Case>,
     target: { dataset: string; name: string; source: Record<string, string> },
@@ -3030,14 +3040,16 @@ async function main(
         : {}),
       backend,
       cache,
-      cases: source,
+      cases: values.closed
+        ? Closed.cases(source, { remote: Closed.github, root: Path.join(cache, 'scratch') })
+        : source,
       dataset: target.dataset,
       jobs,
       layers: Path.resolve(values.layers ?? Converter.defaultLayers(cache)),
       log: (line) => (lab ? lab.progress.line(line) : console.error(line)),
       name: target.name,
       policy,
-      source: target.source,
+      source: values.closed ? { ...target.source, closed: Closed.recipe } : target.source,
       store: blobStore(values.store, access),
     })
     if (values.report)

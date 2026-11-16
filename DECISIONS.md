@@ -7876,3 +7876,41 @@ Actions is disabled on this repository, so every `run` step of `.github/workflow
 On `583b4f8`, the nanoeval lane's KVM box passed e2e-krun, e2e-ns and krun at 59 of 59 steps, including `picker` and `picker-lazy` on both guest backends. Its KVM run on `5a36d52` is recorded in the next entry when it reports.
 
 On `5a36d52`, the nanoeval lane ran fresh clones on its KVM box (2026-11-16 01:16 UTC): all 138 of 138 steps passed. The KVM lanes passed 59 of 59 on the first try: e2e-krun 40, e2e-ns 16, krun 3. Two e2e-dir steps failed once while that box's disk was saturated, then passed alone on a retry.
+
+## 2026-11-16: `import --closed` imports the closed form of a task that checks its tests out of the fix commit
+
+**The problem.** The SWE-bench Pro task directories of Harbor verify with `git checkout FIX -- PATHS`: the last line of `before_repo_set_cmd` in `tests/config.json`, which `tests/test.sh` evaluates in the repository of the agent. So the image must hold the fix commit or be able to fetch it, and an agent with `git` reads the fix from `git show`, from the object store, or from the forge. A score on such a task does not separate an agent that wrote the fix from one that read it.
+
+**The decision.** One option of `import`, `--closed`, in `cli/Closed.ts`. It rewrites a case before the import converts it, so the closed task is an ordinary task: the version, its digest and its blobs are made as for any other, and nothing at run time knows the option. It is a change of the task, so the source of the version records `closed: gold-tests-1` and the digest differs from the open import. What it changes:
+
+| Part | Open | Closed |
+| --- | --- | --- |
+| Test files of the fix | Checked out of the fix commit in the agent's repository | `tests/gold.tar` and `tests/gold-manifest.json`, read at import from the repository on GitHub with a shallow fetch of the base and the fix commit |
+| `.git` of the image | The clone, with every commit up to the image build | One commit of the tracked files, made by a build step after the reset to the base commit. The step fails unless one commit is left and every object is reachable from it |
+| What the image holds | Not checked | The last build step reads every file and every repository of the image, and fails when one holds the fix commit, or a blob the fix commit has and the base commit lacks |
+| Placement | `git checkout` | `tests/closed-place.py`: every file of the manifest is checked against its SHA-256 and written over the agent's, `/logs/verifier/tests_modified.json` counts the files that differed from the base commit, and a missing file or a directory that is a link ends the verifier |
+| Network of the agent | The task's | `network_mode = "no-network"` |
+
+**Fails closed.** A task whose config, Dockerfile or `test.sh` has another shape is refused with its name, and the import fails. A quoted or expanded path in the checkout line is refused, since the import does not evaluate shell. A task with a network allowlist is refused. A failed image check is a failed build, so the task is not imported. `--backend dir` is refused: it builds no image.
+
+**Why one commit and not a filtered history.** The count of commits is the invariant an import can check without knowing the repository. The working tree is the base commit's, so `git status` is clean and `git diff` still shows what the agent changed.
+
+**Why the image is read by blob.** The fix can be in an image outside `.git`: a package cache, a vendored copy, a second clone. The check hashes each file whose size matches a wanted blob as git does and compares, so it finds a copy under any name. It does not find a compressed or a patched copy.
+
+**What it does not close.** Dependencies. A version of a package that only the fix asks for is neither kept out of the image nor carried in `tests/`, so its presence says which version the fix uses, and a task whose tests need one passes only when the verifier can fetch it. Submodules lose their own `.git` and are committed as files, so the tree differs from the base commit's in those paths. The instruction is not read for what it gives away.
+
+**Checked.** `test/Closed.test.ts`, four tests against a repository made in a temporary directory: the transform of a case, the refusals, the placement script on an untouched, a changed and a linked tree, and the image check on a clean image, a renamed copy of a fixed file and a repository that fetched the fix. 
+
+One run of the option on krun slots, on four threads of a Linux machine with KVM, against a deployed Worker at `4f91e64`, with the import of this change on `5abaeea`: six SWE-bench Pro task directories of six repositories (ansible, element-web, flipt, qutebrowser, teleport, tutanota), imported twice, once as they are and once with a probe as the solution.
+
+| Step | Count |
+| --- | --- |
+| Images built, with the one-commit step and the image check | 6 of 6, in both imports |
+| Attempts with the task's solution | 3 of 3 passed, 3 not run |
+| Attempts with a solution that changes nothing | 3 of 3 failed, 3 not run |
+| `tests_modified.json` written by the verifier | 6 of 6, `tests_modified` 0 in each |
+| Probe as the agent: one commit, every object reachable from it | 3 of 3 |
+| Probe: the fix commit is in no repository, and no file of the image is a blob it added | 3 of 3, over 49,130, 100,715 and 166,630 files |
+| Probe: six names and addresses of the internet do not answer, and `/tests` is absent | 3 of 3 |
+
+The three attempts not run in each pair were left unclaimed when the machine was given to another run. One of the three that ran is a task whose fix raises six module versions: its solution passed because its verifier, which keeps the network, fetched them.
