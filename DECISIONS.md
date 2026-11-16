@@ -8258,3 +8258,26 @@ No agent option names this. The task decides it.
 - `-c web_search=disabled` with Codex CLI 0.166.0. It is the setting of `stock-codex` at 0.162.1, and no binary of 0.166.0 was started with it.
 - `nanocode-claude` and `nanocode-codex`, the nanocode command line inside the slot. Its `exec` has no option that turns the web search off, so such an arm on a closed task still has the search of its provider. It is not closed by this change.
 - The tools of fx, opencode and pi were read from their commands here and not from their binaries.
+
+## 2026-11-16: one output cap from every agent
+
+**Seen.** On Workers AI models the arms of one run asked for different reply limits: pi sent `max_completion_tokens: 16384` (its own default when `models.json` names no `maxTokens`), opencode `max_tokens: 32000` (its `OUTPUT_TOKEN_MAX` default), and fx, `nanocode-codex` and a `codex` session sent none. Rows of the pi arm ended on a reply of exactly 16,384 tokens, a cut the other arms did not have.
+
+**The rule.** Every agent sends `leaderboard.replyLimit` (65,536) as its reply limit:
+
+- pi: `maxTokens` on the model in `models.json`.
+- opencode: `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX`. opencode 1.19.5 sends `min(limit.output, OUTPUT_TOKEN_MAX)` and subtracts the same number from the context it uses before it compacts, so a `limit.output` added later must equal it.
+- fx: `max_output_tokens` in `model_metadata` of the model. fx 0.0.17 refuses `output_limit` and `max_tokens` there with `UnknownField`.
+- The nanocode command line: `--max-output-tokens` for both harnesses, where it was given to `claude` only. Its codex harness applies it to a model outside its own catalog.
+- A `codex` session: `max_output_tokens` in the body of its turn, which nanocode-ts passes on in `codex_options` and applies to a model outside the codex catalog, and its chat transport sends as `max_completion_tokens`. It is written to `agent/turns.jsonl`.
+
+**Checked with the pinned binaries.** pi 1.5.2 (`pi-linux-x64.tar.gz`, SHA-256 811c6f2c…0cb5), opencode 1.19.5 (588310a3…647a), fx 0.0.17 (78c155d5…3e75) and nanocode `nanocode-cli-1a946f3` (e1941f3c…45d5) were started with the scripts of `Installed.script` for `@cf/zai-org/glm-5.3-flash` at low effort against a loopback server that records each request body. pi sent `max_completion_tokens: 65536`, opencode `max_tokens: 65536` (2 requests), fx `max_tokens: 65536`, and nanocode `max_output_tokens: 65536` on `/responses`.
+
+**The limit fits the models.** On 2026-11-16 each of `@cf/deepseek-ai/deepseek-v4.1-flash-1017`, `@cf/zai-org/glm-5.3-flash`, `@cf/moonshotai/kimi-k2.7-code`, `@cf/google/gemma-4-26b-a4b-it` and `@cf/qwen/qwen3.8-27b` answered a short prompt with `max_completion_tokens` of 32,768, 65,536 and 131,072 with `finish_reason: stop` and no error, so one limit needs no clamp for them.
+
+**Tests.** `node --test test/Installed.test.ts test/OutputCap.test.ts`.
+
+**Not verified.**
+
+- A run with a model. Whether the pi rows that stopped at 16,384 now finish is for the next smoke run to show.
+- A `codex` session against the loopback server: its path was read in nanocode-ts (`src/wasm.rs`, `codex_options.max_output_tokens`) and nanocode (`transport/chat.rs`), not run.
