@@ -77,7 +77,7 @@ export const adapters: readonly Dataset.Adapter[] = [
     name: 'swe-rebench-leaderboard',
     package: 'swe-rebench/swe-rebench-leaderboard',
     proof:
-      'task directories written with --out and checked against their digests (2 of 860 sampled). Not yet run as an eval with its own solutions',
+      'task directories written with --out and checked against their digests (2 of 860 sampled). Not importable as an eval yet: its tasks give memory as a string such as 8G, which Task.load refuses',
     state: 'unverified',
     tasks: '79d1d2942d10ec41d1b9ee4e4a22db1a2f7b5d20798a804213bdb11ff90677a5',
     version: 'ebe7444e313a0d8db94fa541139826eaebe2b0abcd4900c6f73e750494910dca',
