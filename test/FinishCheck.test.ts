@@ -30,14 +30,15 @@ const turn: Turn.Turn = {
   thinking: 'medium',
 }
 
-const usage = /\[:finish_retries=N\]\[:finish_check=on\], not x=/
+const usage =
+  /\[:finish_retries=N\]\[:finish_check=on\]\[:finish_ambiguity=on\]\[:tool_result_clearing=KEEP\/TOKENS\], not x=/
 
 const check = 'nano-med-check=claude:claude-opus-5-5:medium:finish_check=on'
 
 const direct =
   'nano-dc=claude-direct:claude-opus-5-5:high:brief_finish=on:result_effort=low:yield_share=25:finish_retries=2:finish_check=on'
 
-test('an agent names finish_check last in the order of the options, and its text reads back', () => {
+test('an agent names finish_check after finish_retries in the order of the options, and its text reads back', () => {
   assert.deepEqual(parseAgent(check), {
     finishCheck: true,
     id: 'nano-med-check',

@@ -3470,6 +3470,7 @@ export class Run extends DurableObject<Env> {
       ...(agent.escalateToolErrors === undefined
         ? {}
         : { escalateToolErrors: agent.escalateToolErrors }),
+      ...(agent.finishAmbiguity ? { finishAmbiguity: true } : {}),
       ...(agent.finishCheck ? { finishCheck: true } : {}),
       ...(agent.finishRetries === undefined ? {} : { finishRetries: agent.finishRetries }),
       ...(agent.foldFinish ? { foldFinish: true } : {}),
@@ -3491,6 +3492,9 @@ export class Run extends DurableObject<Env> {
       ...(agent.skipFinishCheck ? { skipFinishCheck: true } : {}),
       ...(agent.stopAtTarget ? { stopAtTarget: true } : {}),
       ...(agent.thinking ? { thinking: agent.thinking } : {}),
+      ...(agent.toolResultClearing === undefined
+        ? {}
+        : { toolResultClearing: agent.toolResultClearing }),
       ...(agent.toolResultTokens === undefined ? {} : { toolResultTokens: agent.toolResultTokens }),
       ...(agent.yieldFloorMs === undefined ? {} : { yieldFloorMs: agent.yieldFloorMs }),
       ...(agent.yieldShare === undefined ? {} : { yieldShare: agent.yieldShare }),

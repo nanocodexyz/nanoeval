@@ -7953,3 +7953,28 @@ The declarations of the package differ from `build-7b8677c` in `Contracts.d.ts` 
 **Checked.** `npm ci`, which verifies the tarball against the integrity of the lock, `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test` from a fresh clone, with the change of the next entry.
 
 **Not verified.** When this was written: `ci.yml` from a fresh clone on KVM, a deployed Worker on this pin, and a model.
+
+## 2026-11-16: an agent may name finish_ambiguity and tool_result_clearing
+
+**Why.** The pinned nanocode-ts `build-5630e0f` takes two session fields that no agent of this repository could name, see the entry above. Without an option, no run could set a session with either of them beside one without.
+
+**What.** Two more entries of the table of options in `cli/nanoeval.ts`, after `:finish_check=on` and so after `:yield_share=N`, in this order and last in the one order:
+
+| Option | Run configuration | What every turn of the session sends | Who takes it |
+| --- | --- | --- | --- |
+| `:finish_ambiguity=on` | `"finishAmbiguity": true` | `finish_ambiguity: true` | `claude`, `claude-direct` among them |
+| `:tool_result_clearing=KEEP/TOKENS`, such as `2/10000` | `"toolResultClearing": { "atLeastTokens": TOKENS, "keep": KEEP }` | `tool_result_clearing: { "at_least_tokens": TOKENS, "keep": KEEP }` | `claude`, `claude-direct` among them |
+
+An example is `nano-med-clear=claude:claude-opus-5-5:medium:finish_ambiguity=on:tool_result_clearing=2/10000`. `agent/turns.jsonl` names both fields. Both are off by default. An agent without them sends nothing new: its turn body and its line of `agent/turns.jsonl` are the same bytes as before.
+
+**The field names.** They are read from the declarations of the `build-5630e0f` tarball: `finish_ambiguity?: boolean` and `tool_result_clearing?: Contracts.ToolResultClearing` on the session request of `dist/cloudflare/App.d.ts`, and `ToolResultClearing = { at_least_tokens: number; keep: number }` in `dist/Contracts.d.ts`. nanocode-ts answers 400 to an object with another key and to a value that is not a whole number of zero or more.
+
+**finish_ambiguity.** nanocode-ts passes the field to `ClaudeBuilder::finish_ambiguity`. Read in nanocode 9951a4bf8, not run: the builder runs the headless finish check for a session that names it, on a model whose ID starts with `claude-opus-` too, and while less than half of the deadline has elapsed, or with no deadline, the finish notice gains one bullet, which asks the model to list each place the task statement can be read two ways and to settle it by the literal wording and examples. So `:finish_ambiguity=on` alone asks for the check, as `:finish_check=on` does, and the two may go in one arm. The option is one more of `Config.finishLevers`: only `on` is a value, a `codex` agent, an installed agent and the oracle are refused with "has a finishAmbiguity, which only a claude session takes", and the configuration refuses it with `skipFinishCheck`, since nanocode would run the check for a session that sends both.
+
+**tool_result_clearing.** nanocode-ts passes the object to `ClaudeBuilder::tool_result_clearing(keep, at_least_tokens)` and adds it to the session key. Read in nanocode b19220112, not run: history clearing keeps the `keep` most recent tool results whole and clears older ones in batches of at least `at_least_tokens` tokens, in place of the fixed 12 results and 20,000 tokens. The agent text is two whole numbers with a slash between them, KEEP first. The configuration takes an object of `atLeastTokens` and `keep` and nothing else, each a whole number of zero or more, which is what nanocode-ts takes, and refuses it for a provider that is not `claude`. It follows `tool_result_tokens` in whom it admits, so a `claude-direct` agent takes it. It is a different thing from `tool_result_tokens`, which bounds the result of one code cell, and one arm may name both.
+
+**An earlier build.** A Worker on `build-7b8677c` or earlier ignores `finish_ambiguity`. It copies `tool_result_clearing` neither to its session nor to its session key, read in the difference of the two builds of `dist/cloudflare/App.js`. An arm with either option on such a Worker is the arm without it.
+
+**Checked.** `test/FinishAmbiguity.test.ts` and `test/ToolResultClearing.test.ts` (new, 3 tests each: the spec, its place in the order and its text read back for `claude` and `claude-direct`; an empty value, another value, a second occurrence and another place refused; the configuration takes it and refuses malformed values, other providers and, for `finish_ambiguity`, `skip_finish_check` with it; a turn sends the field only when named, and a turn without it is the same bytes, with the body of a plain turn written out). The usage line in ten places of eight other test files names the two options, and the name of one test of `test/FinishCheck.test.ts` no longer says that `finish_check` is last. `npm test`: 619 tests, 614 pass, 0 fail, 5 skipped on a machine without KVM, where the tree before this change has 613 tests. `npm run check:types`, `npm run lint` and `npm run dry-run` pass.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM. A Worker on this pin, a model, and a session that took either field. No end-to-end lane names the options.
