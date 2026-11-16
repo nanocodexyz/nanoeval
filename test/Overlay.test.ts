@@ -101,6 +101,7 @@ const samples: Record<string, Record<string, unknown>> = {
   verificationRequested: { verificationRequested: true },
   promptVariant: { promptVariant: 'compact' },
   toolProfile: { toolProfile: 'lean' },
+  omitMediaOnEmptyCut: { omitMediaOnEmptyCut: true },
 }
 
 // Levers only a codex session takes, and levers that need a picker or a fix model the combined
