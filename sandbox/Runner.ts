@@ -1470,7 +1470,11 @@ async function attend(
           return pending(item)
         }
         const scan: Picker.ProbeScan = {}
-        for (const index of probing)
+        const forked = []
+        for (const index of Branch.indexes(item.row.agent.branches ?? 1))
+          if (await exists(Path.join(home, 'slots', Picker.slot(item.row.slot, index), 'hidden')))
+            forked.push(index)
+        for (const index of forked)
           scan[index] = (
             (await text(Path.join(home, 'slots', Picker.slot(item.row.slot, index), 'hidden'))) ??
             ''

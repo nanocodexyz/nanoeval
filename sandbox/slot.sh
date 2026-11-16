@@ -548,6 +548,9 @@ cmd__fork() {
     dir)
       rm -rf "$to/work"
       cp -a --reflink=auto "$dir/work" "$to/work"
+      for p in tests solution oracle; do
+        if [ -e "$to/work/$p" ]; then echo "/$p"; fi
+      done >"$to/hidden"
       ;;
     krun | ns)
       mapfile -t options < <(guest_options "$to")
@@ -555,11 +558,6 @@ cmd__fork() {
         vm "$to" exec "${options[@]}" --user 0 -- rm -rf /tmp/.nanoeval-hand
       fi
       vm "$to" exec "${options[@]}" --user 0 -- sh -c 'for p in /tests /solution /oracle; do if [ -e "$p" ]; then echo "$p"; fi; done' >"$to/hidden"
-      ;;
-    dir)
-      for p in tests solution oracle; do
-        if [ -e "$to/work/$p" ]; then echo "/$p"; fi
-      done >"$to/hidden"
       ;;
   esac
   printf '%s\n' "$slot" >"$to/fork"

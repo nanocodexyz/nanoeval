@@ -7855,3 +7855,16 @@ Actions is disabled on this repository, so every `run` step of `.github/workflow
 On `583b4f8`, the nanoeval lane's KVM box passed e2e-krun, e2e-ns and krun at 59 of 59 steps, including `picker` and `picker-lazy` on both guest backends. Its KVM run on `5a36d52` is recorded in the next entry when it reports.
 
 On `5a36d52`, the nanoeval lane ran fresh clones on its KVM box (2026-11-16 01:16 UTC): all 138 of 138 steps passed. The KVM lanes passed 59 of 59 on the first try: e2e-krun 40, e2e-ns 16, krun 3. Two e2e-dir steps failed once while that box's disk was saturated, then passed alone on a retry.
+
+## 2026-11-16: every probe slot's hidden-path scan is kept
+
+**Problem.** The VPICK smoke (run `673c5245` on canary3, 509d9f6) found two gaps in the probe-slot scan.
+- The vpick3 row's `agent/probe-scan.json` held branches 1 and 2 only. Probe 0 forked 38 s before the others, and the runner wrote the file from the probes of the current batch, so the later upload replaced it. `picker.cheatScan.probeHiddenPaths` counted from that file, so it missed probe 0.
+- On directory slots, `slot.sh _fork` never wrote `hidden`: its `dir)` branch came after an earlier `dir)` arm of the same `case` and could not be reached. The scan read as empty there. krun and ns slots were scanned, so the smoke's KVM rows were scanned, apart from the overwritten probe 0.
+
+**Behavior.**
+- `slot.sh _fork` writes `hidden` on directory slots in the reachable `dir)` arm.
+- On each probe batch, the runner writes `agent/probe-scan.json` from every probe slot of the row that has a `hidden` file, not only the slots of that batch.
+- The e2e lane `picker-lazy` asserts that the scan holds probes 0, 1 and 2, with the trunk's probe forked before the other two.
+
+**Checked.** Hosted Hand: `npm run check:types`, `vp check`, and the dir e2e lanes `picker` and `picker-lazy`. Only the runner changed (`sandbox/slot.sh`, `sandbox/Runner.ts`). The Worker and `src/Protocol.ts` did not, so a runner at this commit serves the canary3 Worker (509d9f6).
