@@ -231,6 +231,17 @@ jobs:
           NANOEVAL_E2E_SCENARIO: lost
           NANOEVAL_E2E_SLOTS: '2'
           NANOEVAL_E2E_LEASE_SEC: '3'
+      - name: End to end, directory slots, a runner stopped with the turns of its rows under way
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: released
+          NANOEVAL_E2E_SLOTS: '2'
+      - name: End to end, directory slots, a runner stopped with the branches of its row under way
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: released-branches
       - name: End to end, directory slots, a runner whose machine brings no slot up beside one that works
         run: npm run e2e
         env:

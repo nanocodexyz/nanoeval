@@ -26,10 +26,14 @@ export type Agent = {
   briefFinal?: true
   briefFinish?: true
   cellYieldMs?: number
+  clearingCacheFloors?: true
   escalateContextTokens?: number
   escalateModel?: string
   escalateToolErrors?: number
   executorShare?: number
+  finishAmbiguity?: true
+  finishCheck?: true
+  finishRetries?: number
   fixModel?: string
   fixProvider?: 'claude' | 'codex'
   fixThinking?: string
@@ -50,7 +54,9 @@ export type Agent = {
   resultEffort?: Effort
   skipFinishCheck?: true
   stopAtTarget?: true
+  subagents?: false
   thinking?: string
+  toolResultClearing?: ToolResultClearing
   toolResultTokens?: number
   yieldFloorMs?: number
   yieldShare?: number
@@ -66,10 +72,14 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'briefFinal',
   'briefFinish',
   'cellYieldMs',
+  'clearingCacheFloors',
   'escalateContextTokens',
   'escalateModel',
   'escalateToolErrors',
   'executorShare',
+  'finishAmbiguity',
+  'finishCheck',
+  'finishRetries',
   'fixModel',
   'fixProvider',
   'fixThinking',
@@ -90,7 +100,9 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'resultEffort',
   'skipFinishCheck',
   'stopAtTarget',
+  'subagents',
   'thinking',
+  'toolResultClearing',
   'toolResultTokens',
   'verifierModel',
   'verifierProvider',
@@ -116,6 +128,8 @@ export const payers: readonly Payer[] = ['deployment', 'plan']
 
 export type RefusalFallback = 'return_once' | 'session'
 
+export type ToolResultClearing = { atLeastTokens: number; keep: number }
+
 export type Effort = 'high' | 'low' | 'max' | 'medium' | 'xhigh'
 
 export const efforts: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
@@ -123,6 +137,9 @@ export const efforts: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'ma
 export const finishLevers = [
   'briefFinal',
   'briefFinish',
+  'clearingCacheFloors',
+  'finishAmbiguity',
+  'finishCheck',
   'foldFinish',
   'leanCells',
   'lowEffortRounds',
@@ -457,6 +474,24 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude')
         fail(agent.id + ' has a toolResultTokens, which only a claude session takes')
     }
+    if (agent.toolResultClearing !== undefined) {
+      const clearing = agent.toolResultClearing
+      if (
+        typeof clearing !== 'object' ||
+        clearing === null ||
+        Object.keys(clearing).some((key) => key !== 'atLeastTokens' && key !== 'keep')
+      )
+        fail(agent.id + ' has a toolResultClearing that is not { atLeastTokens, keep }')
+      integer(clearing.atLeastTokens, agent.id + ': toolResultClearing.atLeastTokens', 0)
+      integer(clearing.keep, agent.id + ': toolResultClearing.keep', 0)
+      if (provider !== 'claude')
+        fail(agent.id + ' has a toolResultClearing, which only a claude session takes')
+    }
+    if (agent.subagents !== undefined) {
+      if (agent.subagents !== false) fail(agent.id + ' has a subagents that is not false')
+      if (provider !== 'claude')
+        fail(agent.id + ' has a subagents, which only a claude session takes')
+    }
     if (agent.lateFinishCheckMs !== undefined) {
       integer(agent.lateFinishCheckMs, agent.id + ': lateFinishCheckMs', 1)
       if (provider !== 'claude')
@@ -486,12 +521,23 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude')
         fail(agent.id + ' has a yieldShare, which only a claude session takes')
     }
+    if (agent.finishRetries !== undefined) {
+      integer(agent.finishRetries, agent.id + ': finishRetries', 1)
+      if (provider !== 'claude')
+        fail(agent.id + ' has a finishRetries, which only a claude session takes')
+      if (agent.skipFinishCheck !== undefined)
+        fail(agent.id + ' has a skipFinishCheck and a finishRetries, which never go in one arm')
+    }
     for (const lever of finishLevers) {
       if (agent[lever] === undefined) continue
       if (agent[lever] !== true) fail(agent.id + ' has a ' + lever + ' that is not true')
       if (provider !== 'claude')
         fail(agent.id + ' has a ' + lever + ', which only a claude session takes')
     }
+    if (agent.finishCheck !== undefined && agent.skipFinishCheck !== undefined)
+      fail(agent.id + ' has a skipFinishCheck and a finishCheck, which never go in one arm')
+    if (agent.finishAmbiguity !== undefined && agent.skipFinishCheck !== undefined)
+      fail(agent.id + ' has a skipFinishCheck and a finishAmbiguity, which never go in one arm')
     if (agent.persistFinish !== undefined) {
       if (agent.persistFinish !== true) fail(agent.id + ' has a persistFinish that is not true')
       if (provider !== 'claude' && provider !== 'codex')
@@ -508,6 +554,7 @@ export function parse(value: unknown): Config {
       ...(agent.briefFinal ? { briefFinal: true as const } : {}),
       ...(agent.briefFinish ? { briefFinish: true as const } : {}),
       ...(agent.cellYieldMs === undefined ? {} : { cellYieldMs: agent.cellYieldMs }),
+      ...(agent.clearingCacheFloors ? { clearingCacheFloors: true as const } : {}),
       ...(agent.escalateContextTokens === undefined
         ? {}
         : { escalateContextTokens: agent.escalateContextTokens }),
@@ -516,6 +563,9 @@ export function parse(value: unknown): Config {
         ? {}
         : { escalateToolErrors: agent.escalateToolErrors }),
       ...(agent.executorShare === undefined ? {} : { executorShare: agent.executorShare }),
+      ...(agent.finishAmbiguity ? { finishAmbiguity: true as const } : {}),
+      ...(agent.finishCheck ? { finishCheck: true as const } : {}),
+      ...(agent.finishRetries === undefined ? {} : { finishRetries: agent.finishRetries }),
       ...(agent.fixModel ? { fixModel: agent.fixModel } : {}),
       ...(agent.fixProvider ? { fixProvider: agent.fixProvider } : {}),
       ...(agent.fixThinking ? { fixThinking: agent.fixThinking } : {}),
@@ -538,7 +588,16 @@ export function parse(value: unknown): Config {
       ...(agent.resultEffort ? { resultEffort: agent.resultEffort } : {}),
       ...(agent.skipFinishCheck ? { skipFinishCheck: true as const } : {}),
       ...(agent.stopAtTarget ? { stopAtTarget: true as const } : {}),
+      ...(agent.subagents === false ? { subagents: false as const } : {}),
       ...(agent.thinking ? { thinking: agent.thinking } : {}),
+      ...(agent.toolResultClearing === undefined
+        ? {}
+        : {
+            toolResultClearing: {
+              atLeastTokens: agent.toolResultClearing.atLeastTokens,
+              keep: agent.toolResultClearing.keep,
+            },
+          }),
       ...(agent.toolResultTokens === undefined ? {} : { toolResultTokens: agent.toolResultTokens }),
       ...(agent.yieldFloorMs === undefined ? {} : { yieldFloorMs: agent.yieldFloorMs }),
       ...(agent.yieldShare === undefined ? {} : { yieldShare: agent.yieldShare }),

@@ -309,6 +309,12 @@ const preamble = ['set -eu', 'mkdir -p "$NANOEVAL_AGENT_HOME"']
 
 const prompt = ['prompt=$(cat; printf x)', 'prompt=${prompt%x}']
 
+const claudeWebTools = ['WebFetch', 'WebSearch']
+
+function claudeClosed(options: { closed?: boolean }): string[] {
+  return options.closed ? ['--disallowedTools ' + claudeWebTools.join(' ')] : []
+}
+
 const fxApis: Record<Api, { base: string; effort: (level: string) => unknown; protocol: string }> =
   {
     chat: {
@@ -370,6 +376,18 @@ function fxAsk(agent: Agent, url: string): string {
   )
 }
 
+const glibcLoaders = ['/lib64/ld-linux-x86-64.so.2', '/lib/ld-linux-aarch64.so.1']
+
+function glibc(options: { musl: boolean }): string {
+  return glibcLoaders
+    .map((loader) =>
+      options.musl
+        ? '{ [ -e ' + loader + ' ] && ! grep -q musl ' + loader + '; }'
+        : '[ -e ' + loader + ' ]',
+    )
+    .join(' || ')
+}
+
 function build(kind: Kind, name: string): string[] {
   const release = releases[kind]
   if (release.source !== 'release') throw new Error(kind + ' has no release to choose a build of')
@@ -379,7 +397,9 @@ function build(kind: Kind, name: string): string[] {
     'if [ -x ' + root + '/any/' + release.entry + ' ]; then cli=' + root + '/any/' + release.entry,
     ...(libcs.includes('gnu')
       ? [
-          'elif [ -e /lib64/ld-linux-x86-64.so.2 ] || [ -e /lib/ld-linux-aarch64.so.1 ]; then cli=' +
+          'elif ' +
+            glibc({ musl: libcs.includes('musl') }) +
+            '; then cli=' +
             root +
             '/gnu/' +
             release.entry,
@@ -543,7 +563,7 @@ function stockCodex(agent: Agent, url: string): string {
   )
 }
 
-function stockClaude(agent: Agent, url: string): string {
+function stockClaude(agent: Agent, options: { closed?: boolean; url: string }): string {
   const root = '"$NANOEVAL_AGENT_RT"/agents/stock-claude'
   const model = quote(agent.model)
   return (
@@ -556,7 +576,7 @@ function stockClaude(agent: Agent, url: string): string {
         '/gnu/claude; fi',
       'ln -sf "$cli" /usr/local/bin/claude 2>/dev/null || true',
       'export ANTHROPIC_AUTH_TOKEN="$' + tokenVariable + '"',
-      'export ANTHROPIC_BASE_URL=' + quote(url),
+      'export ANTHROPIC_BASE_URL=' + quote(options.url),
       'export ANTHROPIC_MODEL=' + model,
       'export ANTHROPIC_DEFAULT_SONNET_MODEL=' + model,
       'export ANTHROPIC_DEFAULT_OPUS_MODEL=' + model,
@@ -573,6 +593,7 @@ function stockClaude(agent: Agent, url: string): string {
         'printf "%s" "$prompt" | "$cli"',
         '--verbose',
         '--output-format=stream-json',
+        ...claudeClosed(options),
         ...(agent.thinking ? ['--effort ' + quote(agent.thinking)] : []),
         '--permission-mode=bypassPermissions',
         '--print 2>&1',
@@ -581,7 +602,7 @@ function stockClaude(agent: Agent, url: string): string {
   )
 }
 
-export function script(agent: Agent, options: { url: string }): string {
+export function script(agent: Agent, options: { closed?: boolean; url: string }): string {
   if (!/^https?:\/\/[A-Za-z0-9.:[\]_/-]+$/.test(options.url))
     throw new Error('the model endpoint is not a plain http or https address: ' + options.url)
   const root = '"$NANOEVAL_AGENT_RT"/agents/' + agent.kind
@@ -632,7 +653,7 @@ export function script(agent: Agent, options: { url: string }): string {
   if (agent.kind === 'opencode') return opencodeRun(agent, options.url)
   if (agent.kind === 'pi') return piPrint(agent, options.url)
   if (agent.kind === 'stock-codex') return stockCodex(agent, options.url)
-  if (agent.kind === 'stock-claude') return stockClaude(agent, options.url)
+  if (agent.kind === 'stock-claude') return stockClaude(agent, options)
   if (agent.kind === 'codex-cli') {
     const provider =
       'model_providers.nanoeval={name="nanoeval", base_url="' +
@@ -656,6 +677,7 @@ export function script(agent: Agent, options: { url: string }): string {
             : []),
           '-c ' + quote('model_provider="nanoeval"'),
           '-c ' + quote(provider),
+          ...(options.closed ? ['-c web_search=disabled'] : []),
           '-',
         ].join(' '),
       ].join('\n') + '\n'
@@ -665,9 +687,7 @@ export function script(agent: Agent, options: { url: string }): string {
     [
       ...preamble,
       'if [ -x ' + root + '/any/claude ]; then cli=' + root + '/any/claude',
-      'elif [ -e /lib64/ld-linux-x86-64.so.2 ] || [ -e /lib/ld-linux-aarch64.so.1 ]; then cli=' +
-        root +
-        '/gnu/claude',
+      'elif ' + glibc({ musl: true }) + '; then cli=' + root + '/gnu/claude',
       'elif [ -e "/lib/ld-musl-$(uname -m).so.1" ]; then cli=' + root + '/musl/claude',
       'else',
       "  echo 'nanoeval: this image has neither the glibc nor the musl loader that Claude Code needs' >&2",
@@ -683,6 +703,7 @@ export function script(agent: Agent, options: { url: string }): string {
         '--output-format stream-json',
         '--verbose',
         '--dangerously-skip-permissions',
+        ...claudeClosed(options),
         '--model ' + quote(agent.model),
         ...(agent.thinking ? ['--effort ' + quote(agent.thinking)] : []),
       ].join(' '),

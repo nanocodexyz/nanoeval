@@ -4,10 +4,14 @@ export type Turn = {
   briefFinal?: true
   briefFinish?: true
   cellYieldMs?: number
+  clearingCacheFloors?: true
   deadline?: { atMs: number; limitMs: number }
   escalateContextTokens?: number
   escalateModel?: string
   escalateToolErrors?: number
+  finishAmbiguity?: true
+  finishCheck?: true
+  finishRetries?: number
   foldFinish?: true
   hand?: string
   lateFinishCheckMs?: number
@@ -24,8 +28,11 @@ export type Turn = {
   resultEffort?: Config.Effort
   skipFinishCheck?: true
   stopAtTarget?: true
+  subagents?: false
   thinking?: string
+  toolResultClearing?: Config.ToolResultClearing
   toolResultTokens?: number
+  webSearch?: false
   yieldFloorMs?: number
   yieldShare?: number
 }
@@ -36,6 +43,9 @@ function levers(turn: Turn): Record<string, true> {
   return {
     ...(turn.briefFinal ? { brief_final: true as const } : {}),
     ...(turn.briefFinish ? { brief_finish: true as const } : {}),
+    ...(turn.clearingCacheFloors ? { clearing_cache_floors: true as const } : {}),
+    ...(turn.finishAmbiguity ? { finish_ambiguity: true as const } : {}),
+    ...(turn.finishCheck ? { finish_check: true as const } : {}),
     ...(turn.foldFinish ? { fold_finish: true as const } : {}),
     ...(turn.leanCells ? { lean_cells: true as const } : {}),
     ...(turn.lowEffortRounds ? { low_effort_rounds: true as const } : {}),
@@ -47,6 +57,7 @@ function levers(turn: Turn): Record<string, true> {
 
 function losses(turn: Turn): Record<string, number | string> {
   return {
+    ...(turn.finishRetries === undefined ? {} : { finish_retries: turn.finishRetries }),
     ...(turn.lateFinishCheckMs === undefined
       ? {}
       : { late_finish_check_ms: turn.lateFinishCheckMs }),
@@ -54,6 +65,19 @@ function losses(turn: Turn): Record<string, number | string> {
     ...(turn.yieldFloorMs === undefined ? {} : { yield_floor_ms: turn.yieldFloorMs }),
     ...(turn.yieldShare === undefined ? {} : { yield_share: turn.yieldShare }),
   }
+}
+
+function clearing(turn: Turn): {
+  tool_result_clearing?: { at_least_tokens: number; keep: number }
+} {
+  return turn.toolResultClearing === undefined
+    ? {}
+    : {
+        tool_result_clearing: {
+          at_least_tokens: turn.toolResultClearing.atLeastTokens,
+          keep: turn.toolResultClearing.keep,
+        },
+      }
 }
 
 function escalate(turn: Turn): { escalate?: Record<string, number | string> } {
@@ -88,7 +112,10 @@ export function sent(turn: Turn, input: { at: number; session: string }): string
       ...(turn.refusalFallback ? { refusal_fallback: turn.refusalFallback } : {}),
       request_id: turn.requestId,
       session: input.session,
+      ...(turn.subagents === false ? { subagents: false } : {}),
+      ...clearing(turn),
       ...(turn.toolResultTokens === undefined ? {} : { tool_result_tokens: turn.toolResultTokens }),
+      ...(turn.webSearch === false ? { web_search: false } : {}),
     }) + '\n'
   )
 }
@@ -114,9 +141,10 @@ export function body(turn: Turn): Record<string, unknown> {
     provider: turn.provider,
     ...(turn.refusalFallback ? { refusal_fallback: turn.refusalFallback } : {}),
     request_id: turn.requestId,
-    ...(turn.provider === 'codex' ? { subagents: false } : {}),
+    ...(turn.provider === 'codex' || turn.subagents === false ? { subagents: false } : {}),
     ...(turn.thinking ? { thinking: turn.thinking } : {}),
+    ...clearing(turn),
     ...(turn.toolResultTokens === undefined ? {} : { tool_result_tokens: turn.toolResultTokens }),
-    ...(turn.provider === 'codex' ? { web_search: false } : {}),
+    ...(turn.provider === 'codex' || turn.webSearch === false ? { web_search: false } : {}),
   }
 }

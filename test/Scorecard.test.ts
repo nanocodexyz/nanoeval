@@ -276,6 +276,53 @@ test('an arm with a model call of no cost shows no cost, and a row of no call co
   assert.deepEqual([arm(card, 'b').uncosted, arm(card, 'b').usdPerAttempt], [0, 0.5])
 })
 
+test('a cost is what the run recorded, the list price of recorded tokens, nothing, or not recorded', () => {
+  const base: Result.Attempt = {
+    agent: { id: 'a', model: 'model-b', provider: 'claude' },
+    finishedAt: 2,
+    id: 'a-1',
+    index: 1,
+    outcome: 'passed',
+    reward: 1,
+    sandbox: null,
+    session: 'a-1',
+    startedAt: 1,
+    task: { checksum: 'sha256:t1', name: 'toy/t1' },
+    timing: {},
+    usage: null,
+  }
+  const tokens = {
+    cacheWriteTokens: 0,
+    cachedTokens: 400000,
+    costUsd: undefined,
+    inputTokens: 1000000,
+    modelCalls: 3,
+    outputTokens: 100000,
+    toolCalls: 1,
+  }
+  const ran = { agentExecution: { finishedAt: 2, startedAt: 1 } }
+  const prices = { 'model-b': { cachedUsd: 0.5, inputUsd: 2, outputUsd: 10 } }
+  assert.deepEqual(Scorecard.cost(base, prices), { basis: 'none', usd: 0 })
+  assert.equal(Scorecard.cost({ ...base, timing: ran }, prices), undefined)
+  assert.deepEqual(
+    Scorecard.cost({ ...base, agent: { ...base.agent, provider: 'oracle' }, timing: ran }),
+    { basis: 'none', usd: 0 },
+  )
+  assert.deepEqual(Scorecard.cost({ ...base, usage: { ...tokens, modelCalls: 0 } }), {
+    basis: 'none',
+    usd: 0,
+  })
+  assert.deepEqual(Scorecard.cost({ ...base, usage: { ...tokens, costUsd: 0.75 } }, prices), {
+    basis: 'recorded',
+    usd: 0.75,
+  })
+  assert.equal(Scorecard.cost({ ...base, usage: tokens }), undefined)
+  assert.equal(Scorecard.cost({ ...base, usage: tokens }, { other: prices['model-b'] }), undefined)
+  const listed = Scorecard.cost({ ...base, usage: tokens }, prices)!
+  assert.equal(listed.basis, 'list')
+  assert.ok(Math.abs(listed.usd - 2.4) < 1e-12)
+})
+
 test('the rows of an excluded task are in no count', () => {
   const rows = ['t1#1', 't2#1', 't2#2'].flatMap((at) => [row('a', at), row('b', at)])
   const card = Scorecard.build([run('r1', ['a', 'b'], rows)], {

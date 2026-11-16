@@ -1056,7 +1056,10 @@ async function attend(
     const file = slots.agentFile(item.row.slot, 'token')
     await Fs.mkdir(Path.dirname(file), { recursive: true })
     await Fs.writeFile(slots.agentFile(item.row.slot, 'instruction.md'), instruction)
-    await Fs.writeFile(slots.agentFile(item.row.slot, 'run.sh'), Installed.script(cli, { url }))
+    await Fs.writeFile(
+      slots.agentFile(item.row.slot, 'run.sh'),
+      Installed.script(cli, { closed: Eval.offline(item.row.task).includes('agent'), url }),
+    )
     await Fs.writeFile(file, endpoint.token + '\n', { mode: 0o600 })
     try {
       await shell(
@@ -1470,7 +1473,11 @@ async function attend(
           return pending(item)
         }
         const scan: Picker.ProbeScan = {}
-        for (const index of probing)
+        const forked = []
+        for (const index of Branch.indexes(item.row.agent.branches ?? 1))
+          if (await exists(Path.join(home, 'slots', Picker.slot(item.row.slot, index), 'hidden')))
+            forked.push(index)
+        for (const index of forked)
           scan[index] = (
             (await text(Path.join(home, 'slots', Picker.slot(item.row.slot, index), 'hidden'))) ??
             ''

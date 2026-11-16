@@ -87,6 +87,8 @@ const attached =
     'lost',
     'machine',
     'overcommit',
+    'released',
+    'released-branches',
     'resume',
     'runners',
     'shared',
@@ -101,11 +103,13 @@ const direct = scenario === 'direct'
 const lazyFork = scenario === 'lazy'
 const lazyPass = scenario === 'lazy-pass'
 const lazying = lazyFork || lazyPass
+const releasedBranches = scenario === 'released-branches'
+const releasing = scenario === 'released' || releasedBranches
 const cascading = scenario === 'cascade'
 const pickerLazy = scenario === 'picker-lazy' || cascading
 const picking = scenario === 'picker' || pickerLazy
 const fixModels: { handoff: boolean; model: string }[] = []
-const branching = scenario === 'branches' || lazying || picking
+const branching = scenario === 'branches' || lazying || picking || releasedBranches
 const verifierPrompts: { others: number; pass: boolean; pwd: string }[] = []
 const branchRequests: { check: boolean; done: boolean }[] = []
 const branchSessions = new Map<string, number>()
@@ -303,6 +307,8 @@ let answered = 0
 let lapseAnswers = 0
 let parked = false
 let hungUp = false
+let freed = false
+let waiting = 0
 let release = () => {}
 const released = new Promise<void>((resolve) => {
   release = resolve
@@ -1237,6 +1243,12 @@ async function modelEndpoint(): Promise<{ close(): void; url: string | undefined
         }
         const body = JSON.parse((await read(request)).toString())
         if (scenario === 'runners') await released
+        if (releasing && !freed) {
+          waiting++
+          await released
+          response.destroy()
+          return
+        }
         if (
           (planned && !planPays(request)) ||
           (loginLane && !loginPays(request, body.fake_cli === true))
@@ -2433,7 +2445,7 @@ async function main(): Promise<void> {
       attach(created.id, 'a', ['--memory-mb', String(admittedMb), '--memory-overcommit'])
     } else if (attached && !stood) {
       attach(created.id, 'a')
-      if (scenario !== 'resume') attach(created.id, 'b')
+      if (scenario !== 'resume' && !releasing) attach(created.id, 'b')
     }
     const handed = unassigned
       ? await waitFor('the pool to hand the member to the second run', async () => {
@@ -2761,6 +2773,24 @@ async function main(): Promise<void> {
           release()
         }
       }
+      if (releasing && !restarted) {
+        const first = runners[0]!
+        const rows = status['attempts'] as { phase: string; runner: number | null }[]
+        const held = rows.filter((attempt) => attempt.runner === (runnerId(first.home) ?? null))
+        if (
+          held.length === Math.min(slots, rows.length) &&
+          held.every((attempt) => attempt.phase === 'run') &&
+          waiting >= 1
+        ) {
+          restarted = true
+          const exited = new Promise((resolve) => first.child.once('exit', resolve))
+          first.child.kill('SIGTERM')
+          await exited
+          freed = true
+          release()
+          attach(created.id, 'b')
+        }
+      }
       if (fleet && !restarted) {
         const first = (
           status['sandboxes'] as { handle: string; id: number; runner: number; state: string }[]
@@ -2898,6 +2928,7 @@ async function main(): Promise<void> {
         'lapse',
         'lost',
         'midturn',
+        'released',
         'restart',
         'resume',
         'runners',
@@ -3152,6 +3183,52 @@ async function main(): Promise<void> {
       )
       if (scenario === 'runners')
         assert.equal(finishedBy.size, 2, 'both runners finished rows of the run')
+      if (releasing) {
+        const survivor = runnerId(runners[1]!.home)
+        const rows = status['attempts'] as {
+          agent: string
+          claims: number
+          id: string
+          outcome: string
+          runner: number
+        }[]
+        const given = rows.filter((row) => row.claims === 2)
+        assert.equal(
+          given.length,
+          Math.min(slots, rows.length),
+          'every row of the stopped runner was claimed again',
+        )
+        assert.equal(status['lostClaims'], given.length)
+        for (const row of rows) {
+          assert.equal(row.runner, survivor, 'every row ended on the runner that stayed')
+          assert.equal(
+            row.outcome,
+            row.agent === 'wrong' ? 'failed' : 'passed',
+            'a row that a stopped runner gave back runs again',
+          )
+          const detail = await api.attempt(created.id, row.id)
+          assert.equal(detail['result'].failure, undefined)
+          assert.notEqual(detail['result'].sandbox, null)
+          assert.ok(
+            detail['result'].usage.modelCalls >= 1,
+            'the agent of the last claim asked its model',
+          )
+          assert.deepEqual(
+            detail['claims'].map((claim: { ending: string }) => claim.ending),
+            given.includes(row) ? ['released', 'finished'] : ['finished'],
+          )
+          assert.equal(
+            detail['result'].session,
+            created.id + '-' + row.id + '-' + row.claims,
+            'the result of a row is of the session of its last claim',
+          )
+          assert.ok(
+            detail['result'].timing.agentExecution.finishedAt >
+              detail['result'].timing.agentExecution.startedAt,
+            'and of an agent that the last claim ran',
+          )
+        }
+      }
       if (scenario === 'lost') {
         assert.ok(status['lostClaims'] >= 1, 'the lease of the killed runner expired')
         assert.ok(
@@ -4800,6 +4877,11 @@ async function main(): Promise<void> {
           'the trunk forks when its verifier fails',
         )
         assert.ok(artifacts.includes(Branch.forkRecord))
+        assert.deepEqual(
+          Object.keys(JSON.parse(await read(Picker.probeScan)) as Picker.ProbeScan).sort(),
+          ['0', '1', '2'],
+          'the scan of every probe slot is kept, also of the trunk probe forked before the others',
+        )
       } else assert.equal(record.fork, undefined)
       assert.deepEqual(
         JSON.parse(await read(Picker.probes)) as number[],

@@ -7852,6 +7852,27 @@ A directory slot has no image. Its verifier root is an empty directory, an artif
 
 **Behavior.** The scripted model skips verifier requests when it counts branch arrivals, so branch 2 is the right branch on every backend, as on directory slots.
 
+## 2026-11-15: `nanoeval scorecard --manifest FILE --site DIR` writes a site of scorecards, and a cost that is not recorded is never 0
+
+**The problem.** `nanoeval scorecard` wrote one page for one matched comparison. A report of several comparisons was put together by a script outside the repository, from copies of results and from blocks written by hand, so that nobody else could make the page again. Two costs were also wrong at the edge. A row whose agent ran and left no usage, as an installed agent may, counted as USD 0. A row with tokens and no cost took the cost of its whole arm away, though the run of `--model-price` would have priced it.
+
+**What changed.** `src/Site.ts` reads a manifest and renders the index, on web types only. `cli/Scorecard.ts` gains `site`, which reads the files, hashes them and writes the site, and `cli/nanoeval.ts` routes `scorecard --manifest FILE --site DIR` to it before it asks for a Worker.
+
+- A manifest has `title`, optional `date`, `note`, `seed`, `draws` and `prices`, and `sections`. A section has `id`, `title`, `reference`, and `results` (files) or `runs` (runs of a Worker), with optional `labels`, `note`, `seed`, `draws` and `exclude`. An unknown key is refused by name, so a misspelt option is not silently dropped.
+- `exclude` needs a `reason`, and names its tasks in a list or in a file, one of the two. A list of tasks left out without a stated reason is how a result is bent, so the reason stands on the page beside the digest of the list.
+- An entry of `results` or `runs` may take some arms of a run. An arm the run does not hold is refused, and so is a label for an arm the section does not have.
+- A run read from a Worker is written to `DIR/runs/ID.json` and hashed there, so the site holds what its numbers came from.
+- The site is `index.html`, `ID.html` and `ID.json` a section (what `--out` writes for one card), `manifest.json` as given and `inputs.sha256`. It holds no clock time: a `date` is shown only when the manifest gives one. `index.html` ends with the commit and the command line.
+- `Scorecard.cost` now answers one of four bases for a row. Recorded: the usage carries a cost. List: the usage carries tokens and no cost, and the options name a price of the model, worked by `Price.usd` as a run does. None, USD 0: no model call, an agent that never started, or the task solution. Not recorded: model calls without a cost and no price, or an agent phase in the timing of the row with no usage. Before, the last case counted as USD 0.
+- An arm counts its matched rows by basis (`recorded`, `listed`, `uncosted`), the card holds the prices it was given, and a cost basis line stands under the table of arms on the page of a card and under every table of the index. The text that read `no cost` now reads `not recorded`.
+- `scorecard --run` takes no price: only a manifest gives one. One way in is enough until someone needs the other.
+
+**Why the rule for a row without usage.** The outcome of a row says nothing about its cost. The timing does: a row with an agent phase ran an agent, and an agent that is not the task solution calls a model. Counting it as 0 made an arm of an installed agent look free. A row that ended before its agent started keeps USD 0, which is true.
+
+**Checked.** `node --test test/Site.test.ts test/Scorecard.test.ts`: 20 of 20, 7 of them new, on fixture result files of two toy runs, 18 and 12 rows, under `test/fixtures/scorecard`. The site is written twice and every file compared. Run once by hand on copies of the results of 7 runs of one eval digest, 8 sections, 2 s: 663 fields of the 19 arms (counts, rates, costs and every interval) equal to the cards the command made one at a time at an earlier commit with the same seed and draws. No field differs but the counts of an arm that the earlier cards do not hold.
+
+**Not verified.** When this was written: the jobs of `ci.yml`. A manifest that names `runs` against a deployed Worker: only a stub answered. A list price on real results: the 7 runs record a cost on every matched row, so only the fixtures have a priced arm. No lane runs the command.
+
 ## 2026-11-16: the usage trailer of a Workers AI binding stream is sent as a chat completions chunk
 
 **The problem.** The smoke row of run 8b4e447c (codex:@cf/deepseek-ai/deepseek-v4.1-flash-1017:low, Worker 4f91e64) had 69 answered streams, and each ended in "invalid Chat Completions stream: chat_envelope". No model call completed. The meter priced each answer at about -0.0012 USD. A stream of the binding, as Cloudflare's /ai/run route sends it, ends with a native frame, data: {"response":"","usage":{...}}, before [DONE]. The frame has no choices, so the chat parser of nanocode refuses it (chat.rs, fn chunk). It is also the only frame with the true token counts. The chat completions chunk before it names prompt_tokens 0 with the cached tokens, which the meter read when it skipped the native frame. The OpenAI compatible route /ai/v1/chat/completions sends no native frame.
@@ -7896,3 +7917,385 @@ On `5a36d52`, the nanoeval lane ran fresh clones on its KVM box (2026-11-16 01:1
 - The parent and this change, imported side by side: `parseAgent`, `agentText` and `Config.parse` over the 220 agent texts of the tests and the documents (139 parse, 81 are refused) give the same agents, texts and refusals apart from the usage line, and `Picker.forkReason` without the key, with `forkOn: undefined` and with `verifier_fail_or_unsure` gives the parent's reason on 2,432 of 2,432 inputs (4 trunk states, no verification and 3 verdicts at confidence 0 to 100, before and at the deadline).
 
 **Not verified.** An end-to-end lane with the key, the krun and ns lanes (no KVM here), a real model, and a deployed Worker.
+
+## 2026-11-16: the Worker admits a row by the slots it holds
+
+**Problem.** The nanoeval lane found this at 509d9f6 on canary3. A runner offers its free slots, and `Admission.fill` handed it one row per free slot. So a 12-slot runner could be handed 12 picker rows, which hold 72 slots: three branch slots and three probe slots each. The runner already counted a row's slots (`Picker.slots`, branches or twice the branches for a picker) in its own load. The Worker's claim did not. The lane bounded picker rows in flight with one-slot runners instead.
+
+**Behavior.**
+- `Ledger.claim` takes `slotsOf(row)`, and the Worker passes `Picker.slots(agent)`: 1 for a plain agent, `branches` for a branching one, and `2 * branches` for a picker.
+- `Admission.fill` counts that weight against the offered slots. It also scales the row's CPUs and memory by the weight, each clamped to the runner's capacity so a heavy row is never starved.
+- A row heavier than every free slot of an idle runner (its free memory is all its memory) is still taken, alone, so a one-slot runner still runs picker rows. A busy runner does not take a row heavier than its free slots.
+- Rows of plain agents are admitted as before.
+
+**Checked.** Hosted Hand: `npm test` 603 pass, 0 fail (a new test in `test/Ledger.test.ts`), plus `npm run check:types` and `vp check`. The fresh-clone ci.yml result follows before merge. This is a Worker change, so it reaches runs only with a deploy.
+
+**CI.** `2ec9bc5` is `0fb9e87` with main `a75dce8` merged in (DECISIONS.md conflict only). Its fresh-clone ci.yml on a hosted Hand passed 138 of 138: check 5, e2e-dir 70, e2e-krun 40, e2e-ns 16, e2e-revision 4, krun 3, where the KVM steps skip without KVM. The nanoeval lane's KVM box passed 59 of 59 on `2ec9bc5`, every step on its first try (2026-11-16 03:33 UTC): e2e-krun 40, e2e-ns 16, krun 3. It also passed 59 of 59 on `0fb9e87`.
+
+## 2026-11-16: every probe slot's hidden-path scan is kept
+
+**Problem.** The VPICK smoke (run `673c5245` on canary3, 509d9f6) found two gaps in the probe-slot scan.
+- The vpick3 row's `agent/probe-scan.json` held branches 1 and 2 only. Probe 0 forked 38 s before the others, and the runner wrote the file from the probes of the current batch, so the later upload replaced it. `picker.cheatScan.probeHiddenPaths` counted from that file, so it missed probe 0.
+- On directory slots, `slot.sh _fork` never wrote `hidden`: its `dir)` branch came after an earlier `dir)` arm of the same `case` and could not be reached. The scan read as empty there. krun and ns slots were scanned, so the smoke's KVM rows were scanned, apart from the overwritten probe 0.
+
+**Behavior.**
+- `slot.sh _fork` writes `hidden` on directory slots in the reachable `dir)` arm.
+- On each probe batch, the runner writes `agent/probe-scan.json` from every probe slot of the row that has a `hidden` file, not only the slots of that batch.
+- The e2e lane `picker-lazy` asserts that the scan holds probes 0, 1 and 2, with the trunk's probe forked before the other two.
+
+**Checked.** Hosted Hand: `npm run check:types`, `vp check`, and the dir e2e lanes `picker` and `picker-lazy`. Only the runner changed (`sandbox/slot.sh`, `sandbox/Runner.ts`). The Worker and `src/Protocol.ts` did not, so a runner at this commit serves the canary3 Worker (509d9f6).
+## 2026-11-16: an agent may name finish_retries, how many times the finish check sends a turn back
+
+**Problem.** nanocode 80fe87002 lets a session set how many times the finish check of its Claude harness may send a turn back to the model before the turn ends. nanocode-ts `build-15cffb1` (which pins nanocode 80fe87002) takes it as an optional field of a turn, `finish_retries`, a positive whole number. Builds before it ignore the field. No agent of a run could set it, so a run could not hold an arm with more retries beside an arm with the default.
+
+**Behavior.** An agent spec may end in `:finish_retries=N`, after `:yield_share=N` and last in the one order of the options, such as `nano-med-retry=claude:claude-opus-5-5:medium:finish_retries=1`. A run configuration names it `{ "provider": "claude", "finishRetries": 1 }`. Every turn of such an agent sends `finish_retries: N` with the other session fields and names it in `agent/turns.jsonl`. An agent without it sends nothing new: its turn body is the same bytes as before. The configuration refuses an N that is not a whole number of at least 1. It also refuses `finishRetries` with `skipFinishCheck`, because one removes the finish check the other sets the retries of. Only a `claude` agent takes it, `claude-direct` among them, since nanocode reads it in its Claude harness only. A `codex` agent, an installed agent and the oracle are refused with "has a finishRetries, which only a claude session takes".
+
+**The pin.** Unchanged, `build-1d85e83`, which ignores the field. An arm that names it does what it says only on a Worker pinned to `build-15cffb1` or later.
+
+**Checked.** On the hosted Hand, in the tree of this commit before it was made: `test/FinishRetries.test.ts` (new, 3 tests: the spec, its place in the order and its text read back for `claude` and `claude-direct`; bad values, a second occurrence and another place refused; the configuration takes it, refuses 0, a negative, a fraction, a string, other providers and `skip_finish_check` with it; a turn sends `finish_retries` only when named, and an agent without it sends the same bytes). The usage line in six other test files names the new option. `npm test`, `npm run check:types`, `npm run lint` and `npm run dry-run`.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone. A Worker on `build-15cffb1`, a model, and a session that took the field.
+
+
+## 2026-11-16: the package pins nanocode-ts build-7b8677c, and a Claude Opus session runs no finish check unless its agent asks for one
+
+**The pin.** `package` pins nanocode-ts `build-7b8677c` (nanocode-ts master 7b8677c101892f0d81b08b29fd54d865d92c7e53, nanocode 1b62f5c8ba4aec018d6bf31e464fd0742894710f) in place of `build-1d85e83`. The hand stays `nanocode-cli-1a946f3`. The release tarball as downloaded has 58,273,205 bytes and the SHA-256 cd68c66800ca5df5cf7d1c63d50b4cf052f71612b9cd0a380fdc330e5f33a8af, and the integrity in `package-lock.json` is its SHA-512. The `package.json` of the tarball names the dependencies, the peer dependencies and the bundled dependencies of the lock entry of `build-1d85e83`, so only the address and the integrity changed in the lock.
+
+**The default that changed.** From nanocode 1adee5c97, a headless root session of the Claude harness on a model whose ID starts with `claude-opus-` adds no finish notice after its first final message. Every eval session of this repository opens headless. An Opus agent of `claude` or `claude-direct` that names no finish option therefore ends its turn at the first final message on this pin, as an agent with `:skip_finish_check=on` did on `build-1d85e83`. Effort does not change the default. On Opus the check still runs for an agent that names `:finish_retries=N` or `:late_finish_check_ms=N`, and for one that names `:finish_check=on`, the option of the next entry. Sonnet, Haiku and every other Claude model keep the check by default, and `:skip_finish_check=on` still removes it there. The Codex harness has a finish check of its own, which this build does not change.
+
+**Results before and after this pin are not the same arm.** An agent such as `nano-med=claude:claude-opus-5-5:medium` is a session with the finish check on every pin up to `build-1d85e83` and a session without it from this pin. Its text, its turn body and its lines of `agent/turns.jsonl` are the same bytes on both. Only the `harness` a run records, the nanocode-ts build of its Worker, tells the two apart. A comparison of an Opus agent across this pin compares two arms unless one side names the option that makes them one:
+
+| An Opus agent that names | up to `build-1d85e83` | from `build-7b8677c` |
+| --- | --- | --- |
+| no finish option | check | no check |
+| `:skip_finish_check=on` | no check | no check |
+| `:finish_check=on` | not an option | check |
+| `:finish_retries=N` or `:late_finish_check_ms=N` | `finish_retries` ignored, late check as named | check |
+
+So the Opus arm without an option of an earlier run is the arm `:finish_check=on` of a run on this pin, and the Opus arm without an option of a run on this pin is the arm `:skip_finish_check=on` of an earlier run. An agent of another Claude model is the same arm on both sides of the pin as far as this default goes.
+
+**Options that word the check.** Read in `crates/backends/claude/src/agent/rounds.rs` of nanocode 1b62f5c8b, not run: `brief_finish` and `persist_finish` change the text of the finish notice, so on an Opus agent without the check `brief_finish` changes nothing. `fold_finish` adds its folded notice to the first prompt whether the check runs or not, and `persist_finish` still reaches that notice. `brief_final` and `stop_at_target` do not depend on the check.
+
+**What else the build contains.** nanocode 1b62f5c8b is 22 commits after 42e37d2cf, the nanocode of `build-1d85e83`. Read by their subjects, and 1adee5c97 by its diff, these reach a session of this repository: a turn whose final round is empty after one reprompt ends instead of failing, in both harnesses. The chat parser accepts the usage trailer frame of a Workers AI stream, a frame without `choices`. A turn may name `finish_retries`, and its fresh-attempt notice asks for a run on an input the task did not show and on one that must come out unchanged. A turn may name `finish_check_min_requests`, which no agent here can name. A codex session may name six options (`codex_options` and `context_window`), which no agent here can name. The resume note of a subagent is capped at 8 KiB. The finish notice gains a bullet for the cases the task statement names, and the final reply names the checks that ran. That last change reaches every session that runs the check, so a Sonnet or Haiku agent is sent another finish notice than on `build-1d85e83`. Beside `build-1d85e83`, the declarations of the package differ in two files. `Contracts.d.ts` and `cloudflare/App.d.ts` gain optional fields only (`finish_check`, `finish_check_min_requests`, `finish_retries`, `context_window` and a `codex_options` group of `compact_instructions`, `lean_tool_arguments`, `lenient_patches`, `max_output_tokens` and `min_wait_ms`), `finishLevers` gains `finish_check`, and two lists of codex options are new. No field was removed or made required, so the pin alone changes no source file of this repository.
+
+**The trailer rewrite stays.** `worker/WorkersAi.ts` still sends the usage trailer of a binding stream as a chat completions chunk, although the parser of this build accepts the native frame. The rewrite also repairs the meter: the trailer is the only frame with the true token counts, and `Proxy.meter` reads them from the chunk. It also serves an installed agent, whose own parser reads the stream without nanocode.
+
+**Why nanocode changed the default.** Its own DECISIONS.md of 2026-11-16 gives the measurements: Opus at medium effort with and without the check on Terminal-Bench 2.1 tasks and on a trap suite. They are not repeated here and were not checked here. Sonnet, Haiku and the Codex harness were not in them, which is why their default stays.
+
+**Checked.** On 2026-11-16, on a 5-core Linux machine without KVM and Node 24.22.1, in a tree of main 5abaeea merged with `feat/finish-retries` 4207268, with this pin and the agent option of the next entry: `npm ci` (it verifies the integrity), `npm run lint` (210 files formatted, 197 linted, no warnings), `npm run check:types` (the Node sources and the Worker), `npm run dry-run`, and `npm test`: 613 tests, 608 pass, 5 skipped, 0 fail. No expectation of a test changed for the pin. No end-to-end lane names a model whose ID starts with `claude-opus-`: the scripted model answers as `claude-haiku-4-5`, so the lanes that count the finish check of a Claude turn count what they counted.
+
+**Not verified.** When this was written: the e2e jobs and the krun job of `ci.yml`. A model and a deployed Worker on this pin, so neither the skipped check of an Opus session nor the check that `finish_check` asks for was seen at work here. nanocode's own check counts the requests of one headless turn against a mock: 1 for Opus by default, 2 with `finish_check`, `finish_retries`, a late check or a request threshold, 2 for Sonnet and Haiku. Most commits of nanocode between the two pins were read by their subjects only.
+
+## 2026-11-16: an agent may name finish_check, the finish check that a Claude Opus session no longer runs by default
+
+**Why.** On the pinned nanocode-ts `build-7b8677c` a headless session of a model whose ID starts with `claude-opus-` runs no finish check unless its session asks for one, see the entry above. Without an option, no run on this pin could have the Opus arm of the runs before it, and the two could not be set beside each other in one run.
+
+**What.** An agent may end in `:finish_check=on`, after `:finish_retries=N` and last in the one order, such as `nano-med-check=claude:claude-opus-5-5:medium:finish_check=on`. A run configuration names it `{ "provider": "claude", "finishCheck": true }`. Every turn of such a session sends `finish_check: true`, the session field that nanocode-ts passes to `ClaudeBuilder::finish_check`, and `agent/turns.jsonl` names it. An agent without it sends nothing new: its turn body is the same bytes as before. The option is one more entry of the table of options in `cli/nanoeval.ts` and one more of `Config.finishLevers`, so it is parsed, validated and written back as `skip_finish_check` is. Only `on` is a value. Only a `claude` agent takes it, `claude-direct` among them: a `codex` agent, an installed agent and the oracle are refused with "has a finishCheck, which only a claude session takes". The configuration also refuses `finishCheck` with `skipFinishCheck`. nanocode would run the check for a session that sends both, and an arm that names both says two things. It goes with `finish_retries` and `late_finish_check_ms`, each of which runs the check without it. On a model that is not Opus the option changes the turn body and nothing nanocode does.
+
+**The default, stated once more for a reader of results.** An Opus agent that names none of `:finish_check=on`, `:finish_retries=N` and `:late_finish_check_ms=N` runs no finish check on this pin and ran one on every pin before it. The agent text does not say which. The result of such an arm before this pin and its result after it are not results of the same arm. `:finish_check=on` on this pin is the arm that had no option before, and no option on this pin is the arm that named `:skip_finish_check=on` before.
+
+**The verifier of a picker.** The verifier session of a `claude` agent with `:picker=verify` or `:picker=verify_lazy` runs `claude-opus-5-5` unless the agent names `verifier_model`, and its turn names no finish option. It is a headless root session of its own, so on this pin it runs no finish check either. `finish_check` goes to the turns of the agent's own sessions and not to its verifier. A picker arm of a `claude` agent therefore differs across the pin in its verifier as well, and no option brings the check of the verifier back. Whether the verifier should ask for it is not decided here. A `codex` verifier is not changed. Read in `worker/Run.ts` and `src/Picker.ts`, not run.
+
+**With finish_retries.** This change is made on main 5abaeea merged with `feat/finish-retries` 4207268, so main gets `finish_retries` and `finish_check` together with the pin that reads both. `Config.agentKeys`, the list of agent keys a Worker knows, gains `finishRetries` and `finishCheck`: the branch of `finish_retries` was cut before that list reached main.
+
+**Checked.** In the tree of the entry above: `test/FinishCheck.test.ts` (new, 3 tests: the spec, its place in the order and its text read back for `claude` and `claude-direct`, with `finish_retries` and with a late check; an empty value, `1`, `true`, `off`, a second occurrence and another place refused; the configuration takes it, refuses another value than `true`, other providers and `skip_finish_check` with it; a turn sends `finish_check` only when named, and an agent without it sends the same bytes). The usage line in seven other test files names the new option, and the name of one test of `test/FinishRetries.test.ts` no longer says that `finish_retries` is last. `npm test`: 613 tests, 608 pass, 5 skipped, 0 fail. `npm run check:types`, `npm run lint` and `npm run dry-run` pass.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM. A Worker on this pin, a model, and a session that took the field. No end-to-end lane names the option.
+
+**CI.** `0663a0e` is `6f82369` with main `8bda5e3` merged in (DECISIONS.md conflict only). Its fresh-clone ci.yml on a hosted Hand passed 138 of 138: check 5, e2e-dir 70, e2e-krun 40, e2e-ns 16, e2e-revision 4, krun 3, where the KVM steps skip without KVM. The nanoeval lane's KVM box passed 59 of 59 on `0663a0e`, every step on its first try (2026-11-16 03:06 UTC). It also passed 59 of 59 on `6f82369`.
+
+## 2026-11-16: `import --closed` imports the closed form of a task that checks its tests out of the fix commit
+
+**The problem.** The SWE-bench Pro task directories of Harbor verify with `git checkout FIX -- PATHS`: the last line of `before_repo_set_cmd` in `tests/config.json`, which `tests/test.sh` evaluates in the repository of the agent. So the image must hold the fix commit or be able to fetch it, and an agent with `git` reads the fix from `git show`, from the object store, or from the forge. A score on such a task does not separate an agent that wrote the fix from one that read it.
+
+**The decision.** One option of `import`, `--closed`, in `cli/Closed.ts`. It rewrites a case before the import converts it, so the closed task is an ordinary task: the version, its digest and its blobs are made as for any other, and nothing at run time knows the option. It is a change of the task, so the source of the version records `closed: gold-tests-1` and the digest differs from the open import. What it changes:
+
+| Part | Open | Closed |
+| --- | --- | --- |
+| Test files of the fix | Checked out of the fix commit in the agent's repository | `tests/gold.tar` and `tests/gold-manifest.json`, read at import from the repository on GitHub with a shallow fetch of the base and the fix commit |
+| `.git` of the image | The clone, with every commit up to the image build | One commit of the tracked files, made by a build step after the reset to the base commit. The step fails unless one commit is left and every object is reachable from it |
+| What the image holds | Not checked | The last build step reads every file and every repository of the image, and fails when one holds the fix commit, or a blob the fix commit has and the base commit lacks |
+| Placement | `git checkout` | `tests/closed-place.py`: every file of the manifest is checked against its SHA-256 and written over the agent's, `/logs/verifier/tests_modified.json` counts the files that differed from the base commit, and a missing file or a directory that is a link ends the verifier |
+| Network of the agent | The task's | `network_mode = "no-network"` |
+
+**Fails closed.** A task whose config, Dockerfile or `test.sh` has another shape is refused with its name, and the import fails. A quoted or expanded path in the checkout line is refused, since the import does not evaluate shell. A task with a network allowlist is refused. A failed image check is a failed build, so the task is not imported. `--backend dir` is refused: it builds no image.
+
+**Why one commit and not a filtered history.** The count of commits is the invariant an import can check without knowing the repository. The working tree is the base commit's, so `git status` is clean and `git diff` still shows what the agent changed.
+
+**Why the image is read by blob.** The fix can be in an image outside `.git`: a package cache, a vendored copy, a second clone. The check hashes each file whose size matches a wanted blob as git does and compares, so it finds a copy under any name. It does not find a compressed or a patched copy.
+
+**What it does not close.** Dependencies. A version of a package that only the fix asks for is neither kept out of the image nor carried in `tests/`, so its presence says which version the fix uses, and a task whose tests need one passes only when the verifier can fetch it. Submodules lose their own `.git` and are committed as files, so the tree differs from the base commit's in those paths. The instruction is not read for what it gives away.
+
+**Checked.** `test/Closed.test.ts`, four tests against a repository made in a temporary directory: the transform of a case, the refusals, the placement script on an untouched, a changed and a linked tree, and the image check on a clean image, a renamed copy of a fixed file and a repository that fetched the fix. 
+
+One run of the option on krun slots, on four threads of a Linux machine with KVM, against a deployed Worker at `4f91e64`, with the import of this change on `5abaeea`: six SWE-bench Pro task directories of six repositories (ansible, element-web, flipt, qutebrowser, teleport, tutanota), imported twice, once as they are and once with a probe as the solution.
+
+| Step | Count |
+| --- | --- |
+| Images built, with the one-commit step and the image check | 6 of 6, in both imports |
+| Attempts with the task's solution | 3 of 3 passed, 3 not run |
+| Attempts with a solution that changes nothing | 3 of 3 failed, 3 not run |
+| `tests_modified.json` written by the verifier | 6 of 6, `tests_modified` 0 in each |
+| Probe as the agent: one commit, every object reachable from it | 3 of 3 |
+| Probe: the fix commit is in no repository, and no file of the image is a blob it added | 3 of 3, over 49,130, 100,715 and 166,630 files |
+| Probe: six names and addresses of the internet do not answer, and `/tests` is absent | 3 of 3 |
+
+The three attempts not run in each pair were left unclaimed when the machine was given to another run. One of the three that ran is a task whose fix raises six module versions: its solution passed because its verifier, which keeps the network, fetched them.
+
+## 2026-11-16: a glibc loader path that musl answers takes the musl build of an installed agent
+
+The launcher of Claude Code and opencode took the glibc build when `/lib64/ld-linux-x86-64.so.2` or `/lib/ld-linux-aarch64.so.1` existed. An Alpine image with a compatibility package has that path: `gcompat` installs a stub there that starts musl's loader with a shim library, and `libc6-compat` links it to musl. The glibc build then starts under musl and ends at the first symbol the shim lacks: Claude Code 2.1.318 ended with `Error relocating ...: mallopt: symbol not found` in an Alpine 3.20 image with `gcompat` 1.1.0, before its first request.
+
+The launcher now takes the glibc build only when a glibc loader path exists and its file does not contain `musl`, and the musl build when musl's loader exists. A stub names `/lib/ld-musl-ARCH.so.1`, a link is musl itself, and the loader of glibc has no such string. An agent that ships no musl build, pi, keeps the rule it had.
+
+Checked: a unit test runs the launcher of Claude Code against a directory of loaders: a glibc loader alone and beside musl takes the glibc build, musl alone, a link to musl and a stub that names musl take the musl build, and no loader ends with 127. Run once on a krun slot with Claude Code 2.1.318 and that image, on a task of the closed SWE-bench Pro form: before the change the attempt ended at the loader with no model request, and with it the agent made 5 model requests and exited 0.
+
+## 2026-11-16: the package pins nanocode-ts build-5630e0f
+
+**The pin.** `package` pins nanocode-ts `build-5630e0f` (nanocode-ts master 5630e0f6a0976a150b68a4249118399252ef56d0, nanocode b19220112213691591a2a2f1ae5d1a682a417698) in place of `build-7b8677c`. The hand stays `nanocode-cli-1a946f3`. The release tarball as downloaded has 58,320,999 bytes and the SHA-256 ec8f412e1d2cd5f1f7ba512fc996a2c22a48321c18dfb47e9676c0ba297b90aa, and the integrity in `package-lock.json` is its SHA-512. The `package.json` of the tarball names the dependencies, the peer dependencies, the bundled dependencies and the exports of `build-7b8677c`, and the files of its bundled `node_modules` are the same bytes, so only the address and the integrity changed in the lock.
+
+**What the build contains.** nanocode-ts 5630e0f is three commits after 7b8677c, and nanocode b19220112 is five commits after 1b62f5c8b. Read in the commit messages and in the `DECISIONS.md` of the two repositories, not run here:
+
+| nanocode | What it changes | A session that names no new field |
+| --- | --- | --- |
+| c55648a2c | The turn log skips an evicted index page whose key filter lacks the owner | No field or request changes |
+| d3137af0b | The build of the release binaries | Not in a session |
+| 9951a4bf8, d2253c609 | `ClaudeBuilder::finish_ambiguity`: one more bullet in the headless finish notice while less than half of the deadline has elapsed | Every notice is the same bytes |
+| b19220112 | `ClaudeBuilder::tool_result_clearing(keep, at_least_tokens)`: how many recent tool results history clearing keeps whole and the batch it clears older ones in, in place of the fixed 12 results and 20,000 tokens | The requests are unchanged, 62 of 62 mock request bodies equal by the commit |
+
+The declarations of the package differ from `build-7b8677c` in `Contracts.d.ts` and `cloudflare/App.d.ts` only: the type `ToolResultClearing` (`at_least_tokens`, `keep`), the optional session fields `finish_ambiguity` and `tool_result_clearing`, and `finish_ambiguity` in `finishLevers`. Both fields are off unless a session names them, so an agent of this repository is the arm it was on `build-7b8677c` until it names one of the options of the next entry. The default of `build-7b8677c` stays: a Claude Opus session runs no finish check unless its agent asks for one.
+
+**Checked.** `npm ci`, which verifies the tarball against the integrity of the lock, `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test` from a fresh clone, with the change of the next entry.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM, a deployed Worker on this pin, and a model.
+
+## 2026-11-16: an agent may name finish_ambiguity and tool_result_clearing
+
+**Why.** The pinned nanocode-ts `build-5630e0f` takes two session fields that no agent of this repository could name, see the entry above. Without an option, no run could set a session with either of them beside one without.
+
+**What.** Two more entries of the table of options in `cli/nanoeval.ts`, after `:finish_check=on` and so after `:yield_share=N`, in this order and last in the one order:
+
+| Option | Run configuration | What every turn of the session sends | Who takes it |
+| --- | --- | --- | --- |
+| `:finish_ambiguity=on` | `"finishAmbiguity": true` | `finish_ambiguity: true` | `claude`, `claude-direct` among them |
+| `:tool_result_clearing=KEEP/TOKENS`, such as `2/10000` | `"toolResultClearing": { "atLeastTokens": TOKENS, "keep": KEEP }` | `tool_result_clearing: { "at_least_tokens": TOKENS, "keep": KEEP }` | `claude`, `claude-direct` among them |
+
+An example is `nano-med-clear=claude:claude-opus-5-5:medium:finish_ambiguity=on:tool_result_clearing=2/10000`. `agent/turns.jsonl` names both fields. Both are off by default. An agent without them sends nothing new: its turn body and its line of `agent/turns.jsonl` are the same bytes as before.
+
+**The field names.** They are read from the declarations of the `build-5630e0f` tarball: `finish_ambiguity?: boolean` and `tool_result_clearing?: Contracts.ToolResultClearing` on the session request of `dist/cloudflare/App.d.ts`, and `ToolResultClearing = { at_least_tokens: number; keep: number }` in `dist/Contracts.d.ts`. nanocode-ts answers 400 to an object with another key and to a value that is not a whole number of zero or more.
+
+**finish_ambiguity.** nanocode-ts passes the field to `ClaudeBuilder::finish_ambiguity`. Read in nanocode 9951a4bf8, not run: the builder runs the headless finish check for a session that names it, on a model whose ID starts with `claude-opus-` too, and while less than half of the deadline has elapsed, or with no deadline, the finish notice gains one bullet, which asks the model to list each place the task statement can be read two ways and to settle it by the literal wording and examples. So `:finish_ambiguity=on` alone asks for the check, as `:finish_check=on` does, and the two may go in one arm. The option is one more of `Config.finishLevers`: only `on` is a value, a `codex` agent, an installed agent and the oracle are refused with "has a finishAmbiguity, which only a claude session takes", and the configuration refuses it with `skipFinishCheck`, since nanocode would run the check for a session that sends both.
+
+**tool_result_clearing.** nanocode-ts passes the object to `ClaudeBuilder::tool_result_clearing(keep, at_least_tokens)` and adds it to the session key. Read in nanocode b19220112, not run: history clearing keeps the `keep` most recent tool results whole and clears older ones in batches of at least `at_least_tokens` tokens, in place of the fixed 12 results and 20,000 tokens. The agent text is two whole numbers with a slash between them, KEEP first. The configuration takes an object of `atLeastTokens` and `keep` and nothing else, each a whole number of zero or more, which is what nanocode-ts takes, and refuses it for a provider that is not `claude`. It follows `tool_result_tokens` in whom it admits, so a `claude-direct` agent takes it. It is a different thing from `tool_result_tokens`, which bounds the result of one code cell, and one arm may name both.
+
+**An earlier build.** A Worker on `build-7b8677c` or earlier ignores `finish_ambiguity`. It copies `tool_result_clearing` neither to its session nor to its session key, read in the difference of the two builds of `dist/cloudflare/App.js`. An arm with either option on such a Worker is the arm without it.
+
+**Checked.** `test/FinishAmbiguity.test.ts` and `test/ToolResultClearing.test.ts` (new, 3 tests each: the spec, its place in the order and its text read back for `claude` and `claude-direct`; an empty value, another value, a second occurrence and another place refused; the configuration takes it and refuses malformed values, other providers and, for `finish_ambiguity`, `skip_finish_check` with it; a turn sends the field only when named, and a turn without it is the same bytes, with the body of a plain turn written out). The usage line in ten places of eight other test files names the two options, and the name of one test of `test/FinishCheck.test.ts` no longer says that `finish_check` is last. `npm test`: 619 tests, 614 pass, 0 fail, 5 skipped on a machine without KVM, where the tree before this change has 613 tests. `npm run check:types`, `npm run lint` and `npm run dry-run` pass.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM. A Worker on this pin, a model, and a session that took either field. No end-to-end lane names the options.
+
+## 2026-11-16: the package pins nanocode-ts build-acdb751
+
+**The pin.** `package` pins nanocode-ts `build-acdb751` (nanocode-ts master acdb7518a9503264812c4bbf87466c506915fae7, nanocode dc09e1baf21d20e09b9f82b954a23f7cd8923c63, WASM build f954f3ee5f8157850f95) in place of `build-5630e0f`. The hand stays `nanocode-cli-1a946f3`. The release tarball as downloaded has 58,248,417 bytes and the SHA-256 849487795bd89a7390b873305bc1b107c250270b74e54dcb5a3e8a6aeeaf956a, which is the digest GitHub records for the release asset, and the integrity in `package-lock.json` is its SHA-512. The `package.json` of the tarball is the same bytes as that of `build-5630e0f`, and so are the files of its bundled `node_modules`, so only the address and the integrity changed in the lock.
+
+**What the build contains.** nanocode-ts acdb751 is two commits after 5630e0f, and nanocode dc09e1baf is three commits after b19220112. Read in the commit messages and in the `DECISIONS.md` of the two repositories, not run here:
+
+| nanocode | What it changes | A session that names no new field |
+| --- | --- | --- |
+| 36dd8652d | The turn log counts only rewritten section bytes in its snapshot rule and loads the index root lazily | No field or request changes |
+| 59df7a1bb | The finish notice v2 becomes the headless default: the notice gains two bullets (each number the task states is computed and compared, a named library call keeps its defaults), and its input bullet asks for a run on an input that must stay unchanged. The default notice grows from 2,007 to 2,396 bytes by the commit | **Changed** for every session that runs the finish check. A session that runs none sends the same requests |
+| dc09e1baf | `ClaudeBuilder::clearing_cache_floors`: two cache breakpoints at the boundaries of the last two tool result clearings | The requests are unchanged: by the commit, 406 of 406 mock request bodies are equal once session IDs, paths and wall times are normalized |
+
+The declarations of the package differ from `build-5630e0f` in `Contracts.d.ts` and `cloudflare/App.d.ts` only: the optional session field `clearing_cache_floors?: boolean`, and `clearing_cache_floors` in `finishLevers`. `dist/cloudflare/App.js` differs in that one name only.
+
+**An arm across the pins.** A row on this pin is not the same arm as a row on `build-7b8677c` or on `build-5630e0f`. An agent whose session runs the finish check sends the finish notice v2, which is the longer one. That is every Sonnet, Haiku and other non-Opus Claude agent without `:skip_finish_check=on`, and an Opus agent with `:finish_check=on`, `:finish_retries=N`, `:late_finish_check_ms=N` or `:finish_ambiguity=on`. An Opus agent that names none of them runs no finish check, as from `build-7b8677c`, and by the commits no request of its session changes, which is read and not measured here. A comparison of two arms holds within one pin only.
+
+**With the options of the entries above.** This change is made on main 6a49cbc merged with `pin-5630e0f` f23bf1e, so main gets `finish_ambiguity` and `tool_result_clearing` together with this pin. `DECISIONS.md` was the only conflict of the merge, and both sides are kept.
+
+**Checked.** `npm ci`, which verifies the tarball against the integrity of the lock, `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test` from a fresh clone, with the change of the next entry.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM, a deployed Worker on this pin, and a model. The notice of 59df7a1bb and the request bodies of dc09e1baf are read, not measured here.
+
+## 2026-11-16: an agent may name clearing_cache_floors
+
+**Why.** The pinned nanocode-ts `build-acdb751` takes one session field that no agent of this repository could name, see the entry above. Without an option, no run could set a session with it beside one without.
+
+**What.** One more entry of the table of options in `cli/nanoeval.ts`, after `:tool_result_clearing=KEEP/TOKENS` and last in the one order:
+
+| Option | Run configuration | What every turn of the session sends | Who takes it |
+| --- | --- | --- | --- |
+| `:clearing_cache_floors=on` | `"clearingCacheFloors": true` | `clearing_cache_floors: true` | `claude`, `claude-direct` among them |
+
+An example is `nano-med-floors=claude:claude-opus-5-5:medium:clearing_cache_floors=on`. `agent/turns.jsonl` names the field. It is off by default. An agent without it sends nothing new: its turn body and its line of `agent/turns.jsonl` are the same bytes as before.
+
+**The field name.** It is read from the declarations of the `build-acdb751` tarball: `clearing_cache_floors?: boolean` on the session request of `dist/cloudflare/App.d.ts` and in `dist/Contracts.d.ts`, and `clearing_cache_floors` in `finishLevers`. nanocode-ts answers 400 to a value that is not a boolean, adds the name to the session key of a session that sends `true`, and passes it to `ClaudeBuilder::clearing_cache_floors`.
+
+**What it does.** Read in nanocode dc09e1baf, not run. History clearing changes the bytes of a tool result inside the cached prefix, so the longest cached prefix falls back to the system prompt and every later message is written to the cache again. With the field, a request with no image floor keeps two cache breakpoints: one before the first result that the latest clearing kept, and one where the clearing before it started. The prefix up to the earlier boundary is then read from the cache. The two breakpoints take the slots of the tools tail and of the second system marker. The commit models -6.21% of the input cost and -13.07% of the cache-write tokens on a replay of six turns against a mock, and that is its measurement, not one of this repository.
+
+**How it is taken.** The option is one more of `Config.finishLevers`, as the field is one of the `finishLevers` of nanocode-ts, though it is no part of the finish check: only `on` is a value, and a `codex` agent, an installed agent and the oracle are refused with "has a clearingCacheFloors, which only a claude session takes". It changes where a request places its cache breakpoints and nothing of the finish check, so the configuration takes it with `skipFinishCheck` and with every other option. It needs no `:tool_result_clearing=KEEP/TOKENS`: the clearing of nanocode, 12 results and 20,000 tokens, has boundaries too, and the two options may go in one arm.
+
+**An earlier build.** A Worker on `build-5630e0f` or earlier copies `clearing_cache_floors` neither to its session nor to its session key, read in the difference of the two builds of `dist/cloudflare/App.js`. An arm with the option on such a Worker is the arm without it.
+
+**Checked.** `test/ClearingCacheFloors.test.ts` (new, 3 tests: the spec, its place in the order and its text read back for `claude` and `claude-direct`; an empty value, another value, a second occurrence and another place refused; the configuration takes it, also with `skip_finish_check`, and refuses malformed values and other providers; a turn sends the field only when named, and a turn without it is the same bytes, with the body of a plain turn written out). `test/Lever.test.ts` refuses each malformed value and each other provider for every name of `Config.finishLevers`, this one among them. The usage line in twelve places of ten other test files names the option, and the name of one test of `test/ToolResultClearing.test.ts` no longer says that `tool_result_clearing` is last. `npm test`: 628 tests, 623 pass, 0 fail, 5 skipped, and the skips need KVM. `npm run check:types`, `npm run lint` and `npm run dry-run` pass.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM. A Worker on this pin, a model, and a session that took the field. No request body with the two breakpoints was read here, and no cache write was counted. No end-to-end lane names the option.
+
+## 2026-11-16: an agent may turn the subagents of its session off
+
+**Why.** A `claude` session of this repository opens with nanocode's subagent tools, and no agent could name a session without them. Without an option, no run could set a session without the tools beside one with them.
+
+**What.** One more entry of the table of options in `cli/nanoeval.ts`, after `:tool_result_clearing=KEEP/TOKENS` and last in the one order:
+
+| Option | Run configuration | What every turn of the session sends | Who takes it |
+| --- | --- | --- | --- |
+| `:subagents=off` | `"subagents": false` | `subagents: false` | `claude`, `claude-direct` among them |
+
+The arm it is for is `nano-med-nosub=claude:claude-opus-5-5:medium:subagents=off`. `agent/turns.jsonl` names the field for an agent that names the option. It is off by default. An agent without it sends nothing new: its turn body and its line of `agent/turns.jsonl` are the same bytes as before.
+
+**The mechanism is a session field, not a flag of a command line.** A `claude` agent is a nanocode-ts session that the Worker hosts, and `src/Turn.ts` writes the body of each of its turns. It has no command line. The line `exec "$@" exec` of `src/Installed.ts` starts the installed agents `nanocode-claude` and `nanocode-codex` only, a vendor command line inside the slot, and this change does not touch it. The field name is read from the declarations of the pinned `build-5630e0f` tarball: `subagents?: boolean` on `SessionDescriptor` of `dist/cloudflare/App.d.ts` and on `AgentConfiguration` of `dist/Contracts.d.ts`.
+
+**What the field does.** Read in nanocode-ts 5630e0f and in nanocode b19220112, not run. `dist/cloudflare/App.js` answers 400 to a value that is not a boolean, stores the value with the session, adds it to the session key, and answers 409 "session subagents is immutable; create a new session" to a later turn that names another value. `src/wasm.rs` calls `builder.without_subagents()` for a session whose value is `false`. In nanocode, `without_subagents` makes the runtime build no subagent registry, so no harness receives the tools that start, message, list, wait for, interrupt or close another agent. `--no-subagents` of the nanocode command line calls the same `without_subagents`, in `bin/nanocode/src/host.rs`. So the option is that flag for a session.
+
+**Who takes it.** `claude` only, `claude-direct` among them. The only value of the agent text is `off`, and the only value of the configuration is `false`: `true` is refused, because the default already has the tools and one arm must have one spelling. A `codex` agent is refused with "has a subagents, which only a claude session takes": `Turn.body` already sends `subagents: false` with every turn of a `codex` session, and its line of `agent/turns.jsonl` does not name the field, both unchanged. An installed agent and the oracle are refused with the same sentence. The verifier session of a picker and the judge sessions do not take the option of the agent.
+
+**Checked.** `test/SubagentsOff.test.ts` (new, 3 tests: the spec, its place last in the order and its text read back for `claude` and `claude-direct`; an empty value, `on`, `false`, another value, a second occurrence and another place refused; the configuration takes `false` and refuses other values and other providers; a turn sends the field only when named, a turn without it is the same bytes, and the body and the line of a plain turn, of a turn with the option and of a `codex` turn are written out). The usage line in twelve places of ten other test files names the option, and the name of one test of `test/ToolResultClearing.test.ts` no longer says that `tool_result_clearing` is last. `npm test`: 622 tests, 617 pass, 0 fail, 5 skipped (the skips need KVM; 619 tests before, the 3 new are this file). `npm run check:types`, `npm run lint` and `npm run dry-run` pass.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM. A Worker on this pin, a model, a session that took the field, and the size of the first request of a session with and without the tools. No end-to-end lane names the option.
+
+## 2026-11-16: subagents comes before clearing_cache_floors in the order of the options
+
+**Why.** The two entries above were written on two branches, and each says that its option is the last of the one order. main takes both.
+
+**What.** The order of the options ends in `finish_ambiguity`, `tool_result_clearing`, `subagents`, `clearing_cache_floors`. An agent that names the last two is `x=claude:claude-opus-5-5:medium:subagents=off:clearing_cache_floors=on`, and the other order is refused, as any other place of an option is. Neither option changes what the other sends. The README and the usage text of `cli/nanoeval.ts` name the order.
+
+**Checked.** The usage line of the tests names both options. `test/ClearingCacheFloors.test.ts` reads back an agent with both and refuses `clearing_cache_floors` before `subagents`. `npm test`: 631 tests, 626 pass, 0 fail, 5 skipped, and the skips need KVM. `npm run check:types`, `npm run lint` and `npm run dry-run` pass.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM, a Worker, a model, and a session with both fields.
+
+## 2026-11-16: an installed agent on a @cf/ model is answered by the Workers AI binding
+
+**Why.** An installed agent on chat completions (`fx-chat`, `opencode-chat`, `pi-chat`) takes the Worker's OpenAI credential, whatever its model. On a Worker whose OpenAI credential is a ChatGPT plan login, a request for `@cf/deepseek-ai/deepseek-v4.1-flash-1017` went to that login and never to Workers AI. A `codex` session on the same model is answered by the Workers AI binding of the Worker (`worker/Sessions.ts`). The two could not be set beside each other on one Worker.
+
+**What.** `Model.forward` reads the body of a `chat/completions` request before it asks for a credential. When the body is a JSON object whose `model` starts with `@cf/`, the request goes to `WorkersAi.fetcher(env.AI, …)` at `/client/v4/accounts/WORKERS_AI_ACCOUNT_ID/ai/v1/chat/completions`, through `Meter.relay` with `cost: false`: the helper, the address, the gateway option and the meter of a session on the binding. The run already refuses a body whose model is not the model of its agent, so only an agent on a `@cf/` model reaches this.
+
+**No fallback.** Once the body names a `@cf/` model, no key, login or relay is asked. Without `env.AI` or without `WORKERS_AI_ACCOUNT_ID` the answer is `401` with `the deployment has no Workers AI binding for MODEL` or `the deployment has no WORKERS_AI_ACCOUNT_ID for MODEL`. An error the binding throws is the answer of `WorkersAi.fetcher`, as for a session: `429` for capacity, `400` for a bad request, else `502`, with the message of the error, so a thrown `402` is a `502` whose message names it. A `Response` of the binding, such as a `402`, reaches the agent with its status and body. The waits of the run for `429`, `503` and `529` apply as on any route of an installed agent.
+
+**The price.** `cost: false` leaves the cost Workers AI reports out of the usage, as for a session, so the run prices the response in `Run.record`, the one place that prices a session's response and an installed agent's: the price of the agent's model from `--model-price`, applied to the tokens of the usage. A unit test sends the same answer through `Model.forward` and through the relay of a session and gets the same usage, without a cost, and prices it from a `--model-price` text. `Run.record` itself runs under workerd only and has no unit test, for this route or any other.
+
+**The log.** A settled request may carry `route`, which `Meter.routed` sets to `workers-ai` for every outcome of this path, the `401` included. `model_requests` has a `route` column, added to an existing run's table like the columns before it, and a line of `agent/model-requests.jsonl` has `route` only when it is set. A line without it is the same bytes as before.
+
+**Every other request.** `chat/completions` with another model, with a body that is no JSON object, `responses`, `responses/compact` and `v1/messages` take the path they took: the body is read once and sent as the same bytes. `test/Forward.test.ts` sends six such requests to a local server through a key, a plan login with a relay and a Claude key, with and without a binding on the Worker, and compares the address, the credential headers and the body bytes. That test passes unchanged on 6a49cbc, the commit before this change, where the three other tests of the file fail. The pinned nanocode-ts is not changed.
+
+**Not changed, and what it means.** The route of a row (`Model.paid`, shown by `compare` as who paid) still names the Worker's OpenAI credential for such an agent, as it does for a `codex` session that the binding answers: the request log is where the binding shows. A Worker with no OpenAI credential at all still refuses a run of such an agent when it is made (`Route.unserved`). A session's request through the binding carries no `route`. `WORKERS_AI_TOKEN` is not used on this path: the binding answers with or without it. `Model.forward` takes `Model.Variables`, the variables it reads, in place of the Worker's `Env`, so a unit test under Node reaches it.
+
+**Checked.** On 2026-11-16, on a 5-core Linux machine without KVM and Node 24.22.1, from a fresh clone of this commit: `npm ci`, `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test`, each with exit status 0. `test/Forward.test.ts` is new, 4 tests.
+
+**Not verified.** When this was written: the e2e jobs and the krun job of `ci.yml`. A real Workers AI binding, a deployed Worker, and fx, opencode or pi against this route: that their chat completions clients read the binding's stream is not shown here. What Workers AI answers when an account is out of credit, as a thrown error or as a `Response`, was not observed.
+
+## 2026-11-16: an installed agent reads the usage of a Workers AI stream once, in its last chunk
+
+**Why.** fx 0.0.17 on `fx-chat:@cf/deepseek-ai/deepseek-v4.1-flash-1017` left with status 1 and `ConflictingIdentity` after its first model request, which the Workers AI binding had answered with 200. The stream Workers AI writes for this model has a `usage` on every chunk, and it is the part of that chunk, not a running total: the first chunk says `prompt_tokens: 5028, completion_tokens: 0`, the next `prompt_tokens: 0, completion_tokens: 1`. After the chunk with the finish reason comes a chunk without choices whose usage is all zero, then the native totals (`{"response":"","usage":…}`), which `WorkersAi.fetcher` already rewrites into a chunk without choices. Chat completions with `stream_options.include_usage` carries the usage once, in a last chunk without choices. fx reads a usage on a chunk as a total so far and refuses one that falls, so the second chunk ended its turn; it also refuses two last chunks whose usage differs.
+
+**What.** `WorkersAi.fetcher` takes `usage: 'last'`. With it, a chunk that has choices comes back without its `usage` and with every other field as it was, a chunk without choices that carries a usage is held, and the native totals take its place when they come. A stream that has no native totals gets its held chunk back before `[DONE]` or at its end, so such a stream comes back as the same bytes. `Model.forward` asks for it on the path of an installed agent. A session does not: nanocode's chat completions client reads the stream as it is, and its bytes are what they were.
+
+**The meter.** The meter reads the usage of the last chunk that carries one, which is the rewritten totals with or without the option, so a response is metered and priced as before. A response the agent leaves early now has no usage in what was sent, where it had the part of the last chunk sent.
+
+**Checked.** The bytes of one such answer were recorded on 2026-11-16 from a deployed Worker at 98e16c9: 65 events, 64 with a usage. The pinned fx 0.0.17 binary, set up as `Installed.script` sets it up and pointed at a local server that sends those bytes, leaves with status 1 and `ConflictingIdentity`. With the same bytes passed through `WorkersAi.fetcher` with `usage: 'last'` (the native totals put back as the binding writes them) it reads the answer, runs both tool calls of it and sends its next request. `test/Binding.test.ts` holds the shape of that stream, cut into uneven pieces, and a stream without native totals, with `[DONE]`, without it and without a last line end. `test/Forward.test.ts` sends such a stream through `Model.forward` and reads one usage in the text and the totals in the meter. From a fresh clone of this commit: `npm ci`, `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test`, each with exit status 0.
+
+**Not verified.** When this was written: fx, opencode or pi against a deployed Worker with this change, the e2e jobs and the krun job of `ci.yml`. opencode and pi read the stream before this change; that they read it after is not shown here. Whether another `@cf/` model writes its usage this way was not observed.
+
+## 2026-11-16: a second import of the same task directories is a new version
+
+An eval version is named by a digest over its rows, and the row of a task whose environment is a disk holds the digest and the size of that disk. Two conversions of one Dockerfile task did not make the same disk bytes, so a second import of the same directories has another digest and is another version.
+
+Measured once, on 2026-11-16. The same 29 task directories of SWE-bench Pro in the closed form were imported twice, on two Linux machines with KVM: the first import into a directory store, the second with `--store r2` from a checkout of `8bda5e3`, 29 of 29 in 940 s, 40.7 GB of disks. The versions are `8783ba6c` and `26db3dfc`. Read from the Worker, they have the same 29 task ids, the same dataset and source, and every field of a task is equal (instruction, tests, verifier, agent, resources, the digest in the image meta) except `environment.disk`, the digest and the size of the packed disk. `krun/` and `sandbox/` hold the same bytes at `5abaeea` and at `8bda5e3`, so the converter did not change between the two imports.
+
+What follows from it:
+
+- A version is one import. The rows of two versions are not pooled and not paired, although their tasks read the same. A read-out names its version, and for a second import it states the reason.
+- A version runs on another machine only when its blobs are where that machine reads them. A directory store ends with its machine: the disks of `8783ba6c` were in one, only its rows were copied to another Worker, and it cannot run again. `--store r2` at import keeps them in the bucket.
+- An import is not a way to get an existing version back. Copy its rows and its blobs.
+
+Not established: which bytes of the disks differ, and why. The formatter takes its UUID and its hash seed from the digest of the image or of the build recipe (`format` in `krun/host/src/image/build.rs`), so what remains is the build (the times and the files that `RUN` steps write, what a step fetches) and what the guest kernel writes to the file system. Whether a task whose environment is an image reference converts to the same bytes twice was not measured. No test covers this, and no code changed with this entry.
+
+## 2026-11-16: a claim that ended writes nothing to its row
+
+**The defect.** A lost claim must start again from nothing. In a run of 2026-11-16 a runner was stopped with a signal while rows of session agents were in their turns, and three of the rows it gave back broke that. The Worker ran an earlier commit with the code of `6835d07` in these paths.
+
+- Two rows of a single-session agent ended `errored` with `agent: the turn ended as cancelled` and were never run again. Each has one claim that ended `released` in the run phase, a failure whose time is the end of that claim to the millisecond, a result with no sandbox, an empty timing and a start 26 ms after the claim ended.
+- One row of an agent with two branches was claimed again. Its second claim has an agent execution of 0.12 s, the verifier graded the fresh sandbox of that claim, and the row ended `failed`. Its artifacts hold the `agent/branches.json` of the first claim: the trunk completed, the other branch `the turn ended as cancelled`.
+
+**The cause** is one order and three writes. `lose()` cancelled the turns of the sessions of the row and read their events, and gave the row back to the ledger only after those round trips. For that time the claim still looked held, and the cancelled turn woke the `agent` call that the runner held open. A runner that is stopped ends its claim loop and lets its row steps go on, so it acted on the answer.
+
+1. The read of a single session answered `failed` with `the turn ended as cancelled` for the turn that `lose()` had cancelled. The runner reported that failure, `finish()` passed the fence, awaited the same sessions, and then completed the row it read again from the ledger without a look at its claim. `Ledger.finish` took any row that was not done, so it ended the row that `lose()` had given back in between.
+2. The read of a branched row checked the claim once, awaited the turn of each branch, and then wrote `agent/branches.json` under the row id, after `lose()` had deleted the artifacts of the row. The second claim found a decided record at its first read and answered `completed`.
+3. `complete()` wrote artifacts between its awaits, and every write of a runner request after an await had the same shape.
+
+An installed agent has no session turn that the run cancels, and the Worker never answers `failed` for its agent, so its rows went back clean. A lease that expires after the machine of the runner died leaves no request of the claim in the Worker: a held call ends within `HOLD_MS`, 50 s, and the default lease is 60 s. A runner that lives while its lease expires, or that is told to leave, has the race.
+
+**The rule.**
+
+- `lose()` ends the claim first, in one step with no await: the ledger takes the row back, the artifacts of the row are deleted, and the calls held for it wake. The sessions are halted, read for the usage of the lost claim and deleted after that. `Ledger.spend` writes that usage to the claim that ended.
+- `Ledger.requeue` and `Ledger.finish` take the claim token that the caller read, and change nothing when the row has another. `requeue` answers `requeued`, `ended` (the claims of the run are used up, and the row stays for its errored result) or `stale`. `Ledger.held` is false for a claim that ended, also while its row waits for that result.
+- A request of a runner checks its claim again after each await and before each write: `mine()` answers 410, `keep()` writes an artifact and `amend()` changes the row only under it. A turn is read, then the claim, then the answer, so the turn that the run cancelled with the claim is the answer to no runner.
+- `complete()` collects the events of its sessions first and writes after its last await, and only when the row still has the claim it was called with. It returns whether it ended the row. `finish()` answers 410 when it did not, and a cancelled run asks again for a row that changed under it.
+- A branch record names the session of the claim that decided it.
+- At result time a graded result is refused when the agent was not run by the claim of the row (`Claim.unowned`): the timing of the claim has no agent execution, `agent/turns.jsonl` has no turn of the session of the claim or has a turn of the session of another claim, the branch record is missing or names another session, or the turn of the chosen session did not complete and the row has no failure of its own. The row ends `errored` with the kind `internal` and `the result of the attempt is refused: ` followed by the reason, and no reward. The fence above makes this state unreachable through the paths that are known. The check names it if another path reaches it.
+
+**Tests.** `node --test test/Ledger.test.ts test/Claim.test.ts`: a claim that ended finishes and requeues no row, before and after another claim takes it, and each refusal of `Claim.unowned`, with the record of the branched row above. Against the ledger of `6835d07` the same calls answered `true` twice: the row that was given back ended `done` with one claim, `released`.
+
+Two lanes on directory slots, `NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=released NANOEVAL_E2E_SLOTS=2 npm run e2e` and `NANOEVAL_E2E_SCENARIO=released-branches`: the scripted model holds its answers, the one runner is stopped with SIGTERM when its rows are in the run phase and a request is held, and a second runner starts. Each row of the stopped runner has two claims, `released` and `finished`, and passes or fails by its agent with the session of its second claim, a sandbox, an agent execution and at least one model call.
+
+**Measured** on 2026-11-16 on one Linux machine with 4 threads, local workerd, the working tree of this change on `6835d07`, and `6835d07` with the two lanes added. A local session object answers in a few milliseconds, so the window of the race is narrow there. The lines marked "with a wait" add 400 ms before `Harness.events` reads a turn, in place of the round trip to a session object of a deployed Worker.
+
+| | `released` | `released-branches` |
+| --- | --- | --- |
+| `6835d07` | passed 3 of 3: the race was not hit | passed 3 of 3: the race was not hit |
+| `6835d07` with a wait | failed 2 of 2: both rows of the stopped runner `errored`, `agent: the turn ended as cancelled`, one claim | failed 2 of 2: the row `errored` the same way, one claim |
+| This change | passed 3 of 3 | passed 3 of 3 |
+| This change with a wait | passed 2 of 2 | passed 2 of 2 |
+
+One more run of `released` with this change failed for a reason of the measurement: a source of the Worker was edited during the run, the local Worker loaded again, and its log held `Uncaught Error: session deleted`.
+
+**Rejected.** A check of the claim only in `finish()`: the record of a branched row and the artifacts of `complete()` are written on other paths. Keeping the order of `lose()` and holding the row in a state between claimed and given back: a state that every reader must know. A test knob in the Worker that slows a session: the Worker has no code for tests.
+
+**Not verified.**
+
+- A deployed Worker. No Worker was deployed with this change.
+- krun and ns slots. The lanes run on directory slots, and the paths that changed do not read the kind of slot.
+- The exact interleaving of the branched row, a trunk that completed and a branch under way when the runner is stopped. The branches lane stops the runner with every session under way. On `6835d07` with a wait it fails by the first write, not the second.
+- A runner whose lease expires while it lives. The path is the same `lose()`, and no lane stalls the heartbeats of a runner that still runs its rows.
+
+## 2026-11-16: a closed task closes the web search that a model provider runs
+
+A task with `network.allowInternet` false is a closed task: the slot of its agent has no network. A web search that the model provider runs is outside the slot, so that slot did not stop it. A closed task with such a search is not closed.
+
+**Seen.** One run on a closed slice of SWE-bench Pro, 28 tasks, three attempts, with a `claude` session arm at high effort beside Claude Code: 5 of the 84 session rows made 19 web searches through 10 calls of the web search tool. One row searched for a hidden test file by its name, and two for the upstream fix. No search returned a hidden test file or the code of the fix. Three of the five rows passed. The Claude Code rows made none, and the tool list of each had `WebSearch` and `WebFetch`.
+
+**The cause.** `Turn.body` sent `web_search: false` only for a `codex` turn (the entry of 2026-11-14 on codex sessions), and the nanocode-ts host turns the search of a provider on unless the turn says so. `Installed.script` started Claude Code with its default tools. `WebSearch` of Claude Code is a nested model request with the search tool of the provider. Neither read the network of the task.
+
+**The rule.** The agent of a closed task (`Eval.offline(task)` names `agent`) gets no web tool that runs outside its slot.
+
+- A nanocode session of any provider is sent `web_search: false`: the turn of the agent and the turn of a picker, which is a session of the model of the agent. The turn of a judge is not changed: it belongs to the verifier. `agent/turns.jsonl` names `web_search: false` for such a turn, so a row shows that it ran closed.
+- Claude Code, as `claude-code` and as `stock-claude`, is started with `--disallowedTools WebFetch WebSearch`.
+- Codex CLI, as `codex-cli`, is started with `-c web_search=disabled`, the setting that `stock-codex` has on every task.
+- fx, opencode and pi get nothing: their commands name no tool that a provider runs, and a fetch from the slot has no network.
+- An open task is unchanged: the body of its turn and the command of its agent are byte for byte what they were.
+
+No agent option names this. The task decides it.
+
+**Checked with the pinned Claude Code.** The 2.1.318 build for x86_64 glibc, SHA-256 as in `src/Installed.ts`, was started with the command of `Installed.script` against an endpoint that refuses connections. The `init` line of its stream lists 22 tools without the flag, `WebFetch` and `WebSearch` among them, and 20 with it, neither among them. `--dangerously-skip-permissions` was set both times.
+
+**Which runs had the defect.** Every run of a closed task before this change, of 2026-11-16 and earlier. A read-out of such a run lists the rows with a provider web search: the request log of a row counts them (`webSearches`).
+
+**The Worker and the runner both carry it.** The Worker builds the turn of a session, and the runner writes the command of an installed agent. A run is closed for both kinds of agent only when both are at this change.
+
+**Tests.** `node --test test/Turn.test.ts test/Installed.test.ts`: the body of a `claude` turn of an open task equals the string it was before, and of a closed task that string with `web_search: false`. A `codex` turn is the same string in both. The last line of the script of `claude-code`, `stock-claude` and `codex-cli` of an open task equals the line it was before, and the script of a closed task differs by the one argument. The scripts of the other kinds are equal in both.
+
+**Not verified.**
+
+- A session with a model. No run was made with this change. The switch is the one a `codex` session has had since 2026-11-14.
+- A subagent of a closed `claude` session. The Worker starts no session for a subagent, so a subagent runs in the runtime of the session that was sent the switch. Whether that runtime keeps the search from a subagent was not read.
+- `-c web_search=disabled` with Codex CLI 0.166.0. It is the setting of `stock-codex` at 0.162.1, and no binary of 0.166.0 was started with it.
+- `nanocode-claude` and `nanocode-codex`, the nanocode command line inside the slot. Its `exec` has no option that turns the web search off, so such an arm on a closed task still has the search of its provider. It is not closed by this change.
+- The tools of fx, opencode and pi were read from their commands here and not from their binaries.

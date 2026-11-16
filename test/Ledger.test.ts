@@ -113,13 +113,14 @@ test('a lost lease makes the row claimable again, a bounded number of times, and
   )
   assert.equal(
     Ledger.requeue(sql, {
+      claim: first!.claim,
       ending: 'expired',
       id: 'a00001',
       limit: 2,
       now: 1001,
       usage: '{"costUsd":0.5}',
     }),
-    true,
+    'requeued',
   )
   const waiting = Ledger.get(sql, 'a00001')!
   assert.deepEqual(
@@ -136,7 +137,12 @@ test('a lost lease makes the row claimable again, a bounded number of times, and
   assert.equal(waiting.result, null)
   assert.equal(Ledger.held(sql, { claim: first!.claim!, id: 'a00001' }), undefined)
   assert.equal(
-    Ledger.finish(sql, { id: 'a00002', now: 1002, result: result('a00002', 'passed') }),
+    Ledger.finish(sql, {
+      claim: null,
+      id: 'a00002',
+      now: 1002,
+      result: result('a00002', 'passed'),
+    }),
     false,
   )
 
@@ -144,8 +150,18 @@ test('a lost lease makes the row claimable again, a bounded number of times, and
   assert.equal(second!.claims, 2)
   assert.equal(second!.session, '0123456789abcdef-a00001-2')
   assert.notEqual(second!.claim, first!.claim)
-  assert.equal(Ledger.requeue(sql, { ending: 'expired', id: 'a00001', limit: 2, now: 4000 }), false)
+  assert.equal(
+    Ledger.requeue(sql, {
+      claim: second!.claim,
+      ending: 'expired',
+      id: 'a00001',
+      limit: 2,
+      now: 4000,
+    }),
+    'ended',
+  )
   assert.equal(Ledger.get(sql, 'a00001')!.phase, 'claimed')
+  assert.equal(Ledger.held(sql, { claim: second!.claim!, id: 'a00001' }), undefined)
   assert.deepEqual(
     Ledger.claims(sql).map((entry) => [entry.n, entry.runner, entry.ending, entry.ended_at]),
     [
@@ -163,7 +179,16 @@ test('a claim whose session lost its turn goes back with what the session answer
   Ledger.update(sql, 'a00001', { phase: 'run' })
   Ledger.explain(sql, { claim: first!.claim!, error: said })
   assert.equal(Ledger.claims(sql)[0]!.ended_at, null)
-  assert.equal(Ledger.requeue(sql, { ending: 'forgotten', id: 'a00001', limit: 2, now: 500 }), true)
+  assert.equal(
+    Ledger.requeue(sql, {
+      claim: first!.claim,
+      ending: 'forgotten',
+      id: 'a00001',
+      limit: 2,
+      now: 500,
+    }),
+    'requeued',
+  )
   assert.equal(Ledger.get(sql, 'a00001')!.phase, 'unclaimed')
   assert.equal(Ledger.held(sql, { claim: first!.claim!, id: 'a00001' }), undefined)
 
@@ -171,12 +196,28 @@ test('a claim whose session lost its turn goes back with what the session answer
   assert.equal(second!.session, '0123456789abcdef-a00001-2')
   Ledger.explain(sql, { claim: second!.claim!, error: said })
   assert.equal(
-    Ledger.requeue(sql, { ending: 'forgotten', id: 'a00001', limit: 2, now: 900 }),
-    false,
+    Ledger.requeue(sql, {
+      claim: second!.claim,
+      ending: 'forgotten',
+      id: 'a00001',
+      limit: 2,
+      now: 900,
+    }),
+    'ended',
   )
   assert.equal(Ledger.get(sql, 'a00001')!.phase, 'claimed')
   assert.equal(
-    Ledger.finish(sql, { id: 'a00001', now: 901, result: result('a00001', 'errored') }),
+    Ledger.held(sql, { claim: second!.claim!, id: 'a00001' }),
+    undefined,
+    'the runner of a claim that ended holds its row no more',
+  )
+  assert.equal(
+    Ledger.finish(sql, {
+      claim: second!.claim,
+      id: 'a00001',
+      now: 901,
+      result: result('a00001', 'errored'),
+    }),
     true,
   )
   const claims = Ledger.claims(sql)
@@ -191,8 +232,13 @@ test('a claim whose session lost its turn goes back with what the session answer
   assert.deepEqual(Ledger.lostUsage(sql), [])
 
   const other = open([{ agent: 'agent', n: 1, task: 'small' }])
-  claim(other)
-  Ledger.finish(other, { id: 'a00001', now: 1, result: result('a00001', 'passed') })
+  const [only] = claim(other)
+  Ledger.finish(other, {
+    claim: only!.claim,
+    id: 'a00001',
+    now: 1,
+    result: result('a00001', 'passed'),
+  })
   assert.deepEqual(
     Ledger.claims(other).map((entry) => [entry.ending, entry.error, Ledger.lost(entry)]),
     [['finished', null, false]],
@@ -203,11 +249,21 @@ test('a row is finished once, and a stale runner cannot finish or extend it', ()
   const sql = open([{ agent: 'agent', n: 1, task: 'small' }])
   const [row] = claim(sql)
   assert.equal(
-    Ledger.finish(sql, { id: row!.id, now: 10, result: result(row!.id, 'passed') }),
+    Ledger.finish(sql, {
+      claim: row!.claim,
+      id: row!.id,
+      now: 10,
+      result: result(row!.id, 'passed'),
+    }),
     true,
   )
   assert.equal(
-    Ledger.finish(sql, { id: row!.id, now: 11, result: result(row!.id, 'failed') }),
+    Ledger.finish(sql, {
+      claim: row!.claim,
+      id: row!.id,
+      now: 11,
+      result: result(row!.id, 'failed'),
+    }),
     false,
   )
   const done = Ledger.get(sql, row!.id)!
@@ -223,7 +279,10 @@ test('a row is finished once, and a stale runner cannot finish or extend it', ()
     }),
     [row!.id],
   )
-  assert.equal(Ledger.requeue(sql, { ending: 'expired', id: row!.id, limit: 3, now: 5000 }), false)
+  assert.equal(
+    Ledger.requeue(sql, { claim: row!.claim, ending: 'expired', id: row!.id, limit: 3, now: 5000 }),
+    'stale',
+  )
   assert.deepEqual(Ledger.expired(sql, 5000), [])
   assert.deepEqual(
     Ledger.claims(sql).map((entry) => entry.ending),
@@ -540,8 +599,14 @@ test('a claim that ends retried is remembered, so an attempt is retried once', (
   const [row] = claim(sql)
   assert.equal(Ledger.retried(sql, row!.id), false)
   assert.equal(
-    Ledger.requeue(sql, { ending: 'retried', id: row!.id, limit: row!.claims + 1, now: 10 }),
-    true,
+    Ledger.requeue(sql, {
+      claim: row!.claim,
+      ending: 'retried',
+      id: row!.id,
+      limit: row!.claims + 1,
+      now: 10,
+    }),
+    'requeued',
   )
   assert.equal(Ledger.get(sql, row!.id)!.phase, 'unclaimed')
   assert.equal(Ledger.retried(sql, row!.id), true)
@@ -564,12 +629,21 @@ test('an attempt is retried within the claims of its row, so a run of one claim 
   assert.equal(Ledger.retriable(sql, { id: row!.id, limit: 1 }), false)
   assert.equal(Ledger.retriable(sql, { id: row!.id, limit: 2 }), true)
   assert.equal(
-    Ledger.requeue(sql, { ending: 'retried', id: row!.id, limit: 1, now: 10 }),
-    false,
+    Ledger.requeue(sql, { claim: row!.claim, ending: 'retried', id: row!.id, limit: 1, now: 10 }),
+    'ended',
     'the ledger gives no row back past the claims of the run, whatever ended its claim',
   )
   assert.equal(Ledger.get(sql, row!.id)!.phase, 'claimed')
-  assert.equal(Ledger.requeue(sql, { ending: 'retried', id: other!.id, limit: 3, now: 10 }), true)
+  assert.equal(
+    Ledger.requeue(sql, {
+      claim: other!.claim,
+      ending: 'retried',
+      id: other!.id,
+      limit: 3,
+      now: 10,
+    }),
+    'requeued',
+  )
   const [again] = claim(sql, { now: 20 })
   assert.equal(again!.id, other!.id)
   assert.equal(
@@ -577,10 +651,22 @@ test('an attempt is retried within the claims of its row, so a run of one claim 
     false,
     'a row that was retried is not retried again, with claims left',
   )
-  assert.equal(Ledger.requeue(sql, { ending: 'expired', id: again!.id, limit: 3, now: 30 }), true)
+  assert.equal(
+    Ledger.requeue(sql, {
+      claim: again!.claim,
+      ending: 'expired',
+      id: again!.id,
+      limit: 3,
+      now: 30,
+    }),
+    'requeued',
+  )
   const [last] = claim(sql, { now: 40 })
   assert.equal(last!.claims, 3)
-  assert.equal(Ledger.requeue(sql, { ending: 'expired', id: last!.id, limit: 3, now: 50 }), false)
+  assert.equal(
+    Ledger.requeue(sql, { claim: last!.claim, ending: 'expired', id: last!.id, limit: 3, now: 50 }),
+    'ended',
+  )
   assert.equal(
     Ledger.claims(sql, last!.id).length,
     3,
@@ -694,4 +780,120 @@ test('rows are claimed by the vCPUs of their tasks when the offer of the runner 
   assert.deepEqual(claimWide(3), ['large', 'small'])
   assert.deepEqual(claimWide(1), ['small'])
   assert.deepEqual(claimWide(0), [])
+})
+
+test('a row that holds several slots is admitted by its weight, and alone on an idle runner when it outweighs it', () => {
+  const offer = { capacityMb: 8192, memoryMb: 8192, slots: 12 }
+  const picker = (item: string) => ({ cpus: 1, item, memoryMb: 512, slots: 6 })
+  assert.deepEqual(
+    Admission.fill([picker('a'), picker('b'), picker('c')], offer),
+    ['a', 'b'],
+    'a 12-slot runner takes two picker rows of six slots, not twelve rows',
+  )
+  assert.deepEqual(
+    Admission.fill([picker('a'), { cpus: 1, item: 'plain', memoryMb: 512 }], {
+      ...offer,
+      slots: 7,
+    }),
+    ['a', 'plain'],
+  )
+  assert.deepEqual(
+    Admission.fill([picker('a'), picker('b')], { capacityMb: 8192, memoryMb: 8192, slots: 1 }),
+    ['a'],
+    'an idle one-slot runner still takes one picker row alone',
+  )
+  assert.deepEqual(
+    Admission.fill([picker('a')], { capacityMb: 8192, memoryMb: 4096, slots: 4 }),
+    [],
+    'a busy runner does not take a row heavier than its free slots',
+  )
+  assert.deepEqual(
+    Admission.fill([{ cpus: 1, item: 'big', memoryMb: 2048, slots: 6 }], {
+      capacityMb: 8192,
+      memoryMb: 8192,
+      slots: 12,
+    }),
+    ['big'],
+    'the memory of a heavy row is clamped to the runner, so it is never starved',
+  )
+})
+
+test('a claim that ended writes nothing to its row, and the row starts again from nothing', () => {
+  const sql = open([{ agent: 'agent', n: 1, task: 'task' }])
+  const [first] = claim(sql)
+  Ledger.update(sql, first!.id, { failure: '{"at":1,"kind":"agent","message":"x"}', phase: 'run' })
+  const held = Ledger.held(sql, { claim: first!.claim!, id: first!.id })!
+  assert.equal(Ledger.current(sql, held)!.id, first!.id)
+
+  assert.equal(
+    Ledger.requeue(sql, {
+      claim: first!.claim,
+      ending: 'released',
+      id: first!.id,
+      limit: 3,
+      now: 100,
+    }),
+    'requeued',
+  )
+  const requeued = Ledger.get(sql, first!.id)!
+  assert.deepEqual(
+    [requeued.claim, requeued.failure, requeued.phase, requeued.session, requeued.timing],
+    [null, null, 'unclaimed', null, '{}'],
+  )
+  assert.equal(
+    Ledger.current(sql, held),
+    undefined,
+    'the row of the claim that ended is not its row',
+  )
+  assert.equal(
+    Ledger.finish(sql, {
+      claim: held.claim,
+      id: held.id,
+      now: 101,
+      result: result(held.id, 'errored'),
+    }),
+    false,
+    'a request of the claim that ended does not finish the row that went back',
+  )
+  assert.equal(Ledger.get(sql, first!.id)!.phase, 'unclaimed')
+  assert.equal(
+    Ledger.requeue(sql, {
+      claim: held.claim,
+      ending: 'expired',
+      id: held.id,
+      limit: 3,
+      now: 102,
+    }),
+    'stale',
+  )
+
+  const [second] = claim(sql)
+  assert.equal(second!.id, first!.id)
+  assert.equal(second!.claims, 2)
+  assert.equal(Ledger.current(sql, held), undefined, 'nor is the row that another claim holds')
+  assert.equal(
+    Ledger.finish(sql, {
+      claim: held.claim,
+      id: held.id,
+      now: 103,
+      result: result(held.id, 'errored'),
+    }),
+    false,
+  )
+  assert.equal(
+    Ledger.requeue(sql, {
+      claim: held.claim,
+      ending: 'released',
+      id: held.id,
+      limit: 3,
+      now: 104,
+    }),
+    'stale',
+    'and it takes the row from no later claim',
+  )
+  assert.equal(Ledger.held(sql, { claim: second!.claim!, id: second!.id })!.claims, 2)
+  assert.deepEqual(
+    Ledger.claims(sql, first!.id).map((entry) => entry.ending),
+    ['released', null],
+  )
 })

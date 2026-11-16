@@ -8,10 +8,13 @@ export type Outcome = {
   flight?: number
   ms: number
   refusal?: Proxy.Refusal
+  route?: Route
   status: number
   usage?: Proxy.Usage
   waitMs?: number
 }
+
+export type Route = 'workers-ai'
 
 export type Limited = { retryAfterMs?: number; status: number; tries: number }
 
@@ -56,6 +59,10 @@ export function rejecting(hooks: Hooks): Hooks {
     settle: (outcome) =>
       hooks.settle(outcome.status === 401 ? { ...outcome, refusal: 'login' } : outcome),
   }
+}
+
+export function routed(hooks: Hooks, route: Route): Hooks {
+  return { ...hooks, settle: (outcome) => hooks.settle({ ...outcome, route }) }
 }
 
 export async function relay(input: relay.Input): Promise<Response> {

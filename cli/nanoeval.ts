@@ -42,6 +42,7 @@ import * as Subset from '../src/Subset.ts'
 import * as Task from '../src/Task.ts'
 import * as Timeline from '../src/Timeline.ts'
 import * as Unsound from '../src/Unsound.ts'
+import * as Closed from './Closed.ts'
 import * as Doctor from './Doctor.ts'
 import * as Import from './Import.ts'
 import * as Login from './Login.ts'
@@ -132,7 +133,7 @@ const usage = `nanoeval <command>
             was run end to end.
   import    --url URL --token T (DATASET | --task DIR...) [--eval NAME] [--only ID]... [--limit N]
             [--backend krun|ns|dir] [--store DIR|r2] [--cache DIR] [--layers DIR] [--sources DIR]
-            [--report FILE] [--keep-going] [--pull-wait SEC] [--jobs N]
+            [--report FILE] [--keep-going] [--pull-wait SEC] [--jobs N] [--closed]
             [--ca-bundle FILE] [--slot-env FILE] [--slot-forward ADDRESS:PORT...]
             Import a dataset, or local task directories, as a version of a durable eval:
             the adapter writes each task, its instruction, tests and solution become blobs
@@ -154,7 +155,13 @@ const usage = `nanoeval <command>
             at once, one without it: each conversion of an image runs a builder microVM of 2
             threads and 2 GiB, and one waits while the disk of the cache has no room for its
             environment beside the ones being written. The rows of the version are in the
-            order of the adapter whatever ends first.
+            order of the adapter whatever ends first. --closed imports the closed form of a
+            task whose verifier checks its test files out of the fix commit (SWE-bench Pro):
+            those files are read from the repository of the task and kept with the tests,
+            the repository in the image becomes one commit of its tracked files, the build
+            fails when the image holds the fix commit or a file it added, the verifier
+            places its own copy of the test files and counts the ones the agent changed,
+            and the agent gets no network. A task that cannot be closed fails the import.
   import    DATASET --out DIR [--only ID]... [--limit N] [--sources DIR]
             Write the dataset's tasks as Harbor task directories instead, with dataset.json.
   evals     --url URL --token T
@@ -329,13 +336,30 @@ const usage = `nanoeval <command>
             :yield_floor_ms=N (an exec or wait yields after N ms at the soonest) and
             :yield_share=N (an exec or wait yields after N percent of the time left at most)
             (nano-w7n=claude:claude-opus-5-5:medium:skip_finish_check=on:result_effort=low:
-            stop_at_target=on:yield_floor_ms=30000). The options come in
+            stop_at_target=on:yield_floor_ms=30000), and :finish_retries=N (the finish check
+            may send the turn back N times; never with skip_finish_check) (nano-med-retry=
+            claude:claude-opus-5-5:medium:finish_retries=1), and :finish_check=on (the finish
+            check runs, which a claude-opus- model skips unless a session asks for it; never
+            with skip_finish_check) (nano-med-check=claude:claude-opus-5-5:medium:
+            finish_check=on), :finish_ambiguity=on (the finish check runs and, in the first
+            half of the time of the task, also settles each place the task can be read two
+            ways; never with skip_finish_check) and :tool_result_clearing=KEEP/TOKENS (the
+            history keeps the last KEEP tool results whole and clears older ones in batches
+            of TOKENS tokens at least) (nano-med-clear=claude:claude-opus-5-5:medium:
+            finish_ambiguity=on:tool_result_clearing=2/10000), :subagents=off (the session
+            has no tools that start or steer another agent) (nano-med-nosub=
+            claude:claude-opus-5-5:medium:subagents=off), and
+            :clearing_cache_floors=on (a request keeps two cache breakpoints at the places
+            where the history was last cleared) (nano-med-floors=claude:claude-opus-5-5:
+            medium:clearing_cache_floors=on). The options come in
             this order where several are named: branches, refusal_fallback, cell_yield_ms,
             brief_finish, fold_finish, low_effort_rounds, brief_final, lean_cells,
             escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens,
             persist_finish, skip_finish_check, late_finish_check_ms, result_effort,
-            stop_at_target, yield_floor_ms, yield_share, fix_provider, fix_model, fix_thinking,
-            verifier_provider, verifier_thinking, executor_share, verifier_share, fork_on.
+            stop_at_target, yield_floor_ms, yield_share, finish_retries, finish_check,
+            finish_ambiguity, tool_result_clearing, subagents, clearing_cache_floors, fix_provider,
+            fix_model, fix_thinking, verifier_provider, verifier_thinking, executor_share,
+            verifier_share, fork_on.
             An agent with :branches=2:picker=verify_lazy that names :fix_provider=claude|codex
             and :fix_model=MODEL runs a cascade: its own model works first, until
             :executor_share=N percent of the agent time (50); the verifier, on
@@ -597,6 +621,24 @@ const usage = `nanoeval <command>
             are compared when the runs share one eval digest, and an arm id that several
             runs hold is named ID@RUN. A run of another eval digest and an empty matched
             set are errors.
+  scorecard --manifest FILE --site DIR [--url URL --token T]
+            Write a site of several scorecards into DIR from the manifest FILE, a JSON
+            object with title, an optional date and note, optional seed and draws for
+            every section, optional prices (each MODEL=INPUT,CACHED,OUTPUT[,WRITE,WRITE_1H]
+            in USD a million tokens) and sections. A section has id, title, reference,
+            and results, a list of files that hold what the Worker answers for
+            /v1/runs/RUN/results, or runs, a list of runs to read from the Worker, which
+            DIR/runs keeps; an entry of either may be {"file": FILE, "arms": [ARM...]} or
+            {"run": RUN, "arms": [ARM...]} to take some arms. A section may have labels (an
+            object of an arm to its label), note, seed, draws, and exclude with a reason
+            and either tasks, a list of task names, or file, one task name a line. Paths
+            are relative to the manifest. DIR holds index.html with a table and a cost
+            basis line for every section, ID.html and ID.json for each section as the
+            command above writes them, manifest.json as given, and inputs.sha256 with the
+            sha256 of the manifest and of every file read. A row with tokens and no cost
+            is priced from prices and counted as list price from recorded tokens; an arm
+            with a row whose cost is not recorded shows not recorded, never 0. The site
+            holds no time: the same files and commit write the same bytes.
   revision  [--nanocode REV|DIR|pinned] [--nanocode-ts REV|DIR|pinned] [--sdk REV|DIR|pinned]
             [--sdk-fallback pinned] [--lab DIR] [--hand-profile release]
             [--nanocode-repository URL|DIR] [--nanocode-ts-repository URL|DIR] [--build-only]
@@ -903,6 +945,50 @@ const agentOptions: readonly AgentOption[] = [
     name: 'yield_share',
     read: (text) => ({ yieldShare: Number(text) }),
     write: (agent) => agent.yieldShare,
+  },
+  {
+    ...count,
+    name: 'finish_retries',
+    read: (text) => ({ finishRetries: Number(text) }),
+    write: (agent) => agent.finishRetries,
+  },
+  {
+    ...on,
+    name: 'finish_check',
+    read: () => ({ finishCheck: true }),
+    write: (agent) => (agent.finishCheck ? on.value : undefined),
+  },
+  {
+    ...on,
+    name: 'finish_ambiguity',
+    read: () => ({ finishAmbiguity: true }),
+    write: (agent) => (agent.finishAmbiguity ? on.value : undefined),
+  },
+  {
+    name: 'tool_result_clearing',
+    pattern: '[0-9]+/[0-9]+',
+    read: (text) => {
+      const [keep, atLeastTokens] = text.split('/')
+      return { toolResultClearing: { atLeastTokens: Number(atLeastTokens), keep: Number(keep) } }
+    },
+    value: 'KEEP/TOKENS',
+    write: (agent) =>
+      agent.toolResultClearing
+        ? agent.toolResultClearing.keep + '/' + agent.toolResultClearing.atLeastTokens
+        : undefined,
+  },
+  {
+    name: 'subagents',
+    pattern: 'off',
+    read: () => ({ subagents: false }),
+    value: 'off',
+    write: (agent) => (agent.subagents === false ? 'off' : undefined),
+  },
+  {
+    ...on,
+    name: 'clearing_cache_floors',
+    read: () => ({ clearingCacheFloors: true }),
+    write: (agent) => (agent.clearingCacheFloors ? on.value : undefined),
   },
   {
     ...providers,
@@ -2149,6 +2235,7 @@ async function main(
       cache: { type: 'string' },
       claims: { default: '3', type: 'string' },
       close: { default: false, type: 'boolean' },
+      closed: { default: false, type: 'boolean' },
       'claude-login': { type: 'string' },
       code: { type: 'string' },
       'codex-login': { type: 'string' },
@@ -2178,6 +2265,7 @@ async function main(
       'key-deposit': { type: 'string' },
       'key-top-up': { type: 'string' },
       lab: { type: 'string' },
+      manifest: { type: 'string' },
       layers: { type: 'string' },
       json: { default: false, type: 'boolean' },
       'lease-sec': { default: '60', type: 'string' },
@@ -2237,6 +2325,7 @@ async function main(
       'slot-env': { type: 'string' },
       standing: { default: false, type: 'boolean' },
       'slot-forward': { multiple: true, type: 'string' },
+      site: { type: 'string' },
       slots: { type: 'string' },
       'slots-only': { default: false, type: 'boolean' },
       sources: { type: 'string' },
@@ -2856,6 +2945,35 @@ async function main(
     )
     return
   }
+  if (command === 'scorecard' && (values.manifest !== undefined || values.site !== undefined)) {
+    const manifest = required(values.manifest, 'manifest')
+    const out = required(values.site, 'site')
+    const other = (['draws', 'exclude-tasks', 'out', 'ref', 'run', 'seed'] as const).find(
+      (name) => values[name] !== undefined,
+    )
+    if (other)
+      throw new Error(
+        'scorecard --manifest takes --' + other + ' from the manifest, not from the command line',
+      )
+    const access =
+      values.url && values.token ? client({ token: values.token, url: values.url }) : undefined
+    const written = await Command.site({
+      commit: checkout(),
+      fetch: access && (async (name) => access.results(await runId(access, name))),
+      manifest,
+      out,
+      url: values.url,
+    })
+    process.stdout.write(
+      written.site.sections
+        .map((found) => found.section.id + '\n' + Scorecard.text(found.card))
+        .join('') +
+        'site written to ' +
+        written.index +
+        '\n',
+    )
+    return
+  }
   if (!values.url)
     throw new Error(
       '--url is required, or NANOEVAL_URL: the address of the Worker, which nanoeval worker prints, http://127.0.0.1:8787 unless its --port names another',
@@ -3034,6 +3152,8 @@ async function main(
     throw new Error('--jobs is how many tasks an import converts at once, not ' + values.jobs)
   const jobs = Number(values.jobs ?? '1')
   const refusals: { error: string; id: string }[] = []
+  if (values.closed && Config.kind(backend) !== 'disk')
+    throw new Error('--closed builds the image of a task, which --backend dir does not')
   const imported = async (
     source: AsyncIterable<Dataset.Case>,
     target: { dataset: string; name: string; source: Record<string, string> },
@@ -3049,14 +3169,16 @@ async function main(
         : {}),
       backend,
       cache,
-      cases: source,
+      cases: values.closed
+        ? Closed.cases(source, { remote: Closed.github, root: Path.join(cache, 'scratch') })
+        : source,
       dataset: target.dataset,
       jobs,
       layers: Path.resolve(values.layers ?? Converter.defaultLayers(cache)),
       log: (line) => (lab ? lab.progress.line(line) : console.error(line)),
       name: target.name,
       policy,
-      source: target.source,
+      source: values.closed ? { ...target.source, closed: Closed.recipe } : target.source,
       store: blobStore(values.store, access),
     })
     if (values.report)
