@@ -1,5 +1,6 @@
 import * as Blocklist from './Blocklist.ts'
 import * as Branch from './Branch.ts'
+import * as Cascade from './Cascade.ts'
 import * as Eval from './Eval.ts'
 import * as Installed from './Installed.ts'
 import type * as Ledger from './Ledger.ts'
@@ -34,7 +35,12 @@ export type Agent = {
   finishAmbiguity?: true
   finishCheck?: true
   finishRetries?: number
+  executorShare?: number
+  fixModel?: string
+  fixProvider?: 'claude' | 'codex'
+  fixThinking?: string
   foldFinish?: true
+  forkOn?: Picker.ForkOn
   id: string
   lateFinishCheckMs?: number
   lazy?: true
@@ -60,6 +66,9 @@ export type Agent = {
   yieldFloorMs?: number
   yieldShare?: number
   verifierModel?: string
+  verifierProvider?: 'claude' | 'codex'
+  verifierShare?: number
+  verifierThinking?: string
 }
 
 export const agentKeys: readonly (keyof Agent)[] = [
@@ -76,7 +85,12 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'finishAmbiguity',
   'finishCheck',
   'finishRetries',
+  'executorShare',
+  'fixModel',
+  'fixProvider',
+  'fixThinking',
   'foldFinish',
+  'forkOn',
   'id',
   'lateFinishCheckMs',
   'lazy',
@@ -100,6 +114,9 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'toolResultClearing',
   'toolResultTokens',
   'verifierModel',
+  'verifierProvider',
+  'verifierShare',
+  'verifierThinking',
   'yieldFloorMs',
   'yieldShare',
 ]
@@ -371,12 +388,68 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude' && provider !== 'codex')
         fail(agent.id + ' picks a branch, which only a claude or codex session can')
     }
+    if (agent.forkOn !== undefined) {
+      choice(agent.forkOn, agent.id + ': forkOn', Picker.forkOns)
+      if (agent.picker !== 'verify_lazy')
+        fail(agent.id + ' has a forkOn, which only an agent with verify_lazy takes')
+    }
     if (agent.verifierModel !== undefined) {
       if (typeof agent.verifierModel !== 'string' || !agent.verifierModel)
         fail(agent.id + ' has an empty verifierModel')
       if (agent.picker === undefined)
         fail(agent.id + ' has a verifierModel, which only an agent with a picker takes')
     }
+    if (agent.verifierProvider !== undefined) {
+      choice(agent.verifierProvider, agent.id + ': verifierProvider', ['claude', 'codex'])
+      if (agent.picker === undefined)
+        fail(agent.id + ' has a verifierProvider, which only an agent with a picker takes')
+      if (agent.verifierProvider !== provider && agent.verifierModel === undefined)
+        fail(
+          agent.id +
+            ' verifies with another provider than its own, and names no verifierModel for it',
+        )
+    }
+    if (agent.verifierThinking !== undefined) {
+      choice(agent.verifierThinking, agent.id + ': verifierThinking', thinking)
+      if (agent.picker === undefined)
+        fail(agent.id + ' has a verifierThinking, which only an agent with a picker takes')
+    }
+    if (agent.fixModel !== undefined) {
+      if (typeof agent.fixModel !== 'string' || !agent.fixModel)
+        fail(agent.id + ' has an empty fixModel')
+      if (agent.picker !== 'verify_lazy' || agent.branches !== 2)
+        fail(
+          agent.id + ' has a fixModel, which only an agent with verify_lazy and two branches takes',
+        )
+      if (agent.fixProvider === undefined) fail(agent.id + ' has a fixModel and no fixProvider')
+    }
+    if (agent.fixProvider !== undefined) {
+      choice(agent.fixProvider, agent.id + ': fixProvider', ['claude', 'codex'])
+      if (agent.fixModel === undefined)
+        fail(agent.id + ' has a fixProvider, which only an agent with a fixModel takes')
+    }
+    if (agent.fixThinking !== undefined) {
+      choice(agent.fixThinking, agent.id + ': fixThinking', thinking)
+      if (agent.fixModel === undefined)
+        fail(agent.id + ' has a fixThinking, which only an agent with a fixModel takes')
+    }
+    for (const share of ['executorShare', 'verifierShare'] as const) {
+      if (agent[share] === undefined) continue
+      if (!(Number.isSafeInteger(agent[share]) && agent[share] >= 1 && agent[share] <= 100))
+        fail(agent.id + ': ' + share + ' must be a whole percent from 1 to 100')
+      if (agent.fixModel === undefined)
+        fail(
+          agent.id +
+            (share === 'executorShare' ? ' has an ' : ' has a ') +
+            share +
+            ', which only an agent with a fixModel takes',
+        )
+    }
+    if (
+      agent.fixModel !== undefined &&
+      Cascade.executorShare(agent) + Cascade.verifierShare(agent) >= 100
+    )
+      fail(agent.id + ': executorShare and verifierShare leave the fix no time')
     if (agent.refusalFallback !== undefined) {
       choice(agent.refusalFallback, 'refusalFallback', ['return_once', 'session'])
       if (provider !== 'claude')
@@ -514,7 +587,12 @@ export function parse(value: unknown): Config {
       ...(agent.finishAmbiguity ? { finishAmbiguity: true as const } : {}),
       ...(agent.finishCheck ? { finishCheck: true as const } : {}),
       ...(agent.finishRetries === undefined ? {} : { finishRetries: agent.finishRetries }),
+      ...(agent.executorShare === undefined ? {} : { executorShare: agent.executorShare }),
+      ...(agent.fixModel ? { fixModel: agent.fixModel } : {}),
+      ...(agent.fixProvider ? { fixProvider: agent.fixProvider } : {}),
+      ...(agent.fixThinking ? { fixThinking: agent.fixThinking } : {}),
       ...(agent.foldFinish ? { foldFinish: true as const } : {}),
+      ...(agent.forkOn ? { forkOn: agent.forkOn } : {}),
       id: agent.id,
       ...(agent.lateFinishCheckMs === undefined
         ? {}
@@ -549,6 +627,9 @@ export function parse(value: unknown): Config {
       ...(agent.yieldFloorMs === undefined ? {} : { yieldFloorMs: agent.yieldFloorMs }),
       ...(agent.yieldShare === undefined ? {} : { yieldShare: agent.yieldShare }),
       ...(agent.verifierModel ? { verifierModel: agent.verifierModel } : {}),
+      ...(agent.verifierProvider ? { verifierProvider: agent.verifierProvider } : {}),
+      ...(agent.verifierShare === undefined ? {} : { verifierShare: agent.verifierShare }),
+      ...(agent.verifierThinking ? { verifierThinking: agent.verifierThinking } : {}),
     }
   })
   if (new Set(agents.map((agent) => agent.id)).size !== agents.length)
