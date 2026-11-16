@@ -8052,3 +8052,25 @@ An example is `nano-med-clear=claude:claude-opus-5-5:medium:finish_ambiguity=on:
 **Checked.** `test/FinishAmbiguity.test.ts` and `test/ToolResultClearing.test.ts` (new, 3 tests each: the spec, its place in the order and its text read back for `claude` and `claude-direct`; an empty value, another value, a second occurrence and another place refused; the configuration takes it and refuses malformed values, other providers and, for `finish_ambiguity`, `skip_finish_check` with it; a turn sends the field only when named, and a turn without it is the same bytes, with the body of a plain turn written out). The usage line in ten places of eight other test files names the two options, and the name of one test of `test/FinishCheck.test.ts` no longer says that `finish_check` is last. `npm test`: 619 tests, 614 pass, 0 fail, 5 skipped on a machine without KVM, where the tree before this change has 613 tests. `npm run check:types`, `npm run lint` and `npm run dry-run` pass.
 
 **Not verified.** When this was written: `ci.yml` from a fresh clone on KVM. A Worker on this pin, a model, and a session that took either field. No end-to-end lane names the options.
+
+## 2026-11-16: the package pins nanocode-ts build-acdb751
+
+**The pin.** `package` pins nanocode-ts `build-acdb751` (nanocode-ts master acdb7518a9503264812c4bbf87466c506915fae7, nanocode dc09e1baf21d20e09b9f82b954a23f7cd8923c63, WASM build f954f3ee5f8157850f95) in place of `build-5630e0f`. The hand stays `nanocode-cli-1a946f3`. The release tarball as downloaded has 58,248,417 bytes and the SHA-256 849487795bd89a7390b873305bc1b107c250270b74e54dcb5a3e8a6aeeaf956a, which is the digest GitHub records for the release asset, and the integrity in `package-lock.json` is its SHA-512. The `package.json` of the tarball is the same bytes as that of `build-5630e0f`, and so are the files of its bundled `node_modules`, so only the address and the integrity changed in the lock.
+
+**What the build contains.** nanocode-ts acdb751 is two commits after 5630e0f, and nanocode dc09e1baf is three commits after b19220112. Read in the commit messages and in the `DECISIONS.md` of the two repositories, not run here:
+
+| nanocode | What it changes | A session that names no new field |
+| --- | --- | --- |
+| 36dd8652d | The turn log counts only rewritten section bytes in its snapshot rule and loads the index root lazily | No field or request changes |
+| 59df7a1bb | The finish notice v2 becomes the headless default: the notice gains two bullets (each number the task states is computed and compared, a named library call keeps its defaults), and its input bullet asks for a run on an input that must stay unchanged. The default notice grows from 2,007 to 2,396 bytes by the commit | **Changed** for every session that runs the finish check. A session that runs none sends the same requests |
+| dc09e1baf | `ClaudeBuilder::clearing_cache_floors`: two cache breakpoints at the boundaries of the last two tool result clearings | The requests are unchanged: by the commit, 406 of 406 mock request bodies are equal once session IDs, paths and wall times are normalized |
+
+The declarations of the package differ from `build-5630e0f` in `Contracts.d.ts` and `cloudflare/App.d.ts` only: the optional session field `clearing_cache_floors?: boolean`, and `clearing_cache_floors` in `finishLevers`. `dist/cloudflare/App.js` differs in that one name only.
+
+**An arm across the pins.** A row on this pin is not the same arm as a row on `build-7b8677c` or on `build-5630e0f`. An agent whose session runs the finish check sends the finish notice v2, which is the longer one. That is every Sonnet, Haiku and other non-Opus Claude agent without `:skip_finish_check=on`, and an Opus agent with `:finish_check=on`, `:finish_retries=N`, `:late_finish_check_ms=N` or `:finish_ambiguity=on`. An Opus agent that names none of them runs no finish check, as from `build-7b8677c`, and by the commits no request of its session changes, which is read and not measured here. A comparison of two arms holds within one pin only.
+
+**With the options of the entries above.** This change is made on main 6a49cbc merged with `pin-5630e0f` f23bf1e, so main gets `finish_ambiguity` and `tool_result_clearing` together with this pin. `DECISIONS.md` was the only conflict of the merge, and both sides are kept.
+
+**Checked.** `npm ci`, which verifies the tarball against the integrity of the lock, `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test` from a fresh clone, with the change of the next entry.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM, a deployed Worker on this pin, and a model. The notice of 59df7a1bb and the request bodies of dc09e1baf are read, not measured here.
