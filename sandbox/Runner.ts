@@ -1058,7 +1058,11 @@ async function attend(
     await Fs.writeFile(slots.agentFile(item.row.slot, 'instruction.md'), instruction)
     await Fs.writeFile(
       slots.agentFile(item.row.slot, 'run.sh'),
-      Installed.script(cli, { closed: Eval.offline(item.row.task).includes('agent'), url }),
+      Installed.script(cli, {
+        closed: Eval.offline(item.row.task).includes('agent'),
+        url,
+        ...(state.webBlocklist ? { blocklist: state.webBlocklist } : {}),
+      }),
     )
     await Fs.writeFile(file, endpoint.token + '\n', { mode: 0o600 })
     try {

@@ -8275,3 +8275,25 @@ A `codex`, `codex-code-mode` or `codex-jobs` agent names `:lenient_patches=on`, 
 **Tests.** `node --test test/CodexSessionOptions.test.ts`: each option reads back to the same agent text, a claude agent that names one is refused, a value that is not a whole number of at least one is refused, and the body of a codex turn without them is the string it was before.
 
 **Not verified.** No run was made with this change.
+
+## 2026-11-16: a run can name a web blocklist that its agents may not fetch
+
+An open task lets its agent search and fetch the web. A benchmark whose tasks, reference solutions or leaderboard trajectories are published on the web can then be answered by fetching them, and a pass that fetched its answer is not a measurement.
+
+**The rule.** `nanoeval run --web-blocklist NAME|FILE` stores a list of hosts and host/path prefixes in the configuration of the run (`webBlocklist`). `terminal-bench` names the list this checkout holds in `src/Blocklist.ts`: the Terminal-Bench and Harbor sites (`tbench.ai`, `harborframework.com`, `tbench.oblok.me`, `marginlab.ai`) and the `laude-institute` and `harbor-framework` repositories of their tasks on `github.com`, `raw.githubusercontent.com`, `codeload.github.com` and `api.github.com`. A FILE holds one entry a line, `#` starts a comment. An entry is a lowercase host with an optional path and no scheme, at most 64 of them, the limit of the provider filter. A bare host covers its subdomains; a host/path entry covers what lies below the path on that exact host only.
+
+- The Worker adds the list to the `blocked_domains` of every `web_search_*` and `web_fetch_*` tool of a `claude` request: the requests of a nanocode session (its egress) and of an installed agent (the model route of the run, which carries the nested search request of Claude Code's `WebSearch`). A tool with `allowed_domains`, a web fetch tool when the list names a path (the provider filters a fetch by host only), or more than 64 entries in all, is refused with a 400, never sent without the list.
+- Claude Code (`claude-code`, `stock-claude`) is started with `--settings` naming a `PreToolUse` hook on `WebFetch`, written to `$NANOEVAL_AGENT_HOME/web-blocklist.sh`, that exits 2 for a listed URL, which refuses the call and tells the model why. Its `WebSearch` is filtered by the Worker.
+- A run with a list takes only agents that enforce it: `claude`, `codex` (a codex session is sent `web_search: false` on every task), `oracle`, `claude-code`, `stock-claude` and `nanocode-claude` (its requests take the model route). `codex-cli`, `stock-codex`, `nanocode-codex`, fx, opencode and pi are refused when the run is created: their searches run where the Worker cannot filter them.
+- `--rerun` takes the list of RUN.
+- A run without a list is unchanged: no request body and no command line differs.
+
+**Not stopped.** A fetch from a shell of an open slot (curl, git clone, pip from a URL) has the network of the slot. The list does not reach it. The backstop is the leak scan before a claim: a transcript that names a listed host, or holds a reference solution, is read, and a copied answer counts as failed.
+
+**Tests.** `node --test test/Blocklist.test.ts`: the matching of hosts, subdomains and paths, the hook refusing with exit 2 exactly the URLs the matcher refuses, the request filter and its refusals, the validation of the configuration, and the command of Claude Code with and without a list.
+
+**Not verified.**
+
+- A deployed Worker and a run with a model. No run was made with this change.
+- The pinned Claude Code reading `--settings` with a hook. The hook was run with `sh` on the JSON a PreToolUse hook receives, not inside Claude Code.
+- That the provider honours `blocked_domains` on the nested search request of Claude Code. That is the documented behaviour of the filter, not a read of a response.

@@ -3,6 +3,7 @@ import type { Contracts } from 'nanocode-ts'
 import { App, Forward } from 'nanocode-ts/cloudflare'
 import manifest from '../package.json' with { type: 'json' }
 import type * as Atif from '../src/Atif.ts'
+import * as Blocklist from '../src/Blocklist.ts'
 import type * as Config from '../src/Config.ts'
 import * as Logins from '../src/Logins.ts'
 import * as Pins from '../src/Pins.ts'
@@ -168,7 +169,32 @@ export const nanocode = App.create<Env>({
             return unpaid(error)
           }
         }
-        const body = await request.arrayBuffer()
+        let body = await request.arrayBuffer()
+        if (name === 'claude' && session && session.judge === undefined) {
+          let value: Record<string, unknown> | undefined
+          try {
+            const parsed = JSON.parse(new TextDecoder().decode(body)) as unknown
+            if (typeof parsed === 'object' && parsed !== null)
+              value = parsed as Record<string, unknown>
+          } catch {}
+          if (value && Blocklist.searches(value)) {
+            const held = (await agentOf(env, session)) as Config.Agent & {
+              webBlocklist?: Blocklist.List
+            }
+            if (held.webBlocklist) {
+              const filtered = Blocklist.anthropic(value, held.webBlocklist)
+              if ('refusal' in filtered)
+                return Response.json(
+                  {
+                    type: 'error',
+                    error: { type: 'invalid_request_error', message: filtered.refusal },
+                  },
+                  { status: 400 },
+                )
+              body = new TextEncoder().encode(JSON.stringify(filtered.body)).buffer as ArrayBuffer
+            }
+          }
+        }
         const relay = (to: { headers: Headers; url: string }) =>
           Meter.relay({
             body,

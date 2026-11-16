@@ -1,3 +1,4 @@
+import * as Blocklist from './Blocklist.ts'
 import * as Branch from './Branch.ts'
 import * as Eval from './Eval.ts'
 import * as Installed from './Installed.ts'
@@ -182,6 +183,7 @@ export type Config = {
     verifierCache?: true
     warm?: { idleSec: number; usd: number }
   }
+  webBlocklist?: Blocklist.List
 }
 
 export type Runner = {
@@ -583,6 +585,24 @@ export function parse(value: unknown): Config {
         unpaid.provider,
     )
 
+  let webBlocklist: Blocklist.List | undefined
+  if (config.webBlocklist !== undefined) {
+    try {
+      webBlocklist = [...Blocklist.valid(config.webBlocklist)]
+    } catch (error) {
+      fail((error as Error).message)
+    }
+    const open = agents.find((agent) => !Blocklist.enforced.includes(agent.provider))
+    if (open)
+      fail(
+        open.id +
+          ' is ' +
+          open.provider +
+          ', and a run with a web blocklist takes only agents that enforce it: ' +
+          Blocklist.enforced.join(', '),
+      )
+  }
+
   if (typeof config.eval?.name !== 'string') fail('eval names the imported eval to run')
   const reference = Eval.reference(
     config.eval.name + (config.eval.version ? '@' + config.eval.version : ''),
@@ -655,6 +675,7 @@ export function parse(value: unknown): Config {
     },
     name: config.name,
     ...(config.only?.length ? { only: [...config.only] } : {}),
+    ...(webBlocklist ? { webBlocklist } : {}),
     ...(config.paces === undefined
       ? {}
       : {
