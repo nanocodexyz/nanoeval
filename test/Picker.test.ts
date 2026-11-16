@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { agentText, parseAgent } from '../cli/nanoeval.ts'
 import type * as Branch from '../src/Branch.ts'
 import * as Config from '../src/Config.ts'
 import * as Picker from '../src/Picker.ts'
@@ -97,6 +98,86 @@ test('a lazy trunk forks unless the verifier passed it with confidence', () => {
   )
 })
 
+const silent: Picker.Verification = { ...Picker.parse('no verdict at all'), usd: 0 }
+
+const errored: Picker.Verification = { ...silent, error: 'the verifier timed out' }
+
+test('fork_on=verifier_fail forks a completed trunk on a FAIL verdict, and on a verifier error as before', () => {
+  const options = { deadlineAt: 2_000, forkOn: 'verifier_fail' as const, now: 1_000 }
+  assert.equal(Picker.forkReason(done(), verified('pass', 90), options), undefined)
+  assert.equal(Picker.forkReason(done(), verified('pass', 50), options), undefined)
+  assert.equal(Picker.forkReason(done(), verified('pass', 0), options), undefined)
+  assert.equal(Picker.forkReason(done(), verified('unsure', 90), options), undefined)
+  assert.equal(Picker.forkReason(done(), verified('unsure', 0), options), undefined)
+  assert.equal(Picker.forkReason(done(), verified('fail', 90), options), 'verifier_fail')
+  assert.equal(Picker.forkReason(done(), verified('fail', 0), options), 'verifier_fail')
+  assert.equal(silent.verdict, 'unsure')
+  assert.equal(
+    Picker.forkReason(done(), silent, options),
+    undefined,
+    'a verifier that named no verdict keeps the trunk',
+  )
+  assert.equal(
+    Picker.forkReason(done(), errored, options),
+    Picker.forkReason(done(), errored, { deadlineAt: 2_000, now: 1_000 }),
+    'a verifier that ended with an error forks as it does without fork_on',
+  )
+  assert.equal(Picker.forkReason(done(), errored, options), 'verifier_unsure')
+  assert.equal(Picker.forkReason({ state: 'timeout' }, undefined, options), 'unverified')
+  assert.equal(Picker.forkReason({ error: 'x', state: 'failed' }, undefined, options), 'unverified')
+  assert.equal(Picker.forkReason({ state: 'cancelled' }, undefined, options), 'unverified')
+  assert.equal(Picker.forkReason({ state: 'timeout' }, verified('pass', 90), options), 'unverified')
+  assert.equal(Picker.forkReason(done(), undefined, options), 'unverified')
+  assert.equal(
+    Picker.forkReason(done(), verified('fail', 90), { ...options, deadlineAt: 1_000 }),
+    undefined,
+    'a trunk past its deadline is kept rather than forked',
+  )
+})
+
+test('fork_on=verifier_fail_or_unsure forks as an agent without fork_on does', () => {
+  const trunks: readonly Branch.Outcome[] = [
+    done(),
+    { state: 'cancelled' },
+    { error: 'x', state: 'failed' },
+    { state: 'timeout' },
+  ]
+  const verifications: readonly (Picker.Verification | undefined)[] = [
+    undefined,
+    errored,
+    silent,
+    verified('fail', 0),
+    verified('fail', 90),
+    verified('pass', 0),
+    verified('pass', 69),
+    verified('pass', 70),
+    verified('pass', 90),
+    verified('unsure', 0),
+    verified('unsure', 90),
+  ]
+  for (const deadlineAt of [1_000, 2_000])
+    for (const trunk of trunks)
+      for (const verification of verifications)
+        assert.equal(
+          Picker.forkReason(trunk, verification, {
+            deadlineAt,
+            forkOn: 'verifier_fail_or_unsure',
+            now: 1_000,
+          }),
+          Picker.forkReason(trunk, verification, { deadlineAt, now: 1_000 }),
+        )
+  const options = { deadlineAt: 2_000, forkOn: 'verifier_fail_or_unsure' as const, now: 1_000 }
+  assert.equal(Picker.forkReason(done(), verified('pass', 90), options), undefined)
+  assert.equal(Picker.forkReason(done(), verified('pass', 70), options), undefined)
+  assert.equal(Picker.forkReason(done(), verified('pass', 69), options), 'verifier_unsure')
+  assert.equal(Picker.forkReason(done(), verified('unsure', 90), options), 'verifier_unsure')
+  assert.equal(Picker.forkReason(done(), verified('fail', 90), options), 'verifier_fail')
+  assert.equal(Picker.forkReason(done(), silent, options), 'verifier_unsure')
+  assert.equal(Picker.forkReason(done(), errored, options), 'verifier_unsure')
+  assert.equal(Picker.forkReason({ state: 'timeout' }, undefined, options), 'unverified')
+  assert.equal(Picker.forkReason(done(), undefined, options), 'unverified')
+})
+
 test('a probe slot takes a slot of its own for each branch', () => {
   assert.equal(Picker.slots({ branches: 3, picker: 'verify' }), 6)
   assert.equal(Picker.slots({ branches: 3 }), 3)
@@ -142,6 +223,54 @@ test('a picker needs branches, and verifier_model needs a picker', () => {
   assert.equal(agent?.verifierModel, 'claude-sonnet-5-5')
   assert.equal(Picker.model(agent!), 'claude-sonnet-5-5')
   assert.equal(Picker.model({ model: 'm', provider: 'claude' }), Picker.defaultModel)
+})
+
+test('an agent names fork_on, and prints back to the same text', () => {
+  const plain =
+    'cv=claude:claude-sonnet-5-5:medium:branches=2:picker=verify_lazy:verifier_model=claude-haiku-5-5:fix_provider=claude:fix_model=claude-opus-5-5:fix_thinking=medium:verifier_thinking=medium'
+  for (const forkOn of Picker.forkOns) {
+    const spec = plain + ':fork_on=' + forkOn
+    const agent = parseAgent(spec)
+    assert.equal(agent.forkOn, forkOn)
+    assert.equal(agentText(agent), spec)
+    assert.deepEqual(parseAgent(agentText(agent)), agent)
+    assert.deepEqual(
+      parseAgent(plain),
+      Object.fromEntries(Object.entries(agent).filter(([key]) => key !== 'forkOn')),
+    )
+    assert.equal(Config.parse(config(agent)).agents[0]?.forkOn, forkOn)
+  }
+  const agent = parseAgent(plain)
+  assert.equal('forkOn' in agent, false)
+  assert.equal(agentText(agent), plain)
+  const [parsed] = Config.parse(config(agent)).agents
+  assert.equal('forkOn' in parsed!, false, 'an agent without fork_on is the agent it was')
+  const short = 'p=codex:m:branches=3:picker=verify_lazy:fork_on=verifier_fail'
+  assert.equal(agentText(parseAgent(short)), short)
+})
+
+test('a fork_on that is not one of its values, or without verify_lazy, is refused', () => {
+  for (const text of [
+    'a=claude:m:branches=2:picker=verify_lazy:fork_on=verifier_unsure',
+    'a=claude:m:branches=2:picker=verify_lazy:fork_on=',
+    'a=claude:m:branches=2:picker=verify_lazy:fork_on=verifier_fail:verifier_share=10',
+  ])
+    assert.throws(
+      () => parseAgent(text),
+      /\[:fork_on=verifier_fail\|verifier_fail_or_unsure\], not /,
+    )
+  assert.throws(
+    () => Config.parse(config({ branches: 2, forkOn: 'verifier_unsure', picker: 'verify_lazy' })),
+    /a: forkOn must be one of verifier_fail, verifier_fail_or_unsure/,
+  )
+  assert.throws(
+    () => Config.parse(config({ branches: 2, forkOn: 'verifier_fail', picker: 'verify' })),
+    /a has a forkOn, which only an agent with verify_lazy takes/,
+  )
+  assert.throws(
+    () => Config.parse(config({ forkOn: 'verifier_fail' })),
+    /a has a forkOn, which only an agent with verify_lazy takes/,
+  )
 })
 
 test('the cheat scan finds a verifier call that reads a path under the hidden tests or solution', () => {
