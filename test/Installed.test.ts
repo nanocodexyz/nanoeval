@@ -132,7 +132,7 @@ test('an agent names a session harness or an installed command', () => {
   )
   assert.throws(
     () => Config.parse({ ...config, agents: [{ id: 'x', model: 'm', provider: 'cursor' }] }),
-    /provider must be one of claude, codex, oracle, claude-code, codex-cli, fx, nanocode-claude, nanocode-codex, opencode, pi/,
+    /provider must be one of claude, codex, oracle, aider, claude-code, codex-cli, fx, nanocode-claude, nanocode-codex, opencode, pi/,
   )
   assert.throws(
     () => Config.parse({ ...config, judge: { model: 'gpt-6.1-sol', provider: 'codex-cli' } }),
@@ -286,7 +286,7 @@ test('every pinned release names a checksum for each build it fetches', () => {
 })
 
 function install(
-  kind: 'claude-code' | 'codex-cli' | 'fx' | 'opencode' | 'pi',
+  kind: 'aider' | 'claude-code' | 'codex-cli' | 'fx' | 'opencode' | 'pi',
   libc: string,
 ): string {
   const rt = Path.join(root, 'rt-' + kind + '-' + libc)
@@ -300,7 +300,7 @@ function install(
       '#!/bin/sh',
       'printf "argument:%s\\n" "$@"',
       'printf "input:%s\\n" "$(cat)"',
-      'env | grep -E "^(ANTHROPIC|CLAUDE|CODEX|DISABLE|FX|IS_SANDBOX|NANOEVAL_AGENT|OPENCODE|PI_|XDG)" | sort',
+      'env | grep -E "^(ANTHROPIC|CLAUDE|CODEX|DISABLE|FX|IS_SANDBOX|LITELLM|NANOEVAL_AGENT|OPENAI|OPENCODE|PI_|XDG)" | sort',
       '',
     ].join('\n'),
     { mode: 0o755 },
@@ -525,6 +525,77 @@ test('the command of fx names the endpoint of the attempt in its settings and no
   assert.throws(
     () => Installed.script({ kind: 'fx', model: 'm' }, { url }),
     /fx names no API for its model/,
+  )
+})
+
+test('the command of aider names the endpoint of the attempt in its variables and reads the task from a file', () => {
+  const url = 'http://127.0.0.1:8787/v1/runs/r/model/a00001'
+  const expected: [Installed.Api, string, string][] = [
+    ['chat', 'OPENAI', "openai/open/model'x"],
+    ['responses', 'OPENAI', "openai/responses/open/model'x"],
+    ['messages', 'ANTHROPIC', "anthropic/open/model'x"],
+  ]
+  for (const [api, variable, model] of expected) {
+    const out = run({ api, kind: 'aider', model: "open/model'x", thinking: 'high' }, install('aider', 'gnu'))
+    const home = Path.join(root, 'home-aider')
+    assert.deepEqual(
+      out
+        .split('\n')
+        .filter((line) => line.startsWith('argument:'))
+        .map((line) => line.slice('argument:'.length)),
+      [
+        '--model',
+        model,
+        '--reasoning-effort',
+        'high',
+        '--message-file',
+        Path.join(home, 'message.md'),
+        '--yes-always',
+        '--no-git',
+        '--no-pretty',
+        '--no-stream',
+        '--no-fancy-input',
+        '--no-check-update',
+        '--no-show-release-notes',
+        '--no-show-model-warnings',
+        '--no-check-model-accepts-settings',
+        '--analytics-disable',
+        '--input-history-file',
+        Path.join(home, 'input.history'),
+        '--chat-history-file',
+        Path.join(home, 'chat.history.md'),
+      ],
+    )
+    assert.equal(Fs.readFileSync(Path.join(home, 'message.md'), 'utf8'), "Write it's done.\n")
+    assert.match(out, /^input:$/m)
+    assert.match(out, new RegExp('^' + variable + '_API_BASE=' + url + '$', 'm'))
+    assert.match(out, new RegExp('^' + variable + '_API_KEY=' + attemptToken + '$', 'm'))
+    assert.match(out, /^LITELLM_LOCAL_MODEL_COST_MAP=True$/m)
+  }
+  const plain = run({ api: 'chat', kind: 'aider', model: 'open-model' }, install('aider', 'gnu'))
+  assert.doesNotMatch(plain, /^argument:--reasoning-effort$/m)
+  assert.throws(
+    () => Installed.script({ kind: 'aider', model: 'm' }, { url }),
+    /aider names no API for its model/,
+  )
+})
+
+test('the output of aider gives the final message, the edits it applied, an error and an ATIF trajectory', () => {
+  const stream = [
+    'Aider v0.86.2',
+    'Model: openai/open-model with whole edit format',
+    'hello.txt',
+    'Applied edit to hello.txt',
+    'Tokens: 2.1k sent, 40 received.',
+    '',
+  ].join('\n')
+  const summary = Installed.summarize('aider', stream)
+  assert.equal(summary.toolCalls, 1)
+  assert.equal(summary.error, undefined)
+  assert.equal(summary.message, stream.trim())
+  assert.equal(
+    Installed.summarize('aider', 'litellm.APIConnectionError: refused\n').error,
+    'litellm.APIConnectionError: refused',
   )
 })
 

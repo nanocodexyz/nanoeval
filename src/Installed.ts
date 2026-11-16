@@ -5,6 +5,7 @@ import * as Slot from './Slot.ts'
 export type Api = 'chat' | 'messages' | 'responses'
 
 export type Kind =
+  | 'aider'
   | 'claude-code'
   | 'codex-cli'
   | 'fx'
@@ -42,6 +43,7 @@ export const apis: Record<Api, 'claude' | 'codex'> = {
 }
 
 export const kinds: readonly Kind[] = [
+  'aider',
   'claude-code',
   'codex-cli',
   'fx',
@@ -57,6 +59,7 @@ export const events = 'agent/events.jsonl'
 export const instruction = 'agent/instruction.md'
 export const tokenVariable = 'NANOEVAL_AGENT_TOKEN'
 
+const aider = 'https://github.com/nanocodexyz/nanoeval/releases/download/aider-v0.86.2'
 const claude =
   'https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases/2.1.318'
 const codex = 'https://github.com/openai/codex/releases/download/rust-v0.166.0'
@@ -70,6 +73,27 @@ const leaderboardCodex = 'https://github.com/openai/codex/releases/download/rust
 export const leaderboard = { contextWindow: 1_048_576, replyLimit: 65_536 } as const
 
 export const releases: Record<Kind, Release> = {
+  aider: {
+    binaries: [
+      {
+        arch: 'aarch64',
+        libc: 'gnu',
+        sha256: 'AARCH64_SHA',
+        url: aider + '/aider-0.86.2-linux-aarch64.tar.gz',
+      },
+      {
+        arch: 'x86_64',
+        libc: 'gnu',
+        sha256: 'X86_SHA',
+        url: aider + '/aider-0.86.2-linux-x86_64.tar.gz',
+      },
+    ],
+    entry: 'aider/aider',
+    format: 'tar.gz',
+    provider: 'api',
+    source: 'release',
+    version: '0.86.2',
+  },
   'claude-code': {
     binaries: [
       {
@@ -454,6 +478,47 @@ function opencodeRun(agent: Agent, url: string): string {
   )
 }
 
+const aiderApis: Record<Api, { base: string; key: string; prefix: string }> = {
+  chat: { base: 'OPENAI_API_BASE', key: 'OPENAI_API_KEY', prefix: 'openai/' },
+  messages: { base: 'ANTHROPIC_API_BASE', key: 'ANTHROPIC_API_KEY', prefix: 'anthropic/' },
+  responses: { base: 'OPENAI_API_BASE', key: 'OPENAI_API_KEY', prefix: 'openai/responses/' },
+}
+
+function aiderMessage(agent: Agent, url: string): string {
+  if (!agent.api) throw new Error('aider names no API for its model')
+  const api = aiderApis[agent.api]
+  return (
+    [
+      ...preamble,
+      ...build('aider', 'aider'),
+      'export HOME="$NANOEVAL_AGENT_HOME"',
+      'export ' + api.base + '=' + quote(url),
+      'export ' + api.key + '="$' + tokenVariable + '"',
+      'export LITELLM_LOCAL_MODEL_COST_MAP=True NO_COLOR=1',
+      'cat >"$NANOEVAL_AGENT_HOME/message.md"',
+      [
+        'exec "$cli"',
+        '--model ' + quote(api.prefix + agent.model),
+        ...(agent.thinking ? ['--reasoning-effort ' + quote(agent.thinking)] : []),
+        '--message-file "$NANOEVAL_AGENT_HOME/message.md"',
+        '--yes-always',
+        '--no-git',
+        '--no-pretty',
+        '--no-stream',
+        '--no-fancy-input',
+        '--no-check-update',
+        '--no-show-release-notes',
+        '--no-show-model-warnings',
+        '--no-check-model-accepts-settings',
+        '--analytics-disable',
+        '--input-history-file "$NANOEVAL_AGENT_HOME/input.history"',
+        '--chat-history-file "$NANOEVAL_AGENT_HOME/chat.history.md"',
+        '</dev/null',
+      ].join(' '),
+    ].join('\n') + '\n'
+  )
+}
+
 const piApis: Record<Api, { api: string; thinking: Record<string, unknown> }> = {
   chat: { api: 'openai-completions', thinking: {} },
   messages: { api: 'anthropic-messages', thinking: { compat: { forceAdaptiveThinking: true } } },
@@ -649,6 +714,7 @@ export function script(agent: Agent, options: { closed?: boolean; url: string })
       ].join('\n') + '\n'
     )
   }
+  if (agent.kind === 'aider') return aiderMessage(agent, options.url)
   if (agent.kind === 'fx') return fxAsk(agent, options.url)
   if (agent.kind === 'opencode') return opencodeRun(agent, options.url)
   if (agent.kind === 'pi') return piPrint(agent, options.url)
@@ -764,6 +830,15 @@ export function summarize(kind: Kind, stream: string): Summary {
     summary.message = stream.trim()
     return summary
   }
+  if (kind === 'aider') {
+    for (const line of stream.split('\n')) {
+      if (line.startsWith('Applied edit to ')) summary.toolCalls++
+      if (/^litellm\.\w+/.test(line)) summary.error = line.trim()
+      if (line.startsWith('Tokens: ')) summary.error = undefined
+    }
+    summary.message = stream.trim()
+    return summary
+  }
   for (const line of lines(stream)) {
     if (kind === 'fx') {
       summary.message = text(line['final_output'] || line['output'])
@@ -835,7 +910,7 @@ export function trajectory(
     if (result) (target.observation ??= { results: [] }).results.push(result)
   }
   if (input.instruction !== undefined) step('user', input.instruction)
-  const runtime = releases[kind].source === 'runtime'
+  const runtime = releases[kind].source === 'runtime' || kind === 'aider'
   if (runtime && input.stream.trim()) step('agent', input.stream.trim()).model_name = model
 
   for (const line of runtime ? [] : lines(input.stream)) {
