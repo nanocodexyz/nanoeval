@@ -98,11 +98,18 @@ const samples: Record<string, Record<string, unknown>> = {
   maxOutputTokens: { maxOutputTokens: 32000 },
   contextWindow: { contextWindow: 200000 },
   codesign: { codesign: false },
+  verificationRequested: { verificationRequested: true },
 }
 
 // Levers only a codex session takes, and levers that need a picker or a fix model the combined
 // overlay below does not hold.
-const codexLevers = ['contextWindow', 'lenientPatches', 'maxOutputTokens', 'minWaitMs']
+const codexLevers = [
+  'contextWindow',
+  'lenientPatches',
+  'maxOutputTokens',
+  'minWaitMs',
+  'verificationRequested',
+]
 const apart = [
   ...codexLevers,
   'executorShare',
