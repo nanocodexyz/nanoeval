@@ -822,6 +822,34 @@ UNLIKE: payer the gateway key in the baseline and a plan login through the relay
 
 **What it does not do.** The runs are on this machine only: a revision is not run on a deployed Worker or in leased sandboxes. A nanocode from before `5f8b457de` is refused when it is named: a slot starts its hand with `--own-processes`, so that a command that exhausts the memory of the slot ends alone, and a hand that does not know the option ends at once, which made every row of such a revision an error after its build. A nanocode-ts revision that does not build against the nanocode it is given ends the command with the compiler's error: name a pair that fits, with `--nanocode-ts` or `--sdk`, or pass `--sdk-fallback pinned`, which builds the package on the nanocode that the nanocode-ts revision names itself when the build on the one it was given fails. The command says so each time, the run records the pair, `nanocode-ts A on nanocode B, hand nanocode C`, and the failure is remembered in the lab, so the next command for that pair builds nothing twice. Such a run tests the new hand with the brain of the older nanocode, not the new brain. The hand is built for this machine and placed in slots with the machine's loader and libraries, as `NANOEVAL_NANOCODE` always was, and not against the old glibc of a release, so a row measures the revision and not the release build of it.
 
+### Overlays
+
+An overlay is one candidate arm written as a JSON file, so a search over harness settings keeps each candidate with its parent, the dimensions it changes, its hypothesis and the runs behind it:
+
+~~~json
+{
+  "format": "nanoeval-overlay/1",
+  "id": "opus55-g1-01",
+  "model": "claude-opus-5-5",
+  "harness": "claude",
+  "thinking": "high",
+  "parent": null,
+  "levers": { "briefFinish": true, "cellYieldMs": 120000 },
+  "pending": {},
+  "dims": ["finish"],
+  "hypothesis": "a brief finish costs less at the same pass rate",
+  "evidence": []
+}
+~~~
+
+`id` is also the agent's id. `harness` is one of claude, claude-direct, codex, codex-code-mode and codex-jobs, `thinking` one of none, low, medium, high, xhigh and max, and `dims` lists prompt, tools, codemode, finish, retries, subagents, context or effort. `levers` holds the fields of a run's agent other than its id, model, provider, orchestration, thinking and api, with the values a run configuration takes, and they are checked by the same rules as `run`. A setting no Worker takes yet goes in `pending`: an overlay with pending keys is valid but not runnable.
+
+~~~sh
+node cli/nanoeval.ts overlay overlays/
+~~~
+
+prints `--agent ID=HARNESS:MODEL:THINKING:...` for each runnable overlay of the files or directories named, in the option order of `--agent`, and lists each overlay that is not runnable on standard error with its pending keys. `src/Overlay.ts` exports `parse`, `compile` (to a run's agent) and `pendingKeys`.
+
 ## Datasets
 
 `nanoeval import` turns a dataset into an eval, so a benchmark needs no Harbor process, no adapter and no image pull at run time. Every source is pinned in this repository by a digest and refused when it does not match. The eval's version records the pinned source and the package checksum of every task, and a run names the version it ran.

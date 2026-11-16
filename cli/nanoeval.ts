@@ -26,6 +26,7 @@ import * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
 import * as Logins from '../src/Logins.ts'
 import * as Loop from '../src/Loop.ts'
+import * as Overlay from '../src/Overlay.ts'
 import type * as Ledger from '../src/Ledger.ts'
 import * as Pace from '../src/Pace.ts'
 import * as Pins from '../src/Pins.ts'
@@ -132,6 +133,11 @@ const usage = `nanoeval <command>
             the terms of its provider.
   datasets  List the datasets that import knows, with the source each is pinned to and what
             was run end to end.
+  overlay   (FILE | DIR)...
+            Read nanoeval-overlay/1 candidates, each FILE or every .json file of each DIR,
+            check their levers by the rules of run, and print --agent ID=HARNESS:MODEL:...
+            for each runnable one. An overlay with pending keys is not runnable: it is
+            listed on standard error with them.
   import    --url URL --token T (DATASET | --task DIR...) [--eval NAME] [--only ID]... [--limit N]
             [--backend krun|ns|dir] [--store DIR|r2] [--cache DIR] [--layers DIR] [--sources DIR]
             [--report FILE] [--keep-going] [--pull-wait SEC] [--jobs N] [--closed]
@@ -1350,6 +1356,50 @@ export function agentText(agent: Config.Agent): string {
       })
       .join('')
   )
+}
+
+export async function readOverlays(paths: readonly string[]): Promise<Overlay.Overlay[]> {
+  const files: string[] = []
+  for (const path of paths) {
+    if ((await Fs.stat(path)).isDirectory())
+      files.push(
+        ...(await Fs.readdir(path))
+          .filter((name) => name.endsWith('.json'))
+          .sort()
+          .map((name) => Path.join(path, name)),
+      )
+    else files.push(path)
+  }
+  const overlays = await Promise.all(
+    files.map(async (file) => {
+      try {
+        return Overlay.parse(JSON.parse(await Fs.readFile(file, 'utf8')))
+      } catch (error) {
+        throw new Error(file + ': ' + (error as Error).message)
+      }
+    }),
+  )
+  const ids = overlays.map((overlay) => overlay.id)
+  const repeated = ids.filter((id, index) => ids.indexOf(id) !== index)
+  if (repeated.length) throw new Error('overlay ids must be unique: ' + repeated.join(', '))
+  return overlays
+}
+
+export function overlayLines(overlays: readonly Overlay.Overlay[]): {
+  runnable: string[]
+  unrunnable: string[]
+} {
+  return {
+    runnable: overlays
+      .filter((overlay) => !Overlay.pendingKeys(overlay).length)
+      .map((overlay) => '--agent ' + agentText(Overlay.compile(overlay))),
+    unrunnable: overlays
+      .filter((overlay) => Overlay.pendingKeys(overlay).length)
+      .map(
+        (overlay) =>
+          'not runnable: ' + overlay.id + ' (pending ' + Overlay.pendingKeys(overlay).join(', ') + ')',
+      ),
+  }
 }
 
 export type Gate = 'any-failure' | 'lost' | 'regression'
@@ -2837,6 +2887,14 @@ async function main(
     const found = Doctor.checks(facts, wanted)
     console.log(Doctor.report(found, wanted))
     process.exitCode = found.some((check) => check.level === 'miss') ? 1 : 0
+    return
+  }
+
+  if (command === 'overlay') {
+    if (!rest.length) throw new Error('overlay takes overlay files or directories of them')
+    const lines = overlayLines(await readOverlays(rest))
+    for (const line of lines.runnable) console.log(line)
+    for (const line of lines.unrunnable) console.error(line)
     return
   }
 
