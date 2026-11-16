@@ -279,7 +279,7 @@ export function forkReason(
 ): Branch.Reason | undefined {
   if (options.now >= options.deadlineAt) return undefined
   if (trunk.state !== 'completed' || !verification) return 'unverified'
-  if (options.forkOn === 'verifier_fail')
+  if (options.forkOn === 'verifier_fail' && !verification.error)
     return verification.verdict === 'fail' ? 'verifier_fail' : undefined
   if (verification.verdict === 'pass' && verification.confidence >= passConfidence) return undefined
   return verification.verdict === 'fail' ? 'verifier_fail' : 'verifier_unsure'

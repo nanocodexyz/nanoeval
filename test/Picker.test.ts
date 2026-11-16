@@ -102,7 +102,7 @@ const silent: Picker.Verification = { ...Picker.parse('no verdict at all'), usd:
 
 const errored: Picker.Verification = { ...silent, error: 'the verifier timed out' }
 
-test('fork_on=verifier_fail forks a completed trunk only on a FAIL verdict', () => {
+test('fork_on=verifier_fail forks a completed trunk on a FAIL verdict, and on a verifier error as before', () => {
   const options = { deadlineAt: 2_000, forkOn: 'verifier_fail' as const, now: 1_000 }
   assert.equal(Picker.forkReason(done(), verified('pass', 90), options), undefined)
   assert.equal(Picker.forkReason(done(), verified('pass', 50), options), undefined)
@@ -119,9 +119,10 @@ test('fork_on=verifier_fail forks a completed trunk only on a FAIL verdict', () 
   )
   assert.equal(
     Picker.forkReason(done(), errored, options),
-    undefined,
-    'a verifier that ended without a verdict keeps the trunk',
+    Picker.forkReason(done(), errored, { deadlineAt: 2_000, now: 1_000 }),
+    'a verifier that ended with an error forks as it does without fork_on',
   )
+  assert.equal(Picker.forkReason(done(), errored, options), 'verifier_unsure')
   assert.equal(Picker.forkReason({ state: 'timeout' }, undefined, options), 'unverified')
   assert.equal(Picker.forkReason({ error: 'x', state: 'failed' }, undefined, options), 'unverified')
   assert.equal(Picker.forkReason({ state: 'cancelled' }, undefined, options), 'unverified')

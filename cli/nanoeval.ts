@@ -345,8 +345,9 @@ const usage = `nanoeval <command>
             that fork is graded (nano-cv=codex:MODEL:low:branches=2:picker=verify_lazy:
             verifier_model=claude-haiku-5-5:fix_provider=claude:fix_model=claude-opus-5-5).
             An agent with :picker=verify_lazy that ends in :fork_on=verifier_fail forks only
-            when the verifier's verdict is FAIL: a PASS of any confidence and an UNSURE keep
-            the trunk. :fork_on=verifier_fail_or_unsure is what an agent without the key does.
+            when the verifier's verdict is FAIL, or the verifier ended with an error: a PASS
+            of any confidence and an UNSURE keep the trunk. :fork_on=verifier_fail_or_unsure
+            is what an agent without the key does.
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
