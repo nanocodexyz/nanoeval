@@ -7914,3 +7914,11 @@ One run of the option on krun slots, on four threads of a Linux machine with KVM
 | Probe: six names and addresses of the internet do not answer, and `/tests` is absent | 3 of 3 |
 
 The three attempts not run in each pair were left unclaimed when the machine was given to another run. One of the three that ran is a task whose fix raises six module versions: its solution passed because its verifier, which keeps the network, fetched them.
+
+## 2026-11-16: a glibc loader path that musl answers takes the musl build of an installed agent
+
+The launcher of Claude Code and opencode took the glibc build when `/lib64/ld-linux-x86-64.so.2` or `/lib/ld-linux-aarch64.so.1` existed. An Alpine image with a compatibility package has that path: `gcompat` installs a stub there that starts musl's loader with a shim library, and `libc6-compat` links it to musl. The glibc build then starts under musl and ends at the first symbol the shim lacks: Claude Code 2.1.318 ended with `Error relocating ...: mallopt: symbol not found` in an Alpine 3.20 image with `gcompat` 1.1.0, before its first request.
+
+The launcher now takes the glibc build only when a glibc loader path exists and its file does not contain `musl`, and the musl build when musl's loader exists. A stub names `/lib/ld-musl-ARCH.so.1`, a link is musl itself, and the loader of glibc has no such string. An agent that ships no musl build, pi, keeps the rule it had.
+
+Checked: a unit test runs the launcher of Claude Code against a directory of loaders: a glibc loader alone and beside musl takes the glibc build, musl alone, a link to musl and a stub that names musl take the musl build, and no loader ends with 127. Run once on a krun slot with Claude Code 2.1.318 and that image, on a task of the closed SWE-bench Pro form: before the change the attempt ended at the loader with no model request, and with it the agent made 5 model requests and exited 0.

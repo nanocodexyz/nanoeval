@@ -326,6 +326,72 @@ function run(agent: Installed.Agent, rt: string): string {
   )
 }
 
+test('an image where musl answers at the path of the glibc loader takes the musl build', () => {
+  const rt = Path.join(root, 'rt-loaders')
+  for (const libc of ['gnu', 'musl']) {
+    const entry = Path.join(rt, 'agents', 'claude-code', libc, 'claude')
+    Fs.mkdirSync(Path.dirname(entry), { recursive: true })
+    Fs.writeFileSync(entry, '#!/bin/sh\necho build:' + libc + '\n', { mode: 0o755 })
+  }
+  const image = Path.join(root, 'image-loaders')
+  const gnu = Path.join(image, 'ld-linux-x86-64.so.2')
+  const musl = Path.join(image, 'ld-musl.so.1')
+  const chosen = () => {
+    const script = Installed.script(
+      { kind: 'claude-code', model: 'm' },
+      { url: 'http://127.0.0.1:8787/v1/runs/r/model/a00001' },
+    )
+      .replaceAll('/lib64/ld-linux-x86-64.so.2', gnu)
+      .replaceAll('/lib/ld-linux-aarch64.so.1', Path.join(image, 'absent'))
+      .replaceAll('"/lib/ld-musl-$(uname -m).so.1"', musl)
+    const result = spawnSync('sh', ['-c', script, 'sh'], {
+      encoding: 'utf8',
+      env: {
+        NANOEVAL_AGENT_HOME: Path.join(root, 'home-loaders'),
+        NANOEVAL_AGENT_RT: rt,
+        NANOEVAL_AGENT_TOKEN: attemptToken,
+        PATH: process.env['PATH'],
+      },
+      input: 'x\n',
+    })
+    return result.status === 0 ? result.stdout.trim() : result.status
+  }
+  const reset = () => {
+    Fs.rmSync(image, { force: true, recursive: true })
+    Fs.mkdirSync(image, { recursive: true })
+  }
+
+  reset()
+  Fs.writeFileSync(gnu, 'the loader of the GNU C Library')
+  assert.equal(chosen(), 'build:gnu')
+  Fs.writeFileSync(musl, 'musl libc')
+  assert.equal(chosen(), 'build:gnu', 'a glibc image that also has musl keeps the glibc build')
+
+  reset()
+  Fs.writeFileSync(musl, 'musl libc')
+  assert.equal(chosen(), 'build:musl')
+  Fs.symlinkSync(musl, gnu)
+  assert.equal(chosen(), 'build:musl', 'the glibc path is a link to musl')
+
+  reset()
+  Fs.writeFileSync(musl, 'musl libc')
+  Fs.writeFileSync(gnu, 'a stub that starts /lib/ld-musl-x86_64.so.1 with a compatibility library')
+  assert.equal(chosen(), 'build:musl', 'the glibc path is a stub that starts musl')
+
+  reset()
+  assert.equal(chosen(), 127)
+
+  assert.match(
+    Installed.script({ api: 'chat', kind: 'opencode', model: 'm' }, { url: 'http://host/a' }),
+    /! grep -q musl \/lib64\/ld-linux-x86-64\.so\.2/,
+  )
+  assert.doesNotMatch(
+    Installed.script({ api: 'chat', kind: 'pi', model: 'm' }, { url: 'http://host/a' }),
+    /grep -q musl/,
+    'pi ships no musl build, so any glibc loader path takes its glibc build',
+  )
+})
+
 test('the command of Codex CLI names the endpoint of the attempt and no credential', () => {
   const out = run(
     { kind: 'codex-cli', model: "gpt-6.1-sol'x", thinking: 'high' },

@@ -370,6 +370,18 @@ function fxAsk(agent: Agent, url: string): string {
   )
 }
 
+const glibcLoaders = ['/lib64/ld-linux-x86-64.so.2', '/lib/ld-linux-aarch64.so.1']
+
+function glibc(options: { musl: boolean }): string {
+  return glibcLoaders
+    .map((loader) =>
+      options.musl
+        ? '{ [ -e ' + loader + ' ] && ! grep -q musl ' + loader + '; }'
+        : '[ -e ' + loader + ' ]',
+    )
+    .join(' || ')
+}
+
 function build(kind: Kind, name: string): string[] {
   const release = releases[kind]
   if (release.source !== 'release') throw new Error(kind + ' has no release to choose a build of')
@@ -379,7 +391,9 @@ function build(kind: Kind, name: string): string[] {
     'if [ -x ' + root + '/any/' + release.entry + ' ]; then cli=' + root + '/any/' + release.entry,
     ...(libcs.includes('gnu')
       ? [
-          'elif [ -e /lib64/ld-linux-x86-64.so.2 ] || [ -e /lib/ld-linux-aarch64.so.1 ]; then cli=' +
+          'elif ' +
+            glibc({ musl: libcs.includes('musl') }) +
+            '; then cli=' +
             root +
             '/gnu/' +
             release.entry,
@@ -665,9 +679,7 @@ export function script(agent: Agent, options: { url: string }): string {
     [
       ...preamble,
       'if [ -x ' + root + '/any/claude ]; then cli=' + root + '/any/claude',
-      'elif [ -e /lib64/ld-linux-x86-64.so.2 ] || [ -e /lib/ld-linux-aarch64.so.1 ]; then cli=' +
-        root +
-        '/gnu/claude',
+      'elif ' + glibc({ musl: true }) + '; then cli=' + root + '/gnu/claude',
       'elif [ -e "/lib/ld-musl-$(uname -m).so.1" ]; then cli=' + root + '/musl/claude',
       'else',
       "  echo 'nanoeval: this image has neither the glibc nor the musl loader that Claude Code needs' >&2",
