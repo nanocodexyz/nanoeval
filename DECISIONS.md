@@ -7934,3 +7934,22 @@ So the Opus arm without an option of an earlier run is the arm `:finish_check=on
 **Checked.** In the tree of the entry above: `test/FinishCheck.test.ts` (new, 3 tests: the spec, its place in the order and its text read back for `claude` and `claude-direct`, with `finish_retries` and with a late check; an empty value, `1`, `true`, `off`, a second occurrence and another place refused; the configuration takes it, refuses another value than `true`, other providers and `skip_finish_check` with it; a turn sends `finish_check` only when named, and an agent without it sends the same bytes). The usage line in seven other test files names the new option, and the name of one test of `test/FinishRetries.test.ts` no longer says that `finish_retries` is last. `npm test`: 613 tests, 608 pass, 5 skipped, 0 fail. `npm run check:types`, `npm run lint` and `npm run dry-run` pass.
 
 **Not verified.** When this was written: `ci.yml` from a fresh clone on KVM. A Worker on this pin, a model, and a session that took the field. No end-to-end lane names the option.
+
+## 2026-11-16: the package pins nanocode-ts build-5630e0f
+
+**The pin.** `package` pins nanocode-ts `build-5630e0f` (nanocode-ts master 5630e0f6a0976a150b68a4249118399252ef56d0, nanocode b19220112213691591a2a2f1ae5d1a682a417698) in place of `build-7b8677c`. The hand stays `nanocode-cli-1a946f3`. The release tarball as downloaded has 58,320,999 bytes and the SHA-256 ec8f412e1d2cd5f1f7ba512fc996a2c22a48321c18dfb47e9676c0ba297b90aa, and the integrity in `package-lock.json` is its SHA-512. The `package.json` of the tarball names the dependencies, the peer dependencies, the bundled dependencies and the exports of `build-7b8677c`, and the files of its bundled `node_modules` are the same bytes, so only the address and the integrity changed in the lock.
+
+**What the build contains.** nanocode-ts 5630e0f is three commits after 7b8677c, and nanocode b19220112 is five commits after 1b62f5c8b. Read in the commit messages and in the `DECISIONS.md` of the two repositories, not run here:
+
+| nanocode | What it changes | A session that names no new field |
+| --- | --- | --- |
+| c55648a2c | The turn log skips an evicted index page whose key filter lacks the owner | No field or request changes |
+| d3137af0b | The build of the release binaries | Not in a session |
+| 9951a4bf8, d2253c609 | `ClaudeBuilder::finish_ambiguity`: one more bullet in the headless finish notice while less than half of the deadline has elapsed | Every notice is the same bytes |
+| b19220112 | `ClaudeBuilder::tool_result_clearing(keep, at_least_tokens)`: how many recent tool results history clearing keeps whole and the batch it clears older ones in, in place of the fixed 12 results and 20,000 tokens | The requests are unchanged, 62 of 62 mock request bodies equal by the commit |
+
+The declarations of the package differ from `build-7b8677c` in `Contracts.d.ts` and `cloudflare/App.d.ts` only: the type `ToolResultClearing` (`at_least_tokens`, `keep`), the optional session fields `finish_ambiguity` and `tool_result_clearing`, and `finish_ambiguity` in `finishLevers`. Both fields are off unless a session names them, so an agent of this repository is the arm it was on `build-7b8677c` until it names one of the options of the next entry. The default of `build-7b8677c` stays: a Claude Opus session runs no finish check unless its agent asks for one.
+
+**Checked.** `npm ci`, which verifies the tarball against the integrity of the lock, `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test` from a fresh clone, with the change of the next entry.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM, a deployed Worker on this pin, and a model.
