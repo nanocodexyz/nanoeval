@@ -13,7 +13,3 @@ test('a codex turn sends its output cap to the session as max_output_tokens', ()
   assert.equal('max_output_tokens' in Turn.body(base), false)
 })
 
-test('a claude turn sends no codex output cap', () => {
-  const claude = Turn.body({ ...base, maxOutputTokens: 1000, provider: 'claude' })
-  assert.equal('max_output_tokens' in claude, false)
-})

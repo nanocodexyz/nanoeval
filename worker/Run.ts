@@ -3493,6 +3493,7 @@ export class Run extends DurableObject<Env> {
       ...(agent.briefFinish ? { briefFinish: true } : {}),
       ...(agent.cellYieldMs === undefined ? {} : { cellYieldMs: agent.cellYieldMs }),
       ...(agent.clearingCacheFloors ? { clearingCacheFloors: true } : {}),
+      ...(agent.contextWindow === undefined ? {} : { contextWindow: agent.contextWindow }),
       ...(deadline ? { deadline } : {}),
       ...(agent.escalateContextTokens === undefined
         ? {}
@@ -3510,9 +3511,12 @@ export class Run extends DurableObject<Env> {
         ? {}
         : { lateFinishCheckMs: agent.lateFinishCheckMs }),
       ...(agent.leanCells ? { leanCells: true } : {}),
+      ...(agent.lenientPatches ? { lenientPatches: true } : {}),
       ...(agent.lowEffortRounds ? { lowEffortRounds: true } : {}),
-      // One output cap for every arm: the installed agents get the same value in Installed.ts.
-      ...(agent.provider === 'codex' ? { maxOutputTokens: Installed.leaderboard.replyLimit } : {}),
+      ...(agent.provider === 'codex'
+        ? { maxOutputTokens: agent.maxOutputTokens ?? Installed.leaderboard.replyLimit }
+        : {}),
+      ...(agent.minWaitMs === undefined ? {} : { minWaitMs: agent.minWaitMs }),
       model: agent.model,
       ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
       payer: this.payer(agent.provider),

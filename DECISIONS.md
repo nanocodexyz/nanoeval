@@ -8259,6 +8259,23 @@ No agent option names this. The task decides it.
 - `nanocode-claude` and `nanocode-codex`, the nanocode command line inside the slot. Its `exec` has no option that turns the web search off, so such an arm on a closed task still has the search of its provider. It is not closed by this change.
 - The tools of fx, opencode and pi were read from their commands here and not from their binaries.
 
+## 2026-11-16: a codex agent takes the Codex session settings of the pinned nanocode-ts
+
+A `codex`, `codex-code-mode` or `codex-jobs` agent names `:lenient_patches=on`, `:min_wait_ms=N`, `:max_output_tokens=N` and `:context_window=N`, after `clearing_cache_floors`. The turn sends them as `lenient_patches`, `min_wait_ms`, `max_output_tokens` and `context_window`, the fields the session descriptor of nanocode-ts `build-acdb751` reads for a Codex session (`codexSwitches` and `codexLimits` in `src/cloudflare/App.ts`, `CodexOptions` and `codex_harness` in `src/wasm.rs`). A `claude` or `claude-direct` agent that names one is refused.
+
+**Why.** Every other finish, retry, clearing and escalation lever of an agent is refused for a codex agent, because nanocode-ts `build-acdb751` passes them only to its Claude harness (`FinishLevers`, `escalation`, `tool_result_clearing` and `tool_result_tokens` go to `claude_harness`; `codex_harness` takes `persist_finish` and `CodexOptions` only). Before this change a codex agent took 7 of the 29 lever keys (`branches`, `cellYieldMs`, `lazy`, `persistFinish`, `picker`, `preflight`, `verifierModel`). The four settings here are behavior the pinned build already has for Codex sessions and no arm could name.
+
+**What each one does in the pinned build.**
+
+- `lenient_patches`: the Codex tool settings accept a patch whose context differs only in whitespace.
+- `min_wait_ms`: the Codex tool settings make a wait for a running command last at least N ms.
+- `max_output_tokens`: applied only to a model outside `Model::ALL`, the built-in Codex models, so it changes DeepSeek, GLM, Kimi and other custom models and not `gpt-6-luna`.
+- `context_window`: the Codex client compacts at nine tenths of N tokens.
+
+**Tests.** `node --test test/CodexSessionOptions.test.ts`: each option reads back to the same agent text, a claude agent that names one is refused, a value that is not a whole number of at least one is refused, and the body of a codex turn without them is the string it was before.
+
+**Not verified.** No run was made with this change.
+
 ## 2026-11-16: one output cap from every agent
 
 **Seen.** On Workers AI models the arms of one run asked for different reply limits: pi sent `max_completion_tokens: 16384` (its own default when `models.json` names no `maxTokens`), opencode `max_tokens: 32000` (its `OUTPUT_TOKEN_MAX` default), and fx, `nanocode-codex` and a `codex` session sent none. Rows of the pi arm ended on a reply of exactly 16,384 tokens, a cut the other arms did not have.
@@ -8269,7 +8286,7 @@ No agent option names this. The task decides it.
 - opencode: `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX`. opencode 1.19.5 sends `min(limit.output, OUTPUT_TOKEN_MAX)` and subtracts the same number from the context it uses before it compacts, so a `limit.output` added later must equal it.
 - fx: `max_output_tokens` in `model_metadata` of the model. fx 0.0.17 refuses `output_limit` and `max_tokens` there with `UnknownField`.
 - The nanocode command line: `--max-output-tokens` for both harnesses, where it was given to `claude` only. Its codex harness applies it to a model outside its own catalog.
-- A `codex` session: `max_output_tokens` in the body of its turn, which nanocode-ts passes on in `codex_options` and applies to a model outside the codex catalog, and its chat transport sends as `max_completion_tokens`. It is written to `agent/turns.jsonl`.
+- A `codex` session: `max_output_tokens` in the body of its turn, unless the agent names its own `:max_output_tokens=N`, which nanocode-ts passes on in `codex_options` and applies to a model outside the codex catalog, and its chat transport sends as `max_completion_tokens`. It is written to `agent/turns.jsonl`.
 
 **Checked with the pinned binaries.** pi 1.5.2 (`pi-linux-x64.tar.gz`, SHA-256 811c6f2c…0cb5), opencode 1.19.5 (588310a3…647a), fx 0.0.17 (78c155d5…3e75) and nanocode `nanocode-cli-1a946f3` (e1941f3c…45d5) were started with the scripts of `Installed.script` for `@cf/zai-org/glm-5.3-flash` at low effort against a loopback server that records each request body. pi sent `max_completion_tokens: 65536`, opencode `max_tokens: 65536` (2 requests), fx `max_tokens: 65536`, and nanocode `max_output_tokens: 65536` on `/responses`.
 
