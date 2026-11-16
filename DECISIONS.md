@@ -7879,3 +7879,11 @@ On `5a36d52`, the nanoeval lane ran fresh clones on its KVM box (2026-11-16 01:1
 ## 2026-11-15: six codex session options as agent keys
 
 The codex options `lean_tool_arguments`, `compact_instructions`, `lenient_patches`, `min_wait_ms`, `context_window` and `max_output_tokens` go after the cascade keys, codex only, and nanocode-ts build-ce7ea8b (nanocode 631e64286) takes them on a session. The command line of nanocode had the first four as flags; a session had none of them, and a custom model ran with a 272,000-token compaction window and no output cap in its requests. A unit test of nanocode 631e64286 showed `@cf/deepseek-ai/deepseek-v4.1-flash-1017` parsed as a custom model, served by the Workers AI gateway as chat completions with `reasoning_effort` sent as given and `max_output_tokens` as `max_completion_tokens`. Checked: `npm run check:types`, `npx vp check` and test/CodexOptions.test.ts (5 of 5), the full `npm test` (612 tests, 607 passed, 5 skipped, 0 failed), `npm run dry-run` and the picker, picker-lazy and cascade directory lanes.
+
+## 2026-11-16: hypothesis, not adopted: cap the fix stage of a DeepSeek cascade
+
+**Observed.** Interim read of run a9e37611 (Worker nanoeval-cascade-lean 8e72f4df, runner 1533f25), paused at 52 of 144 rows on 5 tasks, four of them 3,600 s tasks. USD by stage as read out, exec / verifier / fix: `cv-ds-son` 0.771 / 0.049 / 0.829, `cv-dslean-son` 0.812 / 0.057 / 2.097. Rows whose first exec failed passed after the Sonnet fix in 0 of 6 and 1 of 4, so 1 of 10 converted. With 5 task clusters every interval is underpowered.
+
+**Hypothesis.** On hard tasks the fix stage costs as much as the executor or more and converts almost none of the failures it receives. Escalating only on a confident verifier verdict, or a cheaper or lower-thinking fix, would lower USD per pass at the same pass rate.
+
+**Not changed.** Nothing in run a9e37611 changes. A cap is a separate lever: it gets its own canary after the full 144 rows are read out, judged against the gates fixed before that run (USD per pass below `nano-son` with a task-clustered CI, pass rate within 3 points of `nano-med-plain`, traps x3 clean).
