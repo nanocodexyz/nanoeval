@@ -7877,6 +7877,20 @@ On `583b4f8`, the nanoeval lane's KVM box passed e2e-krun, e2e-ns and krun at 59
 
 On `5a36d52`, the nanoeval lane ran fresh clones on its KVM box (2026-11-16 01:16 UTC): all 138 of 138 steps passed. The KVM lanes passed 59 of 59 on the first try: e2e-krun 40, e2e-ns 16, krun 3. Two e2e-dir steps failed once while that box's disk was saturated, then passed alone on a retry.
 
+## 2026-11-16: the Worker admits a row by the slots it holds
+
+**Problem.** The nanoeval lane found this at 509d9f6 on canary3. A runner offers its free slots, and `Admission.fill` handed it one row per free slot. So a 12-slot runner could be handed 12 picker rows, which hold 72 slots: three branch slots and three probe slots each. The runner already counted a row's slots (`Picker.slots`, branches or twice the branches for a picker) in its own load. The Worker's claim did not. The lane bounded picker rows in flight with one-slot runners instead.
+
+**Behavior.**
+- `Ledger.claim` takes `slotsOf(row)`, and the Worker passes `Picker.slots(agent)`: 1 for a plain agent, `branches` for a branching one, and `2 * branches` for a picker.
+- `Admission.fill` counts that weight against the offered slots. It also scales the row's CPUs and memory by the weight, each clamped to the runner's capacity so a heavy row is never starved.
+- A row heavier than every free slot of an idle runner (its free memory is all its memory) is still taken, alone, so a one-slot runner still runs picker rows. A busy runner does not take a row heavier than its free slots.
+- Rows of plain agents are admitted as before.
+
+**Checked.** Hosted Hand: `npm test` 603 pass, 0 fail (a new test in `test/Ledger.test.ts`), plus `npm run check:types` and `vp check`. The fresh-clone ci.yml result follows before merge. This is a Worker change, so it reaches runs only with a deploy.
+
+**CI.** `2ec9bc5` is `0fb9e87` with main `a75dce8` merged in (DECISIONS.md conflict only). Its fresh-clone ci.yml on a hosted Hand passed 138 of 138: check 5, e2e-dir 70, e2e-krun 40, e2e-ns 16, e2e-revision 4, krun 3, where the KVM steps skip without KVM. The nanoeval lane's KVM box passed 59 of 59 on `2ec9bc5`, every step on its first try (2026-11-16 03:33 UTC): e2e-krun 40, e2e-ns 16, krun 3. It also passed 59 of 59 on `0fb9e87`.
+
 ## 2026-11-16: every probe slot's hidden-path scan is kept
 
 **Problem.** The VPICK smoke (run `673c5245` on canary3, 509d9f6) found two gaps in the probe-slot scan.

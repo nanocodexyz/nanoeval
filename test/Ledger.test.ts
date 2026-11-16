@@ -695,3 +695,39 @@ test('rows are claimed by the vCPUs of their tasks when the offer of the runner 
   assert.deepEqual(claimWide(1), ['small'])
   assert.deepEqual(claimWide(0), [])
 })
+
+test('a row that holds several slots is admitted by its weight, and alone on an idle runner when it outweighs it', () => {
+  const offer = { capacityMb: 8192, memoryMb: 8192, slots: 12 }
+  const picker = (item: string) => ({ cpus: 1, item, memoryMb: 512, slots: 6 })
+  assert.deepEqual(
+    Admission.fill([picker('a'), picker('b'), picker('c')], offer),
+    ['a', 'b'],
+    'a 12-slot runner takes two picker rows of six slots, not twelve rows',
+  )
+  assert.deepEqual(
+    Admission.fill([picker('a'), { cpus: 1, item: 'plain', memoryMb: 512 }], {
+      ...offer,
+      slots: 7,
+    }),
+    ['a', 'plain'],
+  )
+  assert.deepEqual(
+    Admission.fill([picker('a'), picker('b')], { capacityMb: 8192, memoryMb: 8192, slots: 1 }),
+    ['a'],
+    'an idle one-slot runner still takes one picker row alone',
+  )
+  assert.deepEqual(
+    Admission.fill([picker('a')], { capacityMb: 8192, memoryMb: 4096, slots: 4 }),
+    [],
+    'a busy runner does not take a row heavier than its free slots',
+  )
+  assert.deepEqual(
+    Admission.fill([{ cpus: 1, item: 'big', memoryMb: 2048, slots: 6 }], {
+      capacityMb: 8192,
+      memoryMb: 8192,
+      slots: 12,
+    }),
+    ['big'],
+    'the memory of a heavy row is clamped to the runner, so it is never starved',
+  )
+})
