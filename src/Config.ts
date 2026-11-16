@@ -52,6 +52,7 @@ export type Agent = {
   thinking?: string
   toolResultClearing?: ToolResultClearing
   toolResultTokens?: number
+  verificationRequested?: true
   yieldFloorMs?: number
   yieldShare?: number
   verifierModel?: string
@@ -90,6 +91,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'thinking',
   'toolResultClearing',
   'toolResultTokens',
+  'verificationRequested',
   'verifierModel',
   'yieldFloorMs',
   'yieldShare',
@@ -470,6 +472,12 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude' && provider !== 'codex')
         fail(agent.id + ' has a persistFinish, which only a claude or codex session takes')
     }
+    if (agent.verificationRequested !== undefined) {
+      if (agent.verificationRequested !== true)
+        fail(agent.id + ' has a verificationRequested that is not true')
+      if (provider !== 'codex')
+        fail(agent.id + ' has a verificationRequested, which only a codex session takes')
+    }
     const named = Installed.is(provider) && Installed.releases[provider].provider === 'api'
     if (agent.api !== undefined || named) {
       if (!named) fail(agent.id + ' has an api, which ' + provider + ' does not take')
@@ -521,6 +529,7 @@ export function parse(value: unknown): Config {
             },
           }),
       ...(agent.toolResultTokens === undefined ? {} : { toolResultTokens: agent.toolResultTokens }),
+      ...(agent.verificationRequested ? { verificationRequested: true as const } : {}),
       ...(agent.yieldFloorMs === undefined ? {} : { yieldFloorMs: agent.yieldFloorMs }),
       ...(agent.yieldShare === undefined ? {} : { yieldShare: agent.yieldShare }),
       ...(agent.verifierModel ? { verifierModel: agent.verifierModel } : {}),

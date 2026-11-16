@@ -351,13 +351,18 @@ const usage = `nanoeval <command>
             claude:claude-opus-5-5:medium:subagents=off), and
             :clearing_cache_floors=on (a request keeps two cache breakpoints at the places
             where the history was last cleared) (nano-med-floors=claude:claude-opus-5-5:
-            medium:clearing_cache_floors=on). The options come in
+            medium:clearing_cache_floors=on). A codex session agent that ends in
+            :verification_requested=on has every turn of its sessions send
+            verification_requested, and nanocode then tells the model that the user asks for
+            the result to be tested and verified (nanox-verify=codex:gpt-6-luna:high:
+            verification_requested=on). The options come in
             this order where several are named: branches, refusal_fallback, cell_yield_ms,
             brief_finish, fold_finish, low_effort_rounds, brief_final, lean_cells,
             escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens,
             persist_finish, skip_finish_check, late_finish_check_ms, result_effort,
             stop_at_target, yield_floor_ms, yield_share, finish_retries, finish_check,
-            finish_ambiguity, tool_result_clearing, subagents, clearing_cache_floors.
+            finish_ambiguity, tool_result_clearing, subagents, clearing_cache_floors,
+            verification_requested.
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
@@ -969,6 +974,12 @@ const agentOptions: readonly AgentOption[] = [
     name: 'clearing_cache_floors',
     read: () => ({ clearingCacheFloors: true }),
     write: (agent) => (agent.clearingCacheFloors ? on.value : undefined),
+  },
+  {
+    ...on,
+    name: 'verification_requested',
+    read: () => ({ verificationRequested: true }),
+    write: (agent) => (agent.verificationRequested ? on.value : undefined),
   },
 ]
 

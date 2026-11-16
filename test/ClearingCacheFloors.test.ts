@@ -31,14 +31,14 @@ const turn: Turn.Turn = {
 }
 
 const usage =
-  /\[:finish_ambiguity=on\]\[:tool_result_clearing=KEEP\/TOKENS\]\[:subagents=off\]\[:clearing_cache_floors=on\], not x=/
+  /\[:finish_ambiguity=on\]\[:tool_result_clearing=KEEP\/TOKENS\]\[:subagents=off\]\[:clearing_cache_floors=on\]\[:verification_requested=on\], not x=/
 
 const floors = 'nano-med-floors=claude:claude-opus-5-5:medium:clearing_cache_floors=on'
 
 const direct =
   'nano-df=claude-direct:claude-opus-5-5:high:brief_finish=on:yield_share=25:finish_check=on:finish_ambiguity=on:tool_result_clearing=2/10000:clearing_cache_floors=on'
 
-test('an agent names clearing_cache_floors last in the order of the options, and its text reads back', () => {
+test('an agent names clearing_cache_floors after subagents in the order of the options, and its text reads back', () => {
   assert.deepEqual(parseAgent(floors), {
     clearingCacheFloors: true,
     id: 'nano-med-floors',
