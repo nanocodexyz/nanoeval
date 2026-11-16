@@ -8450,3 +8450,11 @@ A server on that port that logs each request and answers `401` saw two requests,
 **The behavior.** `Fallback.billed` names the model a response is billed as: the model the response reports when it is one of the agent's fallbacks, otherwise the agent's model. A response of a fallback that the run has no price for is recorded without a cost, and an attempt with such a response among priced ones has no cost: its USD a pass is unknown rather than priced at another model's list. A run that serves `claude-opus-5-5` gives a price for each fallback, for example `--model-price claude-opus-5=5,0.5,25,6.25,10 --model-price claude-opus-4-8=5,0.5,25,6.25,10` (Anthropic's pricing page, read 2026-11-16).
 
 **Checked.** `npm run lint`, `npm run check:types`, `npm test` on the hosted machine; the krun and ns lanes of `ci.yml` run in CI.
+
+## 2026-11-16: a run may ask its runners to serve the package archive
+
+**Why.** The verifiers of `qemu-alpine-ssh` and `qemu-startup` install `curl` from a Debian 11 security index whose package now answers 404 on the mirror. The release runners were not started with `--package-archive`, so in run `32458b36` all 12 rows of the two tasks, 6 of each arm, and in run `3d92dcef` all 12 again, ended as `verifier` errors and neither arm could be scored on those tasks. A runner option is a property of a machine, and two runners of one run could verify the same task differently.
+
+**What changed.** `run --package-archive` sets `sandbox.packageArchive` in the configuration of the run, the Worker passes it to every runner in the run's configuration, and a runner serves the archive to the verifiers of the run's krun and ns slots when either its own option or the run's is set. A rerun keeps it from its parent. It is refused on dir slots, as `verifierCache` is. Off by default.
+
+**Not run.** No run was made with this change. Unit test of the configuration only.
