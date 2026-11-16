@@ -3642,7 +3642,7 @@ export class Run extends DurableObject<Env> {
       ...(agent.resultEffort ? { resultEffort: agent.resultEffort } : {}),
       ...(agent.skipFinishCheck ? { skipFinishCheck: true } : {}),
       ...(agent.stopAtTarget ? { stopAtTarget: true } : {}),
-      ...(agent.subagents === false ? { subagents: false } : {}),
+      ...(agent.subagents === undefined ? {} : { subagents: agent.subagents }),
       ...(stage.thinking ? { thinking: stage.thinking } : {}),
       ...(agent.toolProfile ? { toolProfile: agent.toolProfile } : {}),
       ...(agent.toolResultClearing === undefined

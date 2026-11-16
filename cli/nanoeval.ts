@@ -1019,10 +1019,11 @@ const agentOptions: readonly AgentOption[] = [
   },
   {
     name: 'subagents',
-    pattern: 'off',
-    read: () => ({ subagents: false }),
-    value: 'off',
-    write: (agent) => (agent.subagents === false ? 'off' : undefined),
+    pattern: 'off|on',
+    read: (text) => ({ subagents: text === 'on' }),
+    value: 'off|on',
+    write: (agent) =>
+      agent.subagents === undefined ? undefined : agent.subagents ? on.value : 'off',
   },
   {
     ...on,
