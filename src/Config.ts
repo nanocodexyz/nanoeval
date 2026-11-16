@@ -28,6 +28,7 @@ export type Agent = {
   briefFinish?: true
   cellYieldMs?: number
   clearingCacheFloors?: true
+  omitMediaOnEmptyCut?: true
   codesign?: false
   contextWindow?: number
   escalateContextTokens?: number
@@ -82,6 +83,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'briefFinish',
   'cellYieldMs',
   'clearingCacheFloors',
+  'omitMediaOnEmptyCut',
   'codesign',
   'contextWindow',
   'escalateContextTokens',
@@ -163,6 +165,7 @@ export const finishLevers = [
   'briefFinal',
   'briefFinish',
   'clearingCacheFloors',
+  'omitMediaOnEmptyCut',
   'finishAmbiguity',
   'finishCheck',
   'foldFinish',
@@ -613,6 +616,7 @@ export function parseAgents(value: unknown): Agent[] {
       ...(agent.briefFinish ? { briefFinish: true as const } : {}),
       ...(agent.cellYieldMs === undefined ? {} : { cellYieldMs: agent.cellYieldMs }),
       ...(agent.clearingCacheFloors ? { clearingCacheFloors: true as const } : {}),
+      ...(agent.omitMediaOnEmptyCut ? { omitMediaOnEmptyCut: true as const } : {}),
       ...(agent.codesign === false ? { codesign: false as const } : {}),
       ...(agent.contextWindow === undefined ? {} : { contextWindow: agent.contextWindow }),
       ...(agent.escalateContextTokens === undefined
