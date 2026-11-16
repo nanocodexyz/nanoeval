@@ -8346,3 +8346,34 @@ A harness search writes many candidate arms and needs each one with its parent, 
 - `harness` names the five harnesses of `--agent` and stands for provider and orchestration, so those, with id, model, thinking and api, are not levers.
 - A lever this checkout does not know is refused, not passed through: a setting no Worker takes yet belongs in `pending`, which keeps the overlay valid and marks it not runnable, so a search can record a candidate before the Worker can run it.
 - The agent string comes from `agentText`, the table `parseAgent` reads, and `test/Overlay.test.ts` round-trips `parseAgent(agentText(compile(overlay)))` for every lever, with a sample per key that must cover the whole lever list, so a lever added to `agentKeys` without one fails the test.
+
+## 2026-11-16: a promotion gate scores each candidate arm against the baseline arm of its own run
+
+`src/Promote.ts` turns the results of runs, what a Worker answers for `/v1/runs/RUN/results`, into one cell a candidate arm, for a search over arms that keeps the arms that beat a baseline.
+
+**The cell.** A candidate is scored only against the baseline arm of the same run, with `Scorecard.build` on those two arms alone: the matched set, the pass rate, USD a pass, and the task-clustered bootstrap of the difference of pass rates and of the ratio of USD a pass, with the seed and draws of the scorecard (1 and 2000 unless given). Its verdict:
+
+- `missing` with `why: 'run'` when the run of the arm holds no row of the baseline: such an arm is not measured.
+- `missing` with `why: 'unmatched'` when either arm has a row with a verdict outside the matched set, as in a run that is still running.
+- `missing` with `why: 'repeats'` when a matched task has fewer than 3 attempts.
+- `win` when the lower bound of the 95 % interval of the lead is above 0, `loss` when its upper bound is below 0.
+- `tie` when the interval of the lead holds 0 and the upper bound of the interval of the ratio of USD a pass is below 1: as good, and cheaper.
+- `none` otherwise, and whenever a row of either arm has no cost, since the ratio is then not recorded.
+
+**Selection.** `select(cells, { stage: 'A', survivors })` ranks the measured cells of the baseline's run by pass rate, then USD a pass, then id, keeps the Pareto front of pass rate against USD a pass, and returns the front first and then the rest by rank, up to the stated number of survivors. A stage A slice is one attempt a task, so a cell missing for its repeats is ranked; a cell missing for its run or for unmatched rows is not. `select(cells, { stage: 'B' })` promotes every `win` and `tie`.
+
+**Read on recorded runs.** `Promote.cells([run], { baseline })` and `Promote.text` over copies of the results in `scorecard-v6/raw`, all of eval `tb21-full@96741725ac06`, seed 1, 2000 draws:
+
+| Run | Candidate vs baseline | Pass | Lead pp [95 %] | USD a pass ratio | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| `1fbd4a11` finished, 89 x 3 | nano vs cc | 239/267 vs 223/267 | +6.0 [+0.4, +11.6] | not recorded for cc | win |
+| `200a4c68` finished, 89 x 3 | nano vs cc | 227/267 vs 234/267 | -2.6 [-8.2, +2.6] | not recorded for cc | none |
+| `0e9d30cd` finished, 89 x 3 | nanox vs cx | 170/267 vs 168/267 | +0.7 [-5.6, +7.1] | not recorded for cx | none |
+| `0ae149bf` running, 24 x 1 | nano-son vs cc | 47/57 vs 52/57 | -8.8 [-22.0, +3.3] | 0.21 [0.14, 0.29] | missing (unmatched) |
+| `047b0a7f` running, 30 x 1 | nano-son vs nano-med-plain | 26/30 vs 27/30 | -3.3 [-13.3, +6.7] | 0.55 [0.34, 0.88] | missing (unmatched) |
+
+The pass counts of `1fbd4a11` are the ones counted by hand for that run: 239 and 223 of 267. Claude Code and Codex CLI arms record no cost on these runs, so their ratio needs a list price (`prices`) before a candidate can tie them.
+
+**Tests.** `node --test test/Promote.test.ts`: win, loss, cheaper tie and none on one run; missing for another run, one attempt and a cancelled row; the refusals; the front and survivors of stage A; the promotions of stage B.
+
+**Not verified.** No run was made for this change, and no command calls the module yet.
