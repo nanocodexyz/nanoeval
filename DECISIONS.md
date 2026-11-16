@@ -8539,3 +8539,11 @@ The entry of 2026-11-14 created every `codex` session without subagents, as code
 **What the configuration refuses.** `subagents: false` for any provider but `claude`, `subagents: true` for any provider but `codex` (`codex-cli` and the other installed agents are not sessions, and a `claude` session has the tools by default), and any value that is not a boolean, each with its own message. The option keeps its place in the one order, after `:tool_result_clearing=KEEP/TOKENS` and before `:clearing_cache_floors=on`, and the usage text says `[:subagents=off|on]`.
 
 **Not run.** An end-to-end lane with the option, a deployed Worker and a model. What a `codex` session with subagents costs, and whether it spawns any on a task, is for the ablation run.
+
+## 2026-11-16: an agent may name omit_media_on_empty_cut
+
+**Problem.** In deployed run 0f032a59 two Haiku 5.5 attempts of financial-document-processor (a00009, a00036) ended with "Claude output token limit exhausted after 3 continuations": their history held a read PDF and 37 and 45 images, and each reply was cut at 1 output token. nanocode replaced images on such a cut but kept the PDF, and every cut spent one of 3 continuations.
+
+**Behavior.** An agent may end in `:omit_media_on_empty_cut=on`, after `:clearing_cache_floors=on` and last in the one order, such as `nano-haiku-media=claude:claude-haiku-5-5:medium:omit_media_on_empty_cut=on`. A run configuration names it `{ "provider": "claude", "omitMediaOnEmptyCut": true }`. Every turn sends `omit_media_on_empty_cut: true`, which nanocode-ts (nanocodexyz/nanocode-ts PR 210) passes to `ClaudeBuilder::omit_media_on_empty_cut` (nanocodexyz/nanocode PR 1195). An agent without it sends the same bytes as before. It is one more of `Config.finishLevers`, so only `claude` agents take it. A Worker on a nanocode-ts build without the field ignores it.
+
+**Checked.** `test/OmitMediaOnEmptyCut.test.ts` (new) and the usage line of eleven test files; `node --test` of it, ClearingCacheFloors, Lever and FinishRetries: 14 pass. **Not run**: a model on a deployed Worker.

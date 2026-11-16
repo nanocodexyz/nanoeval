@@ -6,6 +6,7 @@ export type Turn = {
   briefFinish?: true
   cellYieldMs?: number
   clearingCacheFloors?: true
+  omitMediaOnEmptyCut?: true
   codesign?: false
   contextWindow?: number
   deadline?: { atMs: number; limitMs: number }
@@ -53,6 +54,7 @@ function levers(turn: Turn): Record<string, true> {
     ...(turn.briefFinal ? { brief_final: true as const } : {}),
     ...(turn.briefFinish ? { brief_finish: true as const } : {}),
     ...(turn.clearingCacheFloors ? { clearing_cache_floors: true as const } : {}),
+    ...(turn.omitMediaOnEmptyCut ? { omit_media_on_empty_cut: true as const } : {}),
     ...(turn.finishAmbiguity ? { finish_ambiguity: true as const } : {}),
     ...(turn.finishCheck ? { finish_check: true as const } : {}),
     ...(turn.foldFinish ? { fold_finish: true as const } : {}),

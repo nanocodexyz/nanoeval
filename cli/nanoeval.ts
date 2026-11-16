@@ -381,7 +381,11 @@ const usage = `nanoeval <command>
             and :tool_profile=lean (the session declares exec_command and write_stdin without
             their optional arguments) (nano-gc=codex:MODEL:high:prompt_variant=compact:
             tool_profile=lean); nanocode applies both to a model it has no native prompt for
-            and ignores them for one it has. The options come in
+            and ignores them for one it has.
+            A claude agent may end in :omit_media_on_empty_cut=on (a reply cut at its output
+            limit with no output drops PDF documents as well as images and does not spend a
+            continuation) (nano-haiku-media=claude:claude-haiku-5-5:medium:
+            omit_media_on_empty_cut=on). The options come in
             this order where several are named: branches, refusal_fallback, cell_yield_ms,
             brief_finish, fold_finish, low_effort_rounds, brief_final, lean_cells,
             escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens,
@@ -391,7 +395,7 @@ const usage = `nanoeval <command>
             lenient_patches, min_wait_ms, max_output_tokens, context_window, fix_provider,
             fix_model, fix_thinking, verifier_provider, verifier_thinking, executor_share,
             verifier_share, fork_on, codesign, verification_requested, prompt_variant,
-            tool_profile.
+            tool_profile, omit_media_on_empty_cut.
             An agent with :branches=2:picker=verify_lazy that names :fix_provider=claude|codex
             and :fix_model=MODEL runs a cascade: its own model works first, until
             :executor_share=N percent of the agent time (50); the verifier, on
@@ -1131,6 +1135,12 @@ const agentOptions: readonly AgentOption[] = [
     read: (text) => ({ toolProfile: text as Config.ToolProfile }),
     value: Config.toolProfiles.join('|'),
     write: (agent) => agent.toolProfile,
+  },
+  {
+    ...on,
+    name: 'omit_media_on_empty_cut',
+    read: () => ({ omitMediaOnEmptyCut: true }),
+    write: (agent) => (agent.omitMediaOnEmptyCut ? on.value : undefined),
   },
 ]
 
