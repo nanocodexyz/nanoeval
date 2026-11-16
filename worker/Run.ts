@@ -724,8 +724,7 @@ export class Run extends DurableObject<Env> {
           ((row['tools'] as number | null) ?? 0) +
           ((row['judge'] as number | null) ?? 0)
     for (const lost of Ledger.lostUsage(this.sql))
-      if (!tally.priced(lost.attempt))
-        total += (JSON.parse(lost.usage) as Atif.Usage).costUsd ?? 0
+      if (!tally.priced(lost.attempt)) total += (JSON.parse(lost.usage) as Atif.Usage).costUsd ?? 0
     return total
   }
 
