@@ -428,7 +428,17 @@ function opencodeRun(agent: Agent, url: string): string {
     permission: 'allow',
     provider: {
       nanoeval: {
-        models: { [agent.model]: agent.thinking ? { reasoning: true } : {} },
+        models: {
+          // opencode has no variants for a model it does not know, so --variant alone sends no effort.
+          [agent.model]: agent.thinking
+            ? {
+                reasoning: true,
+                ...(agent.api === 'chat'
+                  ? { variants: { [agent.thinking]: { reasoningEffort: agent.thinking } } }
+                  : {}),
+              }
+            : {},
+        },
         npm: api.npm,
         options: { apiKey: '{env:' + tokenVariable + '}', baseURL: url + api.base },
       },

@@ -568,7 +568,12 @@ test('the command of opencode is the build of the image and names the endpoint i
       permission: 'allow',
       provider: {
         nanoeval: {
-          models: { "open/model'x": { reasoning: true } },
+          models: {
+            "open/model'x": {
+              reasoning: true,
+              ...(api === 'chat' ? { variants: { high: { reasoningEffort: 'high' } } } : {}),
+            },
+          },
           npm,
           options: { apiKey: '{env:NANOEVAL_AGENT_TOKEN}', baseURL: base },
         },
