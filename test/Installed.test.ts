@@ -14,6 +14,7 @@ import * as Installed from '../src/Installed.ts'
 import * as Proxy from '../src/Proxy.ts'
 import type * as Result from '../src/Result.ts'
 import * as Slot from '../src/Slot.ts'
+import * as Turn from '../src/Turn.ts'
 
 const root = Fs.mkdtempSync(Path.join(Os.tmpdir(), 'nanoeval-installed-'))
 after(() => Fs.rmSync(root, { force: true, recursive: true }))
@@ -946,6 +947,44 @@ test('a nanocode codex agent keeps the catalog window of its model and sends no 
   assert.ok(!args.includes('--context-window'), args.join(' '))
   assert.ok(!out.includes('NANOCODE_CONTEXT_WINDOW'), out)
   assert.equal(args[args.indexOf('--hedge-cap-percent') + 1], '0')
+})
+
+test('every agent of a Workers AI model is told the window the endpoint serves', () => {
+  const model = '@cf/moonshotai/kimi-k2.6'
+  const window = 262_144
+  assert.equal(Installed.contextWindow(model), window)
+  assert.equal(Installed.contextWindow('gpt-6-luna'), undefined)
+  const argument = (out: string, name: string) => {
+    const args = out
+      .split('\n')
+      .filter((line) => line.startsWith('argument:'))
+      .map((line) => line.slice('argument:'.length))
+    return args.includes(name) ? args[args.indexOf(name) + 1] : undefined
+  }
+  for (const kind of ['nanocode-codex', 'nanocode-claude'] as const)
+    assert.equal(argument(run({ kind, model }, runtime(false)), '--context-window'), String(window))
+  const opencode = run({ api: 'chat', kind: 'opencode', model }, install('opencode', 'any'))
+  assert.deepEqual(
+    JSON.parse(/^OPENCODE_CONFIG_CONTENT=(.*)$/m.exec(opencode)![1]!).provider.nanoeval.models[
+      model
+    ],
+    { limit: { context: window, output: Installed.leaderboard.replyLimit } },
+  )
+  run({ api: 'chat', kind: 'pi', model }, install('pi', 'any'))
+  assert.deepEqual(
+    JSON.parse(Fs.readFileSync(Path.join(root, 'home-pi', 'pi', 'models.json'), 'utf8')).providers
+      .nanoeval.models,
+    [{ contextWindow: window, id: model }],
+  )
+  const codex = Installed.script({ kind: 'stock-codex', model }, { url: 'http://host/a' })
+  assert.match(codex, new RegExp('^model_context_window = ' + window + '$', 'm'))
+  assert.ok(!codex.includes(String(Installed.leaderboard.contextWindow)), codex)
+  assert.equal(
+    Turn.body({ model, prompt: 'p', provider: 'codex', requestId: 'q' }).context_window,
+    window,
+  )
+  const known = Turn.body({ model: 'gpt-6-luna', prompt: 'p', provider: 'codex', requestId: 'q' })
+  assert.equal('context_window' in known, false)
 })
 
 test('the output of nanocode is its final message and an ATIF trajectory', () => {
