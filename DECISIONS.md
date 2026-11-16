@@ -8258,3 +8258,31 @@ No agent option names this. The task decides it.
 - `-c web_search=disabled` with Codex CLI 0.166.0. It is the setting of `stock-codex` at 0.162.1, and no binary of 0.166.0 was started with it.
 - `nanocode-claude` and `nanocode-codex`, the nanocode command line inside the slot. Its `exec` has no option that turns the web search off, so such an arm on a closed task still has the search of its provider. It is not closed by this change.
 - The tools of fx, opencode and pi were read from their commands here and not from their binaries.
+
+## 2026-11-16: a sandbox on Cloudflare Containers
+
+A run on E2B or the gateway pays a wallet for every sandbox, and a run on local runners needs a machine. A third kind of sandbox, a Container of the Worker's own Cloudflare account, would need neither: `src/Cloudflare.ts` is that provider, and `worker/Container.ts` the Durable Object behind each sandbox. Nothing selects it yet: `sandbox.provider` does not name `cloudflare`, and no class is bound in `wrangler.jsonc`, because what decides whether it is worth binding has not been seen inside a Container.
+
+**The shape.** The same as E2B: a sandbox only starts a runner, through the bootstrap, and the runner fetches each task's packed disk from the Worker's blob store and boots it in a slot. So one container image serves every task. Terminal-Bench 2.1 has 89 task images, and the account keeps 50 GB of images at most, each no larger than its instance's disk (20 GB at most): a container image per task would not fit and would make each new task a deploy.
+
+- `create` names a new object (`nanoeval-<uuid>`), and its template names the container class, one per instance type. The object starts its Container with internet, keeps it for the lifetime the run named (`setInactivityTimeout`, since the runner only dials out and the object gets no request), and an alarm at that time ends it, as E2B ends a sandbox.
+- `exec` is `/bin/bash -l -c` over the native `ctx.container.exec` of `@cloudflare/workers-types` 5.20261016.1, already pinned here. The native call has no time limit, so the object ends a command after 600 s with code 124, the limit of `sandboxd --exec-timeout-ms`.
+- `write` pipes the bytes to `cat` on stdin, after `mkdir -p` of the directory.
+- `@cloudflare/sandbox` 1.0.3 was read and not taken: since 1.0 it is a Durable Object over the same `ctx.container` plus `Files`, `S3Mount` and `DirectoryBackup`, which this provider does not use, and `Files` needs a shim in the image.
+
+**What fits at once.** The Workers Paid limits are 1,500 vCPU, 6 TiB of memory and 30 TB of disk over all live instances. The 89 tasks declare 1 CPU and 2 GiB (69), 1 and 4 GiB (14), 2 and 4 GiB (3), 4 and 8 GiB (2), 1 and 8 GiB (1), each 10 GiB of storage: 1.10 CPUs and 2.58 GiB on average.
+
+| Packing | Instance | Instances | Rows at once | Bound by |
+| --- | --- | --- | --- | --- |
+| A runner with ns slots, admitted by 80 % of memory | standard-4: 4 vCPU, 12 GiB, 20 GB | 375 | about 1,350 (3.6 a sandbox) | vCPU |
+| One row a sandbox, the task in the Container itself | custom: 1 vCPU, 3 GiB (the least a vCPU may have), 12 GB | 1,360 by CPUs asked | about 1,360 | vCPU |
+
+Both reach about 1,350 rows of the Terminal-Bench 2.1 mix at once, against 99 in flight at most in the runs on one machine with KVM (`db0df005`). The second needs a Container image per task, so only the first is open.
+
+**Cost.** Memory $0.0000025 a GiB-second and disk $0.00000007 a GB-second, as provisioned, and CPU $0.000020 a vCPU-second, only as used, per 10 ms while the instance runs. A standard-4 hour is $0.113 of memory and disk and up to $0.288 of CPU: $0.03 to $0.11 an attempt-hour at 3.6 rows. E2B charges $0.079 an hour for 1 vCPU and 2 GiB, paid for the whole lifetime when the sandbox is made.
+
+**Not verified.** No Container was started.
+
+- Whether the Container's root may mount: an ns slot loop-mounts the packed disk, makes an overlay, namespaces, a veth pair, nftables rules and a cgroup per slot. Containers run in a VM of their own and have no privileged mode to ask for. Without `CAP_SYS_ADMIN` there only `dir` slots run, without isolation and without the task's image.
+- The time from `create` to a ready runner, and whether a runner the bootstrap leaves running keeps `exec` from returning.
+- `setInactivityTimeout` past an hour, and the object's alarm ending the Container.
