@@ -178,7 +178,8 @@ const tables = [
     unpriced INTEGER,
     wait INTEGER,
     listed INTEGER,
-    again INTEGER
+    again INTEGER,
+    route TEXT
   )`,
   `CREATE TABLE IF NOT EXISTS model_flights (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -272,6 +273,7 @@ export class Run extends DurableObject<Env> {
       ['model_requests', 'cost', 'REAL'],
       ['model_requests', 'listed', 'INTEGER'],
       ['model_requests', 'refusal', 'TEXT'],
+      ['model_requests', 'route', 'TEXT'],
       ['model_requests', 'searches', 'INTEGER'],
       ['model_requests', 'tools_usd', 'REAL'],
       ['model_requests', 'unpriced', 'INTEGER'],
@@ -891,7 +893,7 @@ export class Run extends DurableObject<Env> {
     if (outcome.flight !== undefined)
       this.sql.run('DELETE FROM model_flights WHERE id = ?', outcome.flight)
     this.sql.run(
-      'INSERT INTO model_requests (attempt, claim, at, path, ms, status, usage, cost, refusal, searches, tools_usd, unpriced, wait, listed, again) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO model_requests (attempt, claim, at, path, ms, status, usage, cost, refusal, searches, tools_usd, unpriced, wait, listed, again, route) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       input.attempt,
       input.claim,
       outcome.at,
@@ -907,6 +909,7 @@ export class Run extends DurableObject<Env> {
       outcome.waitMs ?? null,
       price ? 1 : null,
       outcome.again ? 1 : null,
+      outcome.route ?? null,
     )
     const { refused, ...rest } = this.meta()!
     if (refused && outcome.status < 400) {
@@ -1315,17 +1318,18 @@ export class Run extends DurableObject<Env> {
 
   private requestLog(attempt: string): string | undefined {
     const requests = this.sql.all(
-      'SELECT again, claim, at, path, ms, status, usage, refusal, wait FROM model_requests WHERE attempt = ? ORDER BY id',
+      'SELECT again, claim, at, path, ms, status, usage, refusal, route, wait FROM model_requests WHERE attempt = ? ORDER BY id',
       attempt,
     )
     return requests.length
       ? requests
           .map(
-            ({ again, refusal, wait, ...request }) =>
+            ({ again, refusal, route, wait, ...request }) =>
               JSON.stringify({
                 ...request,
                 ...(again === null ? {} : { again: true }),
                 ...(refusal === null ? {} : { refusal }),
+                ...(route === null ? {} : { route }),
                 ...(wait === null ? {} : { wait }),
                 usage: request['usage'] ? JSON.parse(request['usage'] as string) : null,
               }) + '\n',
