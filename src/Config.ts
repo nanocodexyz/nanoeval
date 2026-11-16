@@ -64,6 +64,7 @@ export type Agent = {
   thinking?: string
   toolResultClearing?: ToolResultClearing
   toolResultTokens?: number
+  verificationRequested?: true
   yieldFloorMs?: number
   yieldShare?: number
   verifierModel?: string
@@ -115,6 +116,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'thinking',
   'toolResultClearing',
   'toolResultTokens',
+  'verificationRequested',
   'verifierModel',
   'verifierProvider',
   'verifierShare',
@@ -561,6 +563,12 @@ export function parseAgents(value: unknown): Agent[] {
       if (provider !== 'codex')
         fail(agent.id + ' has a ' + limit + ', which only a codex session takes')
     }
+    if (agent.verificationRequested !== undefined) {
+      if (agent.verificationRequested !== true)
+        fail(agent.id + ' has a verificationRequested that is not true')
+      if (provider !== 'codex')
+        fail(agent.id + ' has a verificationRequested, which only a codex session takes')
+    }
     if (agent.persistFinish !== undefined) {
       if (agent.persistFinish !== true) fail(agent.id + ' has a persistFinish that is not true')
       if (provider !== 'claude' && provider !== 'codex')
@@ -628,6 +636,7 @@ export function parseAgents(value: unknown): Agent[] {
           }),
       ...(agent.toolResultTokens === undefined ? {} : { toolResultTokens: agent.toolResultTokens }),
       ...(agent.yieldFloorMs === undefined ? {} : { yieldFloorMs: agent.yieldFloorMs }),
+      ...(agent.verificationRequested ? { verificationRequested: true as const } : {}),
       ...(agent.yieldShare === undefined ? {} : { yieldShare: agent.yieldShare }),
       ...(agent.verifierModel ? { verifierModel: agent.verifierModel } : {}),
       ...(agent.verifierProvider ? { verifierProvider: agent.verifierProvider } : {}),
