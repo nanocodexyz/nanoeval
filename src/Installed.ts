@@ -69,6 +69,23 @@ const leaderboardCodex = 'https://github.com/openai/codex/releases/download/rust
 
 export const leaderboard = { contextWindow: 1_048_576, replyLimit: 65_536 } as const
 
+// The window Workers AI serves each model with, which every agent of the model is told alike: a
+// harness told the leaderboard default for a 262K model never compacts before the endpoint refuses
+// the request, and the nanocode session would otherwise assume 272K for a model it does not know.
+// Each value is the max_model_len the endpoint reports when asked for more output than it holds.
+export const contextWindows: Readonly<Record<string, number>> = {
+  '@cf/deepseek-ai/deepseek-v4.1-flash-1017': 1_048_576,
+  '@cf/google/gemma-4-26b-a4b-it': 256_000,
+  '@cf/moonshotai/kimi-k2.6': 262_144,
+  '@cf/moonshotai/kimi-k2.7-code': 262_144,
+  '@cf/qwen/qwen3.8-27b': 262_144,
+  '@cf/zai-org/glm-5.3-flash': 1_048_576,
+}
+
+export function contextWindow(model: string): number | undefined {
+  return contextWindows[model]
+}
+
 export const releases: Record<Kind, Release> = {
   'claude-code': {
     binaries: [
@@ -421,6 +438,11 @@ const opencodeApis: Record<Api, { base: string; npm: string }> = {
   responses: { base: '', npm: '@ai-sdk/openai' },
 }
 
+function opencodeLimit(model: string): { limit?: { context: number; output: number } } {
+  const context = contextWindow(model)
+  return context ? { limit: { context, output: leaderboard.replyLimit } } : {}
+}
+
 function opencodeRun(agent: Agent, url: string): string {
   if (!agent.api) throw new Error('opencode names no API for its model')
   const api = opencodeApis[agent.api]
@@ -429,7 +451,12 @@ function opencodeRun(agent: Agent, url: string): string {
     permission: 'allow',
     provider: {
       nanoeval: {
-        models: { [agent.model]: agent.thinking ? { reasoning: true } : {} },
+        models: {
+          [agent.model]: {
+            ...(agent.thinking ? { reasoning: true } : {}),
+            ...opencodeLimit(agent.model),
+          },
+        },
         npm: api.npm,
         options: { apiKey: '{env:' + tokenVariable + '}', baseURL: url + api.base },
       },
@@ -471,7 +498,11 @@ function piPrint(agent: Agent, url: string): string {
         authHeader: true,
         baseUrl: url,
         models: [
-          { id: agent.model, ...(agent.thinking ? { ...api.thinking, reasoning: true } : {}) },
+          {
+            id: agent.model,
+            ...(contextWindow(agent.model) ? { contextWindow: contextWindow(agent.model) } : {}),
+            ...(agent.thinking ? { ...api.thinking, reasoning: true } : {}),
+          },
         ],
       },
     },
@@ -505,13 +536,13 @@ function stockCodex(agent: Agent, url: string): string {
     input_modalities: ['text', 'image'],
     slug: agent.model,
     display_name: agent.model,
-    context_window: leaderboard.contextWindow,
-    max_context_window: leaderboard.contextWindow,
+    context_window: contextWindow(agent.model) ?? leaderboard.contextWindow,
+    max_context_window: contextWindow(agent.model) ?? leaderboard.contextWindow,
     model_messages: { instructions_template: CodexFallback.instructions },
   }
   const config = [
     'model_provider = "hill-proxy"',
-    'model_context_window = ' + leaderboard.contextWindow,
+    'model_context_window = ' + (contextWindow(agent.model) ?? leaderboard.contextWindow),
     'model_catalog_json = "' + catalog + '"',
     '',
     '[model_providers.hill-proxy]',
@@ -583,7 +614,8 @@ function stockClaude(agent: Agent, options: { closed?: boolean; url: string }): 
       'export ANTHROPIC_DEFAULT_HAIKU_MODEL=' + model,
       'export CLAUDE_CODE_SUBAGENT_MODEL=' + model,
       'export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 IS_SANDBOX=1',
-      'export CLAUDE_CODE_MAX_CONTEXT_TOKENS=' + leaderboard.contextWindow,
+      'export CLAUDE_CODE_MAX_CONTEXT_TOKENS=' +
+        (contextWindow(agent.model) ?? leaderboard.contextWindow),
       'export CLAUDE_CODE_MAX_OUTPUT_TOKENS=' + leaderboard.replyLimit,
       'export CLAUDE_CONFIG_DIR=/logs/agent/sessions',
       'mkdir -p $CLAUDE_CONFIG_DIR/debug $CLAUDE_CONFIG_DIR/projects/-app $CLAUDE_CONFIG_DIR/shell-snapshots $CLAUDE_CONFIG_DIR/statsig $CLAUDE_CONFIG_DIR/todos $CLAUDE_CONFIG_DIR/skills',
@@ -640,10 +672,12 @@ export function script(agent: Agent, options: { closed?: boolean; url: string })
           '--hedge-cap-percent 0',
           ...(harness === 'claude'
             ? [
-                '--context-window ' + leaderboard.contextWindow,
+                '--context-window ' + (contextWindow(agent.model) ?? leaderboard.contextWindow),
                 '--max-output-tokens ' + leaderboard.replyLimit,
               ]
-            : []),
+            : contextWindow(agent.model)
+              ? ['--context-window ' + contextWindow(agent.model)]
+              : []),
           '"$prompt" </dev/null',
         ].join(' '),
       ].join('\n') + '\n'
