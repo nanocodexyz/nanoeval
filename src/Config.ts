@@ -47,6 +47,7 @@ export type Agent = {
   resultEffort?: Effort
   skipFinishCheck?: true
   stopAtTarget?: true
+  subagents?: false
   thinking?: string
   toolResultClearing?: ToolResultClearing
   toolResultTokens?: number
@@ -83,6 +84,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'resultEffort',
   'skipFinishCheck',
   'stopAtTarget',
+  'subagents',
   'thinking',
   'toolResultClearing',
   'toolResultTokens',
@@ -409,6 +411,11 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude')
         fail(agent.id + ' has a toolResultClearing, which only a claude session takes')
     }
+    if (agent.subagents !== undefined) {
+      if (agent.subagents !== false) fail(agent.id + ' has a subagents that is not false')
+      if (provider !== 'claude')
+        fail(agent.id + ' has a subagents, which only a claude session takes')
+    }
     if (agent.lateFinishCheckMs !== undefined) {
       integer(agent.lateFinishCheckMs, agent.id + ': lateFinishCheckMs', 1)
       if (provider !== 'claude')
@@ -499,6 +506,7 @@ export function parse(value: unknown): Config {
       ...(agent.resultEffort ? { resultEffort: agent.resultEffort } : {}),
       ...(agent.skipFinishCheck ? { skipFinishCheck: true as const } : {}),
       ...(agent.stopAtTarget ? { stopAtTarget: true as const } : {}),
+      ...(agent.subagents === false ? { subagents: false as const } : {}),
       ...(agent.thinking ? { thinking: agent.thinking } : {}),
       ...(agent.toolResultClearing === undefined
         ? {}

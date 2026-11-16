@@ -339,13 +339,15 @@ const usage = `nanoeval <command>
             ways; never with skip_finish_check) and :tool_result_clearing=KEEP/TOKENS (the
             history keeps the last KEEP tool results whole and clears older ones in batches
             of TOKENS tokens at least) (nano-med-clear=claude:claude-opus-5-5:medium:
-            finish_ambiguity=on:tool_result_clearing=2/10000). The options come in
+            finish_ambiguity=on:tool_result_clearing=2/10000), and :subagents=off (the session
+            has no tools that start or steer another agent) (nano-med-nosub=
+            claude:claude-opus-5-5:medium:subagents=off). The options come in
             this order where several are named: branches, refusal_fallback, cell_yield_ms,
             brief_finish, fold_finish, low_effort_rounds, brief_final, lean_cells,
             escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens,
             persist_finish, skip_finish_check, late_finish_check_ms, result_effort,
             stop_at_target, yield_floor_ms, yield_share, finish_retries, finish_check,
-            finish_ambiguity, tool_result_clearing.
+            finish_ambiguity, tool_result_clearing, subagents.
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
@@ -944,6 +946,13 @@ const agentOptions: readonly AgentOption[] = [
       agent.toolResultClearing
         ? agent.toolResultClearing.keep + '/' + agent.toolResultClearing.atLeastTokens
         : undefined,
+  },
+  {
+    name: 'subagents',
+    pattern: 'off',
+    read: () => ({ subagents: false }),
+    value: 'off',
+    write: (agent) => (agent.subagents === false ? 'off' : undefined),
   },
 ]
 

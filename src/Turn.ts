@@ -27,6 +27,7 @@ export type Turn = {
   resultEffort?: Config.Effort
   skipFinishCheck?: true
   stopAtTarget?: true
+  subagents?: false
   thinking?: string
   toolResultClearing?: Config.ToolResultClearing
   toolResultTokens?: number
@@ -108,6 +109,7 @@ export function sent(turn: Turn, input: { at: number; session: string }): string
       ...(turn.refusalFallback ? { refusal_fallback: turn.refusalFallback } : {}),
       request_id: turn.requestId,
       session: input.session,
+      ...(turn.subagents === false ? { subagents: false } : {}),
       ...clearing(turn),
       ...(turn.toolResultTokens === undefined ? {} : { tool_result_tokens: turn.toolResultTokens }),
     }) + '\n'
@@ -135,7 +137,7 @@ export function body(turn: Turn): Record<string, unknown> {
     provider: turn.provider,
     ...(turn.refusalFallback ? { refusal_fallback: turn.refusalFallback } : {}),
     request_id: turn.requestId,
-    ...(turn.provider === 'codex' ? { subagents: false } : {}),
+    ...(turn.provider === 'codex' || turn.subagents === false ? { subagents: false } : {}),
     ...(turn.thinking ? { thinking: turn.thinking } : {}),
     ...clearing(turn),
     ...(turn.toolResultTokens === undefined ? {} : { tool_result_tokens: turn.toolResultTokens }),
