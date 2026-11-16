@@ -185,7 +185,10 @@ export const nanocode = App.create<Env>({
               const filtered = Blocklist.anthropic(value, held.webBlocklist)
               if ('refusal' in filtered)
                 return Response.json(
-                  { type: 'error', error: { type: 'invalid_request_error', message: filtered.refusal } },
+                  {
+                    type: 'error',
+                    error: { type: 'invalid_request_error', message: filtered.refusal },
+                  },
                   { status: 400 },
                 )
               body = new TextEncoder().encode(JSON.stringify(filtered.body)).buffer as ArrayBuffer

@@ -27,6 +27,7 @@ const cases: [string, boolean][] = [
   ['https://github.com/harbor-frameworks/x', false],
   ['https://github.com/pytorch/pytorch', false],
   ['https://api.github.com/harbor-framework', false],
+  ['https://gist.github.com/laude-institute/terminal-bench', false],
   ['https://pypi.org/simple/mteb/', false],
   ['https://nottbench.ai/', false],
   ['https://example.com/?u=https://tbench.ai', false],
@@ -40,7 +41,7 @@ test('the list of terminal-bench is valid and names the hosts of the amendment',
     assert.ok(list.includes(host))
 })
 
-test('a url is blocked on a listed host, its subdomains and below a listed path', () => {
+test('a url is blocked on a listed host and its subdomains, and below a listed path of its exact host', () => {
   for (const [url, blocked] of cases) assert.equal(Blocklist.blocks(list, url), blocked, url)
 })
 
@@ -103,7 +104,14 @@ test('an entry is a lowercase host with an optional path', () => {
     'tbench.ai',
     'github.com/a-b',
   ])
-  for (const bad of [[], ['https://tbench.ai'], ['TBench.ai'], ['*.tbench.ai'], ['tbench'], ['a.b', 'a.b']])
+  for (const bad of [
+    [],
+    ['https://tbench.ai'],
+    ['TBench.ai'],
+    ['*.tbench.ai'],
+    ['tbench'],
+    ['a.b', 'a.b'],
+  ])
     assert.throws(() => Blocklist.valid(bad), Blocklist.InvalidError, JSON.stringify(bad))
   assert.throws(() => Blocklist.valid(Array.from({ length: 65 }, (_, i) => 'h' + i + '.com')))
 })
@@ -117,13 +125,25 @@ test('a run with a web blocklist takes only agents that enforce it', async () =>
     eval: { name: 'tb21-full' },
     limits: { attachSec: 60, claims: 3, leaseSec: 60, setupSec: 600, stepRetries: 3 },
     name: 'blocklist',
-    sandbox: { backend: 'krun', disks: 'remove', max: 1, network: 'private', pollMs: 250, provider: 'local' },
+    sandbox: {
+      backend: 'krun',
+      disks: 'remove',
+      max: 1,
+      network: 'private',
+      pollMs: 250,
+      provider: 'local',
+    },
   }
   const parsed = Config.parse({ ...base, webBlocklist: list })
   assert.deepEqual(parsed.webBlocklist, list)
   assert.equal(Config.parse(base).webBlocklist, undefined)
   assert.throws(
-    () => Config.parse({ ...base, agents: [{ id: 'cx', model: 'gpt-6-luna', provider: 'codex-cli' }], webBlocklist: list }),
+    () =>
+      Config.parse({
+        ...base,
+        agents: [{ id: 'cx', model: 'gpt-6-luna', provider: 'codex-cli' }],
+        webBlocklist: list,
+      }),
     /enforce/,
   )
   assert.throws(() => Config.parse({ ...base, webBlocklist: ['https://tbench.ai'] }), /scheme/)
@@ -139,11 +159,18 @@ test('Claude Code of a blocklisted run writes the hook and reads it with --setti
     assert.ok(listed.includes('--settings "$NANOEVAL_AGENT_HOME/web-blocklist.json"'), kind)
     assert.ok(listed.includes(Blocklist.hook(list).trimEnd()), kind)
     assert.equal(
-      listed.split('\n').filter((line) => !line.includes('web-blocklist') && !line.includes('NANOEVAL_WEB_BLOCKLIST')).length >= plain.split('\n').length - 1,
+      listed
+        .split('\n')
+        .filter(
+          (line) => !line.includes('web-blocklist') && !line.includes('NANOEVAL_WEB_BLOCKLIST'),
+        ).length >=
+        plain.split('\n').length - 1,
       true,
     )
   }
   const codex = Installed.script({ kind: 'codex-cli', model: 'gpt-6-luna' }, { url })
-  assert.equal(Installed.script({ kind: 'codex-cli', model: 'gpt-6-luna' }, { blocklist: list, url }), codex)
+  assert.equal(
+    Installed.script({ kind: 'codex-cli', model: 'gpt-6-luna' }, { blocklist: list, url }),
+    codex,
+  )
 })
-

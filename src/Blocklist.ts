@@ -90,10 +90,8 @@ export function blocks(list: List, url: string): boolean {
   if (!host) return true
   return list.some((item) => {
     const listed = split(item)
-    const onHost = host === listed.host || host.endsWith('.' + listed.host)
-    return (
-      onHost && (listed.path === '' || path === listed.path || path.startsWith(listed.path + '/'))
-    )
+    if (listed.path === '') return host === listed.host || host.endsWith('.' + listed.host)
+    return host === listed.host && (path === listed.path || path.startsWith(listed.path + '/'))
   })
 }
 
@@ -104,7 +102,9 @@ const fetchTool = /^web_fetch_[0-9]+$/
 
 function typeOf(tool: unknown): string {
   const type =
-    typeof tool === 'object' && tool !== null ? (tool as Record<string, unknown>)['type'] : undefined
+    typeof tool === 'object' && tool !== null
+      ? (tool as Record<string, unknown>)['type']
+      : undefined
   return typeof type === 'string' ? type : ''
 }
 
@@ -188,9 +188,11 @@ export function hook(list: List): string {
       'for item in $list; do',
       '  listed=${item%%/*}',
       '  part=${item#"$listed"}',
-      '  case $host in "$listed" | *."$listed") ;; *) continue ;; esac',
-      '  [ -z "$part" ] && refuse "$url"',
-      '  case $path in "$part" | "$part"/*) refuse "$url" ;; esac',
+      '  if [ -z "$part" ]; then',
+      '    case $host in "$listed" | *."$listed") refuse "$url" ;; esac',
+      '  elif [ "$host" = "$listed" ]; then',
+      '    case $path in "$part" | "$part"/*) refuse "$url" ;; esac',
+      '  fi',
       'done',
       'exit 0',
     ].join('\n') + '\n'

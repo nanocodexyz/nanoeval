@@ -324,9 +324,10 @@ const hookEnd = 'NANOEVAL_WEB_BLOCKLIST'
 function claudeBlocklist(options: Options): string[] {
   if (!options.blocklist) return []
   const hook = Blocklist.hook(options.blocklist)
-  if (hook.split('\n').includes(hookEnd)) throw new Error('the web blocklist hook ends its own here-document')
+  if (hook.split('\n').includes(hookEnd))
+    throw new Error('the web blocklist hook ends its own here-document')
   return [
-    "cat > \"$NANOEVAL_AGENT_HOME/web-blocklist.sh\" <<'" + hookEnd + "'",
+    'cat > "$NANOEVAL_AGENT_HOME/web-blocklist.sh" <<\'' + hookEnd + "'",
     ...hook.trimEnd().split('\n'),
     hookEnd,
     'cat > "$NANOEVAL_AGENT_HOME/web-blocklist.json" <<' + hookEnd,
