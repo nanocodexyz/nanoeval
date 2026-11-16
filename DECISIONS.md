@@ -8424,3 +8424,21 @@ An example is `nano-high-nocd=claude:claude-opus-5-5:high:codesign=off`. `agent/
 
 **Not verified.** A deployed Worker on this pin, and a model run with the option.
 
+
+## 2026-11-16: Amp cannot be an installed agent
+
+An installed agent runs its own loop inside the slot, gets no credential, and sends its model requests to the endpoint of the run. Amp, Sourcegraph's coding agent, does none of the three, so it has no `Kind` and no row can name it.
+
+**The release that was read.** `@sourcegraph/amp` 0.0.1794844850-g57e01b (2026-11-16) depends on `@ampcode/cli`, which installs a platform package. `@ampcode/cli-linux-x64` 0.0.1794844850-g57e01b: tarball SHA-256 `09454c7f156fe5288a3b0d6d3e1d7f0a34d71d7da6d6209d85eb03d6e7025e7f`, its `amp` binary (ELF x86-64, 155,982,000 bytes) SHA-256 `d51107b2b1432b8dff0aa5a66a4d2383b56bde9eb95f804524ec9bb67665c01f`. Its license file says use is subject to Amp's terms of service.
+
+**What it asks before any work.** On a 5-core Linux x86_64 machine without KVM, with an empty `HOME`:
+
+```sh
+AMP_URL=http://127.0.0.1:18770 AMP_API_KEY=probe AMP_SKIP_UPDATE_CHECK=1 amp -x 'say hi' --stream-json </dev/null
+```
+
+A server on that port that logs each request and answers `401` saw two requests, `POST /api/internal?getUserInfo` and `POST /api/internal?listAgentModes`, and the command exited 1 with `Error: Invalid or missing API key. Run 'amp login' to authenticate.`. Without `AMP_URL` and `AMP_API_KEY` it printed nothing for 40 s and was ended by `timeout`. `amp config model-providers list` gives the same error. No model request left the machine either way.
+
+**Where its model requests go.** `amp config model-providers add-router` takes `openrouter`, `cloudflare` (with `--cloudflare-account-id` and `--cloudflare-gateway-id`), `custom-url` (with `--api-format` chat-completions, responses, anthropic-messages or google-genai and an HTTPS `--base-url`) and others, each stored with `--personal` or `--workspace`: on the Amp account, not in a file of the slot. Amp's documentation (ampcode.com/docs/customize/model-routing and ampcode.com/docs/egress-ips, read 2026-11-16) says that Amp runs the agent loop and inference on its own servers and calls a router from its own IP addresses, so a Custom URL must be public HTTPS.
+
+**What it would take.** A row of Amp would need an Amp account key in the slot, the task's files and output sent to Amp's servers, and the run's model endpoint public, holding a credential that Amp's servers present. The run would not see the loop, could not close the agent's network, and could not meter its requests. A stand-in for `/api/internal` would replace Amp's server rather than run Amp. None of this is done.
