@@ -7876,3 +7876,16 @@ Actions is disabled on this repository, so every `run` step of `.github/workflow
 On `583b4f8`, the nanoeval lane's KVM box passed e2e-krun, e2e-ns and krun at 59 of 59 steps, including `picker` and `picker-lazy` on both guest backends. Its KVM run on `5a36d52` is recorded in the next entry when it reports.
 
 On `5a36d52`, the nanoeval lane ran fresh clones on its KVM box (2026-11-16 01:16 UTC): all 138 of 138 steps passed. The KVM lanes passed 59 of 59 on the first try: e2e-krun 40, e2e-ns 16, krun 3. Two e2e-dir steps failed once while that box's disk was saturated, then passed alone on a retry.
+
+## 2026-11-16: an agent may name finish_retries, how many times the finish check sends a turn back
+
+**Problem.** nanocode 80fe87002 lets a session set how many times the finish check of its Claude harness may send a turn back to the model before the turn ends. nanocode-ts `build-15cffb1` (which pins nanocode 80fe87002) takes it as an optional field of a turn, `finish_retries`, a positive whole number. Builds before it ignore the field. No agent of a run could set it, so a run could not hold an arm with more retries beside an arm with the default.
+
+**Behavior.** An agent spec may end in `:finish_retries=N`, after `:yield_share=N` and last in the one order of the options, such as `nano-med-retry=claude:claude-opus-5-5:medium:finish_retries=1`. A run configuration names it `{ "provider": "claude", "finishRetries": 1 }`. Every turn of such an agent sends `finish_retries: N` with the other session fields and names it in `agent/turns.jsonl`. An agent without it sends nothing new: its turn body is the same bytes as before. The configuration refuses an N that is not a whole number of at least 1. It also refuses `finishRetries` with `skipFinishCheck`, because one removes the finish check the other sets the retries of. Only a `claude` agent takes it, `claude-direct` among them, since nanocode reads it in its Claude harness only. A `codex` agent, an installed agent and the oracle are refused with "has a finishRetries, which only a claude session takes".
+
+**The pin.** Unchanged, `build-1d85e83`, which ignores the field. An arm that names it does what it says only on a Worker pinned to `build-15cffb1` or later.
+
+**Checked.** On the hosted Hand, in the tree of this commit before it was made: `test/FinishRetries.test.ts` (new, 3 tests: the spec, its place in the order and its text read back for `claude` and `claude-direct`; bad values, a second occurrence and another place refused; the configuration takes it, refuses 0, a negative, a fraction, a string, other providers and `skip_finish_check` with it; a turn sends `finish_retries` only when named, and an agent without it sends the same bytes). The usage line in six other test files names the new option. `npm test`, `npm run check:types`, `npm run lint` and `npm run dry-run`.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone. A Worker on `build-15cffb1`, a model, and a session that took the field.
+

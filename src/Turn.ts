@@ -8,6 +8,7 @@ export type Turn = {
   escalateContextTokens?: number
   escalateModel?: string
   escalateToolErrors?: number
+  finishRetries?: number
   foldFinish?: true
   hand?: string
   lateFinishCheckMs?: number
@@ -47,6 +48,7 @@ function levers(turn: Turn): Record<string, true> {
 
 function losses(turn: Turn): Record<string, number | string> {
   return {
+    ...(turn.finishRetries === undefined ? {} : { finish_retries: turn.finishRetries }),
     ...(turn.lateFinishCheckMs === undefined
       ? {}
       : { late_finish_check_ms: turn.lateFinishCheckMs }),
