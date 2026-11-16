@@ -3,13 +3,14 @@ import * as Plans from '../src/Plans.ts'
 import * as Proxy from '../src/Proxy.ts'
 import * as Route from '../src/Route.ts'
 import * as Meter from './Meter.ts'
+import * as Relay from './Relay.ts'
 import * as WorkersAi from './WorkersAi.ts'
 
 export type Variables = Logins.Variables &
-  Proxy.Variables & {
+  Proxy.Variables &
+  Relay.Variables & {
     AI?: WorkersAi.Binding
     CHATGPT_RELAY_SECRET?: string
-    CHATGPT_RELAY_URL?: string
     CLAUDE_PLAN_URL?: string
     WORKERS_AI_ACCOUNT_ID?: string
     WORKERS_AI_GATEWAY?: string
@@ -34,7 +35,9 @@ export function credential(env: Variables, provider: Proxy.Provider): Proxy.Cred
       kind: 'plan',
       ...(provider === 'codex' && env.CHATGPT_RELAY_URL
         ? { relay: { secret: env.CHATGPT_RELAY_SECRET ?? '', url: env.CHATGPT_RELAY_URL } }
-        : {}),
+        : provider === 'codex' && Relay.bound(env)
+          ? { relay: { secret: '', url: Relay.origin } }
+          : {}),
     }
   return Proxy.key(env, provider)
 }
@@ -118,8 +121,15 @@ export async function forward(env: Variables, input: forward.Input): Promise<Res
       provider,
       search: input.search,
     })
+    const relayed =
+      credential.kind === 'plan' && provider === 'codex'
+        ? Relay.fetcher(env, crypto.randomUUID())
+        : undefined
     return Meter.relay({
       body,
+      ...(relayed
+        ? { fetch: (url: string, init: RequestInit) => relayed(new Request(url, init)) }
+        : {}),
       headers: target.headers,
       hooks: credential.kind === 'plan' ? Meter.rejecting(input.hooks) : input.hooks,
       method: request.method,

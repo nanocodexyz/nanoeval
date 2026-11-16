@@ -8495,3 +8495,12 @@ Measured on the hosted Hand with node:sqlite (Node 24.22, :memory:), the old and
 
 A row's request read (one attempt's statuses) went from 0.5 to 11.5 ms to 0.02 to 0.03 ms. This is SQLite CPU outside workerd, not a run: the next measurement is a release run with a model budget at 500 or more rows at once, reading workerd's busiest thread. What still grows with rows after this is the finished rows' json_extract pass, about 4 ms at 2,000 finished rows.
 
+
+## 2026-11-16: a Worker pays codex sessions with a ChatGPT plan through its own relay container
+
+chatgpt.com refuses requests from the Workers runtime, so a deployed Worker could pay codex rows with a ChatGPT login only when `CHATGPT_RELAY_URL` named a relay somewhere public. Every codex arm so far paid by login from a runner with its own relay; none ran through a deployed Worker.
+
+1. A Worker that binds the `RelayContainer` of nanocode-egress as `CHATGPT_RELAY` sends codex plan requests and sockets, of installed agents (`worker/Model.ts`) and of nanocode sessions (`worker/Sessions.ts`), to that container with the secret the container derives from `PLAN_SECRET` (`worker/Relay.ts`). Key credentials, claude and Workers AI never go there.
+2. `CHATGPT_RELAY_URL` still wins when both are set, so a deployment that has a relay keeps it.
+3. `CHATGPT_RELAY_INSTANCES` (default 1, at most 64) spreads requests over containers named `relay-0` and on: a session's requests go to one container by its session name, an installed agent's at random. The relay only forwards bytes, so one container's limit is sockets and memory, not CPU; more instances spread the egress addresses chatgpt.com sees, not the plan's limits, which stay those of the one account.
+4. The binding itself (`containers`, a `durable_objects` binding, a migration and `@cloudflare/containers`) is left to the deployment's wrangler config, since it builds an image on every deploy; without it nothing changes.
