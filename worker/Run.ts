@@ -2232,6 +2232,7 @@ export class Run extends DurableObject<Env> {
       ...(config.sandbox.slots === undefined ? {} : { slots: config.sandbox.slots }),
       token: meta.runnerToken,
       url: meta.publicUrl,
+      ...(config.sandbox.packageArchive ? { packageArchive: true as const } : {}),
       ...(config.sandbox.verifierCache ? { verifierCache: true as const } : {}),
     }
   }

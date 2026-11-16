@@ -195,6 +195,7 @@ export type Config = {
     max: number
     memoryMb?: number
     network: Slot.Network
+    packageArchive?: true
     pollMs: number
     provider: 'e2b' | 'gateway' | 'local'
     runtime?: Eval.Blob
@@ -220,6 +221,7 @@ export type Runner = {
   memoryOvercommit?: true
   network: Slot.Network
   oracle: boolean
+  packageArchive?: true
   pollMs: number
   pool?: Protocol.Standing
   protocol?: number
@@ -724,6 +726,10 @@ export function parse(value: unknown): Config {
   const networks = Slot.networks[backend === 'auto' ? 'krun' : backend]
   if (!networks.includes(sandbox.network))
     fail('sandbox.network of the ' + backend + ' backend is ' + networks.join(' or '))
+  if (sandbox.packageArchive !== undefined && typeof sandbox.packageArchive !== 'boolean')
+    fail('sandbox.packageArchive is true or false')
+  if (sandbox.packageArchive && backend === 'dir')
+    fail('sandbox.packageArchive needs the krun or the ns backend')
   if (sandbox.verifierCache !== undefined && typeof sandbox.verifierCache !== 'boolean')
     fail('sandbox.verifierCache is true or false')
   if (sandbox.verifierCache && backend === 'dir')
@@ -869,6 +875,7 @@ export function parse(value: unknown): Config {
         ? {}
         : { memoryMb: integer(sandbox.memoryMb, 'sandbox.memoryMb', 1) }),
       network: sandbox.network,
+      ...(sandbox.packageArchive ? { packageArchive: true as const } : {}),
       pollMs: integer(sandbox.pollMs, 'sandbox.pollMs', 1),
       provider: choice(sandbox.provider, 'sandbox.provider', ['e2b', 'gateway', 'local']),
       ...(sandbox.runtime === undefined
