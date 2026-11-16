@@ -346,13 +346,16 @@ const usage = `nanoeval <command>
             ways; never with skip_finish_check) and :tool_result_clearing=KEEP/TOKENS (the
             history keeps the last KEEP tool results whole and clears older ones in batches
             of TOKENS tokens at least) (nano-med-clear=claude:claude-opus-5-5:medium:
-            finish_ambiguity=on:tool_result_clearing=2/10000). The options come in
+            finish_ambiguity=on:tool_result_clearing=2/10000), and
+            :clearing_cache_floors=on (a request keeps two cache breakpoints at the places
+            where the history was last cleared) (nano-med-floors=claude:claude-opus-5-5:
+            medium:clearing_cache_floors=on). The options come in
             this order where several are named: branches, refusal_fallback, cell_yield_ms,
             brief_finish, fold_finish, low_effort_rounds, brief_final, lean_cells,
             escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens,
             persist_finish, skip_finish_check, late_finish_check_ms, result_effort,
             stop_at_target, yield_floor_ms, yield_share, finish_retries, finish_check,
-            finish_ambiguity, tool_result_clearing.
+            finish_ambiguity, tool_result_clearing, clearing_cache_floors.
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
@@ -951,6 +954,12 @@ const agentOptions: readonly AgentOption[] = [
       agent.toolResultClearing
         ? agent.toolResultClearing.keep + '/' + agent.toolResultClearing.atLeastTokens
         : undefined,
+  },
+  {
+    ...on,
+    name: 'clearing_cache_floors',
+    read: () => ({ clearingCacheFloors: true }),
+    write: (agent) => (agent.clearingCacheFloors ? on.value : undefined),
   },
 ]
 

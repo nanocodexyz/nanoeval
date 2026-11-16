@@ -25,6 +25,7 @@ export type Agent = {
   briefFinal?: true
   briefFinish?: true
   cellYieldMs?: number
+  clearingCacheFloors?: true
   escalateContextTokens?: number
   escalateModel?: string
   escalateToolErrors?: number
@@ -61,6 +62,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'briefFinal',
   'briefFinish',
   'cellYieldMs',
+  'clearingCacheFloors',
   'escalateContextTokens',
   'escalateModel',
   'escalateToolErrors',
@@ -116,6 +118,7 @@ export const efforts: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'ma
 export const finishLevers = [
   'briefFinal',
   'briefFinish',
+  'clearingCacheFloors',
   'finishAmbiguity',
   'finishCheck',
   'foldFinish',
@@ -471,6 +474,7 @@ export function parse(value: unknown): Config {
       ...(agent.briefFinal ? { briefFinal: true as const } : {}),
       ...(agent.briefFinish ? { briefFinish: true as const } : {}),
       ...(agent.cellYieldMs === undefined ? {} : { cellYieldMs: agent.cellYieldMs }),
+      ...(agent.clearingCacheFloors ? { clearingCacheFloors: true as const } : {}),
       ...(agent.escalateContextTokens === undefined
         ? {}
         : { escalateContextTokens: agent.escalateContextTokens }),

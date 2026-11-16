@@ -8074,3 +8074,27 @@ The declarations of the package differ from `build-5630e0f` in `Contracts.d.ts` 
 **Checked.** `npm ci`, which verifies the tarball against the integrity of the lock, `npm run lint`, `npm run check:types`, `npm run dry-run` and `npm test` from a fresh clone, with the change of the next entry.
 
 **Not verified.** When this was written: `ci.yml` from a fresh clone on KVM, a deployed Worker on this pin, and a model. The notice of 59df7a1bb and the request bodies of dc09e1baf are read, not measured here.
+
+## 2026-11-16: an agent may name clearing_cache_floors
+
+**Why.** The pinned nanocode-ts `build-acdb751` takes one session field that no agent of this repository could name, see the entry above. Without an option, no run could set a session with it beside one without.
+
+**What.** One more entry of the table of options in `cli/nanoeval.ts`, after `:tool_result_clearing=KEEP/TOKENS` and last in the one order:
+
+| Option | Run configuration | What every turn of the session sends | Who takes it |
+| --- | --- | --- | --- |
+| `:clearing_cache_floors=on` | `"clearingCacheFloors": true` | `clearing_cache_floors: true` | `claude`, `claude-direct` among them |
+
+An example is `nano-med-floors=claude:claude-opus-5-5:medium:clearing_cache_floors=on`. `agent/turns.jsonl` names the field. It is off by default. An agent without it sends nothing new: its turn body and its line of `agent/turns.jsonl` are the same bytes as before.
+
+**The field name.** It is read from the declarations of the `build-acdb751` tarball: `clearing_cache_floors?: boolean` on the session request of `dist/cloudflare/App.d.ts` and in `dist/Contracts.d.ts`, and `clearing_cache_floors` in `finishLevers`. nanocode-ts answers 400 to a value that is not a boolean, adds the name to the session key of a session that sends `true`, and passes it to `ClaudeBuilder::clearing_cache_floors`.
+
+**What it does.** Read in nanocode dc09e1baf, not run. History clearing changes the bytes of a tool result inside the cached prefix, so the longest cached prefix falls back to the system prompt and every later message is written to the cache again. With the field, a request with no image floor keeps two cache breakpoints: one before the first result that the latest clearing kept, and one where the clearing before it started. The prefix up to the earlier boundary is then read from the cache. The two breakpoints take the slots of the tools tail and of the second system marker. The commit models -6.21% of the input cost and -13.07% of the cache-write tokens on a replay of six turns against a mock, and that is its measurement, not one of this repository.
+
+**How it is taken.** The option is one more of `Config.finishLevers`, as the field is one of the `finishLevers` of nanocode-ts, though it is no part of the finish check: only `on` is a value, and a `codex` agent, an installed agent and the oracle are refused with "has a clearingCacheFloors, which only a claude session takes". It changes where a request places its cache breakpoints and nothing of the finish check, so the configuration takes it with `skipFinishCheck` and with every other option. It needs no `:tool_result_clearing=KEEP/TOKENS`: the clearing of nanocode, 12 results and 20,000 tokens, has boundaries too, and the two options may go in one arm.
+
+**An earlier build.** A Worker on `build-5630e0f` or earlier copies `clearing_cache_floors` neither to its session nor to its session key, read in the difference of the two builds of `dist/cloudflare/App.js`. An arm with the option on such a Worker is the arm without it.
+
+**Checked.** `test/ClearingCacheFloors.test.ts` (new, 3 tests: the spec, its place in the order and its text read back for `claude` and `claude-direct`; an empty value, another value, a second occurrence and another place refused; the configuration takes it, also with `skip_finish_check`, and refuses malformed values and other providers; a turn sends the field only when named, and a turn without it is the same bytes, with the body of a plain turn written out). `test/Lever.test.ts` refuses each malformed value and each other provider for every name of `Config.finishLevers`, this one among them. The usage line in twelve places of ten other test files names the option, and the name of one test of `test/ToolResultClearing.test.ts` no longer says that `tool_result_clearing` is last. `npm test`: 628 tests, 623 pass, 0 fail, 5 skipped, and the skips need KVM. `npm run check:types`, `npm run lint` and `npm run dry-run` pass.
+
+**Not verified.** When this was written: `ci.yml` from a fresh clone on KVM. A Worker on this pin, a model, and a session that took the field. No request body with the two breakpoints was read here, and no cache write was counted. No end-to-end lane names the option.

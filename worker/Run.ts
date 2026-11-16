@@ -3463,6 +3463,7 @@ export class Run extends DurableObject<Env> {
       ...(agent.briefFinal ? { briefFinal: true } : {}),
       ...(agent.briefFinish ? { briefFinish: true } : {}),
       ...(agent.cellYieldMs === undefined ? {} : { cellYieldMs: agent.cellYieldMs }),
+      ...(agent.clearingCacheFloors ? { clearingCacheFloors: true } : {}),
       ...(deadline ? { deadline } : {}),
       ...(agent.escalateContextTokens === undefined
         ? {}

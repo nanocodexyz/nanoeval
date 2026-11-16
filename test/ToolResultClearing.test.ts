@@ -30,14 +30,15 @@ const turn: Turn.Turn = {
   thinking: 'medium',
 }
 
-const usage = /\[:finish_ambiguity=on\]\[:tool_result_clearing=KEEP\/TOKENS\], not x=/
+const usage =
+  /\[:finish_ambiguity=on\]\[:tool_result_clearing=KEEP\/TOKENS\]\[:clearing_cache_floors=on\], not x=/
 
 const clearing = 'nano-med-clear=claude:claude-opus-5-5:medium:tool_result_clearing=2/10000'
 
 const direct =
   'nano-dt=claude-direct:claude-opus-5-5:high:tool_result_tokens=2000:yield_share=25:finish_ambiguity=on:tool_result_clearing=12/20000'
 
-test('an agent names tool_result_clearing last in the order of the options, and its text reads back', () => {
+test('an agent names tool_result_clearing after finish_ambiguity in the order of the options, and its text reads back', () => {
   assert.deepEqual(parseAgent(clearing), {
     id: 'nano-med-clear',
     model: 'claude-opus-5-5',

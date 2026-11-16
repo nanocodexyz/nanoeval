@@ -4,6 +4,7 @@ export type Turn = {
   briefFinal?: true
   briefFinish?: true
   cellYieldMs?: number
+  clearingCacheFloors?: true
   deadline?: { atMs: number; limitMs: number }
   escalateContextTokens?: number
   escalateModel?: string
@@ -40,6 +41,7 @@ function levers(turn: Turn): Record<string, true> {
   return {
     ...(turn.briefFinal ? { brief_final: true as const } : {}),
     ...(turn.briefFinish ? { brief_finish: true as const } : {}),
+    ...(turn.clearingCacheFloors ? { clearing_cache_floors: true as const } : {}),
     ...(turn.finishAmbiguity ? { finish_ambiguity: true as const } : {}),
     ...(turn.finishCheck ? { finish_check: true as const } : {}),
     ...(turn.foldFinish ? { fold_finish: true as const } : {}),
