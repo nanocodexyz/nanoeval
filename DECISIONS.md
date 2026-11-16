@@ -8549,3 +8549,24 @@ The entry of 2026-11-14 created every `codex` session without subagents, as code
 **Behavior.** An agent may end in `:omit_media_on_empty_cut=on`, after `:clearing_cache_floors=on` and last in the one order, such as `nano-haiku-media=claude:claude-haiku-5-5:medium:omit_media_on_empty_cut=on`. A run configuration names it `{ "provider": "claude", "omitMediaOnEmptyCut": true }`. Every turn sends `omit_media_on_empty_cut: true`, which nanocode-ts (nanocodexyz/nanocode-ts PR 210) passes to `ClaudeBuilder::omit_media_on_empty_cut` (nanocodexyz/nanocode PR 1195). An agent without it sends the same bytes as before. It is one more of `Config.finishLevers`, so only `claude` agents take it. A Worker on a nanocode-ts build without the field ignores it.
 
 **Checked.** `test/OmitMediaOnEmptyCut.test.ts` (new) and the usage line of eleven test files; `node --test` of it, ClearingCacheFloors, Lever and FinishRetries: 14 pass. **Not run**: a model on a deployed Worker.
+
+## 2026-11-16: goose as an installed agent
+
+goose 1.59.2 (`block/goose`, the release the project marks latest) is the fourth command line that names its API, after fx, opencode and pi: `goose-chat`, `goose-messages` and `goose-responses`. Its GitHub release has a glibc and a musl build for x86_64 and aarch64, one binary each in a `.tar.gz`, pinned by the SHA-256 of the four archives as downloaded and checked here, and chosen by the loader of the image as opencode's are.
+
+### What was established
+
+- **Its environment configures it.** `GOOSE_PROVIDER=openai` with `OPENAI_HOST` (the origin of the endpoint) and `OPENAI_BASE_PATH` (its path and `chat/completions` or `responses`) sent `POST` to that path with a bearer token; `GOOSE_PROVIDER=anthropic` with `ANTHROPIC_HOST` set to the endpoint sent `POST <endpoint>/v1/messages` with `x-api-key`, which the endpoint of a run reads as well. The token is `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`, taken from the variable of the attempt, and `GOOSE_DISABLE_KEYRING=1` keeps it out of any file: no file under its home held it after a run.
+- **`goose run` asks nothing.** `--no-session --no-profile --with-builtin developer --output-format stream-json -i -` reads the instruction from its input, gives it the `developer` tools (`shell`, `edit`, `write`, `tree`, `read_image`, `load_skill`), and with `GOOSE_MODE=auto` ran `shell` without a prompt. Its configuration, data and logs go under `XDG_*_HOME` in the agent's home, so `HOME` of the task is left alone.
+- **It asks for a title first and reads the model list.** Each run sends one request without tools, then `GET <path>/models` on the OpenAI routes, which may answer `404`: it went on. Three model requests for one tool call, as opencode.
+- **A thinking level is `GOOSE_THINKING_EFFORT`.** It sent `reasoning_effort` (chat) and `thinking.type: adaptive` with `output_config.effort` (Messages, for a model named `claude-opus-5-5`), and `max_completion_tokens` or `max_tokens` of 128,000 when nothing else names one.
+- **Its stream.** Each line of `stream-json` is a `message` (an assistant message with `text`, `thinking` and `toolRequest` blocks, or a user message with `toolResponse` blocks whose `structuredContent` has the exit code) or a last `complete` with token counts, or an `error` with a string, after which it exits 1. A banner before the first line is not JSON and is skipped. Its own `cost_usd` comes from its catalog and is not read.
+- **Its Responses client wants `sequence_number` on every event.** A scripted stream without it stopped the run with a decode error. OpenAI's own stream carries it.
+
+### What ran
+
+Hosted Linux x86_64 without KVM: the pinned musl and glibc builds against a scripted endpoint over chat completions and Messages, each one tool call that wrote a file and a final message, exit 0, 3 or 4 requests, the token never in a file. The command `Installed.script` writes, run with the pinned builds in a directory, over chat completions and Messages: the same. Lint, both type checks and `node --test test/Installed.test.ts` with the two new tests.
+
+### Not verified
+
+- A krun or ns slot, a Terminal-Bench 2.1 task, a real model, a deployed Worker, linux/arm64, Alpine, and the Responses API of a real provider: no machine with KVM was had for this change.
