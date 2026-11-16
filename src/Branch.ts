@@ -20,6 +20,7 @@ export type Record = {
   chosen: number
   fork?: Fork
   picker?: Picker.Record
+  session?: string
 }
 
 export class InvalidError extends Error {

@@ -8176,3 +8176,51 @@ What follows from it:
 - An import is not a way to get an existing version back. Copy its rows and its blobs.
 
 Not established: which bytes of the disks differ, and why. The formatter takes its UUID and its hash seed from the digest of the image or of the build recipe (`format` in `krun/host/src/image/build.rs`), so what remains is the build (the times and the files that `RUN` steps write, what a step fetches) and what the guest kernel writes to the file system. Whether a task whose environment is an image reference converts to the same bytes twice was not measured. No test covers this, and no code changed with this entry.
+
+## 2026-11-16: a claim that ended writes nothing to its row
+
+**The defect.** A lost claim must start again from nothing. In a run of 2026-11-16 a runner was stopped with a signal while rows of session agents were in their turns, and three of the rows it gave back broke that. The Worker ran an earlier commit with the code of `6835d07` in these paths.
+
+- Two rows of a single-session agent ended `errored` with `agent: the turn ended as cancelled` and were never run again. Each has one claim that ended `released` in the run phase, a failure whose time is the end of that claim to the millisecond, a result with no sandbox, an empty timing and a start 26 ms after the claim ended.
+- One row of an agent with two branches was claimed again. Its second claim has an agent execution of 0.12 s, the verifier graded the fresh sandbox of that claim, and the row ended `failed`. Its artifacts hold the `agent/branches.json` of the first claim: the trunk completed, the other branch `the turn ended as cancelled`.
+
+**The cause** is one order and three writes. `lose()` cancelled the turns of the sessions of the row and read their events, and gave the row back to the ledger only after those round trips. For that time the claim still looked held, and the cancelled turn woke the `agent` call that the runner held open. A runner that is stopped ends its claim loop and lets its row steps go on, so it acted on the answer.
+
+1. The read of a single session answered `failed` with `the turn ended as cancelled` for the turn that `lose()` had cancelled. The runner reported that failure, `finish()` passed the fence, awaited the same sessions, and then completed the row it read again from the ledger without a look at its claim. `Ledger.finish` took any row that was not done, so it ended the row that `lose()` had given back in between.
+2. The read of a branched row checked the claim once, awaited the turn of each branch, and then wrote `agent/branches.json` under the row id, after `lose()` had deleted the artifacts of the row. The second claim found a decided record at its first read and answered `completed`.
+3. `complete()` wrote artifacts between its awaits, and every write of a runner request after an await had the same shape.
+
+An installed agent has no session turn that the run cancels, and the Worker never answers `failed` for its agent, so its rows went back clean. A lease that expires after the machine of the runner died leaves no request of the claim in the Worker: a held call ends within `HOLD_MS`, 50 s, and the default lease is 60 s. A runner that lives while its lease expires, or that is told to leave, has the race.
+
+**The rule.**
+
+- `lose()` ends the claim first, in one step with no await: the ledger takes the row back, the artifacts of the row are deleted, and the calls held for it wake. The sessions are halted, read for the usage of the lost claim and deleted after that. `Ledger.spend` writes that usage to the claim that ended.
+- `Ledger.requeue` and `Ledger.finish` take the claim token that the caller read, and change nothing when the row has another. `requeue` answers `requeued`, `ended` (the claims of the run are used up, and the row stays for its errored result) or `stale`. `Ledger.held` is false for a claim that ended, also while its row waits for that result.
+- A request of a runner checks its claim again after each await and before each write: `mine()` answers 410, `keep()` writes an artifact and `amend()` changes the row only under it. A turn is read, then the claim, then the answer, so the turn that the run cancelled with the claim is the answer to no runner.
+- `complete()` collects the events of its sessions first and writes after its last await, and only when the row still has the claim it was called with. It returns whether it ended the row. `finish()` answers 410 when it did not, and a cancelled run asks again for a row that changed under it.
+- A branch record names the session of the claim that decided it.
+- At result time a graded result is refused when the agent was not run by the claim of the row (`Claim.unowned`): the timing of the claim has no agent execution, `agent/turns.jsonl` has no turn of the session of the claim or has a turn of the session of another claim, the branch record is missing or names another session, or the turn of the chosen session did not complete and the row has no failure of its own. The row ends `errored` with the kind `internal` and `the result of the attempt is refused: ` followed by the reason, and no reward. The fence above makes this state unreachable through the paths that are known. The check names it if another path reaches it.
+
+**Tests.** `node --test test/Ledger.test.ts test/Claim.test.ts`: a claim that ended finishes and requeues no row, before and after another claim takes it, and each refusal of `Claim.unowned`, with the record of the branched row above. Against the ledger of `6835d07` the same calls answered `true` twice: the row that was given back ended `done` with one claim, `released`.
+
+Two lanes on directory slots, `NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=released NANOEVAL_E2E_SLOTS=2 npm run e2e` and `NANOEVAL_E2E_SCENARIO=released-branches`: the scripted model holds its answers, the one runner is stopped with SIGTERM when its rows are in the run phase and a request is held, and a second runner starts. Each row of the stopped runner has two claims, `released` and `finished`, and passes or fails by its agent with the session of its second claim, a sandbox, an agent execution and at least one model call.
+
+**Measured** on 2026-11-16 on one Linux machine with 4 threads, local workerd, the working tree of this change on `6835d07`, and `6835d07` with the two lanes added. A local session object answers in a few milliseconds, so the window of the race is narrow there. The lines marked "with a wait" add 400 ms before `Harness.events` reads a turn, in place of the round trip to a session object of a deployed Worker.
+
+| | `released` | `released-branches` |
+| --- | --- | --- |
+| `6835d07` | passed 3 of 3: the race was not hit | passed 3 of 3: the race was not hit |
+| `6835d07` with a wait | failed 2 of 2: both rows of the stopped runner `errored`, `agent: the turn ended as cancelled`, one claim | failed 2 of 2: the row `errored` the same way, one claim |
+| This change | passed 3 of 3 | passed 3 of 3 |
+| This change with a wait | passed 2 of 2 | passed 2 of 2 |
+
+One more run of `released` with this change failed for a reason of the measurement: a source of the Worker was edited during the run, the local Worker loaded again, and its log held `Uncaught Error: session deleted`.
+
+**Rejected.** A check of the claim only in `finish()`: the record of a branched row and the artifacts of `complete()` are written on other paths. Keeping the order of `lose()` and holding the row in a state between claimed and given back: a state that every reader must know. A test knob in the Worker that slows a session: the Worker has no code for tests.
+
+**Not verified.**
+
+- A deployed Worker. No Worker was deployed with this change.
+- krun and ns slots. The lanes run on directory slots, and the paths that changed do not read the kind of slot.
+- The exact interleaving of the branched row, a trunk that completed and a branch under way when the runner is stopped. The branches lane stops the runner with every session under way. On `6835d07` with a wait it fails by the first write, not the second.
+- A runner whose lease expires while it lives. The path is the same `lose()`, and no lane stalls the heartbeats of a runner that still runs its rows.

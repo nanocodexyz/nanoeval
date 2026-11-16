@@ -123,7 +123,21 @@ export function active(row: Pick<Attempt, 'phase'>): boolean {
 
 export function held(sql: Sql.Sql, input: { claim: string; id: string }): Attempt | undefined {
   const row = get(sql, input.id)
-  return row && active(row) && row.claim === input.claim ? row : undefined
+  return row && active(row) && row.claim === input.claim && live(sql, input.claim) ? row : undefined
+}
+
+function live(sql: Sql.Sql, claim: string): boolean {
+  return sql.all('SELECT 1 FROM claims WHERE token = ? AND ended_at IS NULL', claim).length === 1
+}
+
+export function current(
+  sql: Sql.Sql,
+  input: Pick<Attempt, 'claim' | 'claims' | 'id'>,
+): Attempt | undefined {
+  const row = get(sql, input.id)
+  return row && row.phase !== 'done' && row.claim === input.claim && row.claims === input.claims
+    ? row
+    : undefined
 }
 
 export function mark(
@@ -256,12 +270,12 @@ function end(sql: Sql.Sql, row: Attempt, input: { ending: Ending; now: number; u
   )
 }
 
-export function requeue(sql: Sql.Sql, input: requeue.Input): boolean {
+export function requeue(sql: Sql.Sql, input: requeue.Input): requeue.ReturnType {
   return sql.transaction(() => {
     const row = get(sql, input.id)
-    if (!row || !active(row)) return false
+    if (!row || !active(row) || row.claim !== input.claim) return 'stale'
     end(sql, row, input)
-    if (row.claims >= input.limit) return false
+    if (row.claims >= input.limit) return 'ended'
     update(sql, row.id, {
       claim: null,
       deadline_at: null,
@@ -275,24 +289,30 @@ export function requeue(sql: Sql.Sql, input: requeue.Input): boolean {
       started_at: null,
       timing: '{}',
     })
-    return true
+    return 'requeued'
   })
 }
 
 export declare namespace requeue {
   type Input = {
+    claim: string | null
     ending: 'expired' | 'forgotten' | 'released' | 'retried'
     id: string
     limit: number
     now: number
     usage?: string
   }
+  type ReturnType = 'ended' | 'requeued' | 'stale'
+}
+
+export function spend(sql: Sql.Sql, input: { claim: string; usage: string }): void {
+  sql.run('UPDATE claims SET usage = ? WHERE token = ?', input.usage, input.claim)
 }
 
 export function finish(sql: Sql.Sql, input: finish.Input): boolean {
   return sql.transaction(() => {
     const row = get(sql, input.id)
-    if (!row || row.phase === 'done') return false
+    if (!row || row.phase === 'done' || row.claim !== input.claim) return false
     end(sql, row, { ending: input.ending ?? 'finished', now: input.now })
     update(sql, row.id, {
       lease_until: null,
@@ -306,6 +326,7 @@ export function finish(sql: Sql.Sql, input: finish.Input): boolean {
 
 export declare namespace finish {
   type Input = {
+    claim: string | null
     ending?: Ending
     id: string
     now: number
