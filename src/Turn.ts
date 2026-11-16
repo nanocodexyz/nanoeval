@@ -38,6 +38,7 @@ export type Turn = {
   thinking?: string
   toolResultClearing?: Config.ToolResultClearing
   toolResultTokens?: number
+  verificationRequested?: true
   webSearch?: false
   yieldFloorMs?: number
   yieldShare?: number
@@ -59,6 +60,7 @@ function levers(turn: Turn): Record<string, true> {
     ...(turn.persistFinish ? { persist_finish: true as const } : {}),
     ...(turn.skipFinishCheck ? { skip_finish_check: true as const } : {}),
     ...(turn.stopAtTarget ? { stop_at_target: true as const } : {}),
+    ...(turn.verificationRequested ? { verification_requested: true as const } : {}),
   }
 }
 
