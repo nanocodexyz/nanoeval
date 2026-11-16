@@ -1,0 +1,20 @@
+// The runner fleet Worker: wrangler deploy -c container/wrangler.jsonc
+// Billed per running instance (Containers on Workers Paid). Nothing here is deployed by CI.
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "nanoeval-runners",
+  "main": "Fleet.ts",
+  "compatibility_date": "2026-11-01",
+  "containers": [
+    {
+      "class_name": "RunnerHost",
+      "scheduling_policy": "durable_object",
+      // The most instances at once: 375 x standard-4 is the 1,500 vCPU an account has.
+      "max_instances": 375,
+      "images": { "base": { "dockerfile": "./Dockerfile", "image_build_context": ".." } }
+    }
+  ],
+  "durable_objects": { "bindings": [{ "name": "RUNNER_HOST", "class_name": "RunnerHost" }] },
+  "exports": { "RunnerHost": { "type": "durable-object", "storage": "sqlite" } },
+  "observability": { "enabled": true }
+}
