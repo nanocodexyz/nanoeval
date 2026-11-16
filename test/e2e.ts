@@ -26,6 +26,7 @@ import * as Compare from '../src/Compare.ts'
 import * as Config from '../src/Config.ts'
 import type * as Eval from '../src/Eval.ts'
 import * as Installed from '../src/Installed.ts'
+import * as Picker from '../src/Picker.ts'
 import * as Pins from '../src/Pins.ts'
 import * as Price from '../src/Price.ts'
 import * as Protocol from '../src/Protocol.ts'
@@ -99,7 +100,10 @@ const direct = scenario === 'direct'
 const lazyFork = scenario === 'lazy'
 const lazyPass = scenario === 'lazy-pass'
 const lazying = lazyFork || lazyPass
-const branching = scenario === 'branches' || lazying
+const pickerLazy = scenario === 'picker-lazy'
+const picking = scenario === 'picker' || pickerLazy
+const branching = scenario === 'branches' || lazying || picking
+const verifierPrompts: { others: number; pass: boolean; pwd: string }[] = []
 const branchRequests: { check: boolean; done: boolean }[] = []
 const branchSessions = new Map<string, number>()
 const subagent = scenario === 'subagent'
@@ -418,6 +422,7 @@ function responses(
   if (preflighted) preflightInputs.push(text)
   const arrived = (() => {
     if (!branching || backend === 'dir') return undefined
+    if (picking && text.includes('You are an independent verifier')) return undefined
     const key = body.prompt_cache_key
     if (key === undefined) throw new Error('a branch asks its model without a prompt_cache_key')
     if (!branchSessions.has(key)) branchSessions.set(key, branchSessions.size)
@@ -438,8 +443,14 @@ function responses(
           .findLast((item) =>
             ['custom_tool_call_output', 'function_call_output'].includes(item['type']),
           )?.['output']
-  const code =
-    checking !== -1 && lazying
+  const verifying = picking && text.includes('You are an independent verifier')
+  const code = verifying
+    ? 'const at = await tools.exec_command({ cmd: "pwd" }); const result = await tools.exec_command({ cmd: ' +
+      JSON.stringify(
+        '[ "$(cat greeting.txt)" = \'hello from nanoeval\' ] && echo vcheck-$((40 + 2))-ok || echo vcheck-$((40 + 2))-bad',
+      ) +
+      ' }); const seen = await tools.exec_command({ cmd: "ls -a | grep -c \'^[.]vmark-\' || true" }); await tools.exec_command({ cmd: "touch .vmark-$$-$(date +%s%N); printf vandal > greeting.txt" }); text(String(at.output).trim() + " vmarks-" + String(seen.output).trim() + "-seen " + JSON.stringify(result) + " cell tools: " + JSON.stringify(ALL_TOOLS.map((tool) => tool.name)))'
+    : checking !== -1 && lazying
       ? 'const at = await tools.exec_command({ cmd: "pwd" }); const masked = String(at.output).includes("-b1/"); await tools.exec_command({ cmd: ' +
         JSON.stringify(
           `printf '%s\n' '[ "$(cat greeting.txt)" = "hello from nanoeval" ]' > greeting_test.sh`,
@@ -495,14 +506,33 @@ function responses(
       tools,
     })
   const finished = checking === -1 ? output !== undefined : checked !== undefined
-  if (branching) branchRequests.push({ check: checking !== -1, done: finished })
+  if (branching)
+    branchRequests.push({
+      check: checking !== -1 || verifying,
+      done: finished,
+    })
+  const verified = verifying && finished && JSON.stringify(output).includes('vcheck-42-ok')
+  if (verifying && finished)
+    verifierPrompts.push({
+      others: Number(/vmarks-([0-9]+)-seen/.exec(JSON.stringify(output))?.[1] ?? -1),
+      pass: verified,
+      pwd:
+        /(\/\S+?)\s/.exec(
+          typeof output === 'string'
+            ? output
+            : ((output ?? []) as { text?: string }[]).map((part) => part.text ?? '').join(''),
+        )?.[1] ?? '',
+    })
   const item = finished
     ? {
         content: [
           {
             annotations: [],
-            text:
-              checking === -1
+            text: verifying
+              ? verified
+                ? 'I ran the check myself.\nVERIFIER: PASS\nCONFIDENCE: 95\nOUTPUT: greeting.txt hello from nanoeval'
+                : 'The greeting is wrong.\nVERIFIER: FAIL\nCONFIDENCE: 90\nOUTPUT: greeting.txt wrong'
+              : checking === -1
                 ? 'The task is complete.'
                 : lazying
                   ? JSON.stringify(checked).includes('real-fail')
@@ -1908,6 +1938,11 @@ async function main(): Promise<void> {
                           id: 'branched',
                           ...(lazying ? { lazy: true as const } : {}),
                           model: 'gpt-right',
+                          ...(picking
+                            ? {
+                                picker: pickerLazy ? ('verify_lazy' as const) : ('verify' as const),
+                              }
+                            : {}),
                           provider: 'codex',
                         }
                       : {
@@ -2918,7 +2953,7 @@ async function main(): Promise<void> {
       )
       const trajectories: Atif.Trajectory[] = []
       for (const name of artifacts.filter((name) =>
-        /^agent\/(branch-[0-9]+\/)?trajectory\.json$/.test(name),
+        /^agent\/((branch|verifier)-[0-9]+\/)?trajectory\.json$/.test(name),
       ))
         trajectories.push(JSON.parse(await read(name)) as Atif.Trajectory)
       const every = (all: Atif.Trajectory): Atif.Step[] => [
@@ -4627,6 +4662,116 @@ async function main(): Promise<void> {
       })
       assert.equal(refused.status, 400)
       assert.match(await refused.text(), /no failed attempt to rerun/)
+      await pass()
+      return
+    }
+
+    if (picking) {
+      const detail = details[0]!
+      assert.equal(details.length, 1)
+      assert.equal(
+        detail['attempt'].outcome,
+        'passed',
+        'every verifier overwrote greeting.txt in its probe slot, and the kept branch still passed: ' +
+          JSON.stringify(detail['attempt'].failure),
+      )
+      const read = (name: string) => api.artifact(created.id, detail['attempt'].id, name)
+      const artifacts = detail['artifacts'] as string[]
+      const record = JSON.parse(await read('agent/branches.json')) as Branch.Record
+      const picked = record.picker
+      assert.ok(picked, 'the record of the branches says how the verifier picked')
+      assert.equal(picked.model, 'gpt-right', 'a codex verifier runs the model of the agent')
+      assert.deepEqual(
+        picked.cheatScan,
+        { probeHiddenPaths: 0, verifierHiddenReads: 0 },
+        'no probe slot holds the hidden tests, and no verifier read a path under them',
+      )
+      assert.deepEqual(
+        picked.verifications.map((verification) => verification?.verdict),
+        ['fail', 'fail', 'pass'],
+        'the verifier failed the two wrong branches and passed the right one',
+      )
+      assert.equal(record.chosen, 2, 'the branch the verifier passed is kept')
+      assert.equal(picked.evidence, 'verifier')
+      assert.ok(
+        record.branches.every(
+          (branch) => branch.state !== 'completed' || branch.verdict === 'unknown',
+        ),
+        'no branch was asked for a self-check',
+      )
+      if (pickerLazy) {
+        assert.equal(
+          record.fork?.reason,
+          'verifier_fail',
+          'the trunk forks when its verifier fails',
+        )
+        assert.ok(artifacts.includes(Branch.forkRecord))
+      } else assert.equal(record.fork, undefined)
+      assert.deepEqual(
+        JSON.parse(await read(Picker.probes)) as number[],
+        [0, 1, 2],
+        'each branch was verified in a probe slot forked live from it, once',
+      )
+      if (backend === 'dir')
+        assert.equal(
+          new Set(verifierPrompts.map((prompt) => prompt.pwd)).size,
+          3,
+          'each branch was verified in its own probe slot',
+        )
+      assert.ok(verifierPrompts.length >= 3, 'every verifier reported what it saw')
+      assert.ok(
+        verifierPrompts.every((prompt) => prompt.others === 0),
+        'no verifier found the mark another verifier left, so each probed a slot of its own, on every backend: ' +
+          JSON.stringify(verifierPrompts),
+      )
+      if (backend === 'dir')
+        assert.ok(
+          verifierPrompts.every((prompt) => /-v[0-2]\//.test(prompt.pwd + '/')),
+          'every verifier probed in its own probe slot: ' + JSON.stringify(verifierPrompts),
+        )
+      const turns = (await read('agent/turns.jsonl'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { request_id: string; session: string })
+      assert.deepEqual(
+        turns.map((turn) => turn.request_id).sort(),
+        ['attempt', 'attempt', 'attempt', Picker.requestId, Picker.requestId, Picker.requestId],
+        'three branches worked and three verifiers checked them, without a self-check',
+      )
+      assert.equal(new Set(turns.map((turn) => turn.session)).size, 6)
+      const grades = JSON.parse(await read(Picker.grades)) as {
+        [index: string]: { reward: number | null }
+      }
+      assert.deepEqual(
+        Object.keys(grades).sort(),
+        ['0', '1'],
+        'the branches not kept are graded after the pick, for analysis',
+      )
+      assert.ok(Object.values(grades).every((grade) => grade.reward === 0))
+      const spent = JSON.parse(await read(Picker.usageRecord)) as Picker.Usage
+      assert.equal(spent.verifierCalls, 3)
+      const usage = detail['result'].usage as Atif.Usage
+      assert.equal(
+        usage.modelCalls,
+        branchRequests.length,
+        'the usage of the attempt counts every branch and every verifier',
+      )
+      assert.equal(branchRequests.filter((request) => request.check).length, 9)
+      assert.match(await read('verifier/test-stdout.txt'), /greeting.txt is correct/)
+      console.log(
+        scenario +
+          ': branch ' +
+          record.chosen +
+          ' kept by an independent verifier (' +
+          picked.evidence +
+          ')' +
+          (record.fork ? ' after a fork for ' + record.fork.reason : '') +
+          '; others graded after the pick: ' +
+          JSON.stringify(grades) +
+          '; usage ' +
+          usage.modelCalls +
+          ' model calls',
+      )
       await pass()
       return
     }

@@ -550,10 +550,16 @@ cmd__fork() {
       cp -a --reflink=auto "$dir/work" "$to/work"
       ;;
     krun | ns)
+      mapfile -t options < <(guest_options "$to")
       if [ "$when" = live ]; then
-        mapfile -t options < <(guest_options "$to")
         vm "$to" exec "${options[@]}" --user 0 -- rm -rf /tmp/.nanoeval-hand
       fi
+      vm "$to" exec "${options[@]}" --user 0 -- sh -c 'for p in /tests /solution /oracle; do if [ -e "$p" ]; then echo "$p"; fi; done' >"$to/hidden"
+      ;;
+    dir)
+      for p in tests solution oracle; do
+        if [ -e "$to/work/$p" ]; then echo "/$p"; fi
+      done >"$to/hidden"
       ;;
   esac
   printf '%s\n' "$slot" >"$to/fork"

@@ -11,6 +11,7 @@ import * as Installed from '../src/Installed.ts'
 import * as Bytes from '../src/internal/Bytes.ts'
 import * as Judge from '../src/Judge.ts'
 import * as Pins from '../src/Pins.ts'
+import * as Picker from '../src/Picker.ts'
 import * as Preflight from '../src/Preflight.ts'
 import * as Protocol from '../src/Protocol.ts'
 import type * as Result from '../src/Result.ts'
@@ -81,7 +82,17 @@ type Shared = {
   unpacking: Map<string, Promise<void>>
 }
 
-type Stage = 'agent' | 'attach' | 'cli' | 'fork' | 'judge' | 'prepare' | 'solve' | 'up' | 'verify'
+type Stage =
+  | 'agent'
+  | 'attach'
+  | 'cli'
+  | 'fork'
+  | 'judge'
+  | 'prepare'
+  | 'probe'
+  | 'solve'
+  | 'up'
+  | 'verify'
 
 type Work = {
   at: number
@@ -97,6 +108,7 @@ type Work = {
   memoryMb?: number
   message: string
   next: number
+  probing?: number[]
   round: 1 | 2
   row: Protocol.Claimed
   session?: Protocol.Session
@@ -1132,8 +1144,11 @@ async function attend(
     await Fs.writeFile(file, content)
   }
 
-  const attachHand = async (item: Work, input: { index: number; session: Protocol.Session }) => {
-    const slot = Branch.slot(item.row.slot, input.index)
+  const attachHand = async (
+    item: Work,
+    input: { index: number; session: Protocol.Session; slot?: string },
+  ) => {
+    const slot = input.slot ?? Branch.slot(item.row.slot, input.index)
     const file = Path.join(home, 'slots', slot, 'token')
     await Fs.writeFile(file, input.session.token + '\n', { mode: 0o600 })
     try {
@@ -1146,18 +1161,89 @@ async function attend(
     }
   }
 
+  const probeSlots = (item: Work) =>
+    item.row.agent.branches && item.row.agent.picker
+      ? Branch.indexes(item.row.agent.branches).map((index) =>
+          Picker.slot(Branch.base(item.row.slot), index),
+        )
+      : []
+
   const branchSlots = (item: Work) =>
     item.row.agent.branches
-      ? Branch.indexes(item.row.agent.branches).map((index) =>
-          Branch.slot(Branch.base(item.row.slot), index),
-        )
+      ? [
+          ...Branch.indexes(item.row.agent.branches).map((index) =>
+            Branch.slot(Branch.base(item.row.slot), index),
+          ),
+          ...probeSlots(item),
+        ]
       : [item.row.slot]
+
+  const graded = async (item: Work) => {
+    if (!item.row.agent.picker || !item.row.agent.branches || item.row.task.verifier.finalMessage)
+      return []
+    const base = Branch.base(item.row.slot)
+    const found: { index: number; slot: string }[] = []
+    for (const index of Branch.indexes(item.row.agent.branches)) {
+      const slot = Branch.slot(base, index)
+      if (slot !== item.row.slot && (await exists(Path.join(home, 'slots', slot))))
+        found.push({ index, slot })
+    }
+    return found
+  }
+
+  const gradeOthers = async (item: Work) => {
+    const archive = await text(slots.archiveFile(item.row.slot))
+    const up = await text(slots.separateFile(item.row.slot, 'up'))
+    for (const { slot } of await graded(item)) {
+      if (archive !== undefined) await Fs.writeFile(slots.archiveFile(slot), archive)
+      if (up !== undefined) {
+        await Fs.mkdir(slots.separateFile(slot, ''), { recursive: true })
+        await Fs.writeFile(slots.separateFile(slot, 'up'), up)
+      }
+      await output(slots.verify(slot, item.row.task.verifier.timeoutSec), env)
+    }
+  }
+
+  const othersGraded = async (item: Work, elapsed: number): Promise<boolean> => {
+    const others = await graded(item)
+    if (!others.length) return true
+    const codes = await Promise.all(
+      others.map(async ({ slot }) =>
+        Slot.exit(await phase(Path.join(home, 'slots', slot, 'verify.status'))),
+      ),
+    )
+    const timeoutMs = (item.row.task.verifier.timeoutSec + config.limits.setupSec) * 1000
+    if (codes.includes(undefined) && elapsed <= timeoutMs) return false
+    const grades: {
+      [index: string]: { code: number | null; reward: number | null }
+    } = {}
+    for (const [at, { index, slot }] of others.entries()) {
+      const said = (await text(Path.join(home, 'slots', slot, 'verifier', 'reward.txt')))?.replace(
+        /[ \n\r]/g,
+        '',
+      )
+      grades[index] = {
+        code: codes[at] ?? null,
+        reward: said !== undefined && /^-?[0-9]+(\.[0-9]+)?$/.test(said) ? Number(said) : null,
+      }
+      await output(slots.down(slot, 'keep'), env)
+    }
+    await upload(item, Picker.grades, JSON.stringify(grades, null, 2) + '\n')
+    return true
+  }
 
   const keep = async (item: Work, branch: number | undefined) => {
     if (!item.row.agent.branches) return
     const chosen = Branch.slot(Branch.base(item.row.slot), branch ?? 0)
+    const kept = new Set(
+      item.row.agent.picker
+        ? Branch.indexes(item.row.agent.branches).map((index) =>
+            Branch.slot(Branch.base(item.row.slot), index),
+          )
+        : [],
+    )
     for (const slot of branchSlots(item))
-      if (slot !== chosen && (await exists(Path.join(home, 'slots', slot))))
+      if (slot !== chosen && !kept.has(slot) && (await exists(Path.join(home, 'slots', slot))))
         await output(slots.down(slot, 'keep'), env)
     if (chosen === item.row.slot) return
     item.watcher?.close()
@@ -1183,6 +1269,7 @@ async function attend(
     if (task.verifier.finalMessage) await verifierInput(item, 'final_message.txt', item.message)
     await packages(item)
     await shell(slots.verify(item.row.slot, task.verifier.timeoutSec))
+    await gradeOthers(item)
     item.round = 1
     delete item.diskMb
     await move(item, 'verify')
@@ -1346,6 +1433,65 @@ async function attend(
         }
         return move(item, 'attach')
       }
+      case 'probe': {
+        const probing = item.probing ?? []
+        const codes = await Promise.all(
+          probing.map(async (index) =>
+            Slot.exit(
+              await phase(Path.join(home, 'slots', Picker.slot(item.row.slot, index), 'up.status')),
+            ),
+          ),
+        )
+        const failed = codes.findIndex((code) => code !== undefined && code !== 0)
+        if (failed !== -1) {
+          const probe = Picker.slot(item.row.slot, probing[failed]!)
+          const upLog = await shell(slots.log(probe, 'up', Protocol.logBytes))
+          if (codes[failed] === Slot.machineExit) throw new MachineError(upLog.trim().slice(-2000))
+          await upload(item, 'environment.log', upLog)
+          return fail(
+            item,
+            'environment',
+            'the probe slot ' +
+              probe +
+              ' failed to fork with exit code ' +
+              codes[failed] +
+              ': ' +
+              upLog.slice(-2000),
+          )
+        }
+        if (codes.includes(undefined)) {
+          const setupSec = Math.max(task.setupTimeoutSec ?? 0, config.limits.setupSec)
+          if (elapsed > setupSec * 1000)
+            return fail(
+              item,
+              'environment',
+              'the probe slots did not fork within ' + setupSec + ' s',
+            )
+          return pending(item)
+        }
+        const scan: Picker.ProbeScan = {}
+        for (const index of probing)
+          scan[index] = (
+            (await text(Path.join(home, 'slots', Picker.slot(item.row.slot, index), 'hidden'))) ??
+            ''
+          )
+            .split('\n')
+            .filter(Boolean)
+        await upload(item, Picker.probeScan, JSON.stringify(scan, null, 2) + '\n')
+        for (const index of probing) {
+          const session = await rowCall<Protocol.Session>(item, 'session', {
+            branch: index,
+            verifier: true,
+          } satisfies Protocol.Hand)
+          await attachHand(item, {
+            index,
+            session,
+            slot: Picker.slot(item.row.slot, index),
+          })
+        }
+        delete item.probing
+        return move(item, 'agent')
+      }
       case 'attach': {
         if (!item.row.agent.oracle) await instruct(item)
         if (item.row.agent.preflight && item.facts === undefined) {
@@ -1409,6 +1555,18 @@ async function attend(
           log('forked ' + item.row.id + ' from its trunk while its hand runs')
           return move(item, 'fork')
         }
+        if (state.state === 'probe') {
+          for (const index of state.branches)
+            await shell(
+              slots.fork(Branch.slot(item.row.slot, index), {
+                branch: Picker.slot(item.row.slot, index),
+                when: 'live',
+              }),
+            )
+          item.probing = state.branches
+          log('forked probe slots ' + state.branches.join(', ') + ' of ' + item.row.id)
+          return move(item, 'probe')
+        }
         if (state.state === 'completed' || state.state === 'timeout') {
           item.message = state.state === 'completed' ? state.message : ''
           await keep(item, state.branch)
@@ -1469,6 +1627,7 @@ async function attend(
           return pending(item)
         }
         if (code !== 0 && (await gone(item))) return
+        if (item.round === 1 && !(await othersGraded(item, elapsed))) return pending(item)
         item.marks.push({ at: item.at, ms: now - item.at, name: 'attempt.verifier' })
         return timed(item, 'attempt.collect', () => collect(item, code))
       }
@@ -1609,6 +1768,7 @@ async function attend(
       await call<Config.Runner>('/hello', {
         capabilities: {
           ...capabilities,
+          ...(capabilities.fork_live ? { picker: true } : {}),
           slots: capacity.slots,
           ...(vcpus === undefined ? {} : { vcpus }),
         },
@@ -1697,7 +1857,7 @@ async function attend(
               (total, item) =>
                 total +
                 Math.min(Math.ceil(item.row.task.resources.cpus), vcpus) *
-                  (item.row.agent.branches ?? 1),
+                  Picker.slots(item.row.agent),
               0,
             ),
           }),
@@ -1706,14 +1866,14 @@ async function attend(
         rows.map((item) => ({
           memoryMb:
             Admission.clamp(item.row.task.resources.memoryMb, capacity) *
-            (item.row.agent.branches ?? 1),
+            Picker.slots(item.row.agent),
           starting: item.stage === 'prepare' || item.stage === 'up',
         })),
         availableNow === undefined
           ? undefined
           : { availableMb: availableNow, memoryMb: capabilities.memory_mb },
       ),
-      running: rows.reduce((total, item) => total + (item.row.agent.branches ?? 1), 0),
+      running: rows.reduce((total, item) => total + Picker.slots(item.row.agent), 0),
       starting: rows.filter((item) => item.stage === 'prepare' || item.stage === 'up').length,
     }
   }

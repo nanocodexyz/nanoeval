@@ -3,6 +3,7 @@ import * as Eval from './Eval.ts'
 import * as Installed from './Installed.ts'
 import type * as Ledger from './Ledger.ts'
 import * as Pace from './Pace.ts'
+import * as Picker from './Picker.ts'
 import * as Price from './Price.ts'
 import type * as Protocol from './Protocol.ts'
 import type * as Sandbox from './Sandbox.ts'
@@ -36,6 +37,7 @@ export type Agent = {
   model: string
   orchestration?: Orchestration
   persistFinish?: true
+  picker?: Picker.Kind
   preflight?: true
   provider: 'claude' | 'codex' | 'oracle' | Installed.Kind
   refusalFallback?: RefusalFallback
@@ -46,7 +48,40 @@ export type Agent = {
   toolResultTokens?: number
   yieldFloorMs?: number
   yieldShare?: number
+  verifierModel?: string
 }
+
+export const agentKeys: readonly (keyof Agent)[] = [
+  'api',
+  'branches',
+  'briefFinal',
+  'briefFinish',
+  'cellYieldMs',
+  'escalateContextTokens',
+  'escalateModel',
+  'escalateToolErrors',
+  'foldFinish',
+  'id',
+  'lateFinishCheckMs',
+  'lazy',
+  'leanCells',
+  'lowEffortRounds',
+  'model',
+  'orchestration',
+  'persistFinish',
+  'picker',
+  'preflight',
+  'provider',
+  'refusalFallback',
+  'resultEffort',
+  'skipFinishCheck',
+  'stopAtTarget',
+  'thinking',
+  'toolResultTokens',
+  'verifierModel',
+  'yieldFloorMs',
+  'yieldShare',
+]
 
 export type Harness = 'installed' | 'oracle' | 'session'
 
@@ -259,6 +294,14 @@ export function parse(value: unknown): Config {
     if (typeof agent?.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(agent.id))
       fail('an agent id is letters, digits, dots, dashes and underscores')
     if (typeof agent.model !== 'string' || !agent.model) fail(agent.id + ' names no model')
+    const unknown = Object.keys(agent).filter((key) => !agentKeys.includes(key as keyof Agent))
+    if (unknown.length)
+      fail(
+        agent.id +
+          ' has keys this Worker does not know (' +
+          unknown.join(', ') +
+          '): deploy a Worker that runs them, rather than running another arm',
+      )
     if (agent.thinking !== undefined) choice(agent.thinking, 'thinking', thinking)
     const provider = choice(agent.provider, 'provider', [
       'claude',
@@ -293,6 +336,19 @@ export function parse(value: unknown): Config {
       if (agent.lazy !== true) fail(agent.id + ' has a lazy that is not true')
       if (agent.branches === undefined)
         fail(agent.id + ' is lazy, and only an agent that branches can be')
+    }
+    if (agent.picker !== undefined) {
+      choice(agent.picker, agent.id + ': picker', Picker.kinds)
+      if (agent.branches === undefined)
+        fail(agent.id + ' picks a branch, and only an agent that branches can')
+      if (provider !== 'claude' && provider !== 'codex')
+        fail(agent.id + ' picks a branch, which only a claude or codex session can')
+    }
+    if (agent.verifierModel !== undefined) {
+      if (typeof agent.verifierModel !== 'string' || !agent.verifierModel)
+        fail(agent.id + ' has an empty verifierModel')
+      if (agent.picker === undefined)
+        fail(agent.id + ' has a verifierModel, which only an agent with a picker takes')
     }
     if (agent.refusalFallback !== undefined) {
       choice(agent.refusalFallback, 'refusalFallback', ['return_once', 'session'])
@@ -391,12 +447,13 @@ export function parse(value: unknown): Config {
       ...(agent.lateFinishCheckMs === undefined
         ? {}
         : { lateFinishCheckMs: agent.lateFinishCheckMs }),
-      ...(agent.lazy ? { lazy: true as const } : {}),
+      ...(agent.lazy || Picker.lazy(agent.picker) ? { lazy: true as const } : {}),
       ...(agent.leanCells ? { leanCells: true as const } : {}),
       ...(agent.lowEffortRounds ? { lowEffortRounds: true as const } : {}),
       model: agent.model,
       ...(agent.orchestration ? { orchestration: agent.orchestration } : {}),
       ...(agent.persistFinish ? { persistFinish: true as const } : {}),
+      ...(agent.picker ? { picker: agent.picker } : {}),
       ...(agent.preflight ? { preflight: true as const } : {}),
       provider,
       ...(agent.refusalFallback ? { refusalFallback: agent.refusalFallback } : {}),
@@ -407,6 +464,7 @@ export function parse(value: unknown): Config {
       ...(agent.toolResultTokens === undefined ? {} : { toolResultTokens: agent.toolResultTokens }),
       ...(agent.yieldFloorMs === undefined ? {} : { yieldFloorMs: agent.yieldFloorMs }),
       ...(agent.yieldShare === undefined ? {} : { yieldShare: agent.yieldShare }),
+      ...(agent.verifierModel ? { verifierModel: agent.verifierModel } : {}),
     }
   })
   if (new Set(agents.map((agent) => agent.id)).size !== agents.length)

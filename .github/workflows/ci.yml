@@ -181,6 +181,16 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: dir
           NANOEVAL_E2E_SCENARIO: lazy-pass
+      - name: End to end, directory slots, three branches picked by an independent verifier in probe slots, the others graded after the pick
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: picker
+      - name: End to end, directory slots, a lazy verifier picker forks two branches when the verifier fails its trunk
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_BACKEND: dir
+          NANOEVAL_E2E_SCENARIO: picker-lazy
       - name: End to end, directory slots, an agent that takes a preflight whose facts reach its first prompt
         run: npm run e2e
         env:
@@ -613,6 +623,14 @@ jobs:
         run: npm run e2e
         env:
           NANOEVAL_E2E_SCENARIO: branches
+      - name: End to end, krun slots, three branches picked by an independent verifier in probe slots forked live, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: picker
+      - name: End to end, krun slots, a lazy verifier picker forks two branches when the verifier fails its trunk, skipped where krun cannot run
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: picker-lazy
       - name: End to end, krun slots, an agent that takes a preflight in its microVM, skipped where krun cannot run
         run: npm run e2e
         env:
@@ -784,6 +802,14 @@ jobs:
         env:
           NANOEVAL_E2E_BACKEND: ns
           NANOEVAL_E2E_SCENARIO: branches
+      - name: End to end, ns slots, three branches picked by an independent verifier in probe slots forked live, skipped where the test is not root and no guest can boot
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: picker
+      - name: End to end, ns slots, a lazy verifier picker forks two branches when the verifier fails its trunk, skipped where the test is not root and no guest can boot
+        run: npm run e2e
+        env:
+          NANOEVAL_E2E_SCENARIO: picker-lazy
       - name: End to end, ns slots, an agent that takes a preflight in its slot, skipped where the test is not root and no guest can boot
         run: npm run e2e
         env:

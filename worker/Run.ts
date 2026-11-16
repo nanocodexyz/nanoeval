@@ -23,6 +23,7 @@ import * as Pace from '../src/Pace.ts'
 import * as Payment from '../src/Payment.ts'
 import * as Pins from '../src/Pins.ts'
 import * as Members from '../src/Pool.ts'
+import * as Picker from '../src/Picker.ts'
 import * as Preflight from '../src/Preflight.ts'
 import * as Price from '../src/Price.ts'
 import * as Protocol from '../src/Protocol.ts'
@@ -916,9 +917,9 @@ export class Run extends DurableObject<Env> {
 
   private served(input: { attempt: string; path: string }): string | undefined {
     const row = Ledger.get(this.sql, input.attempt)
-    return input.path.startsWith(judgePath)
-      ? this.config().judge?.model
-      : row && this.agentOf(row).model
+    if (input.path.startsWith(judgePath)) return this.config().judge?.model
+    if (row && input.path.startsWith(Picker.path)) return Picker.model(this.agentOf(row))
+    return row && this.agentOf(row).model
   }
 
   private price(input: { attempt: string; path: string }): Price.Price | undefined {
@@ -1878,7 +1879,8 @@ export class Run extends DurableObject<Env> {
     const sessions: string[] = []
     if (row.session) {
       const branches = this.installed(row) === undefined ? this.branchSessions(row) : []
-      if (submitted && row.phase === 'run') for (const name of branches) await this.halt(name)
+      if (submitted && row.phase === 'run')
+        for (const name of [...branches, ...this.verifierSessions(row)]) await this.halt(name)
       if (submitted)
         usage = await Promise.all(
           branches.map((name) => Harness.events(this.env, name, requestId)),
@@ -1896,7 +1898,8 @@ export class Run extends DurableObject<Env> {
       if (installed && ['judge', 'run', 'verify'].includes(row.phase))
         usage = JSON.stringify(this.metered(row))
       sessions.push(...this.judgeSessions(row))
-      if (row.phase !== 'claimed' && !installed) sessions.push(...branches)
+      if (row.phase !== 'claimed' && !installed)
+        sessions.push(...branches, ...this.verifierSessions(row))
     }
     const requeued = Ledger.requeue(this.sql, {
       ending,
@@ -1939,7 +1942,8 @@ export class Run extends DurableObject<Env> {
     for (const row of this.rows()) {
       if (row.phase === 'done') continue
       if (row.session && row.phase === 'run' && this.submitted(row))
-        for (const name of this.branchSessions(row)) await this.halt(name)
+        for (const name of [...this.branchSessions(row), ...this.verifierSessions(row)])
+          await this.halt(name)
       await this.complete(row, {
         ending: 'cancelled',
         failure: { at: Date.now(), kind: 'cancelled', message: 'the run was cancelled' },
@@ -2812,6 +2816,10 @@ export class Run extends DurableObject<Env> {
       refuse(
         'the run branches its agents lazily, and the slots of this runner cannot fork after the hand starts',
       )
+    if (config.agents.some((agent) => agent.picker) && !capabilities.picker)
+      refuse(
+        'the run picks branches with a verifier, and this runner cannot fork probe slots for it',
+      )
     if (Config.kind(config.sandbox.backend) !== Config.kind(capabilities.backend))
       refuse(
         'the runner was set up for the ' +
@@ -3066,6 +3074,7 @@ export class Run extends DurableObject<Env> {
       id: agent.id,
       ...(agent.lazy ? { lazy: true as const } : {}),
       oracle: agent.provider === 'oracle',
+      ...(agent.picker ? { picker: agent.picker } : {}),
       ...(agent.preflight ? { preflight: true as const } : {}),
     }
   }
@@ -3087,7 +3096,16 @@ export class Run extends DurableObject<Env> {
     const branch = body.branch ?? 0
     if (!Number.isInteger(branch) || branch < 0 || branch >= this.branches(row))
       throw new Refusal(400, 'the attempt has no branch ' + branch)
-    const session = Branch.session(row.session!, branch)
+    if (body.verifier !== undefined && !this.agentOf(row).picker)
+      throw new Refusal(400, 'the attempt has no verifier picker')
+    const session = body.verifier
+      ? Picker.session(row.session!, branch)
+      : Branch.session(row.session!, branch)
+    if (body.verifier) {
+      const probed = new Set(this.probed(row))
+      probed.add(branch)
+      this.putArtifact(row.id, Picker.probes, JSON.stringify([...probed].sort()) + '\n')
+    }
     const token = await Harness.token(this.env, session)
     return {
       name: Protocol.handName,
@@ -3108,6 +3126,134 @@ export class Run extends DurableObject<Env> {
     if (!row.session) return []
     const count = this.agentOf(row).lazy && !this.forkRecord(row) ? 1 : this.branches(row)
     return Branch.indexes(count).map((index) => Branch.session(row.session!, index))
+  }
+
+  private probed(row: Ledger.Attempt): number[] {
+    const recorded = this.textArtifact(row.id, Picker.probes)
+    return recorded === undefined ? [] : (JSON.parse(recorded) as number[])
+  }
+
+  private verifierSessions(row: Ledger.Attempt): string[] {
+    if (!row.session || !this.agentOf(row).picker) return []
+    return this.probed(row).map((index) => Picker.session(row.session!, index))
+  }
+
+  private async verifyBranch(
+    row: Ledger.Attempt,
+    input: { index: number; late: boolean },
+  ): Promise<
+    | { verification: Picker.Verification }
+    | { probe: true }
+    | { waiting: { requestId: string; session: string } }
+  > {
+    const recorded = this.textArtifact(row.id, Picker.file(input.index))
+    if (recorded !== undefined) return { verification: JSON.parse(recorded) as Picker.Verification }
+    const name = Picker.session(row.session!, input.index)
+    const settle = async (
+      report: Harness.Report | undefined,
+      error?: string,
+    ): Promise<{ verification: Picker.Verification }> => {
+      let usage: Atif.Usage | undefined
+      let hiddenReads: string[] = []
+      if (report)
+        try {
+          const events = await Harness.events(this.env, name, Picker.requestId)
+          usage = Atif.usage(events)
+          hiddenReads = Picker.hiddenReads(events, { requestId: Picker.requestId })
+        } catch (failure) {
+          if (!(failure instanceof Harness.LostError)) throw failure
+        }
+      const said = report?.status === 'completed' ? (report.ok?.message ?? '') : ''
+      if (said) this.putArtifact(row.id, Picker.message(input.index), said)
+      const parsed: Omit<Picker.Verification, 'usd'> = said
+        ? Picker.parse(said)
+        : { confidence: 0, verdict: 'unsure' }
+      const verification: Picker.Verification = {
+        ...parsed,
+        ...(error ? { error } : {}),
+        hiddenReads,
+        ...(usage ? { usage } : {}),
+        usd: usage?.costUsd ?? 0,
+      }
+      this.putArtifact(
+        row.id,
+        Picker.file(input.index),
+        JSON.stringify(verification, null, 2) + '\n',
+      )
+      return { verification }
+    }
+    let report: Harness.Report | undefined
+    try {
+      report = await Harness.turn(this.env, name, Picker.requestId)
+    } catch (error) {
+      if (!(error instanceof Harness.LostError)) throw error
+    }
+    if (!report) {
+      if (input.late) return settle(undefined, 'the verifier did not start before its deadline')
+      if (!(await Harness.hands(this.env, name)).includes(Protocol.handName)) {
+        if (this.probed(row).includes(input.index))
+          return { waiting: { requestId: Picker.requestId, session: name } }
+        return { probe: true }
+      }
+      const instruction = this.textArtifact(row.id, Picker.instruction)
+      if (instruction === undefined)
+        throw new Refusal(409, 'the attempt kept no instruction for its verifier')
+      const events = await Harness.events(
+        this.env,
+        Branch.session(row.session!, input.index),
+        requestId,
+      )
+      await this.askVerifier(row, {
+        prompt: Picker.prompt({
+          instruction,
+          log: Picker.log(events, { requestId }),
+        }),
+        session: name,
+      })
+      return { waiting: { requestId: Picker.requestId, session: name } }
+    }
+    if (report.status === 'completed') return settle(report)
+    if (report.status === 'failed' || report.status === 'cancelled')
+      return settle(report, report.error ?? 'the verifier turn ended as ' + report.status)
+    if (input.late) {
+      await Harness.cancel(this.env, name, Picker.requestId)
+      return settle(report, 'the verifier did not finish before its deadline')
+    }
+    return { waiting: { requestId: Picker.requestId, session: name } }
+  }
+
+  private async askVerifier(
+    row: Ledger.Attempt,
+    input: { prompt: string; session: string },
+  ): Promise<Harness.Report> {
+    const agent = this.agentOf(row)
+    const now = Date.now()
+    const deadline = Turn.deadline(this.config().limits, {
+      limitMs: Math.max(60_000, row.deadline_at! + Picker.graceSec * 1000 - now),
+      now,
+    })
+    const turn: Turn.Turn = {
+      ...(deadline ? { deadline } : {}),
+      hand: Protocol.handName,
+      model: Picker.model(agent),
+      payer: this.payer(agent.provider as 'claude' | 'codex'),
+      prompt: input.prompt,
+      provider: agent.provider as 'claude' | 'codex',
+      requestId: Picker.requestId,
+      ...(agent.thinking ? { thinking: agent.thinking } : {}),
+    }
+    try {
+      const report = await Harness.submit(this.env, input.session, turn)
+      this.putArtifact(
+        row.id,
+        Turn.record,
+        (this.textArtifact(row.id, Turn.record) ?? '') +
+          Turn.sent(turn, { at: now, session: input.session }),
+      )
+      return report
+    } catch (error) {
+      throw await this.unpaid(row, error)
+    }
   }
 
   private forkRecord(row: Ledger.Attempt): Branch.Fork | undefined {
@@ -3186,6 +3332,7 @@ export class Run extends DurableObject<Env> {
       }
       if (harness === 'installed')
         this.putArtifact(row.id, Installed.instruction, body.instruction!)
+      if (agent.picker) this.putArtifact(row.id, Picker.instruction, body.instruction!)
       if (agent.preflight) {
         if (typeof body.facts !== 'string')
           throw new Refusal(
@@ -3459,6 +3606,10 @@ export class Run extends DurableObject<Env> {
           continue
         }
         const message = report.ok?.message ?? ''
+        if (agent.picker) {
+          outcomes.push({ message, state: 'completed', verdict: 'unknown' })
+          continue
+        }
         let check: Harness.Report | undefined
         try {
           check = await Harness.turn(this.env, name, Branch.checkRequestId)
@@ -3492,21 +3643,68 @@ export class Run extends DurableObject<Env> {
         if (open) await Harness.cancel(this.env, name, Branch.checkRequestId)
         outcomes.push({ message, state: 'completed', verdict: 'unknown' })
       }
+      const verifications: (Picker.Verification | undefined)[] = []
+      let verifying = false
+      if (agent.picker) {
+        const probe: number[] = []
+        for (const [index, outcome] of outcomes.entries()) {
+          if (outcome?.state !== 'completed') {
+            verifications.push(undefined)
+            continue
+          }
+          const verified = await this.verifyBranch(current, {
+            index,
+            late: now > current.deadline_at! + Picker.graceSec * 1000,
+          })
+          if ('verification' in verified) {
+            verifications.push(verified.verification)
+            continue
+          }
+          verifications.push(undefined)
+          verifying = true
+          if ('probe' in verified) probe.push(index)
+          else waiting ??= verified.waiting
+        }
+        if (probe.length) return { agent: { branches: probe, state: 'probe' } }
+      }
       let chosen: number | undefined
       if (lazy) {
         if (!fork) {
-          const reason = Branch.forkReason(outcomes[0], {
-            deadlineAt: current.deadline_at!,
-            now,
-            startedAt,
-          })
+          const trunk = outcomes[0]
+          const reason = agent.picker
+            ? trunk === undefined
+              ? Branch.forkReason(trunk, {
+                  deadlineAt: current.deadline_at!,
+                  now,
+                  startedAt,
+                })
+              : verifying
+                ? undefined
+                : Picker.forkReason(trunk, verifications[0], {
+                    deadlineAt: current.deadline_at!,
+                    now,
+                  })
+            : Branch.forkReason(trunk, {
+                deadlineAt: current.deadline_at!,
+                now,
+                startedAt,
+              })
+          const gate =
+            agent.picker && trunk !== undefined && (reason || !verifying)
+              ? Picker.gateOf(verifications[0], { at: now, model: Picker.model(agent), reason })
+              : undefined
+          if (gate) this.putArtifact(row.id, Picker.gate, JSON.stringify(gate, null, 2) + '\n')
           if (reason) {
-            const record: Branch.Fork = { at: now, reason }
+            const record: Branch.Fork = {
+              at: now,
+              reason,
+              ...(gate?.verifier ? { verifier: gate.verifier } : {}),
+            }
             this.putArtifact(row.id, Branch.forkRecord, JSON.stringify(record, null, 2) + '\n')
             return { agent: { state: 'fork' } }
           }
-          if (outcomes[0] !== undefined) chosen = 0
-        } else chosen = Branch.settle(outcomes)
+          if (trunk !== undefined && !verifying) chosen = 0
+        } else if (!agent.picker) chosen = Branch.settle(outcomes)
         if (chosen !== undefined)
           for (const [index, name] of this.branchSessions(current).entries())
             if (outcomes[index] === undefined) {
@@ -3515,7 +3713,7 @@ export class Run extends DurableObject<Env> {
               outcomes[index] = { state: 'cancelled' }
             }
       }
-      if (chosen === undefined && outcomes.includes(undefined)) {
+      if (chosen === undefined && (outcomes.includes(undefined) || verifying)) {
         const refused = this.refusedOut(current, now)
         if (refused) {
           Ledger.update(this.sql, row.id, { failure: JSON.stringify(refused) })
@@ -3529,12 +3727,33 @@ export class Run extends DurableObject<Env> {
         return {
           agent: { detached, state: 'running' },
           ...(waiting ? { waiting } : {}),
-          ...(lazy && !fork
+          ...(lazy && !fork && outcomes[0] === undefined
             ? { wakeAt: Branch.forkAt({ deadlineAt: current.deadline_at!, startedAt }) }
             : {}),
         }
       }
       const branches = outcomes as Branch.Outcome[]
+      let picked: Picker.Record | undefined
+      if (agent.picker) {
+        const choice = Picker.choose(branches, verifications)
+        chosen ??= choice.chosen
+        const scan = this.textArtifact(current.id, Picker.probeScan)
+        picked = {
+          agreement: choice.agreement,
+          cheatScan: {
+            probeHiddenPaths: scan
+              ? Object.values(JSON.parse(scan) as Picker.ProbeScan).flat().length
+              : 0,
+            verifierHiddenReads: verifications.reduce(
+              (total, verification) => total + (verification?.hiddenReads?.length ?? 0),
+              0,
+            ),
+          },
+          evidence: chosen === choice.chosen ? choice.evidence : 'verifier',
+          model: Picker.model(agent),
+          verifications: verifications.map((verification) => verification ?? null),
+        }
+      }
       chosen ??= Branch.choose(branches)
       if (branches[chosen]!.state === 'timeout')
         Ledger.update(this.sql, row.id, {
@@ -3556,7 +3775,12 @@ export class Run extends DurableObject<Env> {
                 }) satisfies Result.Failure,
           ),
         })
-      const record: Branch.Record = { branches, chosen, ...(fork ? { fork } : {}) }
+      const record: Branch.Record = {
+        branches,
+        chosen,
+        ...(fork ? { fork } : {}),
+        ...(picked ? { picker: picked } : {}),
+      }
       this.putArtifact(row.id, Branch.record, JSON.stringify(record, null, 2) + '\n')
       return { agent: decided(record) }
     }
@@ -3576,7 +3800,10 @@ export class Run extends DurableObject<Env> {
           1,
           Math.min(
             waitMs,
-            row.deadline_at! - Date.now() + 1,
+            row.deadline_at! +
+              (first.waiting.requestId === Picker.requestId ? Picker.graceSec * 1000 : 0) -
+              Date.now() +
+              1,
             (first.wakeAt ?? Number.POSITIVE_INFINITY) - Date.now() + 1,
           ),
         ),
@@ -3781,7 +4008,8 @@ export class Run extends DurableObject<Env> {
       }
     } else throw new Refusal(400, 'finishing an attempt reports a verifier or a failure')
     if (row.session && row.phase === 'run' && this.submitted(row))
-      for (const name of this.branchSessions(row)) await this.halt(name)
+      for (const name of [...this.branchSessions(row), ...this.verifierSessions(row)])
+        await this.halt(name)
     const statuses = this.sql
       .all(
         'SELECT status FROM model_requests WHERE attempt = ? AND claim = ? AND status IS NOT NULL',
@@ -3868,6 +4096,25 @@ export class Run extends DurableObject<Env> {
       await this.remove(name)
     }
 
+    const verifierUsage: Atif.Usage[] = []
+    for (const [at, name] of this.verifierSessions(row).entries()) {
+      if (submitted)
+        try {
+          const events = await Harness.events(this.env, name, Picker.requestId)
+          verifierUsage.push(Atif.usage(events))
+          const index = this.probed(row)[at]!
+          for (const [file, body] of Object.entries(this.projected(row, { events, session: name })))
+            this.putArtifact(
+              row.id,
+              file.replace(/^agent\//, 'agent/verifier-' + index + '/'),
+              body,
+            )
+        } catch (error) {
+          this.putArtifact(row.id, 'agent/verifier-error.txt', message(error))
+        }
+      await this.remove(name)
+    }
+
     let usage: Atif.Usage | null = null
     let reported: ReturnType<typeof Route.reported> = {}
     const sessions = row.session ? this.branchSessions(row) : [session]
@@ -3895,6 +4142,7 @@ export class Run extends DurableObject<Env> {
           for (const [file, body] of projected) this.putArtifact(row.id, file, body)
         }
         usage = usages.length === 1 ? usages[0]! : Atif.sum(usages)
+        if (agent.picker && verifierUsage.length) usage = Atif.sum([usage, ...verifierUsage])
       } catch (error) {
         this.putArtifact(row.id, 'agent/events-error.txt', message(error))
       }
@@ -3961,6 +4209,33 @@ export class Run extends DurableObject<Env> {
         }
       else if (usage && !kind && usage.costUsd !== undefined && listed > 0)
         usage = { ...usage, costUsd: usage.costUsd + listed, toolsUsd: listed }
+      if (agent.picker) {
+        const verifier = verifierUsage.length ? Atif.sum(verifierUsage) : undefined
+        const pricedVerifier = priced.filter((request) =>
+          (request['path'] as string).startsWith(Picker.path),
+        )
+        const verifierUsd = pricedVerifier.length
+          ? pricedVerifier.reduce((sum, request) => sum + (request['cost'] as number), 0)
+          : (verifier?.costUsd ?? 0)
+        const record: Picker.Usage = {
+          branchUsd: (usage?.costUsd ?? 0) - verifierUsd,
+          verifierCalls: verifierUsage.length,
+          verifierUsd,
+        }
+        this.putArtifact(
+          row.id,
+          Picker.usageRecord,
+          JSON.stringify(
+            {
+              ...record,
+              pricedBy: pricedVerifier.length ? 'meter' : 'events',
+              verifier,
+            },
+            null,
+            2,
+          ) + '\n',
+        )
+      }
       const log = this.requestLog(row.id)
       if (log !== undefined) this.putArtifact(row.id, modelRequests, log)
     }

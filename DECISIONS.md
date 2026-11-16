@@ -7767,6 +7767,70 @@ A directory slot has no image. Its verifier root is an empty directory, an artif
 **Checked.** `test/Metered.test.ts`, 5 tests. The usage of 5 responses of one fx row of the smoke run, replayed as responses streams in 1, 7 and 400 pieces and as a whole body. A messages stream with cache writes and a chat stream with cached and reasoning tokens, streamed and whole, and a chat stream that names no usage. The 5 responses priced: 25,568 input tokens of which 4,992 cached and 2,006 output tokens are the list amount to 1e-12, and a price of the run replaces it. A row with one unread answer beside a 429, a 402 and a 500: 1 unmetered request, no cost, and the line of `status`. `Meter.relay` against a local server for three streams. In the tree of the commit before this line was added: `npm run lint`, `npm run check:types`, `npm test` with 573 of 578 passed and 5 skipped, `npm run dry-run`, and `NANOEVAL_E2E_BACKEND=dir npm run e2e`, whose scripted model names a cost of its own and so is priced as before.
 
 **Not verified.** When this was written: a run. No row was priced by a deployed Worker, so that the 6 rows of the smoke run would now show a cost is from the unit tests and the code path, not from a run. The price against what a provider charges: the plan the smoke run used bills no tokens. Reasoning tokens are in the output tokens and are priced as output.
+## 2026-11-15: a self-check passes by an inline Python assertion, and quoted text no longer splits a command
+
+**Problem.** In live run `a04f0d44` (arm `nanol3=claude:claude-opus-5-5:high:branches=lazy3`, nanoeval `4b71b88`) no session had `Branch.evidence`, so every lazy trunk forked as `unverified` (3 of 5 finished rows forked). The event shapes were not the cause. In the `agent/events.jsonl` and `agent/branch-K/events.jsonl` of attempts a00020, a00022, a00044, a00046 and a00070 (15 sessions), every nested call of a Code Mode `exec` cell is its own `tool.call` and `tool.result`, with `request_id` `self-check`, `call_id` `<cell>/code-N`, `parent_call_id` and `turn_id`. Each nested `Bash` result has `structured_result.exit_code` as a number, and the cell result has `structured_result: null`. The cause was the commands. The terminal-bench tasks hold no test runner, so the model checks with `python3 -c "...assert..."`, often after the solution in an `&&` chain, and the code of `-c` spans lines and holds `;`. `Branch.testCommand` split on `;` and newlines inside the quotes and knew no inline assertion. In 12 of the 13 checks the model also ran `; rm -rf ...` or `; ls /app` after the check, so the exit status is that of the cleanup.
+
+**Behavior.** `Branch.testCommand` splits a command on `;`, newlines, `&`, `&&` and `|` outside quotes only, and finds `||` outside quotes only. A stage that runs `python -c` with code that holds `assert` is a test, except with `-O` or `PYTHONOPTIMIZE`, which remove assertions. The other rules are unchanged: the last command decides, its status must be 0, a hidden pipe or `|| true` is no evidence, and a write forgets every test before it. `Branch.prompt` now asks for the final check as a command of its own, with nothing after it, so that its exit status shows the result.
+
+**Measured.** `Branch.evidence` over the 15 sessions above, each read from the run's artifacts: 0 of 15 with evidence at `4b71b88`, 1 of 15 with this change (the trunk of a00070, `cd /app && python3 jump_analyzer.py ... && python3 -c "...assert..."`). The other 12 checks end with a cleanup after `;` or print a result without an assertion, so they stay unverified by rule. The sentence added to the prompt addresses those, and is not measured.
+
+**Checked.** `test/Branch.test.ts` takes a Code Mode cell in the shape of the run's events (anonymized): a scratch `Write`, the check, then `ls`, which is verified, the check followed by `; rm -rf`, which is not, and the check with exit status 1, which is not. Every `run` step of `ci.yml` from a fresh clone of `b320bf4` on the hosted Hand (5 cores, no `/dev/kvm`, not root), the five jobs side by side: `check` 5 of 5, `e2e-dir` 68 of 68, `e2e-krun` 36 of 36 and `e2e-ns` with `e2e-revision` 18 of 18 (the krun and ns lanes skip themselves here), `krun` 3 of 3. This commit differs from `b320bf4` in this paragraph only.
+
+## 2026-11-15: an independent verifier picks the branch, and a Worker refuses agent keys it does not know
+
+**Problem.** B1 run `66b976fa` (arm `nanol3`, lazy3) wrote no `agent/fork.json` on any row. Every row ran three eager branches, and `Branch.choose` kept branch 0 in 34 of 35 rows. The branches' self-verdicts were 95 pass, 9 unknown and 1 fail of 105, with 6 false PASS rows (protein-assembly x3, video-processing x3). Root cause: the Worker writes `fork.json` (`worker/Run.ts` `branched`), not the hand. The W7L line (`91fb866`, and likewise `a0ab14d` W7M and `657938f` W7N) never got the lazy commits `f509fa4` and `f57fb71`. A lazy-aware CLI sent `lazy: true`, and that Worker's `Config.parse` rebuilt the agent from the keys it knew, silently dropping `lazy`.
+
+**Behavior.**
+- The lazy gate and the inline-assertion evidence fix are ported onto the W7M/W7N line (this head is on W7N `657938f`, nanocode-ts `build-1d85e83`).
+- `Config.parse` refuses an agent key outside `Config.agentKeys`, so a CLI that is newer than the Worker fails the run instead of running another arm.
+- `picker=verify` (off by default): each completed branch's slot is forked live into a probe slot `<base>-v<i>`. A fresh session `<session>-verifier-<i>` attaches there with the task instruction and a log of the branch's writes and commands (exit codes, trimmed output). It does not get the branch's messages, its reasoning or its self-verdict. It probes freely and ends with `VERIFIER:`, `CONFIDENCE:` and `OUTPUT:`. Branches self-check no more.
+- `Picker.choose` orders branches by verdict, then agreement on `OUTPUT` with other branches, then confidence, then index. `agent/branches.json` `picker` records each verification, the agreement counts, the model and the criteria that decided the pick (`evidence`).
+- `picker=verify_lazy`: the trunk is verified, and two branches fork only unless it got PASS with confidence of at least 70 (fork reason `verifier_fail` or `verifier_unsure`).
+- `verifier_model=<id>`: `claude-opus-5-5` by default for claude agents.
+- The hidden verifier never reaches a probe slot: tests are copied in only by `slot.sh verify`, which runs on branch slots after the pick. A runner grades the branches not kept after the pick, for analysis only (`agent/branch-grades.json`).
+- The verifiers' usage is in the attempt's usage and trajectories (`agent/verifier-<i>/`). `agent/picker-usage.json` splits verifier USD from branch USD, metered at billed prices when the meter priced the requests.
+- A runner advertises `picker` when it can fork live, and a picker run refuses a runner that cannot. A picker row reserves two slots per branch.
+
+**Checked.** Hosted Hand (Linux x86_64, no KVM), Node 24.22.3, nanocode-ts `build-771f891`, 2026-11-15:
+- `NANOEVAL_E2E_BACKEND=dir NANOEVAL_E2E_SCENARIO=picker npm run e2e`: passed. Verifiers ran in `-v0`, `-v1` and `-v2`, with verdicts fail, fail, pass. Branch 2 was kept on evidence `verifier`. Branches 0 and 1 were graded after the pick at reward 0. 18 model calls in total.
+- `picker-lazy`: passed. The trunk's verifier said FAIL, the row forked for `verifier_fail` and branch 2 was kept.
+- `branches`, `lazy` and `lazy-pass`: passed. The lazy lanes now count three requests per turn, as on this line.
+- `npm test` 567 tests, `npm run check:types` and `vp check` pass.
+
+**Not verified.** A real model, and a krun or ns live fork into a probe slot (no KVM here). The box smoke and the pilot measure these.
+
+## 2026-11-15: the verifier gate is a record an escalation step reads, and every probe slot and verifier is scanned for hidden tests
+
+**Behavior.**
+- A probe slot is a live fork of the branch's agent slot: the same image, workspace and mounts, and nothing the agent did not have. The hidden tests, the solution and the oracle are copied in only by `slot.sh verify` and `solve`, which never run on a probe slot.
+- At fork time `slot.sh fork` writes `<slot>/hidden` with every path of `/tests`, `/solution` and `/oracle` that exists in the fork. On dir slots that means `work/tests`, `work/solution` and `work/oracle`. The runner uploads the result per branch as `agent/probe-scan.json`.
+- The Worker scans every verifier tool call for a path under `/tests`, `/solution` or `/oracle` and records the hits in `agent/verifier-<i>.json` `hiddenReads`.
+- `agent/branches.json` `picker.cheatScan` counts both, as `probeHiddenPaths` and `verifierHiddenReads`. A row where either is not 0 is void for the picker arms.
+- The verifier sees the instruction, the branch's workspace and anything the branch wrote, its own tests included.
+- A lazy picker's trunk gate is recorded as `agent/gate.json` (`decision` keep or fork, `reason`, and `verifier` with its verdict, confidence, output, model, threshold, USD and message file). `fork.json` carries the same `verifier`, so an escalation step such as CASCADE-V can act on the verdict without parsing the branches record.
+- In the e2e lanes `picker` and `picker-lazy`, every verifier overwrites the graded file in its probe slot, and the kept branch still passes, which proves probes cannot change what is graded. The lanes also assert that the cheat scan is 0 and 0, and they run on the krun and ns backends too, where those can run.
+
+**Checked.** Hosted Hand, 2026-11-15, on main `16c5e5d`:
+- `npm test`, `npm run check:types` and `vp check`.
+- Dir e2e lanes `branches`, `lazy`, `lazy-pass`, `picker` and `picker-lazy`.
+- The fresh-clone ci.yml result for this head is recorded in the entry after this one.
+- The krun and ns lanes skip on the hosted Hand (no KVM). They need a KVM box.
+
+## 2026-11-15: a verifier's own slot is proven by marks, on every backend
+
+**Problem.** On 7a26cd7 the e2e-ns lanes `picker` and `picker-lazy` failed "every verifier probed in its own probe slot". That assertion matched the verifier's `pwd` against the host path `<slot>-v<i>/`. Only a directory slot's workdir is a host path (`<slot>/work`). In an ns or krun guest, `pwd` is the image's workdir, such as `/app`, so the assertion could not pass off directory slots, whatever slot the verifier ran in. The fork path itself is the same on every backend: the runner's `probe` stage forks `Picker.slot(base, i)` live from `Branch.slot(base, i)`, and `attachHand` attaches the verifier session to that slot.
+
+**Behavior.**
+- Every verifier first counts the `.vmark-*` files in its workdir, then leaves one of its own. The lanes assert that every verifier counted 0. Three verifiers sharing one slot, or one verifier reaching another's slot, would count at least 1. The check holds on every backend.
+- The `pwd` check stays as an extra assertion on directory slots.
+- Unchanged, on every backend: `agent/probes.json` lists each branch once, the cheat scan is 0 and 0, and the kept branch passes after every verifier vandalised the graded file in its probe slot.
+
+## 2026-11-15: verifier sessions do not take a branch's turn in the scripted model
+
+**Problem.** On 099ad72 the KVM lanes ran `picker-lazy` with verdicts fail, pass, fail where the test expected fail, fail, pass, the same on krun and ns. On guest backends the scripted model makes the third session to ask (in order of `prompt_cache_key`) the right branch. In `picker-lazy` the trunk's verifier asks before the two forked branches, so it took arrival index 1, and branch 1 became the right one. The code was correct. The same run's assertion that the kept branch passed the hidden tests held, so the verifier passed exactly the branch the grader passed. Verdicts are recorded by branch index (`verifyBranch(index)` reads `Branch.session(session, index)` and probes `Picker.slot(base, index)`).
+
+**Behavior.** The scripted model skips verifier requests when it counts branch arrivals, so branch 2 is the right branch on every backend, as on directory slots.
 
 ## 2026-11-16: the usage trailer of a Workers AI binding stream is sent as a chat completions chunk
 
@@ -7778,3 +7842,16 @@ A directory slot has no image. Its verifier root is an empty directory, an artif
 
 **Not verified.** When this was written: ci.yml from a fresh clone, and a session through the deployed binding. The 429s of that row (66 of code 3021, the requests-a-minute limit of the model on the account, and 3 of code 3040) are not changed here. A run paces them with --model-requests-per-min.
 
+
+## 2026-11-15: fresh-clone ci.yml on the verifier picker merged with main 3c0ed22
+
+Actions is disabled on this repository, so every `run` step of `.github/workflows/ci.yml` ran from a fresh clone of `5a36d52` (`583b4f8` plus main `3c0ed22`) on a hosted Hand (Linux x86_64, Node 24.22.3, no KVM), one process per job:
+- check 5 of 5
+- e2e-dir 70 of 70, including `picker` and `picker-lazy`
+- e2e-revision 4 of 4
+- krun 3 of 3 (cargo fmt, clippy, test)
+- e2e-krun 40 of 40 and e2e-ns 16 of 16, where the krun and ns steps skip on a Hand without KVM
+
+On `583b4f8`, the nanoeval lane's KVM box passed e2e-krun, e2e-ns and krun at 59 of 59 steps, including `picker` and `picker-lazy` on both guest backends. Its KVM run on `5a36d52` is recorded in the next entry when it reports.
+
+On `5a36d52`, the nanoeval lane ran fresh clones on its KVM box (2026-11-16 01:16 UTC): all 138 of 138 steps passed. The KVM lanes passed 59 of 59 on the first try: e2e-krun 40, e2e-ns 16, krun 3. Two e2e-dir steps failed once while that box's disk was saturated, then passed alone on a retry.

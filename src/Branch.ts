@@ -1,4 +1,5 @@
 import type * as Atif from './Atif.ts'
+import type * as Picker from './Picker.ts'
 
 export const checkRequestId = 'self-check'
 export const record = 'agent/branches.json'
@@ -14,7 +15,12 @@ export type Outcome =
   | { error: string; state: 'failed' }
   | { state: 'timeout' }
 
-export type Record = { branches: readonly Outcome[]; chosen: number; fork?: Fork }
+export type Record = {
+  branches: readonly Outcome[]
+  chosen: number
+  fork?: Fork
+  picker?: Picker.Record
+}
 
 export class InvalidError extends Error {
   override name = 'Branch.InvalidError'
@@ -63,32 +69,33 @@ export function valid(count: unknown): count is number {
 export const forkRecord = 'agent/fork.json'
 export const lazyShare = 0.6
 
-export type Fork = { at: number; reason: Reason }
+export type Fork = { at: number; reason: Reason; verifier?: Picker.GateVerifier }
 
-export type Reason = 'time' | 'unverified'
+export type Reason = 'time' | 'unverified' | 'verifier_fail' | 'verifier_unsure'
 
 export type Evidence = { command: string; exitCode: 0 }
 
 type Shell = { command: string }
 
-const shells: { [tool: string]: (input: { [key: string]: unknown }) => string | undefined } = {
-  Bash: (input) => (typeof input['command'] === 'string' ? input['command'] : undefined),
-  exec_command: (input) => {
-    const cmd = input['cmd']
-    if (typeof cmd === 'string') return cmd
-    return Array.isArray(cmd) && cmd.every((part) => typeof part === 'string')
-      ? cmd.join(' ')
-      : undefined
-  },
-  shell: (input) => {
-    const command = input['command']
-    return Array.isArray(command) && command.every((part) => typeof part === 'string')
-      ? command.join(' ')
-      : undefined
-  },
-}
+export const shells: { [tool: string]: (input: { [key: string]: unknown }) => string | undefined } =
+  {
+    Bash: (input) => (typeof input['command'] === 'string' ? input['command'] : undefined),
+    exec_command: (input) => {
+      const cmd = input['cmd']
+      if (typeof cmd === 'string') return cmd
+      return Array.isArray(cmd) && cmd.every((part) => typeof part === 'string')
+        ? cmd.join(' ')
+        : undefined
+    },
+    shell: (input) => {
+      const command = input['command']
+      return Array.isArray(command) && command.every((part) => typeof part === 'string')
+        ? command.join(' ')
+        : undefined
+    },
+  }
 
-const writes = new Set(['apply_patch', 'Edit', 'MultiEdit', 'NotebookEdit', 'Write'])
+export const writes = new Set(['apply_patch', 'Edit', 'MultiEdit', 'NotebookEdit', 'Write'])
 
 const runner = new RegExp(
   String.raw`^(\w+=\S*\s+)*((nice|npx|pipenv run|poetry run|sudo|time|timeout|uv run|xvfb-run)(\s+\S+)*?\s+)?(` +
@@ -157,7 +164,7 @@ export function testCommand(command: string): boolean {
   })
 }
 
-function argumentsOf(value: unknown): { [key: string]: unknown } {
+export function argumentsOf(value: unknown): { [key: string]: unknown } {
   if (typeof value === 'string') {
     try {
       const parsed: unknown = JSON.parse(value)
@@ -171,7 +178,7 @@ function argumentsOf(value: unknown): { [key: string]: unknown } {
   return typeof value === 'object' && value !== null ? (value as { [key: string]: unknown }) : {}
 }
 
-function said(payload: { [key: string]: any }): string {
+export function said(payload: { [key: string]: any }): string {
   const structured = payload['structured_result']
   const parts =
     typeof structured === 'object' && structured !== null

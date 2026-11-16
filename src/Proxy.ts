@@ -50,6 +50,7 @@ export type Session = {
   claim: number
   judge?: number
   run: string
+  verifier?: number
 }
 
 export const oauthBeta = 'oauth-2025-04-20'
@@ -131,9 +132,10 @@ export function refusal(body: string): Exclude<Refusal, 'budget' | 'login' | 'mo
 }
 
 export function session(name: string): Session | undefined {
-  const match = /^([0-9a-f-]{36})-(a[0-9]+)-([0-9]+)(?:-judge-([0-9]+)|-branch-([0-9]+))?$/.exec(
-    name,
-  )
+  const match =
+    /^([0-9a-f-]{36})-(a[0-9]+)-([0-9]+)(?:-judge-([0-9]+)|-branch-([0-9]+)|-verifier-([0-9]+))?$/.exec(
+      name,
+    )
   if (!match) return undefined
   return {
     attempt: match[2]!,
@@ -141,6 +143,7 @@ export function session(name: string): Session | undefined {
     claim: Number(match[3]),
     ...(match[4] === undefined ? {} : { judge: Number(match[4]) }),
     run: match[1]!,
+    ...(match[6] === undefined ? {} : { verifier: Number(match[6]) }),
   }
 }
 
