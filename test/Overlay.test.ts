@@ -52,15 +52,77 @@ const samples: Record<string, Record<string, unknown>> = {
   verifierModel: { branches: 2, picker: 'verify', verifierModel: 'claude-sonnet-5-5' },
   yieldFloorMs: { yieldFloorMs: 30000 },
   yieldShare: { yieldShare: 50 },
+  forkOn: { branches: 2, forkOn: 'verifier_fail', picker: 'verify_lazy' },
+  verifierProvider: { branches: 2, picker: 'verify', verifierProvider: 'claude' },
+  verifierThinking: { branches: 2, picker: 'verify', verifierThinking: 'low' },
+  fixModel: {
+    branches: 2,
+    fixModel: 'claude-sonnet-5-5',
+    fixProvider: 'claude',
+    lazy: true,
+    picker: 'verify_lazy',
+  },
+  fixProvider: {
+    branches: 2,
+    fixModel: 'claude-sonnet-5-5',
+    fixProvider: 'codex',
+    lazy: true,
+    picker: 'verify_lazy',
+  },
+  fixThinking: {
+    branches: 2,
+    fixModel: 'claude-sonnet-5-5',
+    fixProvider: 'claude',
+    fixThinking: 'low',
+    lazy: true,
+    picker: 'verify_lazy',
+  },
+  executorShare: {
+    branches: 2,
+    executorShare: 40,
+    fixModel: 'claude-sonnet-5-5',
+    fixProvider: 'claude',
+    lazy: true,
+    picker: 'verify_lazy',
+  },
+  verifierShare: {
+    branches: 2,
+    fixModel: 'claude-sonnet-5-5',
+    fixProvider: 'claude',
+    lazy: true,
+    picker: 'verify_lazy',
+    verifierShare: 20,
+  },
+  lenientPatches: { lenientPatches: true },
+  minWaitMs: { minWaitMs: 5000 },
+  maxOutputTokens: { maxOutputTokens: 32000 },
+  contextWindow: { contextWindow: 200000 },
 }
+
+// Levers only a codex session takes, and levers that need a picker or a fix model the combined
+// overlay below does not hold.
+const codexLevers = ['contextWindow', 'lenientPatches', 'maxOutputTokens', 'minWaitMs']
+const apart = [
+  ...codexLevers,
+  'executorShare',
+  'fixModel',
+  'fixProvider',
+  'fixThinking',
+  'forkOn',
+  'verifierProvider',
+  'verifierShare',
+  'verifierThinking',
+]
 
 test('every lever of an agent round-trips from an overlay through the agent string', () => {
   assert.deepEqual(Object.keys(samples).sort(), [...Overlay.leverKeys].sort())
   for (const [key, levers] of Object.entries(samples)) {
-    const overlay = Overlay.parse({ ...base, id: 'lever-' + key, levers })
+    const codex = codexLevers.includes(key) ? { harness: 'codex', model: 'gpt-6-luna' } : {}
+    const overlay = Overlay.parse({ ...base, ...codex, id: 'lever-' + key, levers })
     const agent = Overlay.compile(overlay)
     assert.equal(agent[key as keyof Config.Agent] !== undefined, true, key)
-    assert.deepEqual(parseAgent(agentText(agent)), agent, key)
+    // verify_lazy implies lazy, which the agent string leaves out and Config.parseAgents restores.
+    assert.deepEqual(Config.parseAgents([parseAgent(agentText(agent))])[0], agent, key)
   }
   const all = Overlay.parse({
     ...base,
@@ -69,7 +131,13 @@ test('every lever of an agent round-trips from an overlay through the agent stri
       ...Object.entries(samples)
         .filter(
           ([key]) =>
-            !['finishCheck', 'finishAmbiguity', 'finishRetries', 'lateFinishCheckMs'].includes(key),
+            ![
+              'finishCheck',
+              'finishAmbiguity',
+              'finishRetries',
+              'lateFinishCheckMs',
+              ...apart,
+            ].includes(key),
         )
         .map(([, levers]) => levers),
     ),
