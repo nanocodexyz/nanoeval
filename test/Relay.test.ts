@@ -73,16 +73,28 @@ test('a codex plan request of a Worker that binds the relay container leaves thr
 
 test('a relay URL wins over the bound container, and a key credential never reaches the container', async () => {
   const { relay, seen } = namespace()
-  assert.equal(Relay.bound({ CHATGPT_RELAY: relay, CHATGPT_RELAY_URL: 'https://relay.example' }), false)
-  assert.equal(Relay.fetcher({ CHATGPT_RELAY: relay, CHATGPT_RELAY_URL: 'https://relay.example' }, 'k'), undefined)
-  const keyed = await send({ CHATGPT_RELAY: relay, OPENAI_API_KEY: 'k', OPENAI_BASE_URL: 'http://127.0.0.1:9' })
+  assert.equal(
+    Relay.bound({ CHATGPT_RELAY: relay, CHATGPT_RELAY_URL: 'https://relay.example' }),
+    false,
+  )
+  assert.equal(
+    Relay.fetcher({ CHATGPT_RELAY: relay, CHATGPT_RELAY_URL: 'https://relay.example' }, 'k'),
+    undefined,
+  )
+  const keyed = await send({
+    CHATGPT_RELAY: relay,
+    OPENAI_API_KEY: 'k',
+    OPENAI_BASE_URL: 'http://127.0.0.1:9',
+  })
   assert.equal(keyed.response.status, 502)
   assert.equal(seen.length, 0)
 })
 
 test('requests spread over CHATGPT_RELAY_INSTANCES containers, one key always on the same one', () => {
   const env = { CHATGPT_RELAY_INSTANCES: '8' }
-  const names = new Set(Array.from({ length: 400 }, (_, index) => Relay.name(env, 'session-' + index)))
+  const names = new Set(
+    Array.from({ length: 400 }, (_, index) => Relay.name(env, 'session-' + index)),
+  )
   assert.equal(names.size, 8)
   assert.equal(Relay.name(env, 'session-1'), Relay.name(env, 'session-1'))
   assert.equal(Relay.instances({}), 1)
@@ -92,7 +104,11 @@ test('requests spread over CHATGPT_RELAY_INSTANCES containers, one key always on
 
 test('a bound relay without PLAN_SECRET is refused as a provider not reached, not sent without a secret', async () => {
   const { relay, seen } = namespace()
-  const sent = await send({ CHATGPT_ACCESS_TOKEN: 'a', CHATGPT_ACCOUNT_ID: 'b', CHATGPT_RELAY: relay })
+  const sent = await send({
+    CHATGPT_ACCESS_TOKEN: 'a',
+    CHATGPT_ACCOUNT_ID: 'b',
+    CHATGPT_RELAY: relay,
+  })
   assert.equal(sent.response.status, 502)
   assert.match(sent.text, /PLAN_SECRET/)
   assert.equal(seen.length, 0)

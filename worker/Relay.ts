@@ -69,13 +69,9 @@ export function fetcher(
 export async function secret(planSecret: string): Promise<string> {
   if (planSecret.length < 32) throw new Error('PLAN_SECRET needs at least 32 characters')
   const encoder = new TextEncoder()
-  const material = await crypto.subtle.importKey(
-    'raw',
-    encoder.encode(planSecret),
-    'HKDF',
-    false,
-    ['deriveBits'],
-  )
+  const material = await crypto.subtle.importKey('raw', encoder.encode(planSecret), 'HKDF', false, [
+    'deriveBits',
+  ])
   const bits = await crypto.subtle.deriveBits(
     {
       hash: 'SHA-256',
