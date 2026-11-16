@@ -1397,7 +1397,11 @@ export function overlayLines(overlays: readonly Overlay.Overlay[]): {
       .filter((overlay) => Overlay.pendingKeys(overlay).length)
       .map(
         (overlay) =>
-          'not runnable: ' + overlay.id + ' (pending ' + Overlay.pendingKeys(overlay).join(', ') + ')',
+          'not runnable: ' +
+          overlay.id +
+          ' (pending ' +
+          Overlay.pendingKeys(overlay).join(', ') +
+          ')',
       ),
   }
 }

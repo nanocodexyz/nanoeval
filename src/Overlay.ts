@@ -122,9 +122,7 @@ export function parse(value: unknown): Overlay {
     )
   const pending = value['pending']
   if (!record(pending)) return fail(id + ': pending is an object')
-  const known = Object.keys(pending).filter((key) =>
-    leverKeys.includes(key as keyof Config.Agent),
-  )
+  const known = Object.keys(pending).filter((key) => leverKeys.includes(key as keyof Config.Agent))
   if (known.length)
     fail(id + ' has pending keys that are levers (' + known.join(', ') + '): put them in levers')
   const named = value['dims']

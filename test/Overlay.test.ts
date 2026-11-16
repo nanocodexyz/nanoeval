@@ -67,7 +67,10 @@ test('every lever of an agent round-trips from an overlay through the agent stri
     levers: Object.assign(
       {},
       ...Object.entries(samples)
-        .filter(([key]) => !['finishCheck', 'finishAmbiguity', 'finishRetries', 'lateFinishCheckMs'].includes(key))
+        .filter(
+          ([key]) =>
+            !['finishCheck', 'finishAmbiguity', 'finishRetries', 'lateFinishCheckMs'].includes(key),
+        )
         .map(([, levers]) => levers),
     ),
   })
@@ -121,7 +124,8 @@ test('an overlay with pending keys is not runnable', () => {
     () => Overlay.compile(overlay),
     (error: Error) =>
       error.name === 'Overlay.PendingError' &&
-      error.message === 'opus55-g1-01 is not runnable until a Worker accepts promptVariant, toolProfile',
+      error.message ===
+        'opus55-g1-01 is not runnable until a Worker accepts promptVariant, toolProfile',
   )
   assert.deepEqual(overlayLines([overlay, Overlay.parse({ ...base, id: 'b' })]), {
     runnable: ['--agent b=claude:claude-opus-5-5:high'],
