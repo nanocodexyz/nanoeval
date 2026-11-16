@@ -28,6 +28,7 @@ export type Agent = {
   escalateContextTokens?: number
   escalateModel?: string
   escalateToolErrors?: number
+  finishAmbiguity?: true
   finishCheck?: true
   finishRetries?: number
   foldFinish?: true
@@ -47,6 +48,7 @@ export type Agent = {
   skipFinishCheck?: true
   stopAtTarget?: true
   thinking?: string
+  toolResultClearing?: ToolResultClearing
   toolResultTokens?: number
   yieldFloorMs?: number
   yieldShare?: number
@@ -62,6 +64,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'escalateContextTokens',
   'escalateModel',
   'escalateToolErrors',
+  'finishAmbiguity',
   'finishCheck',
   'finishRetries',
   'foldFinish',
@@ -81,6 +84,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'skipFinishCheck',
   'stopAtTarget',
   'thinking',
+  'toolResultClearing',
   'toolResultTokens',
   'verifierModel',
   'yieldFloorMs',
@@ -103,6 +107,8 @@ export const payers: readonly Payer[] = ['deployment', 'plan']
 
 export type RefusalFallback = 'return_once' | 'session'
 
+export type ToolResultClearing = { atLeastTokens: number; keep: number }
+
 export type Effort = 'high' | 'low' | 'max' | 'medium' | 'xhigh'
 
 export const efforts: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
@@ -110,6 +116,7 @@ export const efforts: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'ma
 export const finishLevers = [
   'briefFinal',
   'briefFinish',
+  'finishAmbiguity',
   'finishCheck',
   'foldFinish',
   'leanCells',
@@ -389,6 +396,19 @@ export function parse(value: unknown): Config {
       if (provider !== 'claude')
         fail(agent.id + ' has a toolResultTokens, which only a claude session takes')
     }
+    if (agent.toolResultClearing !== undefined) {
+      const clearing = agent.toolResultClearing
+      if (
+        typeof clearing !== 'object' ||
+        clearing === null ||
+        Object.keys(clearing).some((key) => key !== 'atLeastTokens' && key !== 'keep')
+      )
+        fail(agent.id + ' has a toolResultClearing that is not { atLeastTokens, keep }')
+      integer(clearing.atLeastTokens, agent.id + ': toolResultClearing.atLeastTokens', 0)
+      integer(clearing.keep, agent.id + ': toolResultClearing.keep', 0)
+      if (provider !== 'claude')
+        fail(agent.id + ' has a toolResultClearing, which only a claude session takes')
+    }
     if (agent.lateFinishCheckMs !== undefined) {
       integer(agent.lateFinishCheckMs, agent.id + ': lateFinishCheckMs', 1)
       if (provider !== 'claude')
@@ -433,6 +453,8 @@ export function parse(value: unknown): Config {
     }
     if (agent.finishCheck !== undefined && agent.skipFinishCheck !== undefined)
       fail(agent.id + ' has a skipFinishCheck and a finishCheck, which never go in one arm')
+    if (agent.finishAmbiguity !== undefined && agent.skipFinishCheck !== undefined)
+      fail(agent.id + ' has a skipFinishCheck and a finishAmbiguity, which never go in one arm')
     if (agent.persistFinish !== undefined) {
       if (agent.persistFinish !== true) fail(agent.id + ' has a persistFinish that is not true')
       if (provider !== 'claude' && provider !== 'codex')
@@ -456,6 +478,7 @@ export function parse(value: unknown): Config {
       ...(agent.escalateToolErrors === undefined
         ? {}
         : { escalateToolErrors: agent.escalateToolErrors }),
+      ...(agent.finishAmbiguity ? { finishAmbiguity: true as const } : {}),
       ...(agent.finishCheck ? { finishCheck: true as const } : {}),
       ...(agent.finishRetries === undefined ? {} : { finishRetries: agent.finishRetries }),
       ...(agent.foldFinish ? { foldFinish: true as const } : {}),
@@ -477,6 +500,14 @@ export function parse(value: unknown): Config {
       ...(agent.skipFinishCheck ? { skipFinishCheck: true as const } : {}),
       ...(agent.stopAtTarget ? { stopAtTarget: true as const } : {}),
       ...(agent.thinking ? { thinking: agent.thinking } : {}),
+      ...(agent.toolResultClearing === undefined
+        ? {}
+        : {
+            toolResultClearing: {
+              atLeastTokens: agent.toolResultClearing.atLeastTokens,
+              keep: agent.toolResultClearing.keep,
+            },
+          }),
       ...(agent.toolResultTokens === undefined ? {} : { toolResultTokens: agent.toolResultTokens }),
       ...(agent.yieldFloorMs === undefined ? {} : { yieldFloorMs: agent.yieldFloorMs }),
       ...(agent.yieldShare === undefined ? {} : { yieldShare: agent.yieldShare }),
