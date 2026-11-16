@@ -1130,7 +1130,8 @@ async function attend(
             (early.kind === 'agent' ? ': ' + (summary.error ?? errors.slice(-2000)) : ''),
         },
       })
-    if (input.code !== 0 && !Verdict.timeoutCodes.includes(input.code))
+    const gaveUp = Installed.stopped(input.cli.kind, summary.message + '\n' + errors.slice(-2000))
+    if (input.code !== 0 && !Verdict.timeoutCodes.includes(input.code) && !gaveUp)
       return fail(
         item,
         'agent',
