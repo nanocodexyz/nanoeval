@@ -59,7 +59,7 @@ test('an agent names prompt_variant and tool_profile last in the order of the op
   ])
     assert.throws(
       () => parseAgent(text),
-      /\[:prompt_variant=compact\]\[:tool_profile=lean\]\[:omit_media_on_empty_cut=on\]\[:stall_nudge_ms=N\], not x=/,
+      /\[:prompt_variant=compact\]\[:tool_profile=lean\]\[:omit_media_on_empty_cut=on\]\[:stall_nudge_ms=N\]\[:hedge_cap_percent=0\.\.100\], not x=/,
     )
 })
 

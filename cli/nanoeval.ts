@@ -389,7 +389,13 @@ const usage = `nanoeval <command>
             A claude agent may end in :stall_nudge_ms=N (each time the session's commands have
             run N ms more in all, a tool result tells it to stop a job that will not finish
             instead of waiting on it again) (nano-haiku-stall=claude:claude-haiku-5-5:medium:
-            stall_nudge_ms=300000). The options come in
+            stall_nudge_ms=300000).
+            A claude, codex, codex-code-mode, codex-jobs, nanocode-claude or nanocode-codex
+            agent may end in :hedge_cap_percent=N (its sessions resend a model request whose
+            first byte is late on a second connection for at most N percent of their recent
+            requests; 0 sends one request for each model call) (nano-nohedge=claude:
+            claude-opus-5-5:high:hedge_cap_percent=0). An agent without it runs the hedge
+            policy nanocode defaults to. The options come in
             this order where several are named: branches, refusal_fallback, cell_yield_ms,
             brief_finish, fold_finish, low_effort_rounds, brief_final, lean_cells,
             escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens,
@@ -399,7 +405,7 @@ const usage = `nanoeval <command>
             lenient_patches, min_wait_ms, max_output_tokens, context_window, fix_provider,
             fix_model, fix_thinking, verifier_provider, verifier_thinking, executor_share,
             verifier_share, fork_on, codesign, verification_requested, prompt_variant,
-            tool_profile, omit_media_on_empty_cut, stall_nudge_ms.
+            tool_profile, omit_media_on_empty_cut, stall_nudge_ms, hedge_cap_percent.
             An agent with :branches=2:picker=verify_lazy that names :fix_provider=claude|codex
             and :fix_model=MODEL runs a cascade: its own model works first, until
             :executor_share=N percent of the agent time (50); the verifier, on
@@ -1151,6 +1157,13 @@ const agentOptions: readonly AgentOption[] = [
     name: 'stall_nudge_ms',
     read: (text) => ({ stallNudgeMs: Number(text) }),
     write: (agent) => agent.stallNudgeMs,
+  },
+  {
+    name: 'hedge_cap_percent',
+    pattern: '[0-9]+',
+    read: (text) => ({ hedgeCapPercent: Number(text) }),
+    value: '0..100',
+    write: (agent) => agent.hedgeCapPercent,
   },
 ]
 
