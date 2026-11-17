@@ -103,6 +103,7 @@ const samples: Record<string, Record<string, unknown>> = {
   toolProfile: { toolProfile: 'lean' },
   omitMediaOnEmptyCut: { omitMediaOnEmptyCut: true },
   stallNudgeMs: { stallNudgeMs: 300000 },
+  hedgeCapPercent: { hedgeCapPercent: 0 },
 }
 
 // Levers only a codex session takes, and levers that need a picker or a fix model the combined

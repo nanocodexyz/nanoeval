@@ -60,6 +60,9 @@ const network = (process.env['NANOEVAL_E2E_NETWORK'] ??
   Config.network({ backend })) as Config.Config['sandbox']['network']
 const tickMs = process.env['NANOEVAL_E2E_TICK_MS'] ?? '500'
 const firstByteMs = Number(process.env['NANOEVAL_E2E_FIRST_BYTE_MS'] ?? '0')
+// A run whose model is late to answer counts one request for each model call, so its agents name
+// the hedge cap 0; every other run keeps the hedge nanocode defaults to.
+const unhedged = firstByteMs > 0 ? { hedgeCapPercent: 0 } : {}
 const pollMs = Number(process.env['NANOEVAL_E2E_POLL_MS'] ?? '250')
 const storeKind = process.env['NANOEVAL_E2E_STORE'] ?? 'directory'
 const gateway = process.env['NANOEVAL_E2E_GATEWAY'] === '1'
@@ -2033,10 +2036,18 @@ async function main(): Promise<void> {
                         },
                       ]
                     : [
-                        gateway
-                          ? { id: 'right', model: 'gpt-right', provider: 'codex' }
-                          : { id: 'right', model: 'claude-haiku-4-5', provider: 'claude' },
                         {
+                          ...(gateway
+                            ? { id: 'right', model: 'gpt-right', provider: 'codex' as const }
+                            : {
+                                id: 'right',
+                                model: 'claude-haiku-4-5',
+                                provider: 'claude' as const,
+                              }),
+                          ...unhedged,
+                        },
+                        {
+                          ...unhedged,
                           ...(longCell
                             ? {
                                 briefFinish: true as const,

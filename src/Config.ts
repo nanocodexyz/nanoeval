@@ -71,6 +71,7 @@ export type Agent = {
   yieldFloorMs?: number
   yieldShare?: number
   stallNudgeMs?: number
+  hedgeCapPercent?: number
   verifierModel?: string
   verifierProvider?: 'claude' | 'codex'
   verifierShare?: number
@@ -99,6 +100,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'fixThinking',
   'foldFinish',
   'forkOn',
+  'hedgeCapPercent',
   'id',
   'lateFinishCheckMs',
   'lazy',
@@ -550,6 +552,22 @@ export function parseAgents(value: unknown): Agent[] {
       if (provider !== 'claude')
         fail(agent.id + ' has a stallNudgeMs, which only a claude session takes')
     }
+    if (agent.hedgeCapPercent !== undefined) {
+      if (
+        !(
+          Number.isSafeInteger(agent.hedgeCapPercent) &&
+          agent.hedgeCapPercent >= 0 &&
+          agent.hedgeCapPercent <= 100
+        )
+      )
+        fail(agent.id + ': hedgeCapPercent must be a whole percent from 0 to 100')
+      if (
+        provider !== 'claude' &&
+        provider !== 'codex' &&
+        !(Installed.is(provider) && Installed.releases[provider].source === 'runtime')
+      )
+        fail(agent.id + ' has a hedgeCapPercent, which only a nanocode session or agent takes')
+    }
     if (agent.yieldShare !== undefined) {
       if (
         !(
@@ -679,6 +697,7 @@ export function parseAgents(value: unknown): Agent[] {
       ...(agent.verificationRequested ? { verificationRequested: true as const } : {}),
       ...(agent.yieldShare === undefined ? {} : { yieldShare: agent.yieldShare }),
       ...(agent.stallNudgeMs === undefined ? {} : { stallNudgeMs: agent.stallNudgeMs }),
+      ...(agent.hedgeCapPercent === undefined ? {} : { hedgeCapPercent: agent.hedgeCapPercent }),
       ...(agent.verifierModel ? { verifierModel: agent.verifierModel } : {}),
       ...(agent.verifierProvider ? { verifierProvider: agent.verifierProvider } : {}),
       ...(agent.verifierShare === undefined ? {} : { verifierShare: agent.verifierShare }),

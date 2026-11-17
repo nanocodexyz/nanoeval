@@ -3153,6 +3153,9 @@ export class Run extends DurableObject<Env> {
         ? {
             cli: {
               ...(agent.api ? { api: agent.api } : {}),
+              ...(agent.hedgeCapPercent === undefined
+                ? {}
+                : { hedgeCapPercent: agent.hedgeCapPercent }),
               kind: agent.provider,
               model: agent.model,
               ...(agent.thinking ? { thinking: agent.thinking } : {}),

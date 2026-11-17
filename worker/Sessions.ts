@@ -40,7 +40,7 @@ function refuse(message: string): Response {
 
 const cellYieldMs = (bound as Env).CELL_YIELD_MS
 
-type Opened = App.create.Limits & Pick<Contracts.AgentConfiguration, 'cell_yield_ms'>
+type Opened = App.create.Limits & Pick<Contracts.AgentConfiguration, 'cell_yield_ms' | 'hedge'>
 
 async function agentOf(env: Env, session: Proxy.Session): Promise<Config.Agent> {
   const answer = await env.RUNS.get(env.RUNS.idFromName(session.run)).fetch(
@@ -237,13 +237,18 @@ export const nanocode = App.create<Env>({
     }),
   hands: 'always',
   headless: true,
-  hedge: { cap_percent: 0 },
+  // No hedge for the app: a session runs the hedge policy nanocode defaults to, unless its agent
+  // names hedgeCapPercent, which limits below gives to that agent's sessions alone.
   limits: async (opened, env): Promise<Opened> => {
     const session = Proxy.session(opened.authority.session_name ?? '')
-    const named =
-      session && session.judge === undefined ? (await agentOf(env, session)).cellYieldMs : undefined
-    const ms = named ?? (cellYieldMs ? Number(cellYieldMs) : undefined)
-    return ms === undefined ? {} : { cell_yield_ms: ms }
+    const agent = session && session.judge === undefined ? await agentOf(env, session) : undefined
+    const ms = agent?.cellYieldMs ?? (cellYieldMs ? Number(cellYieldMs) : undefined)
+    return {
+      ...(ms === undefined ? {} : { cell_yield_ms: ms }),
+      ...(agent?.hedgeCapPercent === undefined
+        ? {}
+        : { hedge: { cap_percent: agent.hedgeCapPercent } }),
+    }
   },
   subscription: async (_account, env, provider) =>
     Logins.held(env, provider) ||

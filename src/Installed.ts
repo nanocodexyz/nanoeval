@@ -17,7 +17,13 @@ export type Kind =
   | 'stock-claude'
   | 'stock-codex'
 
-export type Agent = { api?: Api; kind: Kind; model: string; thinking?: string }
+export type Agent = {
+  api?: Api
+  hedgeCapPercent?: number
+  kind: Kind
+  model: string
+  thinking?: string
+}
 
 export type Binary = {
   arch: 'aarch64' | 'x86_64'
@@ -767,7 +773,9 @@ export function script(agent: Agent, options: Options): string {
           ...(agent.thinking ? ['--thinking ' + quote(agent.thinking)] : []),
           '--ephemeral',
           '--no-tempo-tools',
-          '--hedge-cap-percent 0',
+          ...(agent.hedgeCapPercent === undefined
+            ? []
+            : ['--hedge-cap-percent ' + agent.hedgeCapPercent]),
           ...(harness === 'claude'
             ? ['--context-window ' + (contextWindow(agent.model) ?? leaderboard.contextWindow)]
             : contextWindow(agent.model)
