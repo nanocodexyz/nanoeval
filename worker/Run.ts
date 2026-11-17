@@ -3667,6 +3667,7 @@ export class Run extends DurableObject<Env> {
         : { toolResultClearing: agent.toolResultClearing }),
       ...(agent.toolResultTokens === undefined ? {} : { toolResultTokens: agent.toolResultTokens }),
       ...(agent.verificationRequested ? { verificationRequested: true } : {}),
+      ...(agent.singleVerification ? { singleVerification: true } : {}),
       ...this.webSearch(row),
       ...(agent.yieldFloorMs === undefined ? {} : { yieldFloorMs: agent.yieldFloorMs }),
       ...(agent.yieldShare === undefined ? {} : { yieldShare: agent.yieldShare }),

@@ -375,7 +375,10 @@ const usage = `nanoeval <command>
             or codex-jobs agent that ends in :verification_requested=on has its sessions ask
             the model to run the task's checks and its own tests before it finishes, which the
             upstream Codex instructions forbid unless asked (nanox-v=codex:gpt-6-luna:high:
-            verification_requested=on).
+            verification_requested=on), and one that ends in :single_verification=on has its
+            headless sessions ask for one verification run of the result as the task's check
+            would run it, instead of several checks (nanox-sv=codex:gpt-6.1-sol:high:
+            single_verification=on).
             A codex, codex-code-mode or codex-jobs agent may also name :prompt_variant=compact
             (the session sends the compact system prompt of nanocode instead of its native one)
             and :tool_profile=lean (the session declares exec_command and write_stdin without
@@ -404,7 +407,7 @@ const usage = `nanoeval <command>
             finish_ambiguity, tool_result_clearing, subagents, clearing_cache_floors,
             lenient_patches, min_wait_ms, max_output_tokens, context_window, fix_provider,
             fix_model, fix_thinking, verifier_provider, verifier_thinking, executor_share,
-            verifier_share, fork_on, codesign, verification_requested, prompt_variant,
+            verifier_share, fork_on, codesign, verification_requested, single_verification, prompt_variant,
             tool_profile, omit_media_on_empty_cut, stall_nudge_ms, hedge_cap_percent.
             An agent with :branches=2:picker=verify_lazy that names :fix_provider=claude|codex
             and :fix_model=MODEL runs a cascade: its own model works first, until
@@ -1131,6 +1134,12 @@ const agentOptions: readonly AgentOption[] = [
     name: 'verification_requested',
     read: () => ({ verificationRequested: true }),
     write: (agent) => (agent.verificationRequested ? on.value : undefined),
+  },
+  {
+    ...on,
+    name: 'single_verification',
+    read: () => ({ singleVerification: true }),
+    write: (agent) => (agent.singleVerification ? on.value : undefined),
   },
   {
     name: 'prompt_variant',

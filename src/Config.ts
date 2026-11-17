@@ -68,6 +68,7 @@ export type Agent = {
   toolResultClearing?: ToolResultClearing
   toolResultTokens?: number
   verificationRequested?: true
+  singleVerification?: true
   yieldFloorMs?: number
   yieldShare?: number
   stallNudgeMs?: number
@@ -118,6 +119,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'provider',
   'refusalFallback',
   'resultEffort',
+  'singleVerification',
   'skipFinishCheck',
   'stallNudgeMs',
   'stopAtTarget',
@@ -614,6 +616,12 @@ export function parseAgents(value: unknown): Agent[] {
       if (provider !== 'codex')
         fail(agent.id + ' has a verificationRequested, which only a codex session takes')
     }
+    if (agent.singleVerification !== undefined) {
+      if (agent.singleVerification !== true)
+        fail(agent.id + ' has a singleVerification that is not true')
+      if (provider !== 'codex')
+        fail(agent.id + ' has a singleVerification, which only a codex session takes')
+    }
     if (agent.persistFinish !== undefined) {
       if (agent.persistFinish !== true) fail(agent.id + ' has a persistFinish that is not true')
       if (provider !== 'claude' && provider !== 'codex')
@@ -679,6 +687,7 @@ export function parseAgents(value: unknown): Agent[] {
       provider,
       ...(agent.refusalFallback ? { refusalFallback: agent.refusalFallback } : {}),
       ...(agent.resultEffort ? { resultEffort: agent.resultEffort } : {}),
+      ...(agent.singleVerification ? { singleVerification: true as const } : {}),
       ...(agent.skipFinishCheck ? { skipFinishCheck: true as const } : {}),
       ...(agent.stopAtTarget ? { stopAtTarget: true as const } : {}),
       ...(agent.subagents === undefined ? {} : { subagents: agent.subagents }),

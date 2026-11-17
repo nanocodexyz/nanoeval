@@ -257,7 +257,7 @@ test('a fork_on that is not one of its values, or without verify_lazy, is refuse
   ])
     assert.throws(
       () => parseAgent(text),
-      /\[:fork_on=verifier_fail\|verifier_fail_or_unsure\]\[:codesign=off\]\[:verification_requested=on\]\[:prompt_variant=compact\]\[:tool_profile=lean\]\[:omit_media_on_empty_cut=on\]\[:stall_nudge_ms=N\]\[:hedge_cap_percent=0\.\.100\], not /,
+      /\[:fork_on=verifier_fail\|verifier_fail_or_unsure\]\[:codesign=off\]\[:verification_requested=on\]\[:single_verification=on\]\[:prompt_variant=compact\]\[:tool_profile=lean\]\[:omit_media_on_empty_cut=on\]\[:stall_nudge_ms=N\]\[:hedge_cap_percent=0\.\.100\], not /,
     )
   assert.throws(
     () => Config.parse(config({ branches: 2, forkOn: 'verifier_unsure', picker: 'verify_lazy' })),

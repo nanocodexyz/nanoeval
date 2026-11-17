@@ -99,6 +99,7 @@ const samples: Record<string, Record<string, unknown>> = {
   contextWindow: { contextWindow: 200000 },
   codesign: { codesign: false },
   verificationRequested: { verificationRequested: true },
+  singleVerification: { singleVerification: true },
   promptVariant: { promptVariant: 'compact' },
   toolProfile: { toolProfile: 'lean' },
   omitMediaOnEmptyCut: { omitMediaOnEmptyCut: true },
@@ -116,6 +117,7 @@ const codexLevers = [
   'promptVariant',
   'toolProfile',
   'verificationRequested',
+  'singleVerification',
 ]
 const apart = [
   ...codexLevers,
