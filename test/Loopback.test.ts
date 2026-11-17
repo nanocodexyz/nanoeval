@@ -189,3 +189,41 @@ test('a relay answers 502 for a host that refuses and ends a session that cannot
     relay.close()
   }
 })
+
+test('a relay opens a session ahead and hands that upgrade to the first matching hand, or tunnels anew', async () => {
+  const remote = await upstream()
+  const relay = Loopback.create()
+  try {
+    const target = 'ws://' + remote.host + '/sessions/early/hands'
+    await relay.open(target, 'the-hand-token')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    assert.equal(remote.seen.length, 1, 'the upgrade went upstream before any hand')
+    assert.equal(remote.seen[0]!.authorization, 'Bearer the-hand-token')
+
+    const session = await relay.url(target)
+    const socket = new WebSocket(session, {
+      headers: { authorization: 'Bearer the-hand-token' },
+    } as never)
+    socket.binaryType = 'arraybuffer'
+    await opened(socket)
+    socket.send('through the early upgrade')
+    assert.equal(await next(socket), 'through the early upgrade')
+    const bytes = new Uint8Array(Crypto.randomBytes(1 << 18))
+    socket.send(bytes)
+    assert.deepEqual(new Uint8Array((await next(socket)) as ArrayBuffer), bytes)
+    assert.equal(remote.seen.length, 1, 'the hand took the early upgrade')
+    socket.close()
+
+    await relay.open(target, 'the-hand-token')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    const other = new WebSocket(session, { headers: { authorization: 'Bearer another' } } as never)
+    await opened(other)
+    other.send('fresh')
+    assert.equal(await next(other), 'fresh')
+    assert.equal(remote.seen.at(-1)!.authorization, 'Bearer another', 'another bearer tunnels anew')
+    other.close()
+  } finally {
+    relay.close()
+    remote.close()
+  }
+})

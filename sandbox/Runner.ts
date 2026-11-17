@@ -966,8 +966,12 @@ async function attend(
       item.row.agent.oracle ? undefined : instruct(item),
       item.row.agent.cli
         ? undefined
-        : rowCall<Protocol.Session>(item, 'session').then((session) => {
+        : rowCall<Protocol.Session>(item, 'session').then(async (session) => {
             item.session = session
+            if (item.row.agent.branches) return
+            const url = await reached(item, session.url)
+            if (url !== session.url)
+              await shared.relay.open(session.url, session.token).catch(() => undefined)
           }),
     ])
     const variables: [
