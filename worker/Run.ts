@@ -3198,6 +3198,7 @@ export class Run extends DurableObject<Env> {
       probed.add(branch)
       this.keep(row, Picker.probes, JSON.stringify([...probed].sort()) + '\n')
     }
+    if (!body.verifier) this.warm(row, branch, session)
     const token = await Harness.token(this.env, session)
     return {
       name: Protocol.handName,
@@ -3208,6 +3209,19 @@ export class Run extends DurableObject<Env> {
         encodeURIComponent(session) +
         '/hands',
     }
+  }
+
+  private warm(row: Ledger.Attempt, branch: number, session: string): void {
+    const stage = Cascade.stage(this.agentOf(row), branch)
+    if (stage.provider !== 'claude' && stage.provider !== 'codex') return
+    this.ctx.waitUntil(
+      Harness.warm(this.env, session, {
+        model: stage.model,
+        ...(this.payer(stage.provider) ? { payer: this.payer(stage.provider)! } : {}),
+        provider: stage.provider,
+        ...this.webSearch(row),
+      }).catch(() => {}),
+    )
   }
 
   private branches(row: Pick<Ledger.Attempt, 'agent'>): number {

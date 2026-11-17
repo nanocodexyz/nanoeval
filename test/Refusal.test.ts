@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
+import * as Fs from 'node:fs/promises'
 import * as Http from 'node:http'
 import type { AddressInfo } from 'node:net'
+import * as Os from 'node:os'
 import * as Path from 'node:path'
 import { test } from 'node:test'
 import { begins, commands, help, named, refusal } from '../cli/nanoeval.ts'
@@ -217,5 +219,44 @@ test('the command prints what a Worker answered 404 as one line and exits 1', as
     })
   } finally {
     worker.close()
+  }
+})
+
+test('the token can come from a file, so it stays out of process listings', async () => {
+  const cli = Path.resolve(import.meta.dirname, '../cli/nanoeval.ts')
+  const directory = await Fs.mkdtemp(Path.join(Os.tmpdir(), 'nanoeval-token-'))
+  const file = Path.join(directory, 'token')
+  await Fs.writeFile(file, 'from-file\n')
+  const seen: (string | undefined)[] = []
+  const server = Http.createServer((request, response) => {
+    seen.push(request.headers.authorization)
+    response.writeHead(401, { 'content-type': 'application/json' })
+    response.end('{"error":"no"}')
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const url = 'http://127.0.0.1:' + (server.address() as AddressInfo).port
+  const run = (env: Record<string, string>, ...words: string[]) =>
+    new Promise<{ status: number | null; stderr: string }>((resolve) => {
+      const child = spawn(process.execPath, [cli, ...words], {
+        env: { HOME: process.env['HOME'], PATH: process.env['PATH'], ...env },
+      })
+      let stderr = ''
+      child.stderr.on('data', (chunk) => (stderr += chunk))
+      child.on('close', (status) => resolve({ status, stderr }))
+    })
+  try {
+    await run({}, 'runs', '--url', url, '--token-file', file)
+    await run({ NANOEVAL_TOKEN_FILE: file }, 'runs', '--url', url)
+    assert.deepEqual(seen, ['Bearer from-file', 'Bearer from-file'])
+    const both = await run({}, 'runs', '--url', url, '--token', 't', '--token-file', file)
+    assert.equal(both.stderr, 'nanoeval: --token and --token-file name the same token: give one\n')
+    assert.equal(both.status, 1)
+    await Fs.writeFile(file, '\n')
+    const empty = await run({}, 'runs', '--url', url, '--token-file', file)
+    assert.equal(empty.stderr, 'nanoeval: --token-file ' + file + ' is empty\n')
+    assert.equal(seen.length, 2)
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+    await Fs.rm(directory, { force: true, recursive: true })
   }
 })

@@ -1276,6 +1276,7 @@ A run keeps a timeline, and `nanoeval status` prints the first of each step as a
 # A machine of yours stands by for any run with --sandboxes 0 and its backend: the run is handed to it when it is created.
 # It serves several such runs at once in its --slots, and a run created while they are busy waits for the next free one.
 node cli/nanoeval.ts runner --standing --backend krun --slots 4
+# From a script, --token-file FILE (or NANOEVAL_TOKEN_FILE) keeps the token out of the process listing.
 node cli/nanoeval.ts run --eval terminal-bench-2.1 --agent luna=codex:gpt-6-luna --sandboxes 0 --backend krun --wait
 
 # A leased sandbox is kept for 10 minutes after its run, and the next run with the same template, runtime and backend takes it.
