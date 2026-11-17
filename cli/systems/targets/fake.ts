@@ -13,9 +13,6 @@ export function reply(prompt: string): string {
   return found ? found[1]!.replace(/^["'`]|["'`.]$/g, '') : 'ok'
 }
 
-// A deterministic stand-in for tests: the build's version is a speed factor (a=1, b=0.5 halves every
-// delay). "sleep N" in a prompt is a cell of N x 100 ms, "fail" errors the turn, model no-such-model
-// refuses it, and the deadline and stall window of the suite apply.
 export const fake: Target.Target = {
   async describe(build) {
     return { overrides: { factor: factor(build) } }

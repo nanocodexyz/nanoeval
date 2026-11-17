@@ -1301,6 +1301,22 @@ The warm row is one run and not the five that were planned: the key's limit was 
 
 A cold start cannot be shorter than what E2B and the gateway take: 3.6 to 4.6 s for the paid create, 0.2 to 1.7 s for its price, and about 1.3 s before a command starts to run in the new sandbox. The runner then fetches and unpacks its 20 MB archive in 2.3 s, sets up in 0.4 s and claims. `base` is the template to lease: it has root, Node 20 and `mke2fs`, where `desktop` has no Node and costs five times as much. A kept `base` sandbox costs $0.104 an hour at E2B's price, a `desktop` one $0.51, and the pool pays $0.0001 to terminate it. The gateway sold no renewal, so a kept sandbox lives as long as the lease its run bought: `--sandbox-lease-sec` has to cover the runs and the idle time. [DECISIONS.md](DECISIONS.md#2026-11-12-a-run-that-starts-at-once) has every run and every step.
 
+## Systems mode
+
+`nanoeval systems` measures how fast and how robust a nanocode build is as a system, apart from task quality: scripted turns on a target, timed per turn. A suite is a directory with `suite.json` (nanoeval-suites `systems/systems-v1`, preregistered in its `prereg/SYSTEMS-V1.md`), given as a path or as a name under `NANOEVAL_SUITES`.
+
+```sh
+NANOEVAL_SUITES=~/nanoeval-suites node cli/nanoeval.ts systems run --suite systems-v1 --target cli-local \
+  --build base=23e21f8952f8 --build head=./target/cli/x86_64-unknown-linux-gnu/nanocode --concurrency 1,10 --reps 2
+node cli/nanoeval.ts systems compare output/systems/<ts> --base base --head head
+```
+
+- A target is an adapter in `cli/systems/targets/<name>.ts` with the contract of `cli/systems/Target.ts`: `describe`, `open` and a session's `turn`, which returns the turn's timings. `cli-local` runs `nanocode exec` (later turns `--resume` the session) through a local route proxy that holds the key; `fake` is a deterministic stand-in for tests.
+- A build is `label=<path|url|version>`: a path is a binary, a URL is downloaded, anything else is a `nanocode-cli` release version.
+- Scenarios are `turns`, `coldwarm` (a fresh binary path and home for the first turn) or `sustained` (sessions loop for `durationS`), each at its concurrency levels and repetitions, with a deadline, a stall window, expectations per turn and SLOs on a metric's p50, p95 or mean.
+- `run` writes `run.json`, `summary.md` (p50 and p95 per metric, PASS or FAIL per scenario) and one file per turn under `output/systems/<UTC timestamp>/`. `--strict` exits 1 when an SLO is missed.
+- `compare` gives head/base ratios per scenario, concurrency, phase and metric with a 95 % interval from the clustered bootstrap of `src/Scorecard.ts` (seed 1, 4000 draws; clusters are prompts, or repetitions where a group has fewer than 3), and WIN, TIE or LOSS when the interval is wholly better, holds 1, or is wholly worse.
+
 ## Checks
 
 ```sh
@@ -1374,6 +1390,7 @@ CI is six jobs on GitHub-hosted runners: `check` (lint, types, unit tests, the d
 | `sandbox/` | `Runner.ts`, the task runner, and `Main.ts`, its entry when it is bundled into one file. `slot.sh`, one attempt in one slot. `Store.ts`, the blob store and the cache. `Converter.ts`, where an environment becomes a disk through the launcher. `Prune.ts`, what can go from the layer cache and from a directory store. `Sandboxd.ts`, the local sandbox daemon |
 | `krun/` | The Rust workspace: the libkrun binding, the launcher and the guest binary of the krun backend, the image converter (`nanoeval-krun image`), and `nanoeval-net`, the relay of a private slot |
 | `cli/` | The `nanoeval` command, the import pipeline, `Runtime.ts`, which builds the archive a remote sandbox starts its runner from, and `Doctor.ts`, the checks of `nanoeval doctor` |
+| `cli/systems/` | `nanoeval systems`: the target contract, suites, the runner, the report and the build-vs-build compare, and the `cli-local` and `fake` targets |
 | `datasets/` | The dataset adapters, and the graders they write into tasks |
 | `scripts/` | `install-linux.sh`, the E2B price quote, `harbor-check.py`, which loads an exported job with Harbor's own models, `scripted-model.ts`, a model endpoint that needs no credential, and `mine-failures.ts`, which classes the failed attempts of runs against a passing competitor |
 | `tasks/` | Three small Harbor tasks from gakonst/nanoeval |

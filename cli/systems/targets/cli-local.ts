@@ -6,13 +6,6 @@ import * as Os from 'node:os'
 import * as Path from 'node:path'
 import * as Target from '../Target.ts'
 
-// Drives the nanocode CLI headless (nanocode exec, one process per turn, later turns --resume the session)
-// through a local route proxy, as the local systems harness does (sys METRICS.md): startup is the first model
-// request reaching the proxy after spawn, TTFT the first line of model output the CLI writes (charged for any
-// buffering), first byte the proxy's first upstream response byte, tok/s output tokens over the time each
-// request streamed, cells the time from a response that asked for tools to the next request, RSS the process
-// tree sampled every 100 ms. Keys come from the environment and never reach the CLI.
-
 export type Provider = 'claude' | 'codex'
 
 export type Call = {
@@ -63,7 +56,6 @@ function key(of: Provider): string | undefined {
     : (process.env['NANOEVAL_SYSTEMS_OPENAI_KEY'] ?? process.env['OPENAI_API_KEY'])
 }
 
-// Reads one server-sent event payload (or a whole JSON response) into the call record.
 export function observe(call: Call, payload: unknown, at: number): void {
   if (!payload || typeof payload !== 'object') return
   const event = payload as Record<string, any>
@@ -206,7 +198,6 @@ export async function proxy(of: Provider, upstream?: string): Promise<Proxy> {
   return state
 }
 
-// One ps for every live process tree, every 100 ms.
 type Watch = { root: number; samples: { kb: number; t: number }[] }
 const watched = new Set<Watch>()
 let ticking: ReturnType<typeof setInterval> | undefined
@@ -573,10 +564,7 @@ export const cliLocal: Target.Target = {
             : {
                 error: timedOut
                   ? 'deadline of ' + deadlineMs + ' ms'
-                  : 'exit ' +
-                    code +
-                    ': ' +
-                    stderr.trim().split('\n').slice(-3).join(' | ').slice(0, 400),
+                  : 'exit ' + code + ': ' + stderr.trim(),
               }),
           ...(first?.tFirstByte !== undefined ? { firstByteMs: first.tFirstByte } : {}),
           ...(firstTokenMs !== undefined ? { firstTokenMs } : {}),

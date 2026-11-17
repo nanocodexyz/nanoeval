@@ -150,7 +150,7 @@ export function measure(
     ok: found.ok,
     pass: !failures.length,
     stalled: !!found.stalled,
-    text: found.text.slice(0, 4000),
+    text: found.text,
     timedOut: !!found.timedOut,
   }
 }
@@ -191,13 +191,13 @@ async function guarded(
         resolve({
           cells: [],
           doneMs: Target.now(),
-          error: 'no answer within the deadline plus 5 s (runner guard)',
+          error: 'no answer within the deadline plus the stall window (runner guard)',
           ok: false,
           sendMs,
           text: '',
           timedOut: true,
         }),
-      scenario.deadlineMs + 5000,
+      scenario.deadlineMs + scenario.stallMs,
     )
   })
   try {
