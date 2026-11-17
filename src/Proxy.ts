@@ -259,14 +259,41 @@ function paid(used: Record<string, any>): number | undefined {
     : undefined
 }
 
+export function delivers(value: Record<string, any>): boolean {
+  const type = value['type']
+  if (typeof type === 'string') {
+    if (type === 'content_block_delta') return true
+    if (type === 'content_block_start') {
+      const block = value['content_block']?.['type']
+      return block === 'tool_use' || block === 'server_tool_use'
+    }
+    if (type.startsWith('response.') && type.endsWith('.delta')) return true
+    if (type === 'response.output_item.added') {
+      const item = value['item']?.['type']
+      return typeof item === 'string' && item.endsWith('_call')
+    }
+  }
+  const choices = value['choices']
+  if (!Array.isArray(choices)) return false
+  return choices.some((choice) => {
+    const delta = choice?.['delta']
+    if (typeof delta !== 'object' || delta === null) return false
+    for (const key of ['content', 'reasoning', 'reasoning_content'])
+      if (typeof delta[key] === 'string' && delta[key] !== '') return true
+    return Array.isArray(delta['tool_calls']) && delta['tool_calls'].length > 0
+  })
+}
+
 export function meter(
   provider: Provider,
   options: { cost?: false } = {},
 ): {
+  delivered(): boolean
   push(chunk: string): void
   usage(): Usage | undefined
 } {
   const costed = options.cost !== false
+  let delivered = false
   let pending = ''
   let whole = ''
   let stream = false
@@ -363,10 +390,14 @@ export function meter(
     stream = true
     try {
       const value = JSON.parse(text.slice('data:'.length)) as unknown
-      if (typeof value === 'object' && value !== null) read(value as Record<string, any>)
+      if (typeof value === 'object' && value !== null) {
+        if (!delivered) delivered = delivers(value as Record<string, any>)
+        read(value as Record<string, any>)
+      }
     } catch {}
   }
   return {
+    delivered: () => delivered,
     push(chunk) {
       if (!stream) whole += chunk
       pending += chunk
