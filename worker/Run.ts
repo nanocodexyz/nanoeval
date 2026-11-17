@@ -257,6 +257,10 @@ export class Run extends DurableObject<Env> {
   private readonly creating = new Set<number>()
   private readonly cursors = new Map<string, number>()
   private readonly evidenced = new Map<string, Branch.Evidence | null>()
+  private readonly warmed = new Map<
+    string,
+    { at: number; deadline: NonNullable<Turn.Turn['deadline']> }
+  >()
   private readonly holds = Hold.create()
   private readonly instance = secret()
   private readonly specs = new Map<string, Eval.Task>()
@@ -3213,15 +3217,20 @@ export class Run extends DurableObject<Env> {
   }
 
   private warm(row: Ledger.Attempt, branch: number, session: string): void {
-    const stage = Cascade.stage(this.agentOf(row), branch)
+    const agent = this.agentOf(row)
+    const stage = Cascade.stage(agent, branch)
     if (stage.provider !== 'claude' && stage.provider !== 'codex') return
+    const deadline = Turn.deadline(this.config().limits, {
+      limitMs: this.task(row.task).agent.timeoutSec * 1000,
+      now: Date.now(),
+    })
+    if (deadline && !Cascade.on(agent)) this.warmed.set(session, { at: Date.now(), deadline })
     this.ctx.waitUntil(
-      Harness.warm(this.env, session, {
-        model: stage.model,
-        ...(this.payer(stage.provider) ? { payer: this.payer(stage.provider)! } : {}),
-        provider: stage.provider,
-        ...this.webSearch(row),
-      }).catch(() => {}),
+      Harness.warm(
+        this.env,
+        session,
+        this.turnOf(row, { branch, deadline, prompt: '', requestId: '' }),
+      ).catch(() => {}),
     )
   }
 
@@ -3619,15 +3628,46 @@ export class Run extends DurableObject<Env> {
     const agent = this.agentOf(row)
     if (agent.provider !== 'claude' && agent.provider !== 'codex')
       throw new Refusal(409, 'the agent of the attempt is not a session')
-    const stage = Cascade.stage(agent, input.branch ?? 0)
     const now = Date.now()
-    const deadline = Turn.deadline(this.config().limits, {
-      limitMs:
-        input.deadlineAt === undefined
-          ? this.task(row.task).agent.timeoutSec * 1000
-          : input.deadlineAt - now,
-      now,
+    const warmed = input.deadlineAt === undefined ? this.warmed.get(input.session) : undefined
+    this.warmed.delete(input.session)
+    const deadline =
+      (warmed && now - warmed.at < 30_000 ? warmed.deadline : undefined) ??
+      Turn.deadline(this.config().limits, {
+        limitMs:
+          input.deadlineAt === undefined
+            ? this.task(row.task).agent.timeoutSec * 1000
+            : input.deadlineAt - now,
+        now,
+      })
+    const turn = this.turnOf(row, {
+      ...(input.branch === undefined ? {} : { branch: input.branch }),
+      deadline,
+      prompt: input.prompt,
+      requestId: input.requestId,
     })
+    this.mine(row)
+    try {
+      const report = await Harness.submit(this.env, input.session, turn)
+      this.keep(
+        row,
+        Turn.record,
+        (this.textArtifact(row.id, Turn.record) ?? '') +
+          Turn.sent(turn, { at: now, session: input.session }),
+      )
+      return report
+    } catch (error) {
+      throw await this.unpaid(row, error)
+    }
+  }
+
+  private turnOf(
+    row: Ledger.Attempt,
+    input: { branch?: number; deadline: Turn.Turn['deadline']; prompt: string; requestId: string },
+  ): Turn.Turn {
+    const agent = this.agentOf(row)
+    const stage = Cascade.stage(agent, input.branch ?? 0)
+    const deadline = input.deadline
     const full: Turn.Turn = {
       ...(agent.briefFinal ? { briefFinal: true } : {}),
       ...(agent.briefFinish ? { briefFinish: true } : {}),
@@ -3687,20 +3727,7 @@ export class Run extends DurableObject<Env> {
       ...(agent.yieldFloorMs === undefined ? {} : { yieldFloorMs: agent.yieldFloorMs }),
       ...(agent.yieldShare === undefined ? {} : { yieldShare: agent.yieldShare }),
     }
-    this.mine(row)
-    const turn = Cascade.fixing(agent, input.branch ?? 0) ? Cascade.bare(full) : full
-    try {
-      const report = await Harness.submit(this.env, input.session, turn)
-      this.keep(
-        row,
-        Turn.record,
-        (this.textArtifact(row.id, Turn.record) ?? '') +
-          Turn.sent(turn, { at: now, session: input.session }),
-      )
-      return report
-    } catch (error) {
-      throw await this.unpaid(row, error)
-    }
+    return Cascade.fixing(agent, input.branch ?? 0) ? Cascade.bare(full) : full
   }
 
   private async branched(
