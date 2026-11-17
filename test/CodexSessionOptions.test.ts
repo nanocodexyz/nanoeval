@@ -22,7 +22,7 @@ const config = {
 }
 
 const usage =
-  /\[:clearing_cache_floors=on\]\[:lenient_patches=on\]\[:min_wait_ms=N\]\[:max_output_tokens=N\]\[:context_window=N\], not x=/
+  /\[:clearing_cache_floors=on\]\[:lenient_patches=on\]\[:min_wait_ms=N\]\[:max_output_tokens=N\]\[:context_window=N\]\[:hedge_cap_percent=0\.\.100\], not x=/
 
 const all =
   'nanox-dsk=codex:deepseek-v4-pro:high:lenient_patches=on:min_wait_ms=2000:max_output_tokens=32000:context_window=128000'

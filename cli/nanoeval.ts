@@ -359,14 +359,20 @@ const usage = `nanoeval <command>
             outside the built-in Codex models stops at N tokens) and :context_window=N (the
             session compacts its history at nine tenths of N tokens) (nanox-dsk=codex:
             deepseek-v4-pro:high:lenient_patches=on:min_wait_ms=2000:max_output_tokens=32000:
-            context_window=128000). The options come in
+            context_window=128000).
+            A claude, codex, codex-code-mode, codex-jobs, nanocode-claude or nanocode-codex
+            agent may end in :hedge_cap_percent=N (its sessions resend a model request whose
+            first byte is late on a second connection for at most N percent of their recent
+            requests; 0 sends one request for each model call) (nano-nohedge=claude:
+            claude-opus-5-5:high:hedge_cap_percent=0). An agent without it runs the hedge
+            policy nanocode defaults to. The options come in
             this order where several are named: branches, refusal_fallback, cell_yield_ms,
             brief_finish, fold_finish, low_effort_rounds, brief_final, lean_cells,
             escalate_model, escalate_tool_errors, escalate_context_tokens, tool_result_tokens,
             persist_finish, skip_finish_check, late_finish_check_ms, result_effort,
             stop_at_target, yield_floor_ms, yield_share, finish_retries, finish_check,
             finish_ambiguity, tool_result_clearing, subagents, clearing_cache_floors,
-            lenient_patches, min_wait_ms, max_output_tokens, context_window.
+            lenient_patches, min_wait_ms, max_output_tokens, context_window, hedge_cap_percent.
             A claude, codex, codex-code-mode or codex-jobs HARNESS followed by +preflight (nanoxp=codex+preflight:
             gpt-6-luna:high) has the runner probe the slot once before the first turn (tools on
             PATH and their versions, CPUs, memory, free disk, OS, whether pypi.org answers) and
@@ -1011,6 +1017,13 @@ const agentOptions: readonly AgentOption[] = [
     name: 'context_window',
     read: (text) => ({ contextWindow: Number(text) }),
     write: (agent) => agent.contextWindow,
+  },
+  {
+    name: 'hedge_cap_percent',
+    pattern: '[0-9]+',
+    read: (text) => ({ hedgeCapPercent: Number(text) }),
+    value: '0..100',
+    write: (agent) => agent.hedgeCapPercent,
   },
 ]
 

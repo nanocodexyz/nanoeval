@@ -28,6 +28,7 @@ export type Agent = {
   cellYieldMs?: number
   clearingCacheFloors?: true
   contextWindow?: number
+  hedgeCapPercent?: number
   escalateContextTokens?: number
   escalateModel?: string
   escalateToolErrors?: number
@@ -77,6 +78,7 @@ export const agentKeys: readonly (keyof Agent)[] = [
   'finishCheck',
   'finishRetries',
   'foldFinish',
+  'hedgeCapPercent',
   'id',
   'lateFinishCheckMs',
   'lazy',
@@ -486,6 +488,22 @@ export function parse(value: unknown): Config {
       if (provider !== 'codex')
         fail(agent.id + ' has a ' + limit + ', which only a codex session takes')
     }
+    if (agent.hedgeCapPercent !== undefined) {
+      if (
+        !(
+          Number.isSafeInteger(agent.hedgeCapPercent) &&
+          agent.hedgeCapPercent >= 0 &&
+          agent.hedgeCapPercent <= 100
+        )
+      )
+        fail(agent.id + ': hedgeCapPercent must be a whole percent from 0 to 100')
+      if (
+        provider !== 'claude' &&
+        provider !== 'codex' &&
+        !(Installed.is(provider) && Installed.releases[provider].source === 'runtime')
+      )
+        fail(agent.id + ' has a hedgeCapPercent, which only a nanocode session or agent takes')
+    }
     if (agent.persistFinish !== undefined) {
       if (agent.persistFinish !== true) fail(agent.id + ' has a persistFinish that is not true')
       if (provider !== 'claude' && provider !== 'codex')
@@ -504,6 +522,7 @@ export function parse(value: unknown): Config {
       ...(agent.cellYieldMs === undefined ? {} : { cellYieldMs: agent.cellYieldMs }),
       ...(agent.clearingCacheFloors ? { clearingCacheFloors: true as const } : {}),
       ...(agent.contextWindow === undefined ? {} : { contextWindow: agent.contextWindow }),
+      ...(agent.hedgeCapPercent === undefined ? {} : { hedgeCapPercent: agent.hedgeCapPercent }),
       ...(agent.escalateContextTokens === undefined
         ? {}
         : { escalateContextTokens: agent.escalateContextTokens }),

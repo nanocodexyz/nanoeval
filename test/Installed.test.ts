@@ -885,8 +885,6 @@ test('the command of nanocode is the runtime of the slot and reads the endpoint 
     'high',
     '--ephemeral',
     '--no-tempo-tools',
-    '--hedge-cap-percent',
-    '0',
     "Write it's done.",
   ])
   assert.match(
@@ -910,8 +908,6 @@ test('the command of nanocode is the runtime of the slot and reads the endpoint 
     'claude',
     '--ephemeral',
     '--no-tempo-tools',
-    '--hedge-cap-percent',
-    '0',
     '--context-window',
     String(Installed.leaderboard.contextWindow),
     '--max-output-tokens',
@@ -936,7 +932,7 @@ test('the command of nanocode is the runtime of the slot and reads the endpoint 
   })
 })
 
-test('a nanocode codex agent keeps the catalog window of its model and sends no hedged request', () => {
+test('a nanocode codex agent keeps the catalog window of its model and the hedge nanocode defaults to', () => {
   const out = run({ kind: 'nanocode-codex', model: 'gpt-6-luna', thinking: 'high' }, runtime(false))
   const args = out
     .split('\n')
@@ -945,7 +941,20 @@ test('a nanocode codex agent keeps the catalog window of its model and sends no 
 
   assert.ok(!args.includes('--context-window'), args.join(' '))
   assert.ok(!out.includes('NANOCODE_CONTEXT_WINDOW'), out)
-  assert.equal(args[args.indexOf('--hedge-cap-percent') + 1], '0')
+  assert.ok(!args.includes('--hedge-cap-percent'), args.join(' '))
+})
+
+test('a nanocode agent sends the hedge cap its agent names', () => {
+  const capped = (kind: 'nanocode-claude' | 'nanocode-codex', hedgeCapPercent: number) => {
+    const args = run({ hedgeCapPercent, kind, model: 'gpt-6-luna' }, runtime(false))
+      .split('\n')
+      .filter((line) => line.startsWith('argument:'))
+      .map((line) => line.slice('argument:'.length))
+    return args[args.indexOf('--hedge-cap-percent') + 1]
+  }
+  assert.equal(capped('nanocode-codex', 0), '0')
+  assert.equal(capped('nanocode-claude', 0), '0')
+  assert.equal(capped('nanocode-codex', 25), '25')
 })
 
 test('the output of nanocode is its final message and an ATIF trajectory', () => {
