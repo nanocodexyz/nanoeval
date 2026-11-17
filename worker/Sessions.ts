@@ -158,8 +158,14 @@ export const nanocode = App.create<Env>({
         if (binding && (request.method !== 'POST' || headers.has('upgrade')))
           return refuse('the Workers AI binding serves chat completions only')
         if (request.method !== 'POST' || headers.has('upgrade')) {
-          const plain = (sent: Headers) =>
-            (relayed ?? fetch)(
+          const metered =
+            session && headers.get('upgrade')?.toLowerCase() === 'websocket'
+              ? signed || login
+                ? Meter.rejecting(hooks)
+                : hooks
+              : undefined
+          const plain = async (sent: Headers) => {
+            const upstream = await (relayed ?? fetch)(
               new Request(target, {
                 method: request.method,
                 headers: sent,
@@ -167,6 +173,8 @@ export const nanocode = App.create<Env>({
                 signal: request.signal,
               }),
             )
+            return metered ? Meter.socket({ hooks: metered, provider: name, upstream }) : upstream
+          }
           if (!login) return plain(headers)
           try {
             if (request.body) return await plain(carrying(await credential()))
