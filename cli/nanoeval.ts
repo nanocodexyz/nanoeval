@@ -108,8 +108,11 @@ const usage = `nanoeval <command>
             names the address that runners and hands on other machines dial, such as a
             tunnel in front of this Worker. --nanocode-ts, or NANOEVAL_NANOCODE_TS, names
             the directory of a built nanocode-ts package that the Worker bundles in place
-            of the pinned one, as nanoeval revision builds it: runs created on it record
-            NANOEVAL_NANOCODE_TS_REVISION as their harness, or the WASM build of the package.
+            of the pinned one, as nanoeval revision builds it, WASM core included: the
+            command bundles the Worker once first, and does not start it when the bundled
+            nanocode_wasm.wasm differs from the one of the package it declares. Runs created
+            on it record NANOEVAL_NANOCODE_TS_REVISION as their harness, or the WASM build of
+            the package.
             PLAN_SECRET, which seals a plan signed in with nanoeval plans, is taken from the
             environment, or made once and kept in a private file of the state directory.
   plan      refresh [--codex-login FILE] [--claude-login FILE] [--within-sec 21600]
@@ -2687,14 +2690,21 @@ async function main(
     const state = Path.resolve(values.state ?? Path.join('output', 'worker'))
     vars['PLAN_SECRET'] =
       process.env['PLAN_SECRET'] ?? (await Plan.secret(Path.join(state, 'plan.secret')))
-    const harness = await Revision.wrangler({
-      ...process.env,
-      ...(values['nanocode-ts'] ? { NANOEVAL_NANOCODE_TS: values['nanocode-ts'] } : {}),
+    const root = Path.resolve(import.meta.dirname, '..')
+    const directory = await Fs.mkdtemp(Path.join(Os.tmpdir(), 'nanoeval-worker-'))
+    const harness = await Revision.wrangler(
+      {
+        ...process.env,
+        ...(values['nanocode-ts'] ? { NANOEVAL_NANOCODE_TS: values['nanocode-ts'] } : {}),
+      },
+      Path.join(directory, 'harness'),
+    )
+    const bundle = await Revision.verify(harness, {
+      directory: Path.join(directory, 'bundle'),
+      root,
     })
     Object.assign(vars, harness.vars)
 
-    const root = Path.resolve(import.meta.dirname, '..')
-    const directory = await Fs.mkdtemp(Path.join(Os.tmpdir(), 'nanoeval-worker-'))
     const file = Path.join(directory, 'vars.env')
     await Fs.writeFile(file, Plan.envFile(vars), { mode: 0o600 })
     const child = spawn(
@@ -2702,6 +2712,7 @@ async function main(
       [
         Path.join(root, 'node_modules', 'wrangler', 'bin', 'wrangler.js'),
         'dev',
+        ...bundle,
         '--local',
         '--ip',
         values.host,
@@ -2713,7 +2724,6 @@ async function main(
         state,
         '--env-file',
         file,
-        ...harness.arguments,
       ],
       { cwd: root, stdio: 'inherit' },
     )

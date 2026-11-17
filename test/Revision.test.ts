@@ -190,6 +190,7 @@ test('an evaluation is refused when no credential serves an agent or the judge',
 
 test('the Worker takes a built package by an alias for each of its entries, and names its build', async () => {
   const built = Path.join(directory, 'package')
+  const generated = Path.join(directory, 'generated')
   Fs.mkdirSync(Path.join(built, 'dist'), { recursive: true })
   Fs.writeFileSync(
     Path.join(built, 'package.json'),
@@ -206,28 +207,77 @@ test('the Worker takes a built package by an alias for each of its entries, and 
     Path.join(built, 'dist', 'nanocode-wasm.json'),
     JSON.stringify({ fingerprint: '0123abcd' }),
   )
-  assert.deepEqual(await Revision.wrangler({}), { arguments: [], vars: {} })
-  assert.deepEqual(await Revision.wrangler({ NANOEVAL_NANOCODE_TS: built }), {
+  Fs.writeFileSync(Path.join(built, 'dist', 'nanocode_wasm.wasm'), 'core')
+  const pinned = await Revision.wrangler({}, generated)
+  assert.deepEqual(pinned.arguments, [])
+  assert.deepEqual(pinned.vars, {})
+  assert.match(pinned.core, /^[0-9a-f]{64}$/)
+  const shim = Path.join(generated, 'nanocode-ts', 'nanocode_wasm.wasm.js')
+  assert.deepEqual(await Revision.wrangler({ NANOEVAL_NANOCODE_TS: built }, generated), {
     arguments: [
       '--alias',
       'nanocode-ts:' + Path.join(built, 'dist/index.js'),
       '--alias',
       'nanocode-ts/cloudflare:' + Path.join(built, 'dist/cloudflare/index.js'),
+      '--alias',
+      'nanocode-ts/nanocode_wasm.wasm:' + shim,
     ],
+    core: '0d45f5fd462b8c70bffb10021ac1bcff3f58f29b1faf7568595095427d42812c',
     vars: { NANOCODE_TS_REVISION: 'nanocode-ts wasm 0123abcd' },
   })
+  assert.equal(
+    Fs.readFileSync(shim, 'utf8'),
+    'import module from ' +
+      JSON.stringify(Path.join(built, 'dist', 'nanocode_wasm.wasm')) +
+      '\nexport default module\n',
+  )
   assert.deepEqual(
     (
-      await Revision.wrangler({
-        NANOEVAL_NANOCODE_TS: built,
-        NANOEVAL_NANOCODE_TS_REVISION: 'nanocode-ts a on nanocode b',
-      })
+      await Revision.wrangler(
+        {
+          NANOEVAL_NANOCODE_TS: built,
+          NANOEVAL_NANOCODE_TS_REVISION: 'nanocode-ts a on nanocode b',
+        },
+        generated,
+      )
     ).vars,
     { NANOCODE_TS_REVISION: 'nanocode-ts a on nanocode b' },
   )
-  await assert.rejects(Revision.wrangler({ NANOEVAL_NANOCODE_TS: directory }), {
+  await assert.rejects(Revision.wrangler({ NANOEVAL_NANOCODE_TS: directory }, generated), {
     name: 'Revision.SourceError',
   })
+})
+
+test('the Worker bundles the WASM core of the package it declares, and refuses one that differs', async () => {
+  const root = Path.resolve(import.meta.dirname, '..')
+  const layout = Path.join(directory, 'layout')
+  const built = Path.join(layout, 'swapped')
+  Fs.mkdirSync(Path.join(layout, 'node_modules'), { recursive: true })
+  Fs.symlinkSync(
+    Path.join(root, 'node_modules', 'nanocode-ts'),
+    Path.join(layout, 'node_modules', 'nanocode-ts'),
+  )
+  Fs.cpSync(Path.join(root, 'node_modules', 'nanocode-ts'), built, { recursive: true })
+  Fs.writeFileSync(
+    Path.join(built, 'dist', Revision.coreFile),
+    Uint8Array.of(0, 0x61, 0x73, 0x6d, 1, 0, 0, 0),
+  )
+  const harness = await Revision.wrangler(
+    { NANOEVAL_NANOCODE_TS: built },
+    Path.join(directory, 'swapped-generated'),
+  )
+  const served = await Revision.verify(harness, {
+    directory: Path.join(directory, 'swapped-bundle'),
+    root,
+  })
+  assert.deepEqual(served, [Path.join(directory, 'swapped-bundle', 'index.js'), '--no-bundle'])
+  await assert.rejects(
+    Revision.verify(
+      { arguments: [], core: harness.core },
+      { directory: Path.join(directory, 'pinned-bundle'), root },
+    ),
+    { name: 'Revision.BundleError' },
+  )
 })
 
 test('the variables of a build name the hand and the package for a runner and a Worker', () => {
