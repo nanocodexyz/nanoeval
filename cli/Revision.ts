@@ -15,6 +15,10 @@ export class BuildError extends Error {
   override name = 'Revision.BuildError'
 }
 
+export class BundleError extends Error {
+  override name = 'Revision.BundleError'
+}
+
 export class CredentialError extends Error {
   override name = 'Revision.CredentialError'
 }
@@ -26,6 +30,8 @@ export class PlanError extends Error {
 export class SourceError extends Error {
   override name = 'Revision.SourceError'
 }
+
+export const coreFile = 'nanocode_wasm.wasm'
 
 export const pinned = 'pinned'
 
@@ -225,24 +231,33 @@ export function profileDirectory(profile: string): string {
 
 export function aliases(
   directory: string,
-  manifest: { exports?: unknown; name?: unknown },
-): string[] {
+  input: { generated: string; manifest: { exports?: unknown; name?: unknown } },
+): { arguments: string[]; modules: Record<string, string> } {
+  const { manifest } = input
   if (
     typeof manifest.name !== 'string' ||
     typeof manifest.exports !== 'object' ||
     !manifest.exports
   )
     throw new SourceError(directory + ' holds no package with exports')
-  return Object.entries(manifest.exports as Record<string, unknown>).flatMap(([subpath, entry]) => {
-    const file =
-      typeof entry === 'string' ? entry : (entry as { default?: unknown } | null)?.default
-    return typeof file === 'string' && /\.[cm]?js$/.test(file)
-      ? [
-          '--alias',
-          Path.posix.join(manifest.name as string, subpath) + ':' + Path.join(directory, file),
-        ]
-      : []
-  })
+  const modules: Record<string, string> = {}
+  const args = Object.entries(manifest.exports as Record<string, unknown>).flatMap(
+    ([subpath, entry]) => {
+      const file =
+        typeof entry === 'string' ? entry : (entry as { default?: unknown } | null)?.default
+      if (typeof file !== 'string') return []
+      const specifier = Path.posix.join(manifest.name as string, subpath)
+      if (/\.[cm]?js$/.test(file)) return ['--alias', specifier + ':' + Path.join(directory, file)]
+      if (!file.endsWith('.wasm')) return []
+      const module = Path.join(input.generated, specifier + '.js')
+      modules[module] =
+        'import module from ' +
+        JSON.stringify(Path.join(directory, file)) +
+        '\nexport default module\n'
+      return ['--alias', specifier + ':' + module]
+    },
+  )
+  return { arguments: args, modules }
 }
 
 export function missing(
@@ -798,9 +813,16 @@ export declare namespace build {
 
 export async function wrangler(
   env: Record<string, string | undefined>,
-): Promise<{ arguments: string[]; vars: Record<string, string> }> {
+  generated: string,
+): Promise<{ arguments: string[]; core: string; vars: Record<string, string> }> {
   const directory = env['NANOEVAL_NANOCODE_TS']
-  if (!directory) return { arguments: [], vars: {} }
+  const root = Path.resolve(import.meta.dirname, '..')
+  if (!directory)
+    return {
+      arguments: [],
+      core: await digest(Path.join(root, 'node_modules', 'nanocode-ts', 'dist', coreFile)),
+      vars: {},
+    }
   const resolved = Path.resolve(directory)
   const manifest = JSON.parse(
     await Fs.readFile(Path.join(resolved, 'package.json'), 'utf8').catch(() => {
@@ -812,13 +834,74 @@ export async function wrangler(
       throw new SourceError(resolved + ' holds no dist of a built nanocode-ts')
     }),
   ) as { fingerprint: string }
+  const aliased = aliases(resolved, { generated, manifest })
+  for (const [file, text] of Object.entries(aliased.modules)) {
+    await Fs.mkdir(Path.dirname(file), { recursive: true })
+    await Fs.writeFile(file, text)
+  }
   return {
-    arguments: aliases(resolved, manifest),
+    arguments: aliased.arguments,
+    core: await digest(Path.join(resolved, 'dist', coreFile)),
     vars: {
       NANOCODE_TS_REVISION:
         env['NANOEVAL_NANOCODE_TS_REVISION'] || 'nanocode-ts wasm ' + wasm.fingerprint,
     },
   }
+}
+
+export async function bundled(
+  args: readonly string[],
+  input: { directory: string; entry?: string; root: string },
+): Promise<string> {
+  await run(
+    process.execPath,
+    [
+      Path.join(input.root, 'node_modules', 'wrangler', 'bin', 'wrangler.js'),
+      'deploy',
+      ...(input.entry ? [input.entry] : []),
+      '--dry-run',
+      '--outdir',
+      input.directory,
+      ...args,
+    ],
+    { cwd: input.root },
+  )
+  const cores = (await Fs.readdir(input.directory)).filter((name) => name.endsWith('-' + coreFile))
+  if (cores.length !== 1)
+    throw new BundleError(
+      'the Worker bundle in ' + input.directory + ' holds ' + cores.length + ' ' + coreFile,
+    )
+  return digest(Path.join(input.directory, cores[0]!))
+}
+
+/**
+ * Bundles the Worker with the harness's aliases, checks that it holds the WASM core of
+ * the nanocode-ts it declares, and returns the wrangler dev arguments that serve that
+ * bundle as built. wrangler dev drops --alias, so the Worker runs this bundle rather
+ * than one wrangler dev would build from node_modules.
+ */
+export async function verify(
+  harness: { arguments: readonly string[]; core: string },
+  input: { directory: string; entry?: string; root: string },
+): Promise<string[]> {
+  const held = await bundled(harness.arguments, input)
+  if (held !== harness.core)
+    throw new BundleError(
+      'the Worker would bundle ' +
+        coreFile +
+        ' ' +
+        held +
+        ', not ' +
+        harness.core +
+        ' of the nanocode-ts it declares, so it does not start',
+    )
+  return [Path.join(input.directory, 'index.js'), '--no-bundle']
+}
+
+async function digest(file: string): Promise<string> {
+  return Crypto.createHash('sha256')
+    .update(await Fs.readFile(file))
+    .digest('hex')
 }
 
 export async function port(): Promise<{ port: number; release(): void }> {

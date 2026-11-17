@@ -1548,7 +1548,12 @@ async function main(): Promise<void> {
         ? await Plan.relay(upstream.url)
         : undefined
   const url = 'http://127.0.0.1:' + port
-  const harness = await Revision.wrangler(process.env)
+  const harness = await Revision.wrangler(process.env, Path.join(out, 'harness'))
+  const bundle = await Revision.verify(harness, {
+    directory: Path.join(out, 'bundle'),
+    ...(taken ? { entry: Path.resolve('test/worker/Taken.ts') } : {}),
+    root: Path.resolve('.'),
+  })
   const vars: Record<string, string> = {
     ...harness.vars,
     ACCESS_TOKEN: token,
@@ -1586,7 +1591,7 @@ async function main(): Promise<void> {
       [
         'dev',
         '--local',
-        ...(taken ? [Path.resolve('test/worker/Taken.ts')] : []),
+        ...bundle,
         '--ip',
         '127.0.0.1',
         '--port',
@@ -1597,7 +1602,6 @@ async function main(): Promise<void> {
         Path.join(out, 'state'),
         '--env-file',
         Path.join(secrets, 'vars.env'),
-        ...harness.arguments,
       ],
       {
         detached: true,
