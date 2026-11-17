@@ -214,3 +214,176 @@ export declare namespace relay {
     url: string
   }
 }
+
+const terminal = ['error', 'response.completed', 'response.failed', 'response.incomplete']
+
+/** Meters a Responses WebSocket: each `response.create` the agent sends is one model request, timed and priced by the same meter as a streamed answer. */
+export function frames(input: frames.Input): frames.Frames {
+  const { hooks, provider } = input
+  const now = input.now ?? Date.now
+  const decoder = new TextDecoder()
+  let open:
+    | {
+        at: number
+        firstByteMs?: number
+        firstDeltaMs?: number
+        meter: ReturnType<typeof Proxy.meter>
+        status: number
+      }
+    | undefined
+  let settling: Promise<void> = Promise.resolve()
+  const text = (data: unknown): string | undefined =>
+    typeof data === 'string'
+      ? data
+      : data instanceof ArrayBuffer || ArrayBuffer.isView(data)
+        ? decoder.decode(data as ArrayBuffer)
+        : undefined
+  const parse = (data: string): Record<string, any> | undefined => {
+    try {
+      const value = JSON.parse(data) as unknown
+      return typeof value === 'object' && value !== null
+        ? (value as Record<string, any>)
+        : undefined
+    } catch {
+      return undefined
+    }
+  }
+  const settle = () => {
+    const done = open
+    if (!done) return
+    open = undefined
+    const usage = done.meter.usage()
+    const outcome: Outcome = {
+      at: done.at,
+      ...(done.firstByteMs === undefined ? {} : { firstByteMs: done.firstByteMs }),
+      ...(done.firstDeltaMs === undefined ? {} : { firstDeltaMs: done.firstDeltaMs }),
+      ms: now() - done.at,
+      status: done.status,
+      ...(usage ? { usage } : {}),
+    }
+    settling = settling.then(
+      () => hooks.settle(outcome),
+      () => hooks.settle(outcome),
+    )
+  }
+  return {
+    sent(data) {
+      const value = text(data)
+      if (value === undefined || parse(value)?.['type'] !== 'response.create') return
+      settle()
+      open = {
+        at: now(),
+        meter: Proxy.meter(provider, input.cost === false ? { cost: false } : {}),
+        status: 200,
+      }
+    },
+    received(data) {
+      const request = open
+      if (!request) return
+      const value = text(data)
+      if (value === undefined) return
+      request.firstByteMs ??= now() - request.at
+      request.meter.push('data: ' + value.replace(/\r?\n/g, ' ') + '\n')
+      if (request.firstDeltaMs === undefined && request.meter.delivered())
+        request.firstDeltaMs = now() - request.at
+      const event = parse(value)
+      const type = event?.['type']
+      if (typeof type !== 'string' || !terminal.includes(type)) return
+      if (type === 'error') {
+        const status = event?.['status']
+        request.status = typeof status === 'number' && status >= 400 ? status : 500
+      }
+      settle()
+    },
+    closed() {
+      settle()
+      return settling
+    },
+  }
+}
+
+export declare namespace frames {
+  type Input = {
+    cost?: false
+    hooks: Pick<Hooks, 'settle'>
+    now?: () => number
+    provider: Proxy.Provider
+  }
+  type Frames = {
+    /** Settles a request the socket closed before it finished, and resolves once every request is settled. */
+    closed(): Promise<void>
+    received(data: unknown): void
+    sent(data: unknown): void
+  }
+}
+
+export type Socket = {
+  accept(): void
+  addEventListener(
+    type: 'close' | 'error' | 'message',
+    listener: (event: { code?: number; data?: unknown; reason?: string }) => void,
+  ): void
+  close(code?: number, reason?: string): void
+  send(data: string | ArrayBuffer): void
+}
+
+/** Passes an upgraded answer through a socket pair that meters it with `frames`; any other answer is returned as it is. */
+export function socket(input: socket.Input): Response {
+  const upstream = (input.upstream as { webSocket?: Socket | null }).webSocket
+  if (input.upstream.status !== 101 || !upstream) return input.upstream
+  const [client, server] = (input.pair?.() ??
+    Object.values(
+      new (
+        globalThis as unknown as { WebSocketPair: new () => Record<0 | 1, Socket> }
+      ).WebSocketPair(),
+    )) as readonly [unknown, Socket]
+  const metered = frames(input)
+  const shut = (to: Socket, code?: number, reason?: string) => {
+    try {
+      to.close(code === undefined || code === 1005 || code === 1006 ? 1000 : code, reason)
+    } catch {}
+  }
+  upstream.accept()
+  server.accept()
+  server.addEventListener('message', (event) => {
+    metered.sent(event.data)
+    try {
+      upstream.send(event.data as string | ArrayBuffer)
+    } catch {}
+  })
+  upstream.addEventListener('message', (event) => {
+    metered.received(event.data)
+    try {
+      server.send(event.data as string | ArrayBuffer)
+    } catch {}
+  })
+  server.addEventListener('close', (event) => {
+    void metered.closed()
+    shut(upstream, event.code, event.reason)
+  })
+  upstream.addEventListener('close', (event) => {
+    void metered.closed()
+    shut(server, event.code, event.reason)
+  })
+  server.addEventListener('error', () => {
+    void metered.closed()
+    shut(upstream, 1011)
+  })
+  upstream.addEventListener('error', () => {
+    void metered.closed()
+    shut(server, 1011)
+  })
+  return new Response(null, {
+    headers: input.upstream.headers,
+    status: 101,
+    webSocket: client,
+  } as ResponseInit)
+}
+
+export declare namespace socket {
+  type Input = frames.Input & {
+    /** Makes the socket pair the agent and the meter hold, a `WebSocketPair` by default. */
+    pair?: () => readonly [unknown, Socket]
+    upstream: Response
+  }
+}
