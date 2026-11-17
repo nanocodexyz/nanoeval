@@ -286,7 +286,7 @@ test('a session streams a turn, sends the visitor and the model, and resumes', a
   const visitor = 'a'.repeat(64)
   process.env['NANOEVAL_SYSTEMS_CF_DEMO_VISITOR'] = visitor
   try {
-    const context = { deadlineMs: 5_000, model: 'gpt-6-luna', stallMs: 2_000 }
+    const context = { deadlineMs: 5_000, model: 'gpt-6-luna', stallMs: 2_000, thinking: 'low' }
     const session = await Demo.default.open({ label: 'test', url: server.url + '/' }, context)
     const sample = await session.turn('hi')
     assert.equal(sample.ok, true, sample.error)
@@ -303,6 +303,7 @@ test('a session streams a turn, sends the visitor and the model, and resumes', a
         prompt: 'hi',
         provider: 'codex',
         request_id: undefined,
+        thinking: 'low',
       },
     )
     const resumed = await Demo.default.resume!(

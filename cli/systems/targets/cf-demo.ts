@@ -349,6 +349,7 @@ export async function turn(
           prompt: options.prompt,
           request_id: crypto.randomUUID(),
           ...model(options.context?.model),
+          ...(options.context?.thinking ? { thinking: options.context.thinking } : {}),
         }),
         headers: headers(endpoint, 'text/event-stream'),
         method: 'POST',
