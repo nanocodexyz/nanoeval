@@ -5,6 +5,8 @@ import type * as WorkersAi from './WorkersAi.ts'
 export type Outcome = {
   again?: true
   at: number
+  firstByteMs?: number
+  firstDeltaMs?: number
   flight?: number
   ms: number
   refusal?: Proxy.Refusal
@@ -163,12 +165,17 @@ async function forwarded(
     const meter = Proxy.meter(input.provider, input.cost === false ? { cost: false } : {})
     const decoder = new TextDecoder()
     let settled = false
+    const streamed = upstream.headers.get('content-type')?.includes('text/event-stream') ?? false
+    let firstByteMs: number | undefined
+    let firstDeltaMs: number | undefined
     const settle = async () => {
       if (settled) return
       settled = true
       const usage = meter.usage()
       await hooks.settle({
         at,
+        ...(firstByteMs === undefined ? {} : { firstByteMs }),
+        ...(firstDeltaMs === undefined ? {} : { firstDeltaMs }),
         ...(held.flight === undefined ? {} : { flight: held.flight }),
         ms: Date.now() - at,
         status: upstream.status,
@@ -180,7 +187,9 @@ async function forwarded(
       cancel: settle,
       flush: settle,
       transform(chunk, controller) {
+        if (streamed) firstByteMs ??= Date.now() - at
         meter.push(decoder.decode(chunk, { stream: true }))
+        if (firstDeltaMs === undefined && meter.delivered()) firstDeltaMs = Date.now() - at
         controller.enqueue(chunk)
       },
     }

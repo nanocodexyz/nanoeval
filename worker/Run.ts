@@ -183,7 +183,9 @@ const tables = [
     wait INTEGER,
     listed INTEGER,
     again INTEGER,
-    route TEXT
+    route TEXT,
+    first_byte INTEGER,
+    first_delta INTEGER
   )`,
   'CREATE INDEX IF NOT EXISTS model_requests_attempt ON model_requests (attempt, claim)',
   `CREATE TABLE IF NOT EXISTS model_flights (
@@ -278,6 +280,8 @@ export class Run extends DurableObject<Env> {
       ['claims', 'error', 'TEXT'],
       ['model_requests', 'again', 'INTEGER'],
       ['model_requests', 'cost', 'REAL'],
+      ['model_requests', 'first_byte', 'INTEGER'],
+      ['model_requests', 'first_delta', 'INTEGER'],
       ['model_requests', 'listed', 'INTEGER'],
       ['model_requests', 'refusal', 'TEXT'],
       ['model_requests', 'route', 'TEXT'],
@@ -901,7 +905,7 @@ export class Run extends DurableObject<Env> {
     if (outcome.flight !== undefined)
       this.sql.run('DELETE FROM model_flights WHERE id = ?', outcome.flight)
     this.sql.run(
-      'INSERT INTO model_requests (attempt, claim, at, path, ms, status, usage, cost, refusal, searches, tools_usd, unpriced, wait, listed, again, route) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO model_requests (attempt, claim, at, path, ms, status, usage, cost, refusal, searches, tools_usd, unpriced, wait, listed, again, route, first_byte, first_delta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       input.attempt,
       input.claim,
       outcome.at,
@@ -918,6 +922,8 @@ export class Run extends DurableObject<Env> {
       price ? 1 : null,
       outcome.again ? 1 : null,
       outcome.route ?? null,
+      outcome.firstByteMs ?? null,
+      outcome.firstDeltaMs ?? null,
     )
     const { refused, ...rest } = this.meta()!
     if (refused && outcome.status < 400) {
@@ -1349,16 +1355,18 @@ export class Run extends DurableObject<Env> {
 
   private requestLog(attempt: string): string | undefined {
     const requests = this.sql.all(
-      'SELECT again, claim, at, path, ms, status, usage, refusal, route, wait FROM model_requests WHERE attempt = ? ORDER BY id',
+      'SELECT again, claim, at, path, ms, status, usage, refusal, route, wait, first_byte, first_delta FROM model_requests WHERE attempt = ? ORDER BY id',
       attempt,
     )
     return requests.length
       ? requests
           .map(
-            ({ again, refusal, route, wait, ...request }) =>
+            ({ again, first_byte, first_delta, refusal, route, wait, ...request }) =>
               JSON.stringify({
                 ...request,
                 ...(again === null ? {} : { again: true }),
+                ...(first_byte === null ? {} : { first_byte }),
+                ...(first_delta === null ? {} : { first_delta }),
                 ...(refusal === null ? {} : { refusal }),
                 ...(route === null ? {} : { route }),
                 ...(wait === null ? {} : { wait }),
@@ -3446,7 +3454,7 @@ export class Run extends DurableObject<Env> {
     const row = Ledger.get(this.sql, claimed.id)!
     const session = row.session!
     if (row.phase === 'attach') {
-      if (harness !== 'installed')
+      if (harness !== 'installed' && (harness !== 'session' || this.branchSessions(row).length > 1))
         for (const name of this.branchSessions(row))
           if (!(await this.listed(row, { session: name, waitMs }))) return { state: 'waiting' }
       if (harness !== 'oracle') {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import * as Http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { test } from 'node:test'
+import * as Proxy from '../src/Proxy.ts'
 import * as Retry from '../src/Retry.ts'
 import * as Meter from '../worker/Meter.ts'
 
@@ -168,4 +169,62 @@ test('a pace holds a request before it is sent and before it is asked again, and
   } finally {
     server.close()
   }
+})
+
+test('a streamed answer settles with the time to its first byte and to its first model output', async () => {
+  const events = (value: Record<string, unknown>) => 'data: ' + JSON.stringify(value) + '\n\n'
+  const server = Http.createServer((request, response) => {
+    request.resume()
+    request.on('end', () => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' })
+      response.write(events({ type: 'response.created', response: {} }))
+      setTimeout(() => {
+        response.write(events({ type: 'response.output_text.delta', delta: 'hi' }))
+        response.end(
+          events({
+            type: 'response.completed',
+            response: { output: [], usage: { input_tokens: 10, output_tokens: 2 } },
+          }),
+        )
+      }, 80)
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const settled: Meter.Outcome[] = []
+    const response = await relay('http://127.0.0.1:' + (server.address() as AddressInfo).port, {
+      settle: (outcome) => void settled.push(outcome),
+    })
+    await response.text()
+    const [outcome] = settled
+    assert.ok(outcome)
+    assert.equal(outcome.usage?.outputTokens, 2)
+    assert.ok(outcome.firstByteMs !== undefined && outcome.firstDeltaMs !== undefined)
+    assert.ok(outcome.firstDeltaMs - outcome.firstByteMs >= 60)
+    assert.ok(outcome.firstDeltaMs <= outcome.ms)
+  } finally {
+    server.close()
+  }
+})
+
+test('model output is a text, reasoning or tool call delta, or a tool call starting', () => {
+  assert.equal(Proxy.delivers({ type: 'response.created' }), false)
+  assert.equal(
+    Proxy.delivers({ type: 'response.output_item.added', item: { type: 'message' } }),
+    false,
+  )
+  assert.equal(
+    Proxy.delivers({ type: 'response.output_item.added', item: { type: 'function_call' } }),
+    true,
+  )
+  assert.equal(Proxy.delivers({ type: 'response.reasoning_summary_text.delta' }), true)
+  assert.equal(Proxy.delivers({ type: 'message_start' }), false)
+  assert.equal(Proxy.delivers({ type: 'content_block_delta' }), true)
+  assert.equal(
+    Proxy.delivers({ type: 'content_block_start', content_block: { type: 'tool_use' } }),
+    true,
+  )
+  assert.equal(Proxy.delivers({ choices: [{ delta: { role: 'assistant', content: '' } }] }), false)
+  assert.equal(Proxy.delivers({ choices: [{ delta: { content: 'x' } }] }), true)
+  assert.equal(Proxy.delivers({ choices: [{ delta: { tool_calls: [{ index: 0 }] } }] }), true)
 })
