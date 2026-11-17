@@ -49,6 +49,24 @@ export async function token(env: Env, name: string): Promise<string> {
   return minted.token
 }
 
+export async function warm(
+  env: Env,
+  name: string,
+  input: { model: string; payer?: string; provider: 'claude' | 'codex'; webSearch?: false },
+): Promise<void> {
+  const response = await call(env, session(name) + '/warm', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: input.model,
+      ...(input.payer ? { payer: input.payer } : {}),
+      provider: input.provider,
+      ...(input.provider === 'codex' || input.webSearch === false ? { web_search: false } : {}),
+    }),
+  })
+  await response.body?.cancel()
+}
+
 export async function hands(env: Env, name: string): Promise<readonly string[]> {
   const listed = await json<{ hands: string[] }>(
     await call(env, session(name) + '/hands'),

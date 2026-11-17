@@ -487,8 +487,8 @@ const usage = `nanoeval <command>
             from --warm-budget-usd while it is idle and terminates it when the idle time or
             what is paid ends. Any run takes a sandbox that is kept, with or without the
             option.
-  runner    --url URL --token T (--run RUN | --standing --backend krun|ns|dir [--location HINT])
-            [--home DIR] [--ends-in-sec N]
+  runner    --url URL (--token T | --token-file FILE) (--run RUN | --standing
+            --backend krun|ns|dir [--location HINT]) [--home DIR] [--ends-in-sec N]
             [--backend krun|ns] [--slots N] [--memory-mb N] [--memory-overcommit]
             [--cpus-per-thread N] [--slots-only]
             [--free-disk-mb N] [--poll-ms N] [--store DIR] [--cache DIR]
@@ -2526,6 +2526,7 @@ async function main(
       template: { type: 'string' },
       'tick-ms': { default: '500', type: 'string' },
       token: { default: process.env['NANOEVAL_TOKEN'], type: 'string' },
+      'token-file': { default: process.env['NANOEVAL_TOKEN_FILE'], type: 'string' },
       unsound: { type: 'string' },
       url: { default: process.env['NANOEVAL_URL'], type: 'string' },
       'verifier-cache': { default: false, type: 'boolean' },
@@ -2539,6 +2540,12 @@ async function main(
       'within-sec': { default: '21600', type: 'string' },
     },
   })
+  if (values['token-file'] !== undefined) {
+    if (tokens.some((token) => token.kind === 'option' && token.name === 'token'))
+      throw new Error('--token and --token-file name the same token: give one')
+    values.token = (await Fs.readFile(values['token-file'], 'utf8')).trim()
+    if (!values.token) throw new Error('--token-file ' + values['token-file'] + ' is empty')
+  }
   const [named, ...rest] = positionals
   const screen = {
     ...(process.stdout.isTTY ? { height: process.stdout.rows } : {}),
