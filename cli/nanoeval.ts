@@ -49,6 +49,7 @@ import * as Doctor from './Doctor.ts'
 import * as Import from './Import.ts'
 import * as Login from './Login.ts'
 import * as Plan from './Plan.ts'
+import * as Systems from './systems/main.ts'
 import * as Revision from './Revision.ts'
 import * as Runtime from './Runtime.ts'
 import * as Command from './Scorecard.ts'
@@ -4258,12 +4259,18 @@ export function refusal(error: unknown, worker?: string): string {
 }
 
 if (import.meta.main)
-  await (process.argv[2] === 'watch' ? Watch.main(process.argv.slice(3)) : main()).catch(
-    (error: unknown) => {
-      const at = process.argv.indexOf('--url')
-      console.error(
-        'nanoeval: ' + refusal(error, at < 0 ? process.env['NANOEVAL_URL'] : process.argv[at + 1]),
-      )
-      process.exit(error instanceof UnknownCommandError ? 2 : 1)
-    },
-  )
+  await (
+    process.argv[2] === 'watch'
+      ? Watch.main(process.argv.slice(3))
+      : process.argv[2] === 'systems'
+        ? Systems.main(process.argv.slice(3)).then((code) => {
+            process.exitCode = code
+          })
+        : main()
+  ).catch((error: unknown) => {
+    const at = process.argv.indexOf('--url')
+    console.error(
+      'nanoeval: ' + refusal(error, at < 0 ? process.env['NANOEVAL_URL'] : process.argv[at + 1]),
+    )
+    process.exit(error instanceof UnknownCommandError ? 2 : 1)
+  })

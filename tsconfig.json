@@ -15,6 +15,7 @@
   },
   "include": [
     "cli/*.ts",
+    "cli/systems/**/*.ts",
     "datasets/*.ts",
     "sandbox/*.ts",
     "scripts/*.ts",

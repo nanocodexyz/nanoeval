@@ -24,7 +24,11 @@ export type TurnSample = {
   timedOut?: boolean
 }
 
-export type Session = { close(): Promise<void>; id: string; turn(prompt: string): Promise<TurnSample> }
+export type Session = {
+  close(): Promise<void>
+  id: string
+  turn(prompt: string): Promise<TurnSample>
+}
 
 export type Description = {
   nanocodeRev?: string
@@ -34,7 +38,13 @@ export type Description = {
   wasmSha256?: string
 }
 
-export type Context = { deadlineMs: number; model?: string; stallMs: number }
+export type Context = {
+  cold?: boolean
+  deadlineMs: number
+  model?: string
+  stallMs: number
+  thinking?: string
+}
 
 export type Target = {
   describe(build: Build): Promise<Description>
