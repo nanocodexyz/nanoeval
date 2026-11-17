@@ -3089,8 +3089,10 @@ export class Run extends DurableObject<Env> {
       token: secret,
       wholeLast: !Admission.wholeFirst(this.share(runner, body.offer.capacityMb)),
     })
-    for (const row of claimed)
+    for (const row of claimed) {
       Timeline.add(this.sql, { at: now, attempt: row.id, name: 'attempt.claimed', runner })
+      if (!this.installed(row)) this.warm(row, 0, Branch.session(row.session!, 0))
+    }
     const waiting = this.rows().some((row) => row.phase === 'unclaimed')
     const response = idle(
       !claimed.length && body.offer.slots > 0 && waiting && !pace.declined(),
@@ -3198,7 +3200,6 @@ export class Run extends DurableObject<Env> {
       probed.add(branch)
       this.keep(row, Picker.probes, JSON.stringify([...probed].sort()) + '\n')
     }
-    if (!body.verifier) this.warm(row, branch, session)
     const token = await Harness.token(this.env, session)
     return {
       name: Protocol.handName,
