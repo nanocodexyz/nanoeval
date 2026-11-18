@@ -3,6 +3,7 @@ import * as Path from 'node:path'
 import * as Report from './Report.ts'
 import * as Runner from './Runner.ts'
 import * as Stats from './Stats.ts'
+import type * as Suite from './Suite.ts'
 
 export class InvalidError extends Error {
   override name = 'Compare.InvalidError'
@@ -29,6 +30,7 @@ export type Result = {
   draws: number
   head: string
   level: number
+  preset?: Suite.Preset
   rows: Row[]
   runs: string[]
   seed: number
@@ -48,6 +50,30 @@ export const metrics = [
   'turnsPerMin',
   'modelCalls',
 ] as const
+
+export async function layout(dir: string): Promise<Record<string, string> | undefined> {
+  if (dir.endsWith('.json')) return undefined
+  if (await Fs.stat(Path.join(dir, 'run.json')).catch(() => undefined)) return undefined
+  const found: Record<string, string> = {}
+  for (const entry of await Fs.readdir(dir, { withFileTypes: true }))
+    if (
+      entry.isDirectory() &&
+      (await Fs.stat(Path.join(dir, entry.name, 'run.json')).catch(() => undefined))
+    )
+      found[entry.name] = Path.join(dir, entry.name)
+  if (!Object.keys(found).length)
+    throw new InvalidError('no run.json in ' + dir + ' or its directories')
+  return found
+}
+
+export const client = new Set([
+  'ttftMs',
+  'startupMs',
+  'firstByteMs',
+  'cellMs',
+  'rssPeakKb',
+  'rssSteadyKb',
+])
 
 export async function read(dir: string): Promise<Runner.Run> {
   const file = dir.endsWith('.json') ? dir : Path.join(dir, 'run.json')
@@ -185,6 +211,9 @@ export function compare(
     draws: options.draws,
     head: head.build,
     level: 0.95,
+    ...((head.run.preset ?? base.run.preset)
+      ? { preset: (head.run.preset ?? base.run.preset)! }
+      : {}),
     rows,
     runs: [...new Set([base.run.id, head.run.id])],
     seed: options.seed,
@@ -234,11 +263,50 @@ const names: Record<string, string> = {
   turnsPerMin: 'turns/min',
 }
 
-export function markdown(result: Result): string {
+function tally(rows: readonly Row[]): string {
   const counts = { LOSS: 0, NA: 0, TIE: 0, WIN: 0 }
-  for (const row of result.rows) counts[row.verdict]++
+  for (const row of rows) counts[row.verdict]++
+  return (
+    'WIN ' +
+    counts.WIN +
+    ' · TIE ' +
+    counts.TIE +
+    ' · LOSS ' +
+    counts.LOSS +
+    (counts.NA ? ' · NA ' + counts.NA : '')
+  )
+}
+
+function rowsTable(result: Result, rows: readonly Row[]): string {
+  if (!rows.length) return 'No rows.'
+  return Report.table(
+    ['scenario', 'c', 'phase', 'metric', result.base, result.head, 'ratio [95% CI]', 'verdict'],
+    rows.map((row) => [
+      row.scenario + (row.target === 'cli-local' ? '' : ' (' + row.target + ')'),
+      String(row.concurrency),
+      row.phase,
+      names[row.metric] ?? row.metric,
+      Report.number(row.base),
+      Report.number(row.head),
+      Report.number(row.ratio) +
+        ' [' +
+        Report.number(row.low) +
+        ', ' +
+        Report.number(row.high) +
+        ']',
+      '**' + row.verdict + '**',
+    ]),
+  )
+}
+
+export function markdown(result: Result): string {
+  const mine = result.rows.filter((row) => client.has(row.metric))
+  const model = result.rows.filter((row) => !client.has(row.metric))
+  const preset = result.preset
+    ? ' on ' + result.preset.model + (result.preset.thinking ? ':' + result.preset.thinking : '')
+    : ''
   return [
-    '# Systems compare: ' + result.head + ' vs ' + result.base,
+    '# Systems compare: ' + result.head + ' vs ' + result.base + preset,
     '',
     'Ratio = mean(' +
       result.head +
@@ -254,32 +322,18 @@ export function markdown(result: Result): string {
       result.runs.join(', ') +
       '.',
     '',
-    'WIN ' +
-      counts.WIN +
-      ' · TIE ' +
-      counts.TIE +
-      ' · LOSS ' +
-      counts.LOSS +
-      (counts.NA ? ' · NA ' + counts.NA : ''),
+    '## Client signals',
     '',
-    Report.table(
-      ['scenario', 'c', 'phase', 'metric', result.base, result.head, 'ratio [95% CI]', 'verdict'],
-      result.rows.map((row) => [
-        row.scenario + (row.target === 'cli-local' ? '' : ' (' + row.target + ')'),
-        String(row.concurrency),
-        row.phase,
-        names[row.metric] ?? row.metric,
-        Report.number(row.base),
-        Report.number(row.head),
-        Report.number(row.ratio) +
-          ' [' +
-          Report.number(row.low) +
-          ', ' +
-          Report.number(row.high) +
-          ']',
-        '**' + row.verdict + '**',
-      ]),
-    ),
+    'What the client itself costs: TTFT, startup, first byte, cell time and memory. ' + tally(mine),
+    '',
+    rowsTable(result, mine),
+    '',
+    '## Includes model work',
+    '',
+    'Turn time, model calls, tok/s, throughput and pass rate also move with what the model does (how long it thinks, how many tool calls it makes), so read them as end-to-end, not as the client alone. ' +
+      tally(model),
+    '',
+    rowsTable(result, model),
     '',
   ].join('\n')
 }

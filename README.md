@@ -1311,11 +1311,13 @@ NANOEVAL_SUITES=~/nanoeval-suites node cli/nanoeval.ts systems run --suite syste
 node cli/nanoeval.ts systems compare output/systems/<ts> --base base --head head
 ```
 
-- A target is an adapter in `cli/systems/targets/<name>.ts` with the contract of `cli/systems/Target.ts`: `describe`, `open` and a session's `turn`, which returns the turn's timings. `cli-local` runs `nanocode exec` (later turns `--resume` the session) through a local route proxy that holds the key; `fake` is a deterministic stand-in for tests.
+- A target is an adapter in `cli/systems/targets/<name>.ts` with the contract of `cli/systems/Target.ts`: `describe`, `open` and a session's `turn`, which returns the turn's timings. `cli-local` runs `nanocode exec` (later turns `--resume` the session) through a local route proxy that holds the credentials, so they never reach the CLI: an Anthropic or OpenAI key from the environment, or for OpenAI models the ChatGPT plan through a relay (`NANOEVAL_SYSTEMS_RELAY_URL`, `NANOEVAL_SYSTEMS_RELAY_SECRET` or `_FILE`, and the login in `NANOEVAL_SYSTEMS_CODEX_AUTH`, by default `~/.codex/auth.json`). `fake` is a deterministic stand-in for tests.
 - A build is `label=<path|url|version>`: a path is a binary, a URL is downloaded, anything else is a `nanocode-cli` release version.
 - Scenarios are `turns`, `coldwarm` (a fresh binary path and home for the first turn) or `sustained` (sessions loop for `durationS`), each at its concurrency levels and repetitions, with a deadline, a stall window, expectations per turn and SLOs on a metric's p50, p95 or mean.
-- `run` writes `run.json`, `summary.md` (p50 and p95 per metric, PASS or FAIL per scenario) and one file per turn under `output/systems/<UTC timestamp>/`. `--strict` exits 1 when an SLO is missed.
-- `compare` gives head/base ratios per scenario, concurrency, phase and metric with a 95 % interval from the clustered bootstrap of `src/Scorecard.ts` (seed 1, 4000 draws; clusters are prompts, or repetitions where a group has fewer than 3), and WIN, TIE or LOSS when the interval is wholly better, holds 1, or is wholly worse.
+- Models are presets (`presets`: a model and a thinking level); the suite's `defaults.matrix` runs each preset into its own subdirectory with a `summary.md` of all of them. `--preset a,b` picks presets and `--model M [--thinking T]` runs one model instead. A scenario that names its own model keeps it.
+- `run` writes `run.json`, `summary.md` and one file per turn under `output/systems/<UTC timestamp>/`. `--strict` exits 1 when an SLO is missed.
+- `compare` gives head/base ratios per scenario, concurrency, phase and metric with a 95 % interval from the clustered bootstrap of `src/Scorecard.ts` (seed 1, 4000 draws; clusters are prompts, or repetitions where a group has fewer than 3), and WIN, TIE or LOSS when the interval is wholly better, holds 1, or is wholly worse. Model-matrix directories compare preset by preset.
+- Both reports lead with the client signals, the release verdict: TTFT, startup, first byte, cell time and RSS. Turn time, model calls, tok/s, throughput and pass rate come in a separate section, Includes model work, since they also move with how long the model thinks and how many tool calls it makes.
 
 ## Checks
 

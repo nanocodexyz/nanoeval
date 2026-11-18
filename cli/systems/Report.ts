@@ -1,8 +1,11 @@
+import * as Path from 'node:path'
 import type * as Runner from './Runner.ts'
 import * as Stats from './Stats.ts'
 import type * as Suite from './Suite.ts'
 
-const shown = ['ttftMs', 'turnMs', 'tokS', 'startupMs', 'rssPeakKb'] as const
+export const client = ['ttftMs', 'startupMs', 'firstByteMs', 'cellMs', 'rssPeakKb'] as const
+
+export const work = ['turnMs', 'modelCalls', 'tokS'] as const
 
 export function number(value: number | null | undefined, digits = 3): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '-'
@@ -20,6 +23,75 @@ export function table(head: readonly string[], rows: readonly (readonly string[]
 
 function pair(summary: Stats.Summary | undefined): string {
   return summary?.n ? number(summary.p50) + ' / ' + number(summary.p95) : '-'
+}
+
+function metrics(run: Runner.Run, names: readonly string[], pass: boolean): string {
+  return table(
+    [
+      'scenario',
+      'c',
+      'phase',
+      'target/build',
+      ...(pass ? ['n', 'pass'] : []),
+      ...names,
+      ...(pass ? [] : ['agg tok/s', 'turns/min']),
+    ],
+    run.groups
+      .filter((group) => group.phase !== 'batch')
+      .map((group) => {
+        const batch = run.groups.find(
+          (other) =>
+            other.phase === 'batch' &&
+            other.scenario === group.scenario &&
+            other.concurrency === group.concurrency &&
+            other.target === group.target &&
+            other.build === group.build,
+        )
+        const of = (name: string) => group.metrics[name] ?? batch?.metrics[name]
+        return [
+          group.scenario,
+          String(group.concurrency),
+          group.phase,
+          group.target + '/' + group.build,
+          ...(pass
+            ? [String(group.metrics['pass']?.n ?? 0), number(group.metrics['pass']?.mean ?? null)]
+            : []),
+          ...names.map((name) => pair(group.metrics[name])),
+          ...(pass
+            ? []
+            : ['aggTokS', 'turnsPerMin'].map((name) =>
+                of(name)?.n ? number(of(name)!.p50) : '-',
+              )),
+        ]
+      }),
+  )
+}
+
+export function matrix(
+  index: readonly { dir: string; preset?: Suite.Preset; run: Runner.Run }[],
+): string {
+  const first = index[0]?.run
+  return [
+    '# Systems model matrix ' + (first?.id ?? ''),
+    '',
+    'Suite ' +
+      (first
+        ? first.suite.name + '@' + first.suite.version + ' (sha256 ' + first.suite.digest + ')'
+        : '-') +
+      '. One run per model preset, each in its own directory.',
+    '',
+    table(
+      ['preset', 'model', 'thinking', 'scenario runs meeting SLOs', 'summary'],
+      index.map(({ dir, preset, run }) => [
+        preset?.name ?? '-',
+        preset?.model ?? '-',
+        preset?.thinking ?? '-',
+        run.verdicts.filter((verdict) => verdict.passed).length + '/' + run.verdicts.length,
+        Path.basename(dir) + '/summary.md',
+      ]),
+    ),
+    '',
+  ].join('\n')
 }
 
 export function summary(run: Runner.Run, suite?: Suite.Suite): string {
@@ -70,36 +142,17 @@ export function summary(run: Runner.Run, suite?: Suite.Suite): string {
       ]),
     ),
     '',
-    '## Metrics (p50 / p95)',
+    '## Client signals (p50 / p95)',
     '',
-    'Times in ms, tok/s per turn, RSS in KB. pass is the share of turns that met their expectations.',
+    'What the client itself costs: TTFT, startup and first byte (ms), cell time (ms) and peak RSS (KB). pass is the share of turns that met their expectations.',
     '',
-    table(
-      ['scenario', 'c', 'phase', 'target/build', 'n', 'pass', ...shown, 'agg tok/s'],
-      run.groups
-        .filter((group) => group.phase !== 'batch')
-        .map((group) => {
-          const batch = run.groups.find(
-            (other) =>
-              other.phase === 'batch' &&
-              other.scenario === group.scenario &&
-              other.concurrency === group.concurrency &&
-              other.target === group.target &&
-              other.build === group.build,
-          )
-          const aggregate = group.metrics['aggTokS'] ?? batch?.metrics['aggTokS']
-          return [
-            group.scenario,
-            String(group.concurrency),
-            group.phase,
-            group.target + '/' + group.build,
-            String(group.metrics['pass']?.n ?? 0),
-            number(group.metrics['pass']?.mean ?? null),
-            ...shown.map((name) => pair(group.metrics[name])),
-            aggregate?.n ? number(aggregate.p50) : '-',
-          ]
-        }),
-    ),
+    metrics(run, client, true),
+    '',
+    '## Includes model work (p50 / p95)',
+    '',
+    'Turn time (ms), model calls and tok/s per turn, and per batch the aggregate tok/s and turns a minute (p50), also move with what the model does, not only with the client.',
+    '',
+    metrics(run, work, false),
     '',
   ]
   const failed = run.verdicts.flatMap((verdict) => verdict.checks.filter((check) => !check.passed))
