@@ -22,7 +22,6 @@
   "ai": { "binding": "AI" },
   "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "nanoeval-blobs" }],
   "vars": {
-    "CELL_YIELD_MS": "120000",
     "EVENT_COALESCE_MS": "100",
     "EVENT_PAGE_SIZE": "128",
     "EVENT_STREAM_KEEPALIVE_MS": "5000",
