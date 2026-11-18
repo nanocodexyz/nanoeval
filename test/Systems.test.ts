@@ -161,6 +161,10 @@ describe('systems runner', () => {
     Assert.equal(Runner.judge({ cells: 1 }, turn).length, 1)
     Assert.deepEqual(Runner.judge({ timedOut: true }, { ...turn, ok: false, timedOut: true }), [])
     Assert.match(Runner.judge(undefined, { ...turn, error: 'boom', ok: false })[0]!, /boom/)
+    Assert.deepEqual(
+      Runner.judge({ stalled: true, text: 'alpha' }, { ...turn, stalled: true, timedOut: true }),
+      ['timed out'],
+    )
   })
 
   it('runs the fake target, writes run.json and summary.md, and compares two builds', async () => {

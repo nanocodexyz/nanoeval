@@ -46,6 +46,7 @@ export const metrics = [
   'pass',
   'aggTokS',
   'turnsPerMin',
+  'modelCalls',
 ] as const
 
 export async function read(dir: string): Promise<Runner.Run> {
@@ -172,7 +173,10 @@ export function compare(
         ratio: found.value,
         scenario: key.scenario,
         target: key.target,
-        verdict: left.length < 2 || right.length < 2 ? 'NA' : Stats.verdict(metric, found),
+        verdict:
+          shared.length < 2 || left.length < 2 || right.length < 2
+            ? 'NA'
+            : Stats.verdict(metric, found),
       })
     }
   }
@@ -217,6 +221,7 @@ export function arms(runs: readonly Runner.Run[], wanted: { base?: string; head?
 
 const names: Record<string, string> = {
   aggTokS: 'aggregate tok/s',
+  modelCalls: 'model calls',
   cellMs: 'cell time (ms)',
   firstByteMs: 'first byte (ms)',
   pass: 'pass rate',
@@ -245,7 +250,7 @@ export function markdown(result: Result): string {
       result.seed +
       ': a draw resamples the clusters (prompts when a group has 3 or more, else repetitions) with replacement, the same clusters for both builds, then the samples within each cluster for each build. WIN: the interval is wholly on the better side of 1 for ' +
       result.head +
-      ' (below 1 for times and memory, above 1 for tok/s, pass rate and throughput), LOSS: wholly on the worse side, TIE: it holds 1, NA: a build has fewer than 2 samples. Runs: ' +
+      ' (below 1 for times and memory, above 1 for tok/s, pass rate and throughput), LOSS: wholly on the worse side, TIE: it holds 1, NA: a build has fewer than 2 samples, or the builds share fewer than 2 clusters. Runs: ' +
       result.runs.join(', ') +
       '.',
     '',

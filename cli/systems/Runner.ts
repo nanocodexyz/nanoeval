@@ -111,7 +111,7 @@ function phaseOf(scenario: Suite.Scenario, turn: number): string {
 export function judge(expect: Suite.Expect | undefined, found: Target.TurnSample): string[] {
   const failures: string[] = []
   const wanted = expect ?? {}
-  if (wanted.timedOut !== undefined && !!found.timedOut !== wanted.timedOut)
+  if (!!found.timedOut !== !!wanted.timedOut)
     failures.push(wanted.timedOut ? 'expected a timeout' : 'timed out')
   if (wanted.stalled !== undefined && !!found.stalled !== wanted.stalled)
     failures.push(wanted.stalled ? 'expected a stall' : 'stalled')
