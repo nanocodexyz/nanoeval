@@ -362,3 +362,15 @@ test('visitor rejects a malformed configured id', () => {
   }
   assert.match(Demo.visitor('NANOEVAL_SYSTEMS_UNSET_VISITOR'), /^[0-9a-f]{64}$/)
 })
+
+test('spec reads the nanocode-ts pin from a release tarball or a git ref', () => {
+  assert.equal(
+    Demo.spec(
+      'https://github.com/nanocodexyz/nanocode-ts/releases/download/build-6d58e23/nanocode-ts-6d58e23.tgz',
+    ),
+    '6d58e23',
+  )
+  assert.equal(Demo.spec('github:nanocodexyz/nanocode-ts#c49cf386'), 'c49cf386')
+  assert.equal(Demo.spec('^1.2.3'), '^1.2.3')
+  assert.equal(Demo.spec(undefined), undefined)
+})

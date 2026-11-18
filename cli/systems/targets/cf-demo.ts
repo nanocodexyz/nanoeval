@@ -494,7 +494,12 @@ export async function pinned(): Promise<string | undefined> {
   const response = await fetch(manifest)
   if (!response.ok) return undefined
   const found = (await response.json()) as { dependencies?: Record<string, string> }
-  return found.dependencies?.['nanocode-ts']?.split('#')[1]
+  return spec(found.dependencies?.['nanocode-ts'])
+}
+
+export function spec(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  return /\/download\/build-([0-9a-f]+)\//.exec(value)?.[1] ?? /#(.+)$/.exec(value)?.[1] ?? value
 }
 
 export function base(build: Target.Build): string {
