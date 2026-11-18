@@ -288,6 +288,9 @@ test('the deployed Worker binds Workers AI on the tempo account, and a local Wor
   const config = Fs.readFileSync('wrangler.jsonc', 'utf8')
   assert.match(config, /"ai": \{ "binding": "AI" \}/)
   assert.match(config, /"WORKERS_AI_ACCOUNT_ID": "0a39052b0a32ba8c8444345fe21b7595"/)
-  assert.match(Fs.readFileSync('cli/nanoeval.ts', 'utf8'), /'dev',\n\s+'--local',/)
+  assert.match(
+    Fs.readFileSync('cli/nanoeval.ts', 'utf8'),
+    /'dev',\n\s+(?:\.\.\.bundle,\n\s+)?'--local',/,
+  )
   assert.match(Fs.readFileSync('test/e2e.ts', 'utf8'), /'dev',\n\s+'--local',/)
 })
