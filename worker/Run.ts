@@ -34,6 +34,7 @@ import * as Retry from '../src/Retry.ts'
 import * as Route from '../src/Route.ts'
 import type * as Runs from '../src/Runs.ts'
 import * as Sandbox from '../src/Sandbox.ts'
+import * as Spent from '../src/Spent.ts'
 import * as SqlSetup from '../src/Sql.ts'
 import * as Timeline from '../src/Timeline.ts'
 import * as Turn from '../src/Turn.ts'
@@ -45,6 +46,7 @@ import * as Harness from './Harness.ts'
 import type * as Meter from './Meter.ts'
 import * as Model from './Model.ts'
 import * as PoolObject from './Pool.ts'
+import type * as Requests from './Requests.ts'
 import * as Sessions from './Sessions.ts'
 import * as Storage from './Storage.ts'
 import * as Vault from './Vault.ts'
@@ -193,21 +195,12 @@ const tables = [
   'CREATE TABLE IF NOT EXISTS model_paced (attempt TEXT NOT NULL, claim INTEGER NOT NULL, requests INTEGER NOT NULL, held REAL NOT NULL, PRIMARY KEY (attempt, claim))',
   ...Ledger.tables,
   ...Payment.tables,
+  ...Spent.tables,
   ...Timeline.tables,
 ]
 
 const json = Storage.json
 const message = Storage.message
-
-type Settled = Proxy.Session & {
-  admit?: { waitedMs: number }
-  outcome?: Meter.Outcome
-  pace?: true
-  path?: string
-  provider?: Proxy.Provider
-  refused?: Meter.Refused
-  released?: number
-}
 
 function detail(text: string): string {
   let found: unknown
@@ -255,6 +248,7 @@ export class Run extends DurableObject<Env> {
   private readonly instance = secret()
   private readonly specs = new Map<string, Eval.Task>()
   private readonly sql: SqlSetup.Sql
+  private reportedMemo: { key: string; usd: number } | undefined
   private ticking: Promise<void> | undefined
   private readonly wallet: Payment.Wallet
 
@@ -285,6 +279,7 @@ export class Run extends DurableObject<Env> {
     for (const [table, column, type] of added)
       if (!this.sql.all('PRAGMA table_info(' + table + ')').some((row) => row['name'] === column))
         this.sql.run('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + type)
+    Spent.open(this.sql)
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -301,9 +296,8 @@ export class Run extends DurableObject<Env> {
         return await this.create(request, url.searchParams)
       const meta = this.meta()
       if (!meta) return json({ error: 'run not found' }, 404)
-      if (parts[0] === 'model') return await this.model(request, parts.slice(1), url.search)
       if (request.method === 'POST' && parts[0] === 'metered')
-        return json(this.settled((await request.json()) as Settled))
+        return json(this.settled((await request.json()) as Meter.Settled))
       if (parts[0] === 'runner') {
         const header = request.headers.get('authorization') ?? ''
         if (!(await same(header, 'Bearer ' + meta.runnerToken)))
@@ -704,47 +698,18 @@ export class Run extends DurableObject<Env> {
   }
 
   private modelSpent(): number {
-    const priced = new Set<string>()
-    let total = 0
-    for (const row of this.sql.all(
-      'SELECT attempt, SUM(COALESCE(cost, tools_usd, 0)) AS usd, COUNT(cost) AS priced FROM model_requests GROUP BY attempt',
-    )) {
-      if (row['priced']) priced.add(row['attempt'] as string)
-      total += row['usd'] as number
-    }
-    for (const row of this.rows())
-      if (row.result && !priced.has(row.id)) {
-        const result = JSON.parse(row.result) as Result.Attempt
-        total +=
-          (result.usage?.costUsd ?? 0) -
-          (result.usage?.toolsUsd ?? 0) +
-          (result.judge?.usage?.costUsd ?? 0)
-      }
-    for (const lost of Ledger.lostUsage(this.sql))
-      if (!priced.has(lost.attempt)) total += (JSON.parse(lost.usage) as Atif.Usage).costUsd ?? 0
-    return total
+    return Spent.requests(this.sql).usd + this.reportedUsd()
+  }
+
+  private reportedUsd(): number {
+    const key = Spent.reportedKey(this.sql)
+    if (this.reportedMemo?.key !== key)
+      this.reportedMemo = { key, usd: Spent.reported(this.sql) }
+    return this.reportedMemo.usd
   }
 
   private flights(): number {
-    const flights = this.sql.all('SELECT id, attempt, claim, instance FROM model_flights')
-    let held = 0
-    for (const flight of flights) {
-      const row = Ledger.get(this.sql, flight['attempt'] as string)
-      const flying = Budget.flying(
-        { claim: flight['claim'] as number, instance: flight['instance'] as string },
-        { claim: row && Ledger.active(row) ? row.claims : undefined, instance: this.instance },
-      )
-      if (flying) held++
-      else this.sql.run('DELETE FROM model_flights WHERE id = ?', flight['id'] as number)
-    }
-    return held
-  }
-
-  private largest(): number | undefined {
-    const seen = this.sql.all(
-      'SELECT COUNT(*) AS responses, MAX(COALESCE(cost, tools_usd, 0)) AS usd FROM model_requests WHERE usage IS NOT NULL',
-    )[0]!
-    return seen['responses'] ? (seen['usd'] as number) : undefined
+    return Spent.flights(this.sql, this.instance)
   }
 
   private held(): boolean {
@@ -753,7 +718,7 @@ export class Run extends DurableObject<Env> {
       limitUsd !== undefined &&
       Budget.held({
         flights: this.flights(),
-        largestUsd: this.largest(),
+        largestUsd: Spent.requests(this.sql).largestUsd,
         limitUsd,
         spentUsd: this.modelSpent(),
       })
@@ -765,8 +730,9 @@ export class Run extends DurableObject<Env> {
     const limitUsd = config.budget.modelUsd
     if (limitUsd === undefined) return {}
     const flights = this.flights()
-    const largestUsd = this.largest()
-    const spentUsd = this.modelSpent()
+    const totals = Spent.requests(this.sql)
+    const largestUsd = totals.largestUsd
+    const spentUsd = totals.usd + this.reportedUsd()
     const admission = Budget.admit({
       flights,
       largestUsd,
@@ -895,10 +861,11 @@ export class Run extends DurableObject<Env> {
       reported && price
         ? { ...reported, costBy: 'list', costUsd: Price.usd(price, reported) + (tools?.usd ?? 0) }
         : reported
-    if (outcome.flight !== undefined)
-      this.sql.run('DELETE FROM model_flights WHERE id = ?', outcome.flight)
-    this.sql.run(
-      'INSERT INTO model_requests (attempt, claim, at, path, ms, status, usage, cost, refusal, searches, tools_usd, unpriced, wait, listed, again, route) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    this.sql.transaction(() => {
+      if (outcome.flight !== undefined)
+        this.sql.run('DELETE FROM model_flights WHERE id = ?', outcome.flight)
+      this.sql.run(
+        'INSERT INTO model_requests (attempt, claim, at, path, ms, status, usage, cost, refusal, searches, tools_usd, unpriced, wait, listed, again, route) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       input.attempt,
       input.claim,
       outcome.at,
@@ -915,7 +882,14 @@ export class Run extends DurableObject<Env> {
       price ? 1 : null,
       outcome.again ? 1 : null,
       outcome.route ?? null,
-    )
+      )
+      Spent.add(this.sql, {
+        attempt: input.attempt,
+        costUsd: usage?.costUsd,
+        responded: usage !== undefined,
+        toolsUsd: tools?.usd,
+      })
+    })
     const { refused, ...rest } = this.meta()!
     if (refused && outcome.status < 400) {
       this.setMeta(rest)
@@ -1113,14 +1087,27 @@ export class Run extends DurableObject<Env> {
     return new Refusal(410, text)
   }
 
-  private settled(body: Settled): Meter.Admission {
+  /**
+   * What a relay of a model request tells the run: the meter of a session, and the requests of
+   * an installed agent that the stateless Worker relays. The body of a response never reaches
+   * the run, only these calls.
+   */
+  settled(body: Meter.Settled): Meter.Admission {
     if (typeof body?.attempt !== 'string' || !Ledger.get(this.sql, body.attempt))
       throw new Refusal(404, 'the run has no such attempt')
     if (body.refused) {
       const pauseMs = this.refuse(body.refused)
       if (pauseMs !== undefined) return { pauseMs }
-      this.wake(body.attempt)
+      if (!body.installed) this.wake(body.attempt)
       return {}
+    }
+    if (body.limited) {
+      const pauseMs = this.limited({
+        attempt: body.attempt,
+        claim: Number(body.claim),
+        limited: body.limited,
+      })
+      return pauseMs === undefined ? {} : { pauseMs }
     }
     if (body.admit)
       return this.admit({
@@ -1138,16 +1125,33 @@ export class Run extends DurableObject<Env> {
     }
     if (body.released !== undefined)
       this.sql.run('DELETE FROM model_flights WHERE id = ?', Number(body.released))
-    if (body.outcome && typeof body.path === 'string')
+    if (body.outcome && typeof body.path === 'string' && !this.recorded(body.attempt, body.outcome))
       this.record({
         attempt: body.attempt,
         claim: Number(body.claim),
-        listed: true,
+        listed: !body.installed,
         outcome: body.outcome,
         path: body.path,
         provider: body.provider === 'codex' ? 'codex' : 'claude',
       })
     return {}
+  }
+
+  /**
+   * Whether the end of a request in flight was already recorded: a relay that tells it twice
+   * (a stream that ends both by flush and by cancel, or a call made again) records it once.
+   */
+  private recorded(attempt: string, outcome: Meter.Outcome): boolean {
+    if (outcome.flight === undefined) return false
+    if (this.sql.all('SELECT id FROM model_flights WHERE id = ?', outcome.flight).length) return false
+    return (
+      this.sql.all(
+        'SELECT id FROM model_requests WHERE attempt = ? AND at = ? AND status = ? LIMIT 1',
+        attempt,
+        outcome.at,
+        outcome.status,
+      ).length > 0
+    )
   }
 
   private life(runner: RunnerRow): Admission.Life | undefined {
@@ -1725,107 +1729,64 @@ export class Run extends DurableObject<Env> {
     )
   }
 
-  private async model(
-    request: Request,
-    parts: readonly string[],
-    search: string,
-  ): Promise<Response> {
-    const [id, ...rest] = parts
-    const row = id ? Ledger.get(this.sql, decodeURIComponent(id)) : undefined
+  /**
+   * Authorizes a model request of an installed agent and admits it to the model budget, in one
+   * call. The stateless Worker relays the request (`Requests.serve`) and tells the run what
+   * happened through `settled`, so the body of a response never passes through the run.
+   */
+  async model(input: Requests.Asked): Promise<Requests.Answer> {
+    if (!this.meta()) return { refused: { message: 'run not found', status: 404 } }
+    const row = Ledger.get(this.sql, input.attempt)
     const kind = row ? this.installed(row) : undefined
-    const presented = Proxy.token(request.headers)
     if (
       !row ||
       !kind ||
       !row.claim ||
       row.phase !== 'run' ||
       Date.now() > (row.deadline_at ?? 0) ||
-      !presented ||
-      !(await same(presented, await this.modelToken(row)))
+      !input.token ||
+      !(await same(input.token, await this.modelToken(row)))
     )
-      return Model.refuse(request, {
-        message: 'no agent of this run is running with this token',
-        status: 401,
-      })
-    const provider = Installed.provider(kind, this.agentOf(row).api)
+      return {
+        refused: { message: 'no agent of this run is running with this token', status: 401 },
+      }
+    const agent = this.agentOf(row)
+    const provider = Installed.provider(kind, agent.api)
     if (
       Installed.releases[kind].source === 'runtime' &&
-      request.method === 'GET' &&
-      rest.join('/') === 'models'
+      input.method === 'GET' &&
+      input.route === 'models'
     )
-      return Response.json({ data: [{ id: this.agentOf(row).model, object: 'model' }] })
-    const path = Proxy.route(provider, rest.join('/'))
-    if (!path)
-      return Model.refuse(request, {
-        message: 'the run forwards no ' + rest.join('/'),
-        status: 404,
+      return { models: agent.model }
+    const path = Proxy.route(provider, input.route)
+    if (!path) return { refused: { message: 'the run forwards no ' + input.route, status: 404 } }
+    if (input.method !== 'POST')
+      return { refused: { message: 'the run forwards POST requests only', status: 405 } }
+    const generates = Proxy.generates(provider, path)
+    if (
+      generates &&
+      input.asked &&
+      !Fallback.served({ model: agent.model, provider }).includes(input.asked.model as string)
+    ) {
+      this.record({
+        attempt: row.id,
+        claim: row.claims,
+        listed: false,
+        outcome: { at: Date.now(), ms: 0, refusal: 'model', status: 400 },
+        path,
+        provider,
       })
-    if (request.method !== 'POST')
-      return Model.refuse(request, {
-        message: 'the run forwards POST requests only',
-        status: 405,
-      })
-    let forwarded = request
-    if (Proxy.generates(provider, path)) {
-      let body = await request.text()
-      let value: Record<string, unknown> | undefined
-      try {
-        const parsed = JSON.parse(body) as unknown
-        if (typeof parsed === 'object' && parsed !== null) value = parsed as Record<string, unknown>
-      } catch {}
-      const model = this.agentOf(row).model
-      if (value && !Fallback.served({ model, provider }).includes(value['model'] as string)) {
-        this.record({
-          attempt: row.id,
-          claim: row.claims,
-          listed: false,
-          outcome: { at: Date.now(), ms: 0, refusal: 'model', status: 400 },
-          path,
-          provider,
-        })
-        return Response.json(
-          {
-            error: {
-              message: Fallback.refusal(value['model']),
-              type: 'invalid_request_error',
-            },
-          },
-          { status: 400 },
-        )
-      }
-      const limit = Number(this.env.NANOEVAL_REPLY_LIMIT ?? 0)
-      if (value && path === 'responses' && limit > 0 && !value['max_output_tokens']) {
-        value['max_output_tokens'] = limit
-        body = JSON.stringify(value)
-      }
-      forwarded = new Request(request.url, {
-        body,
-        headers: request.headers,
-        method: request.method,
-      })
+      return { unserved: Fallback.refusal(input.asked.model) }
     }
-    return Model.forward(this.env, {
-      hooks: {
-        admit: async (waitedMs) => this.admit({ attempt: row.id, claim: row.claims, waitedMs }),
-        limited: (limited) => this.limited({ attempt: row.id, claim: row.claims, limited }),
-        pace: () => this.pace({ attempt: row.id, claim: row.claims, path }),
-        refused: async (refused) => this.refuse(refused),
-        release: (flight) => void this.sql.run('DELETE FROM model_flights WHERE id = ?', flight),
-        settle: (outcome) =>
-          this.record({
-            attempt: row.id,
-            claim: row.claims,
-            listed: false,
-            outcome,
-            path,
-            provider,
-          }),
+    return {
+      grant: {
+        admission: this.admit({ attempt: row.id, claim: row.claims, waitedMs: 0 }),
+        claim: row.claims,
+        generates,
+        path,
+        provider,
       },
-      path,
-      provider,
-      request: forwarded,
-      search,
-    })
+    }
   }
 
   private async within(work: Promise<unknown>): Promise<void> {

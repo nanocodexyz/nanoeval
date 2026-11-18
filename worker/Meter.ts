@@ -26,6 +26,20 @@ export type Refused = {
 
 export type Admission = { flight?: number; pauseMs?: number; refused?: string }
 
+/** What a relay of a model request tells its run (`Run.settled`): one of these at a time. */
+export type Settled = Proxy.Session & {
+  admit?: { waitedMs: number }
+  /** The request is of an installed agent, relayed by the Worker, and not of a session. */
+  installed?: true
+  limited?: Limited
+  outcome?: Outcome
+  pace?: true
+  path?: string
+  provider?: Proxy.Provider
+  refused?: Refused
+  released?: number
+}
+
 export type Hooks = {
   admit?(waitedMs: number): Promise<Admission>
   limited?(limited: Limited): number | undefined | Promise<number | undefined>

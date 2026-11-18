@@ -6,6 +6,7 @@ import { locations, type Env } from './Env.ts'
 import * as Evals from './Evals.ts'
 import * as Model from './Model.ts'
 import * as PoolObject from './Pool.ts'
+import * as Requests from './Requests.ts'
 import { Run } from './Run.ts'
 import { AgentSession, authorized, nanocode } from './Sessions.ts'
 import * as Storage from './Storage.ts'
@@ -19,8 +20,16 @@ export { AgentSession, EvalsObject as Evals, PlanVault, Pool, Run }
 
 const json = Storage.json
 
+function decoded(part: string): string {
+  try {
+    return decodeURIComponent(part)
+  } catch {
+    return ''
+  }
+}
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url)
     if (url.pathname === '/health') return json({ ok: true })
     if (url.pathname.startsWith('/sessions/')) return nanocode.fetch(request, env)
@@ -109,6 +118,22 @@ export default {
     }
     if (!/^[0-9a-f-]{36}$/.test(id) || rest[0] === 'metered')
       return json({ error: 'route not found' }, 404)
+    if (rest[0] === 'model') {
+      const run = env.RUNS.get(env.RUNS.idFromName(id)) as unknown as Requests.Run
+      return Requests.serve({
+        attempt: decoded(rest[1] ?? ''),
+        env,
+        request,
+        route: rest.slice(2).filter(Boolean).join('/'),
+        run: {
+          id,
+          model: (asked) => run.model(asked),
+          settled: (body) => run.settled(body),
+        },
+        search: url.search,
+        wait: (promise) => ctx.waitUntil(promise),
+      })
+    }
     return env.RUNS.get(env.RUNS.idFromName(id)).fetch(
       new Request('https://run.internal/' + (rest.join('/') || 'status') + url.search, {
         method: request.method,

@@ -8258,3 +8258,29 @@ No agent option names this. The task decides it.
 - `-c web_search=disabled` with Codex CLI 0.166.0. It is the setting of `stock-codex` at 0.162.1, and no binary of 0.166.0 was started with it.
 - `nanocode-claude` and `nanocode-codex`, the nanocode command line inside the slot. Its `exec` has no option that turns the web search off, so such an arm on a closed task still has the search of its provider. It is not closed by this change.
 - The tools of fx, opencode and pi were read from their commands here and not from their binaries.
+
+## 2026-11-16: the Worker relays model requests, the run only decides them
+
+**The defect.** Every model request of an installed agent went through the Durable Object of its run: `Run.model` checked the token, admitted the request, fetched the provider and returned the response through `Meter.relay`, a `TransformStream` that runs the meter for each chunk. A Durable Object has one thread, so the bytes of every stream of a run were copied and metered by that one thread, beside every other request of the run. Under load the object is reset, and every stream it holds ends with `Network connection lost`; the agent sees a 502 from the `catch` in `Model.forward`.
+
+**Seen.** One arm of 252 slots had 42% of its model requests end in that 502. A local workerd with 1,000 concurrent streams through one run object lost 875 of 1,000 to a reset of the object. The same 1,000 streams relayed by the stateless Worker, with the object called only to admit and record, all completed.
+
+**The rule.** A request to `/v1/runs/<id>/model/<attempt>/<path>` is served by the Worker (`Requests.serve`), not by the run.
+
+- The Worker makes one RPC, `Run.model`, which checks the token, the row, the agent, the provider, the path and the model of the request, and admits it to the model budget. It answers a grant (claim, provider, path, whether the path generates, and the first admission), a refusal, the model list of a runtime agent, or the 400 of a model the agent is not served.
+- The Worker runs `Model.forward` with the credentials it already has, and the stream goes from the provider to the agent without passing through the run.
+- The hooks of the meter (`admit` after a pause, `pace`, `limited`, `refused`, `release`, `settle`) are RPC calls to `Run.settled`, the body that a session meter already sends, marked `installed`. An installed request is recorded as not listed and a refusal does not wake a session, as before.
+- A flight of the first admission that the relay never took (a request refused before it starts) is given back.
+- A call to the run that fails does not fail the request: an admission admits it, a pause is not taken, an outcome is lost. If the first RPC fails the Worker answers 503.
+- An end is told once. The relay already settles a stream once when both `flush` and `cancel` run; the hooks also drop a second end with the same start, status, retry mark and refusal, and the run records the end of a flight only once: an outcome whose flight is gone and whose attempt has a request with the same start and status is not recorded again.
+
+**Admission reads totals.** `admit()` ran a `GROUP BY` over every recorded request and parsed the result JSON of every row on each call, and `flights()` read the row of each flight. Now:
+
+- `model_totals` holds the cost of the requests, the number of ended responses and the largest one. `record()` adds each request in the transaction that inserts it (`Spent.add`), and `model_priced` holds the attempts with a priced request. A run made before this change fills both from its requests once when its object starts (`Spent.open`).
+- The cost that results and lost claims report for attempts without a priced request is read again only when a key of counts and sums changes (`Spent.reportedKey`), not on every request.
+- Stale flights are deleted in one statement with the rule of `Budget.flying`, then counted.
+
+**Tests.** `node --test test/Spent.test.ts test/Requests.test.ts test/Meter.test.ts test/Budget.test.ts`: the totals equal a scan of the requests after each insert, a run without totals fills them once, a response that cost nothing is the largest when it is the only one, the reported cost and its key follow results and lost claims, the flights kept are those `Budget.flying` keeps; the Worker relays a granted request to a local provider and tells the run one end with its flight and usage, refusals and the model list are answered without the provider, a run that is not reached is a 503, the first admission is used once, an end is told once, an unused flight is given back, and failed calls to the run do not fail the request.
+
+**Not verified.** A deployed Worker, and the 1,000-stream and 252-slot loads with this change: no benchmark was run for this entry. Sessions still relay through their own session objects and are unchanged.
+
