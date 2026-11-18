@@ -429,7 +429,10 @@ export const cliLocal: Target.Target = {
       overrides: {
         binary: file,
         model: model(),
-        route: upstream(provider(model()))?.via ?? 'direct',
+        routes: {
+          claude: upstream('claude')?.via ?? 'direct',
+          codex: upstream('codex')?.via ?? 'direct',
+        },
         sha256: sha,
         version: await run(file, ['--version']),
       },
