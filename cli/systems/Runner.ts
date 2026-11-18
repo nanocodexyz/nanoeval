@@ -80,6 +80,7 @@ export type Run = {
   finished: string
   groups: Group[]
   id: string
+  preset?: Suite.Preset
   samples: Sample[]
   started: string
   suite: { digest: string; name: string; version: string }
@@ -92,6 +93,7 @@ export type Options = {
   command?: string
   log?: (line: string) => void
   out?: string
+  preset?: Suite.Preset
   suite: Suite.Suite
   targets: readonly Target.Target[]
 }
@@ -363,6 +365,7 @@ export async function run(options: Options): Promise<{ dir: string; run: Run }> 
     finished: new Date().toISOString(),
     groups,
     id,
+    ...(options.preset ? { preset: options.preset } : {}),
     samples,
     started: started.toISOString(),
     suite: {

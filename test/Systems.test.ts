@@ -349,3 +349,116 @@ describe('cli-local target', () => {
     }
   })
 })
+
+describe('systems model matrix and report sections', () => {
+  const matrixSuite = {
+    defaults: { deadlineMs: 2000, matrix: ['fast', 'slow'], reps: 2, stallMs: 1000 },
+    name: 'systems-matrix',
+    presets: { fast: { model: 'm-fast', thinking: 'high' }, slow: { model: 'm-slow' } },
+    scenarios: [
+      {
+        description: 'three turns',
+        id: 'chat',
+        turns: [
+          { expect: { text: 'alpha' }, prompt: 'Reply with exactly: alpha' },
+          { expect: { text: 'beta' }, prompt: 'Reply with exactly: beta' },
+          {
+            expect: { cells: 1, text: 'gamma' },
+            prompt: 'Run a code cell, then reply with exactly: gamma',
+          },
+        ],
+      },
+      {
+        description: 'own model',
+        id: 'bad-model',
+        model: 'no-such-model',
+        turns: [{ expect: { ok: false }, prompt: 'Reply with exactly: never' }],
+      },
+    ],
+    version: '1',
+  }
+
+  it('parses presets and keeps a scenario model over the preset', () => {
+    const suite = Suite.parse(matrixSuite)
+    Assert.deepEqual(suite.matrix, ['fast', 'slow'])
+    const chosen = Suite.preset(suite, suite.presets['fast']!)
+    Assert.equal(chosen.scenarios[0]!.model, 'm-fast')
+    Assert.equal(chosen.scenarios[0]!.thinking, 'high')
+    Assert.equal(chosen.scenarios[1]!.model, 'no-such-model')
+    Assert.throws(
+      () => Suite.parse({ ...matrixSuite, defaults: { matrix: ['nope'] } }),
+      /names preset nope/,
+    )
+    Assert.throws(() => Suite.presets(suite, ['nope']), /has no preset nope/)
+  })
+
+  it('runs every preset of the matrix and compares them preset by preset', async () => {
+    const root = await Fs.mkdtemp(Path.join(Os.tmpdir(), 'systems-matrix-'))
+    await Fs.writeFile(Path.join(root, 'suite.json'), JSON.stringify(matrixSuite))
+    const printed: string[] = []
+    const print = (line: string) => printed.push(line)
+    const out = Path.join(root, 'run')
+    const args = ['run', '--suite', root, '--target', 'fake', '--quiet', '--out', out]
+    Assert.equal(await Main.main([...args, '--build', 'old=1', '--build', 'new=0.5'], print), 0)
+    const fast = JSON.parse(
+      await Fs.readFile(Path.join(out, 'fast', 'run.json'), 'utf8'),
+    ) as Runner.Run
+    Assert.deepEqual(fast.preset, { model: 'm-fast', name: 'fast', thinking: 'high' })
+    Assert.ok(fast.samples.every((sample) => sample.pass))
+    Assert.match(await Fs.readFile(Path.join(out, 'summary.md'), 'utf8'), /\| slow \| m-slow \|/)
+    const summary = await Fs.readFile(Path.join(out, 'fast', 'summary.md'), 'utf8')
+    Assert.ok(summary.indexOf('## Client signals') < summary.indexOf('## Includes model work'))
+    Assert.equal(
+      await Main.main(['compare', out, '--base', 'old', '--head', 'new', '--draws', '200'], print),
+      0,
+    )
+    const json = JSON.parse(await Fs.readFile(Path.join(out, 'compare.json'), 'utf8')) as Record<
+      string,
+      Compare.Result
+    >
+    Assert.deepEqual(Object.keys(json).sort(), ['fast', 'slow'])
+    const markdown = await Fs.readFile(Path.join(out, 'compare.md'), 'utf8')
+    Assert.match(markdown, /# Systems compare: new vs old on m-fast:high/)
+    const clientAt = markdown.indexOf('## Client signals')
+    const workAt = markdown.indexOf('## Includes model work')
+    Assert.ok(clientAt > 0 && workAt > clientAt)
+    Assert.ok(markdown.slice(clientAt, workAt).includes('TTFT (ms)'))
+    Assert.ok(!markdown.slice(clientAt, workAt).includes('turn time (ms)'))
+    Assert.ok(markdown.slice(workAt).includes('turn time (ms)'))
+  })
+
+  it('routes OpenAI models through the plan relay with the ChatGPT login', async () => {
+    const root = await Fs.mkdtemp(Path.join(Os.tmpdir(), 'systems-relay-'))
+    const auth = Path.join(root, 'auth.json')
+    await Fs.writeFile(
+      auth,
+      JSON.stringify({ tokens: { access_token: 'access', account_id: 'account' } }),
+    )
+    await Fs.writeFile(Path.join(root, 'secret'), 'relay-secret\n')
+    const names = [
+      'NANOEVAL_SYSTEMS_RELAY_URL',
+      'NANOEVAL_SYSTEMS_CODEX_AUTH',
+      'NANOEVAL_SYSTEMS_RELAY_SECRET_FILE',
+    ]
+    const before = names.map((name) => process.env[name])
+    process.env['NANOEVAL_SYSTEMS_RELAY_URL'] = 'https://relay.example/'
+    process.env['NANOEVAL_SYSTEMS_CODEX_AUTH'] = auth
+    process.env['NANOEVAL_SYSTEMS_RELAY_SECRET_FILE'] = Path.join(root, 'secret')
+    try {
+      Assert.deepEqual(CliLocal.upstream('codex'), {
+        base: 'https://relay.example/backend-api/codex',
+        headers: {
+          authorization: 'Bearer access',
+          'chatgpt-account-id': 'account',
+          'x-nanocode-relay-secret': 'relay-secret',
+        },
+        via: 'relay',
+      })
+    } finally {
+      names.forEach((name, at) => {
+        if (before[at] === undefined) delete process.env[name]
+        else process.env[name] = before[at]
+      })
+    }
+  })
+})

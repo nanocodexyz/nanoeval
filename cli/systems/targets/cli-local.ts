@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import * as Fs_ from 'node:fs'
 import * as Fs from 'node:fs/promises'
 import * as Http from 'node:http'
 import * as Os from 'node:os'
@@ -54,6 +55,47 @@ function key(of: Provider): string | undefined {
   return of === 'claude'
     ? (process.env['NANOEVAL_SYSTEMS_ANTHROPIC_KEY'] ?? process.env['ANTHROPIC_API_KEY'])
     : (process.env['NANOEVAL_SYSTEMS_OPENAI_KEY'] ?? process.env['OPENAI_API_KEY'])
+}
+
+export type Upstream = { base: string; headers: Record<string, string>; via: 'key' | 'relay' }
+
+function secretFile(name: string): string | undefined {
+  const file = process.env[name + '_FILE']
+  return process.env[name] ?? (file ? Fs_.readFileSync(file, 'utf8').trim() : undefined)
+}
+
+export function upstream(of: Provider, base?: string): Upstream | undefined {
+  const relay = process.env['NANOEVAL_SYSTEMS_RELAY_URL']
+  if (of === 'codex' && relay) {
+    const auth = JSON.parse(
+      Fs_.readFileSync(
+        process.env['NANOEVAL_SYSTEMS_CODEX_AUTH'] ??
+          Path.join(Os.homedir(), '.codex', 'auth.json'),
+        'utf8',
+      ),
+    ) as { tokens?: { access_token?: string; account_id?: string } }
+    if (!auth.tokens?.access_token)
+      throw new Target.InvalidError('the ChatGPT login for the relay has no access token')
+    const secret = secretFile('NANOEVAL_SYSTEMS_RELAY_SECRET')
+    return {
+      base: (base ?? relay.replace(/\/+$/, '') + '/backend-api/codex').replace(/\/+$/, ''),
+      headers: {
+        authorization: 'Bearer ' + auth.tokens.access_token,
+        ...(auth.tokens.account_id ? { 'chatgpt-account-id': auth.tokens.account_id } : {}),
+        ...(secret ? { 'x-nanocode-relay-secret': secret } : {}),
+      },
+      via: 'relay',
+    }
+  }
+  const secret = key(of)
+  if (!secret) return undefined
+  return {
+    base: (
+      base ?? (of === 'claude' ? 'https://api.anthropic.com' : 'https://api.openai.com/v1')
+    ).replace(/\/+$/, ''),
+    headers: of === 'claude' ? { 'x-api-key': secret } : { authorization: 'Bearer ' + secret },
+    via: 'key',
+  }
 }
 
 export function observe(call: Call, payload: unknown, at: number): void {
@@ -113,11 +155,9 @@ export function model_call(path: string): boolean {
 
 export type Proxy = { calls: Call[]; close(): Promise<void>; onActivity?: () => void; url: string }
 
-export async function proxy(of: Provider, upstream?: string): Promise<Proxy> {
-  const secret = key(of)
-  const base = (
-    upstream ?? (of === 'claude' ? 'https://api.anthropic.com' : 'https://api.openai.com/v1')
-  ).replace(/\/+$/, '')
+export async function proxy(of: Provider, to?: string | Upstream): Promise<Proxy> {
+  const route = typeof to === 'object' ? to : upstream(of, to)
+  const base = route?.base ?? ''
   const calls: Call[] = []
   const state: Proxy = { calls, close: async () => {}, url: '' }
   const server = Http.createServer(async (request, response) => {
@@ -134,10 +174,7 @@ export async function proxy(of: Provider, upstream?: string): Promise<Proxy> {
     for (const [name, value] of Object.entries(request.headers))
       if (!drop.has(name) && value !== undefined)
         headers[name] = Array.isArray(value) ? value.join(', ') : value
-    if (secret) {
-      if (of === 'claude') headers['x-api-key'] = secret
-      else headers['authorization'] = 'Bearer ' + secret
-    }
+    Object.assign(headers, route?.headers)
     try {
       const answer = await fetch(base + path, {
         body: chunks.length ? Buffer.concat(chunks) : undefined,
@@ -392,7 +429,10 @@ export const cliLocal: Target.Target = {
       overrides: {
         binary: file,
         model: model(),
-        route: key(provider(model())) ? 'proxy' : 'direct',
+        routes: {
+          claude: upstream('claude')?.via ?? 'direct',
+          codex: upstream('codex')?.via ?? 'direct',
+        },
         sha256: sha,
         version: await run(file, ['--version']),
       },
@@ -418,10 +458,10 @@ export const cliLocal: Target.Target = {
       nanohome = Path.join(dir, 'home')
       await Fs.mkdir(nanohome, { recursive: true })
     }
-    const route =
-      key(of) && !named.startsWith('tempo/')
-        ? await proxy(of, process.env['NANOEVAL_SYSTEMS_UPSTREAM'])
-        : undefined
+    const target = named.startsWith('tempo/')
+      ? undefined
+      : upstream(of, process.env['NANOEVAL_SYSTEMS_UPSTREAM'])
+    const route = target ? await proxy(of, target) : undefined
     const env: Record<string, string> = {
       HOME: process.env['HOME'] ?? Os.homedir(),
       LANG: 'en_US.UTF-8',

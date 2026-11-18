@@ -40,10 +40,14 @@ export type Scenario = {
   turns: Turn[]
 }
 
+export type Preset = { model: string; name: string; thinking?: string }
+
 export type Suite = {
   dir: string
   digest: string
+  matrix: string[]
   model?: string
+  presets: Record<string, Preset>
   name: string
   scenarios: Scenario[]
   thinking?: string
@@ -53,12 +57,14 @@ export type Suite = {
 type Raw = {
   defaults?: {
     deadlineMs?: number
+    matrix?: string[]
     model?: string
     reps?: number
     stallMs?: number
     thinking?: string
   }
   name?: unknown
+  presets?: Record<string, { model?: unknown; thinking?: unknown }>
   scenarios?: unknown
   version?: unknown
 }
@@ -163,11 +169,31 @@ export function parse(raw: Raw, dir = '.', digest = 'inline'): Suite {
       turns: turns as Turn[],
     }
   })
+  const presets: Record<string, Preset> = {}
+  for (const [name, entry] of Object.entries(raw.presets ?? {})) {
+    if (!/^[a-z0-9][a-z0-9.-]*$/.test(name))
+      throw new InvalidError(
+        'a preset name is lowercase letters, digits, dots and dashes, not ' + name,
+      )
+    if (typeof entry?.model !== 'string' || !entry.model)
+      throw new InvalidError('preset ' + name + ' names a model')
+    presets[name] = {
+      model: entry.model,
+      name,
+      ...(typeof entry.thinking === 'string' ? { thinking: entry.thinking } : {}),
+    }
+  }
+  const matrix = defaults.matrix ?? []
+  for (const name of matrix)
+    if (!presets[name])
+      throw new InvalidError('the matrix names preset ' + name + ', which the suite lacks')
   return {
     dir,
     digest,
+    matrix,
     ...(defaults.model ? { model: defaults.model } : {}),
     name: raw.name,
+    presets,
     scenarios,
     ...(defaults.thinking ? { thinking: defaults.thinking } : {}),
     version: raw.version,
@@ -202,4 +228,34 @@ export function pick(
       }))
       .filter((scenario) => scenario.concurrency.length)
   return { ...suite, scenarios }
+}
+
+export function preset(suite: Suite, chosen: Preset): Suite {
+  return {
+    ...suite,
+    scenarios: suite.scenarios.map((scenario) => ({
+      ...scenario,
+      model: scenario.model ?? chosen.model,
+      ...((scenario.thinking ?? chosen.thinking)
+        ? { thinking: (scenario.thinking ?? chosen.thinking)! }
+        : {}),
+    })),
+  }
+}
+
+export function presets(suite: Suite, names: readonly string[]): Preset[] {
+  return names.map((name) => {
+    const found = suite.presets[name]
+    if (!found)
+      throw new InvalidError(
+        'suite ' +
+          suite.name +
+          ' has no preset ' +
+          name +
+          ' (it has ' +
+          (Object.keys(suite.presets).join(', ') || 'none') +
+          ')',
+      )
+    return found
+  })
 }
